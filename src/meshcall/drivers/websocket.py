@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import uuid
 from pathlib import Path
 from stat import S_ISSOCK
 from typing import TYPE_CHECKING
 
-from websockets.asyncio.client import connect, unix_connect
+from websockets.asyncio.client import ClientConnection, connect, unix_connect
 from websockets.asyncio.server import Server, ServerConnection, serve, unix_serve
 
 from meshcall.driver import ClientDriver, DriverBinding, ServerDriver
 from meshcall.errors import DriverStateError, ProtocolError
-from meshcall.protocol import PROTOCOL_VERSION, HelloAckFrame, HelloFrame
+from meshcall.protocol import (
+    PROTOCOL_VERSION,
+    HelloAckFrame,
+    HelloFrame,
+    ServerRegisterAckFrame,
+    ServerRegisterFrame,
+)
 from meshcall.transport import FrameConnection
 
 if TYPE_CHECKING:
@@ -39,16 +47,11 @@ class WebSocketClientDriver(ClientDriver):
     async def connect(self) -> FrameConnection:
         if self._connection is not None:
             return self._connection
-        if self.unix_path is not None:
-            websocket = await unix_connect(
-                str(self.unix_path),
-                uri="ws://localhost/",
-                max_size=self.max_frame_size,
-            )
-        else:
-            if self.uri is None:
-                raise DriverStateError("WebSocket URI is not configured")
-            websocket = await connect(self.uri, max_size=self.max_frame_size)
+        websocket = await _connect_endpoint(
+            uri=self.uri,
+            unix_path=self.unix_path,
+            max_frame_size=self.max_frame_size,
+        )
         connection = FrameConnection(websocket, max_frame_size=self.max_frame_size)
         await connection.send(HelloFrame(role="client", peer_id=self.peer_id))
         response = await connection.receive()
@@ -160,3 +163,94 @@ class WebSocketDirectServerDriver(ServerDriver):
             and S_ISSOCK(self.unix_path.stat().st_mode)
         ):
             self.unix_path.unlink()
+
+
+class WebSocketRouterServerDriver(ServerDriver):
+    def __init__(
+        self,
+        uri: str | None = None,
+        *,
+        unix_path: str | Path | None = None,
+        instance_id: str | None = None,
+        max_frame_size: int = 1024 * 1024,
+    ) -> None:
+        super().__init__()
+        if (uri is None) == (unix_path is None):
+            raise ValueError("Set exactly one of uri or unix_path")
+        self.uri = uri
+        self.unix_path = Path(unix_path) if unix_path is not None else None
+        self.instance_id = instance_id or uuid.uuid4().hex
+        self.max_frame_size = max_frame_size
+        self._connection: FrameConnection | None = None
+        self._runtime_task: asyncio.Task[None] | None = None
+
+    async def start(
+        self,
+        binding: DriverBinding,
+        runtime: ServerRuntime,
+    ) -> None:
+        self.check_binding(binding)
+        websocket = await _connect_endpoint(
+            uri=self.uri,
+            unix_path=self.unix_path,
+            max_frame_size=self.max_frame_size,
+        )
+        connection = FrameConnection(websocket, max_frame_size=self.max_frame_size)
+        try:
+            await connection.send(
+                HelloFrame(
+                    role="server",
+                    peer_id=self.instance_id,
+                    instance_id=self.instance_id,
+                )
+            )
+            hello_ack = await connection.receive()
+            if not isinstance(hello_ack, HelloAckFrame):
+                raise ProtocolError("Expected hello.ack from WebSocket Router")
+            await connection.send(
+                ServerRegisterFrame(
+                    instance_id=self.instance_id,
+                    services=runtime.registration(),
+                )
+            )
+            register_ack = await connection.receive()
+            if (
+                not isinstance(register_ack, ServerRegisterAckFrame)
+                or register_ack.instance_id != self.instance_id
+            ):
+                raise ProtocolError("Expected matching server.register.ack")
+        except BaseException:
+            await connection.close()
+            raise
+        self._connection = connection
+        self._runtime_task = asyncio.create_task(
+            runtime.serve_connection(connection),
+            name=f"meshcall-router-server-{self.instance_id}",
+        )
+
+    async def stop(self, binding: DriverBinding) -> None:
+        self.check_binding(binding)
+        connection, self._connection = self._connection, None
+        runtime_task, self._runtime_task = self._runtime_task, None
+        if connection is not None:
+            await connection.close()
+        if runtime_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await runtime_task
+
+
+async def _connect_endpoint(
+    *,
+    uri: str | None,
+    unix_path: Path | None,
+    max_frame_size: int,
+) -> ClientConnection:
+    if unix_path is not None:
+        return await unix_connect(
+            str(unix_path),
+            uri="ws://localhost/",
+            max_size=max_frame_size,
+        )
+    if uri is None:
+        raise DriverStateError("WebSocket URI is not configured")
+    return await connect(uri, max_size=max_frame_size)
