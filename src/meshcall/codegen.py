@@ -113,6 +113,7 @@ def _render_method(
                 f"            {method.name!r},",
                 "            request,",
                 "            items,",
+                f"            {input_item},",
                 f"            {response},",
                 "        )",
             ]
@@ -169,4 +170,3 @@ def _required_type(ref: TypeRef | None, aliases: dict[str, str]) -> str:
 
 def _render_type(ref: TypeRef, aliases: dict[str, str]) -> str:
     return f"{aliases[ref.module]}.{ref.qualname}"
-
