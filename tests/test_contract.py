@@ -29,20 +29,19 @@ class Result(BaseModel):
 
 @service(name="test.v1.TestService", balance=Balance.least_inflight())
 class TestService:
-    @method.static.unary
+    @method.unary().static
     async def unary(request: Request) -> Result:
         return Result(total=request.value)
 
-    @method.static.server_stream
-    @method.options(balance=Balance.round_robin())
+    @method.server_stream(balance=Balance.round_robin()).static
     async def download(request: Request) -> AsyncIterator[Item]:
         yield Item(value=request.value)
 
-    @method.static.client_stream
+    @method.client_stream().static
     async def upload(request: Request, items: RpcInputStream[Item]) -> Result:
         return Result(total=request.value)
 
-    @method.static.duplex
+    @method.duplex().static
     async def duplex(
         request: Request,
         channel: RpcDuplex[Item, Item],
@@ -67,7 +66,7 @@ def test_extracts_all_method_shapes() -> None:
 
 
 def test_rejects_instance_rpc_method() -> None:
-    with pytest.raises(ContractError, match=r"must use @method\.static"):
+    with pytest.raises(ContractError, match=r"must use @method\.<shape>"):
 
         @service(name="test.v1.InvalidService")
         class InvalidService:
@@ -96,7 +95,7 @@ def test_rejects_declared_shape_mismatch() -> None:
 
         @service(name="test.v1.MismatchedService")
         class MismatchedService:
-            @method.static.unary
+            @method.unary().static
             async def download(request: Request) -> AsyncIterator[Item]:
                 yield Item(value=request.value)
 
@@ -106,6 +105,6 @@ def test_rejects_non_pydantic_payload() -> None:
 
         @service(name="test.v1.InvalidPayloadService")
         class InvalidPayloadService:
-            @method.static.unary
+            @method.unary().static
             async def invalid(request: int) -> Result:
                 return Result(total=request)

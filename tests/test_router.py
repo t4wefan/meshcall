@@ -32,19 +32,17 @@ class RouteResult(BaseModel):
 
 @service(name="test.v1.RouteService", balance=Balance.round_robin())
 class RouteServiceA:
-    @method.static.unary
+    @method.unary().static
     async def round_robin(request: RouteRequest) -> RouteResult:
         await asyncio.sleep(request.delay)
         return RouteResult(instance="a")
 
-    @method.static.unary
-    @method.options(balance=Balance.least_inflight())
+    @method.unary(balance=Balance.least_inflight()).static
     async def least_inflight(request: RouteRequest) -> RouteResult:
         await asyncio.sleep(request.delay)
         return RouteResult(instance="a")
 
-    @method.static.unary
-    @method.options(balance=Balance.sticky(key="request.session_id"))
+    @method.unary(balance=Balance.sticky(key="request.session_id")).static
     async def sticky(request: RouteRequest) -> RouteResult:
         await asyncio.sleep(request.delay)
         return RouteResult(instance="a")
@@ -52,19 +50,17 @@ class RouteServiceA:
 
 @service(name="test.v1.RouteService", balance=Balance.round_robin())
 class RouteServiceB:
-    @method.static.unary
+    @method.unary().static
     async def round_robin(request: RouteRequest) -> RouteResult:
         await asyncio.sleep(request.delay)
         return RouteResult(instance="b")
 
-    @method.static.unary
-    @method.options(balance=Balance.least_inflight())
+    @method.unary(balance=Balance.least_inflight()).static
     async def least_inflight(request: RouteRequest) -> RouteResult:
         await asyncio.sleep(request.delay)
         return RouteResult(instance="b")
 
-    @method.static.unary
-    @method.options(balance=Balance.sticky(key="request.session_id"))
+    @method.unary(balance=Balance.sticky(key="request.session_id")).static
     async def sticky(request: RouteRequest) -> RouteResult:
         await asyncio.sleep(request.delay)
         return RouteResult(instance="b")

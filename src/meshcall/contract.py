@@ -67,9 +67,6 @@ class MethodOptions:
 class Method:
     """Decorator namespace for RPC method binding styles."""
 
-    def __init__(self) -> None:
-        self.static = StaticMethod()
-
     def __call__(
         self,
         *,
@@ -88,51 +85,69 @@ class Method:
 
         return decorate
 
-    def options(
+    def unary(
         self,
         *,
         balance: BalancePolicy | None = None,
-    ) -> Callable[
-        [Callable[MethodParams, MethodReturnT]],
-        Callable[MethodParams, MethodReturnT],
-    ]:
-        """Attach optional metadata before an explicit shape decorator."""
+    ) -> MethodDeclaration:
+        return MethodDeclaration(StreamKind.UNARY, balance)
 
-        def decorate(
-            func: Callable[MethodParams, MethodReturnT],
-        ) -> Callable[MethodParams, MethodReturnT]:
-            _mark_method(func, balance=balance, stream=None)
-            return func
+    def server_stream(
+        self,
+        *,
+        balance: BalancePolicy | None = None,
+    ) -> MethodDeclaration:
+        return MethodDeclaration(StreamKind.SERVER, balance)
 
-        return decorate
+    def client_stream(
+        self,
+        *,
+        balance: BalancePolicy | None = None,
+    ) -> MethodDeclaration:
+        return MethodDeclaration(StreamKind.CLIENT, balance)
+
+    def duplex(
+        self,
+        *,
+        balance: BalancePolicy | None = None,
+    ) -> MethodDeclaration:
+        return MethodDeclaration(StreamKind.DUPLEX, balance)
 
 
-class StaticMethod:
-    """Explicit static RPC method declarations."""
+class MethodDeclaration:
+    """RPC shape and options awaiting a binding style."""
+
+    def __init__(
+        self,
+        stream: StreamKind,
+        balance: BalancePolicy | None,
+    ) -> None:
+        self.stream = stream
+        self.balance = balance
 
     if TYPE_CHECKING:
-        unary = staticmethod
-        server_stream = staticmethod
-        client_stream = staticmethod
-        duplex = staticmethod
+        static = staticmethod
     else:
 
-        def __init__(self) -> None:
-            self.unary = _StaticShape(StreamKind.UNARY)
-            self.server_stream = _StaticShape(StreamKind.SERVER)
-            self.client_stream = _StaticShape(StreamKind.CLIENT)
-            self.duplex = _StaticShape(StreamKind.DUPLEX)
+        @property
+        def static(self) -> _StaticShape:
+            return _StaticShape(self.stream, self.balance)
 
 
 class _StaticShape:
-    def __init__(self, stream: StreamKind) -> None:
+    def __init__(
+        self,
+        stream: StreamKind,
+        balance: BalancePolicy | None,
+    ) -> None:
         self.stream = stream
+        self.balance = balance
 
     def __call__(
         self,
         func: Callable[MethodParams, MethodReturnT],
     ) -> staticmethod[MethodParams, MethodReturnT]:
-        _mark_method(func, balance=None, stream=self.stream)
+        _mark_method(func, balance=self.balance, stream=self.stream)
         return staticmethod(func)
 
 
@@ -202,7 +217,7 @@ def extract_service_contract(
         elif hasattr(descriptor, "__meshcall_method__"):
             raise ContractError(
                 f"{cls.__qualname__}.{attribute_name} must use "
-                "@method.static.<shape> or @staticmethod"
+                "@method.<shape>(...).static or @staticmethod"
             )
 
         if func is None:

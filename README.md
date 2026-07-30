@@ -50,18 +50,17 @@ class CountItem(BaseModel):
 
 @service(name="example.v1.CounterService")
 class CounterService:
-    @method.static.server_stream
+    @method.server_stream().static
     async def count(request: CountRequest) -> AsyncIterator[CountItem]:
         for value in range(request.stop):
             yield CountItem(value=value)
 ```
 
-Service methods must be static and asynchronous. Use `method.static.unary`,
-`server_stream`, `client_stream`, or `duplex` to state the RPC shape. The
-signature is independently inferred and checked against that declaration.
-
-Use `@method.options(balance=...)` directly below the shape decorator when a
-method needs to override the service's load-balancing policy.
+Service methods must be static and asynchronous. Use `method.unary().static`,
+`server_stream().static`, `client_stream().static`, or `duplex().static` to
+state the RPC shape and binding style. Pass `balance=...` to the shape when a
+method needs to override the service's load-balancing policy. The signature is
+independently inferred and checked against the declaration.
 
 ## Generate a client
 
