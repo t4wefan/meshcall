@@ -5,7 +5,15 @@ import re
 from collections.abc import AsyncIterator as AsyncIteratorABC
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar, get_args, get_origin, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ParamSpec,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -21,6 +29,8 @@ from meshcall.ir import (
 from meshcall.streams import RpcDuplex, RpcInputStream
 
 ServiceT = TypeVar("ServiceT", bound=type[Any])
+MethodParams = ParamSpec("MethodParams")
+MethodReturnT = TypeVar("MethodReturnT")
 _SERVICE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.]*$")
 
 
@@ -51,19 +61,104 @@ class Balance:
 @dataclass(frozen=True)
 class MethodOptions:
     balance: BalancePolicy | None
+    stream: StreamKind | None
 
 
-def method(
+class Method:
+    """Decorator namespace for RPC method binding styles."""
+
+    def __init__(self) -> None:
+        self.static = StaticMethod()
+
+    def __call__(
+        self,
+        *,
+        balance: BalancePolicy | None = None,
+    ) -> Callable[
+        [Callable[MethodParams, MethodReturnT]],
+        Callable[MethodParams, MethodReturnT],
+    ]:
+        """Legacy marker used together with an explicit @staticmethod."""
+
+        def decorate(
+            func: Callable[MethodParams, MethodReturnT],
+        ) -> Callable[MethodParams, MethodReturnT]:
+            _mark_method(func, balance=balance, stream=None)
+            return func
+
+        return decorate
+
+    def options(
+        self,
+        *,
+        balance: BalancePolicy | None = None,
+    ) -> Callable[
+        [Callable[MethodParams, MethodReturnT]],
+        Callable[MethodParams, MethodReturnT],
+    ]:
+        """Attach optional metadata before an explicit shape decorator."""
+
+        def decorate(
+            func: Callable[MethodParams, MethodReturnT],
+        ) -> Callable[MethodParams, MethodReturnT]:
+            _mark_method(func, balance=balance, stream=None)
+            return func
+
+        return decorate
+
+
+class StaticMethod:
+    """Explicit static RPC method declarations."""
+
+    if TYPE_CHECKING:
+        unary = staticmethod
+        server_stream = staticmethod
+        client_stream = staticmethod
+        duplex = staticmethod
+    else:
+
+        def __init__(self) -> None:
+            self.unary = _StaticShape(StreamKind.UNARY)
+            self.server_stream = _StaticShape(StreamKind.SERVER)
+            self.client_stream = _StaticShape(StreamKind.CLIENT)
+            self.duplex = _StaticShape(StreamKind.DUPLEX)
+
+
+class _StaticShape:
+    def __init__(self, stream: StreamKind) -> None:
+        self.stream = stream
+
+    def __call__(
+        self,
+        func: Callable[MethodParams, MethodReturnT],
+    ) -> staticmethod[MethodParams, MethodReturnT]:
+        _mark_method(func, balance=None, stream=self.stream)
+        return staticmethod(func)
+
+
+method = Method()
+
+
+def _mark_method(
+    func: Callable[..., Any],
     *,
-    balance: BalancePolicy | None = None,
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    def decorate(func: Callable[..., Any]) -> Callable[..., Any]:
-        if hasattr(func, "__meshcall_method__"):
-            raise ContractError(f"{func.__qualname__} is already an RPC method")
-        func.__meshcall_method__ = MethodOptions(balance=balance)  # type: ignore[attr-defined]
-        return func
-
-    return decorate
+    balance: BalancePolicy | None,
+    stream: StreamKind | None,
+) -> None:
+    existing = getattr(func, "__meshcall_method__", None)
+    if existing is not None and not isinstance(existing, MethodOptions):
+        raise ContractError(f"{func.__qualname__} has invalid RPC metadata")
+    if isinstance(existing, MethodOptions):
+        if existing.balance is not None and balance is not None:
+            raise ContractError(f"{func.__qualname__} declares balance twice")
+        if existing.stream is not None and stream is not None:
+            raise ContractError(f"{func.__qualname__} declares its RPC shape twice")
+        balance = balance or existing.balance
+        stream = stream or existing.stream
+    func.__meshcall_method__ = MethodOptions(  # type: ignore[attr-defined]
+        balance=balance,
+        stream=stream,
+    )
 
 
 def service(
@@ -106,7 +201,8 @@ def extract_service_contract(
             func = descriptor.__func__
         elif hasattr(descriptor, "__meshcall_method__"):
             raise ContractError(
-                f"{cls.__qualname__}.{attribute_name} must use @staticmethod"
+                f"{cls.__qualname__}.{attribute_name} must use "
+                "@method.static.<shape> or @staticmethod"
             )
 
         if func is None:
@@ -119,6 +215,7 @@ def extract_service_contract(
                 func,
                 name=attribute_name,
                 balance=options.balance or balance,
+                declared_stream=options.stream,
             )
         )
 
@@ -139,6 +236,7 @@ def _extract_method(
     *,
     name: str,
     balance: BalancePolicy,
+    declared_stream: StreamKind | None,
 ) -> MethodContract:
     if not (inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)):
         raise ContractError(f"RPC method {func.__qualname__} must be async")
@@ -199,22 +297,30 @@ def _extract_method(
             raise ContractError(f"Invalid stream result on {func.__qualname__}")
         output_type = output_args[0]
         _require_model(output_type, f"stream item for {func.__qualname__}")
-        return MethodContract(
-            name=name,
-            stream=StreamKind.SERVER,
-            request=request_ref,
-            output_item=_type_ref(output_type),
-            balance=balance,
+        return _validate_declared_stream(
+            MethodContract(
+                name=name,
+                stream=StreamKind.SERVER,
+                request=request_ref,
+                output_item=_type_ref(output_type),
+                balance=balance,
+            ),
+            declared_stream=declared_stream,
+            func=func,
         )
 
     if stream_annotation is None:
         _require_model(return_type, f"response for {func.__qualname__}")
-        return MethodContract(
-            name=name,
-            stream=StreamKind.UNARY,
-            request=request_ref,
-            response=_type_ref(return_type),
-            balance=balance,
+        return _validate_declared_stream(
+            MethodContract(
+                name=name,
+                stream=StreamKind.UNARY,
+                request=request_ref,
+                response=_type_ref(return_type),
+                balance=balance,
+            ),
+            declared_stream=declared_stream,
+            func=func,
         )
 
     stream_origin = get_origin(stream_annotation)
@@ -225,13 +331,17 @@ def _extract_method(
         input_type = stream_args[0]
         _require_model(input_type, f"input stream item for {func.__qualname__}")
         _require_model(return_type, f"response for {func.__qualname__}")
-        return MethodContract(
-            name=name,
-            stream=StreamKind.CLIENT,
-            request=request_ref,
-            response=_type_ref(return_type),
-            input_item=_type_ref(input_type),
-            balance=balance,
+        return _validate_declared_stream(
+            MethodContract(
+                name=name,
+                stream=StreamKind.CLIENT,
+                request=request_ref,
+                response=_type_ref(return_type),
+                input_item=_type_ref(input_type),
+                balance=balance,
+            ),
+            declared_stream=declared_stream,
+            func=func,
         )
 
     if stream_origin is RpcDuplex:
@@ -244,17 +354,36 @@ def _extract_method(
         if return_type not in (None, type(None)):
             _require_model(return_type, f"response for {func.__qualname__}")
             response_ref = _type_ref(return_type)
-        return MethodContract(
-            name=name,
-            stream=StreamKind.DUPLEX,
-            request=request_ref,
-            response=response_ref,
-            input_item=_type_ref(input_type),
-            output_item=_type_ref(output_type),
-            balance=balance,
+        return _validate_declared_stream(
+            MethodContract(
+                name=name,
+                stream=StreamKind.DUPLEX,
+                request=request_ref,
+                response=response_ref,
+                input_item=_type_ref(input_type),
+                output_item=_type_ref(output_type),
+                balance=balance,
+            ),
+            declared_stream=declared_stream,
+            func=func,
         )
 
     raise ContractError(f"Unsupported stream annotation on {func.__qualname__}")
+
+
+def _validate_declared_stream(
+    contract: MethodContract,
+    *,
+    declared_stream: StreamKind | None,
+    func: Callable[..., Any],
+) -> MethodContract:
+    if declared_stream is not None and contract.stream is not declared_stream:
+        raise ContractError(
+            f"RPC method {func.__qualname__} is declared as "
+            f"{declared_stream.value}, but its signature implies "
+            f"{contract.stream.value}"
+        )
+    return contract
 
 
 def _require_model(annotation: Any, context: str) -> None:

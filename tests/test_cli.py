@@ -24,8 +24,7 @@ class Result(BaseModel):
 
 @service(name="demo.v1.DemoService")
 class DemoService:
-    @staticmethod
-    @method()
+    @method.static.unary
     async def echo(request: Request) -> Result:
         return Result(value=request.value)
 """.lstrip(),

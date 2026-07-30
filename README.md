@@ -50,15 +50,18 @@ class CountItem(BaseModel):
 
 @service(name="example.v1.CounterService")
 class CounterService:
-    @staticmethod
-    @method()
+    @method.static.server_stream
     async def count(request: CountRequest) -> AsyncIterator[CountItem]:
         for value in range(request.stop):
             yield CountItem(value=value)
 ```
 
-Service methods must be static and asynchronous. Request, response, and stream
-item types are Pydantic models. MeshCall infers the RPC shape from the signature.
+Service methods must be static and asynchronous. Use `method.static.unary`,
+`server_stream`, `client_stream`, or `duplex` to state the RPC shape. The
+signature is independently inferred and checked against that declaration.
+
+Use `@method.options(balance=...)` directly below the shape decorator when a
+method needs to override the service's load-balancing policy.
 
 ## Generate a client
 
@@ -146,4 +149,3 @@ Router listeners and service/client connections also accept `unix_path=`.
 
 See [the protocol specification](docs/protocol.md) and
 [the implementation architecture](docs/architecture.md) for details.
-

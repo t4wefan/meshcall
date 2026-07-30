@@ -29,23 +29,20 @@ class Result(BaseModel):
 
 @service(name="test.v1.TestService", balance=Balance.least_inflight())
 class TestService:
-    @staticmethod
-    @method()
+    @method.static.unary
     async def unary(request: Request) -> Result:
         return Result(total=request.value)
 
-    @staticmethod
-    @method(balance=Balance.round_robin())
+    @method.static.server_stream
+    @method.options(balance=Balance.round_robin())
     async def download(request: Request) -> AsyncIterator[Item]:
         yield Item(value=request.value)
 
-    @staticmethod
-    @method()
+    @method.static.client_stream
     async def upload(request: Request, items: RpcInputStream[Item]) -> Result:
         return Result(total=request.value)
 
-    @staticmethod
-    @method()
+    @method.static.duplex
     async def duplex(
         request: Request,
         channel: RpcDuplex[Item, Item],
@@ -70,7 +67,7 @@ def test_extracts_all_method_shapes() -> None:
 
 
 def test_rejects_instance_rpc_method() -> None:
-    with pytest.raises(ContractError, match="must use @staticmethod"):
+    with pytest.raises(ContractError, match=r"must use @method\.static"):
 
         @service(name="test.v1.InvalidService")
         class InvalidService:
@@ -79,12 +76,36 @@ def test_rejects_instance_rpc_method() -> None:
                 return Result(total=request.value)
 
 
+def test_legacy_staticmethod_syntax_remains_supported() -> None:
+    @service(name="test.v1.LegacyService")
+    class LegacyService:
+        @staticmethod
+        @method()
+        async def unary(request: Request) -> Result:
+            return Result(total=request.value)
+
+    contract = get_service_contract(LegacyService)
+    assert contract.methods[0].stream is StreamKind.UNARY
+
+
+def test_rejects_declared_shape_mismatch() -> None:
+    with pytest.raises(
+        ContractError,
+        match="declared as unary, but its signature implies server_stream",
+    ):
+
+        @service(name="test.v1.MismatchedService")
+        class MismatchedService:
+            @method.static.unary
+            async def download(request: Request) -> AsyncIterator[Item]:
+                yield Item(value=request.value)
+
+
 def test_rejects_non_pydantic_payload() -> None:
     with pytest.raises(ContractError, match="Pydantic BaseModel"):
 
         @service(name="test.v1.InvalidPayloadService")
         class InvalidPayloadService:
-            @staticmethod
-            @method()
+            @method.static.unary
             async def invalid(request: int) -> Result:
                 return Result(total=request)

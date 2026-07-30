@@ -32,19 +32,16 @@ handler_cancelled = asyncio.Event()
 
 @service(name="test.v1.NumberService")
 class NumberService:
-    @staticmethod
-    @method()
+    @method.static.unary
     async def unary(request: NumberRequest) -> NumberResult:
         return NumberResult(total=request.value)
 
-    @staticmethod
-    @method()
+    @method.static.unary
     async def slow(request: NumberRequest) -> NumberResult:
         await asyncio.sleep(request.value / 1000)
         return NumberResult(total=request.value)
 
-    @staticmethod
-    @method()
+    @method.static.unary
     async def cancellable(request: NumberRequest) -> NumberResult:
         try:
             await asyncio.sleep(request.value)
@@ -53,14 +50,12 @@ class NumberService:
             raise
         return NumberResult(total=request.value)
 
-    @staticmethod
-    @method()
+    @method.static.server_stream
     async def download(request: NumberRequest) -> AsyncIterator[NumberItem]:
         for value in range(request.value):
             yield NumberItem(value=value)
 
-    @staticmethod
-    @method()
+    @method.static.client_stream
     async def upload(
         request: NumberRequest,
         items: RpcInputStream[NumberItem],
@@ -70,8 +65,7 @@ class NumberService:
             total += item.value
         return NumberResult(total=total)
 
-    @staticmethod
-    @method()
+    @method.static.duplex
     async def duplex(
         request: NumberRequest,
         channel: RpcDuplex[NumberItem, NumberItem],

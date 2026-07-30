@@ -2,8 +2,8 @@
 .pytest_cache/
 .ruff_cache/
 .venv/
+.vscode/
 __pycache__/
 *.py[cod]
 build/
 dist/
-
