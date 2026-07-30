@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Literal, Self, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from meshcall.errors import ProtocolError
 from meshcall.ir import BalancePolicy, StreamKind
@@ -33,6 +40,7 @@ class RegisteredMethod(FrameModel):
     name: str
     stream: StreamKind
     balance: BalancePolicy
+    schema_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class RegisteredService(FrameModel):
@@ -46,9 +54,25 @@ class ServerRegisterFrame(FrameModel):
     services: tuple[RegisteredService, ...]
 
 
+class MethodRegistrationResult(FrameModel):
+    service: str
+    method: str
+    accepted: bool
+    reason: Literal["schema_mismatch", "balance_disabled"] | None = None
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> Self:
+        if self.accepted == (self.reason is not None):
+            raise ValueError(
+                "Accepted methods must omit a reason and rejected methods need one"
+            )
+        return self
+
+
 class ServerRegisterAckFrame(FrameModel):
     kind: Literal["server.register.ack"] = "server.register.ack"
     instance_id: str
+    methods: tuple[MethodRegistrationResult, ...]
 
 
 class CallOpenFrame(FrameModel):
@@ -145,4 +169,3 @@ def decode_frame(data: str | bytes) -> Frame:
         return _FRAME_ADAPTER.validate_json(data)
     except ValidationError as exc:
         raise ProtocolError(f"Invalid frame: {exc}") from exc
-

@@ -94,6 +94,89 @@ class RouteServiceClient(ClientBase):
         )
 
 
+class UpgradeRequest(BaseModel):
+    value: int = 0
+
+
+class IncompatibleUpgradeRequest(BaseModel):
+    value: str
+
+
+class UpgradeResult(BaseModel):
+    instance: str
+
+
+@service(name="test.v1.UpgradeService")
+class UpgradeServiceA:
+    @method.unary(balance=Balance.round_robin())
+    async def shared(self, request: UpgradeRequest) -> UpgradeResult:
+        return UpgradeResult(instance="a")
+
+    @method.unary(balance=Balance.disabled())
+    async def exclusive(self, request: UpgradeRequest) -> UpgradeResult:
+        return UpgradeResult(instance="a")
+
+
+@service(name="test.v1.UpgradeService")
+class UpgradeServiceB:
+    @method.unary(balance=Balance.random())
+    async def shared(self, request: UpgradeRequest) -> UpgradeResult:
+        return UpgradeResult(instance="b")
+
+    @method.unary(balance=Balance.disabled())
+    async def exclusive(self, request: UpgradeRequest) -> UpgradeResult:
+        return UpgradeResult(instance="b")
+
+    @method.unary()
+    async def added(self, request: UpgradeRequest) -> UpgradeResult:
+        return UpgradeResult(instance="b")
+
+
+@service(name="test.v1.UpgradeService")
+class IncompatibleUpgradeService:
+    @method.unary()
+    async def shared(
+        self,
+        request: IncompatibleUpgradeRequest,
+    ) -> UpgradeResult:
+        return UpgradeResult(instance="incompatible")
+
+
+@service(name="test.v1.UpgradeService")
+class UpgradeServiceReplacement:
+    @method.unary(balance=Balance.disabled())
+    async def exclusive(self, request: UpgradeRequest) -> UpgradeResult:
+        return UpgradeResult(instance="replacement")
+
+
+class UpgradeServiceClient(ClientBase):
+    service_name = "test.v1.UpgradeService"
+
+    async def shared(self) -> UpgradeResult:
+        return await self._unary(
+            self.service_name,
+            "shared",
+            UpgradeRequest(),
+            UpgradeResult,
+        )
+
+    async def exclusive(self) -> UpgradeResult:
+        return await self._unary(
+            self.service_name,
+            "exclusive",
+            UpgradeRequest(),
+            UpgradeResult,
+        )
+
+    async def added(self) -> UpgradeResult:
+        return await self._unary(
+            self.service_name,
+            "added",
+            UpgradeRequest(),
+            UpgradeResult,
+        )
+
+
 async def test_router_balancing_and_stream_forwarding_over_tcp() -> None:
     router = WebSocketRouter(host="127.0.0.1", port=0)
     await router.start()
@@ -190,3 +273,67 @@ async def test_router_over_unix_websocket() -> None:
         await server.stop()
         await router.stop()
     assert not socket_path.exists()
+
+
+async def test_router_method_registry_supports_rolling_upgrades() -> None:
+    router = WebSocketRouter(host="127.0.0.1", port=0)
+    await router.start()
+    uri = f"ws://127.0.0.1:{router.bound_port}"
+    driver_a = WebSocketRouterServerDriver(uri, instance_id="upgrade-a")
+    driver_b = WebSocketRouterServerDriver(uri, instance_id="upgrade-b")
+    driver_bad = WebSocketRouterServerDriver(uri, instance_id="upgrade-bad")
+    driver_replacement = WebSocketRouterServerDriver(
+        uri,
+        instance_id="upgrade-replacement",
+    )
+    server_a = RpcServer(services=[UpgradeServiceA], driver=driver_a)
+    server_b = RpcServer(services=[UpgradeServiceB], driver=driver_b)
+    server_bad = RpcServer(
+        services=[IncompatibleUpgradeService],
+        driver=driver_bad,
+    )
+    replacement = RpcServer(
+        services=[UpgradeServiceReplacement],
+        driver=driver_replacement,
+    )
+    client = UpgradeServiceClient(WebSocketClientDriver(uri))
+    await server_a.start()
+    await server_b.start()
+    await server_bad.start()
+    try:
+        results_b = {result.method: result for result in driver_b.registration_results}
+        assert results_b["shared"].accepted
+        assert not results_b["exclusive"].accepted
+        assert results_b["exclusive"].reason == "balance_disabled"
+        assert results_b["added"].accepted
+
+        bad_result = driver_bad.registration_results[0]
+        assert not bad_result.accepted
+        assert bad_result.reason == "schema_mismatch"
+
+        assert [(await client.shared()).instance for _ in range(4)] == [
+            "a",
+            "b",
+            "a",
+            "b",
+        ]
+        assert (await client.exclusive()).instance == "a"
+        assert (await client.added()).instance == "b"
+
+        await server_b.stop()
+        with pytest.raises(MeshCallError) as unavailable:
+            await client.added()
+        assert unavailable.value.code == ErrorCode.UNAVAILABLE
+
+        await server_a.stop()
+        await replacement.start()
+        replacement_result = driver_replacement.registration_results[0]
+        assert replacement_result.accepted
+        assert (await client.exclusive()).instance == "replacement"
+    finally:
+        await client.stop()
+        await replacement.stop()
+        await server_bad.stop()
+        await server_b.stop()
+        await server_a.stop()
+        await router.stop()

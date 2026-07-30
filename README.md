@@ -15,6 +15,7 @@ The current implementation includes:
 - cancellation, deadlines, half-close, per-direction flow control, and fair
   per-call sending;
 - round-robin, least-inflight, random, sticky, and disabled balancing;
+- method-level Router registration with Schema validation and additive rollout;
 - immutable `call_id` to service-instance routing and disconnect cleanup.
 
 Typed notifications and the Tags DSL are the next milestone.
@@ -62,6 +63,9 @@ the RPC shape. Append `.static` when a method doesn't need a service instance.
 Pass `balance=...` to the shape when a method needs to override the service's
 load-balancing policy. The signature is independently inferred and checked
 against the declaration.
+
+Balance is ultimately a method property. The service-level policy only supplies
+the default for methods that don't declare their own policy.
 
 ## Generate a client
 
@@ -128,6 +132,12 @@ await server.start()
 Clients use the normal `WebSocketClientDriver` and connect to the Router URI. A
 stream is balanced only at `call.open`; all later items, windows, half-closes,
 errors, and cancellation frames remain pinned to the selected instance.
+
+Router registration is method-based and first-registration-wins. Later instances
+join a method's provider pool only when its stream shape and canonical Schema
+hash match. New methods create new pools, missing methods don't receive their
+traffic, and `Balance.disabled()` keeps one active provider. This supports
+additive rolling upgrades without mixing incompatible method contracts.
 
 Router listeners and service/client connections also accept `unix_path=`.
 

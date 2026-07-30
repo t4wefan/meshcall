@@ -9,6 +9,21 @@ The first frame sent by a connection is `hello`. Its role is either `client` or
 `server`. A server connection to a Router follows a successful handshake with a
 `server.register` frame containing its immutable service registration.
 
+Each registered method carries its resolved Balance policy and a SHA-256 hash of
+its canonical request, response, input-item, and output-item JSON Schemas. The
+service-level Balance setting is only a contract default and isn't registered as
+separate Router state. The first registration for a service and method
+establishes the Router's canonical method contract. A later method is accepted
+only when its stream shape and Schema hash match. `server.register.ack` reports
+accepted and skipped methods; skipped methods never enter that instance's
+routing pool.
+
+Method pools are independent. A later instance may add methods or omit existing
+ones. A method with disabled balancing has at most one active provider, while
+the instance's other methods may still join their respective pools. Canonical
+method contracts remain until the Router stops, including while no provider is
+available.
+
 The protocol version is `meshcall/1`. A peer must reject an unsupported version
 before accepting calls.
 
@@ -61,4 +76,3 @@ does not resume streams or migrate them between service instances.
 Protocol errors use stable machine-readable codes. Internal exception details
 and tracebacks are never sent by default. Application errors may use namespaced
 codes, but must still use the common error envelope.
-

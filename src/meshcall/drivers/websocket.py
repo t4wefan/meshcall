@@ -7,6 +7,7 @@ from pathlib import Path
 from stat import S_ISSOCK
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from websockets.asyncio.client import ClientConnection, connect, unix_connect
 from websockets.asyncio.server import Server, ServerConnection, serve, unix_serve
 
@@ -16,6 +17,7 @@ from meshcall.protocol import (
     PROTOCOL_VERSION,
     HelloAckFrame,
     HelloFrame,
+    MethodRegistrationResult,
     ServerRegisterAckFrame,
     ServerRegisterFrame,
 )
@@ -183,6 +185,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         self.max_frame_size = max_frame_size
         self._connection: FrameConnection | None = None
         self._runtime_task: asyncio.Task[None] | None = None
+        self.registration_results: tuple[MethodRegistrationResult, ...] = ()
 
     async def start(
         self,
@@ -190,6 +193,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         runtime: ServerRuntime,
     ) -> None:
         self.check_binding(binding)
+        self.registration_results = ()
         websocket = await _connect_endpoint(
             uri=self.uri,
             unix_path=self.unix_path,
@@ -219,6 +223,16 @@ class WebSocketRouterServerDriver(ServerDriver):
                 or register_ack.instance_id != self.instance_id
             ):
                 raise ProtocolError("Expected matching server.register.ack")
+            self.registration_results = register_ack.methods
+            for result in register_ack.methods:
+                if not result.accepted:
+                    logger.warning(
+                        "Router skipped {}.{} for instance {}: {}",
+                        result.service,
+                        result.method,
+                        self.instance_id,
+                        result.reason,
+                    )
         except BaseException:
             await connection.close()
             raise
@@ -232,6 +246,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         self.check_binding(binding)
         connection, self._connection = self._connection, None
         runtime_task, self._runtime_task = self._runtime_task, None
+        self.registration_results = ()
         if connection is not None:
             await connection.close()
         if runtime_task is not None:

@@ -27,9 +27,12 @@ registration.
 ## Call ownership
 
 The client creates a UUID `call_id`. A Direct server stores calls per connection.
-The Router stores a global route with the client connection and one selected
-service instance. The route increments that instance's inflight count and is
-removed exactly once by a terminal result, terminal error, or disconnect.
+The Router stores a canonical contract and provider pool for each service method,
+then creates a global route with the client connection and one selected service
+instance. This allows old and new instances to expose different additive method
+sets during a rolling upgrade. The route increments that instance's inflight
+count and is removed exactly once by a terminal result, terminal error, or
+disconnect.
 
 The Router forwards stream data without decoding Pydantic payloads. Sticky
 balancing is the only policy that reads a declared request field.
@@ -60,4 +63,3 @@ task can't operate through a newly acquired generation.
 - Deadline expiry cancels the service task and returns `deadline_exceeded`.
 - Instance disconnect terminates its routed calls with retryable `unavailable`.
 - Connection loss terminates all local active calls; no recovery is attempted.
-

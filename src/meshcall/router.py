@@ -24,7 +24,8 @@ from meshcall.protocol import (
     ErrorPayload,
     HelloAckFrame,
     HelloFrame,
-    RegisteredService,
+    MethodRegistrationResult,
+    RegisteredMethod,
     ServerRegisterAckFrame,
     ServerRegisterFrame,
 )
@@ -43,7 +44,7 @@ class _ClientPeer:
 class _ServiceInstance:
     instance_id: str
     connection: FrameConnection
-    services: dict[str, RegisteredService]
+    methods: set[tuple[str, str]] = field(default_factory=set)
     inflight: int = 0
 
 
@@ -55,10 +56,15 @@ class _Route:
 
 
 @dataclass
-class _ServicePool:
-    signature: RegisteredService
+class _MethodPool:
+    signature: RegisteredMethod
     instances: list[_ServiceInstance] = field(default_factory=list)
-    round_robin_cursor: dict[str, int] = field(default_factory=dict)
+    round_robin_cursor: int = 0
+
+
+@dataclass
+class _ServicePool:
+    methods: dict[str, _MethodPool] = field(default_factory=dict)
 
 
 class WebSocketRouter:
@@ -196,33 +202,68 @@ class WebSocketRouter:
         services = {service.name: service for service in registration.services}
         if len(services) != len(registration.services):
             raise ProtocolError("Server registration contains duplicate services")
+        for service in services.values():
+            method_names = {method.name for method in service.methods}
+            if len(method_names) != len(service.methods):
+                raise ProtocolError(
+                    f"Service {service.name} contains duplicate methods"
+                )
         instance = _ServiceInstance(
             instance_id=registration.instance_id,
             connection=connection,
-            services=services,
         )
+        results: list[MethodRegistrationResult] = []
         async with self._lock:
             if instance.instance_id in self._instances:
                 raise ProtocolError(
                     f"Duplicate service instance: {instance.instance_id}"
                 )
-            for service in services.values():
-                pool = self._services.get(service.name)
-                if pool is not None and pool.signature != service:
-                    raise ProtocolError(
-                        f"Incompatible registration for service {service.name}"
-                    )
             self._instances[instance.instance_id] = instance
             for service in services.values():
-                pool = self._services.setdefault(
-                    service.name,
-                    _ServicePool(signature=service),
+                service_pool = self._services.setdefault(
+                    service.name, _ServicePool()
                 )
-                pool.instances.append(instance)
-                pool.instances.sort(key=lambda item: item.instance_id)
-        await connection.send(
-            ServerRegisterAckFrame(instance_id=instance.instance_id)
-        )
+                for method in service.methods:
+                    method_pool = service_pool.methods.get(method.name)
+                    reason: str | None = None
+                    if method_pool is None:
+                        method_pool = _MethodPool(signature=method)
+                        service_pool.methods[method.name] = method_pool
+                    elif (
+                        method_pool.signature.stream is not method.stream
+                        or method_pool.signature.schema_hash != method.schema_hash
+                    ):
+                        reason = "schema_mismatch"
+                    elif (
+                        method_pool.signature.balance.kind is BalanceKind.DISABLED
+                        and method_pool.instances
+                    ):
+                        reason = "balance_disabled"
+
+                    accepted = reason is None
+                    results.append(
+                        MethodRegistrationResult(
+                            service=service.name,
+                            method=method.name,
+                            accepted=accepted,
+                            reason=reason,
+                        )
+                    )
+                    if not accepted:
+                        continue
+                    instance.methods.add((service.name, method.name))
+                    method_pool.instances.append(instance)
+                    method_pool.instances.sort(key=lambda item: item.instance_id)
+        try:
+            await connection.send(
+                ServerRegisterAckFrame(
+                    instance_id=instance.instance_id,
+                    methods=tuple(results),
+                )
+            )
+        except BaseException:
+            await self._remove_instance(instance)
+            raise
         return instance
 
     async def _client_loop(self, client: _ClientPeer) -> None:
@@ -306,27 +347,30 @@ class WebSocketRouter:
             )
 
     def _select_instance(self, frame: CallOpenFrame) -> _ServiceInstance:
-        pool = self._services.get(frame.service)
-        if pool is None or not pool.instances:
+        service_pool = self._services.get(frame.service)
+        if service_pool is None:
             raise _RouteSelectionError(
                 ErrorCode.UNAVAILABLE,
                 f"No instances registered for {frame.service}",
             )
-        method = next(
-            (item for item in pool.signature.methods if item.name == frame.method),
-            None,
-        )
-        if method is None:
+        method_pool = service_pool.methods.get(frame.method)
+        if method_pool is None:
             raise _RouteSelectionError(
                 ErrorCode.METHOD_NOT_FOUND,
                 f"Unknown method {frame.service}.{frame.method}",
             )
-        instances = pool.instances
-        policy = method.balance
+        instances = method_pool.instances
+        if not instances:
+            raise _RouteSelectionError(
+                ErrorCode.UNAVAILABLE,
+                f"No instances registered for {frame.service}.{frame.method}",
+            )
+        policy = method_pool.signature.balance
         if policy.kind is BalanceKind.ROUND_ROBIN:
-            cursor = pool.round_robin_cursor.get(method.name, 0)
-            selected = instances[cursor % len(instances)]
-            pool.round_robin_cursor[method.name] = (cursor + 1) % len(instances)
+            selected = instances[method_pool.round_robin_cursor % len(instances)]
+            method_pool.round_robin_cursor = (
+                method_pool.round_robin_cursor + 1
+            ) % len(instances)
             return selected
         if policy.kind is BalanceKind.LEAST_INFLIGHT:
             return min(instances, key=lambda item: (item.inflight, item.instance_id))
@@ -372,13 +416,16 @@ class WebSocketRouter:
             if self._instances.get(instance.instance_id) is not instance:
                 return
             self._instances.pop(instance.instance_id, None)
-            for service_name in instance.services:
-                pool = self._services.get(service_name)
-                if pool is None:
+            for service_name, method_name in instance.methods:
+                service_pool = self._services.get(service_name)
+                if service_pool is None:
                     continue
-                pool.instances = [item for item in pool.instances if item is not instance]
-                if not pool.instances:
-                    self._services.pop(service_name, None)
+                method_pool = service_pool.methods.get(method_name)
+                if method_pool is None:
+                    continue
+                method_pool.instances = [
+                    item for item in method_pool.instances if item is not instance
+                ]
             routes = [
                 route for route in self._routes.values() if route.instance is instance
             ]

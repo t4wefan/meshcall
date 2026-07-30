@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import inspect
+import json
 import time
 import uuid
 from collections.abc import Sequence
@@ -126,6 +128,7 @@ class ServerRuntime:
                         name=method.name,
                         stream=method.stream,
                         balance=method.balance,
+                        schema_hash=_method_schema_hash(method),
                     )
                     for method in service.methods
                 ),
@@ -531,6 +534,17 @@ class RpcServer:
 
 def _resolve_optional_type(ref: TypeRef | None) -> type[BaseModel] | None:
     return _resolve_type(ref) if ref is not None else None
+
+
+def _method_schema_hash(method: MethodContract) -> str:
+    schemas = {
+        "request": method.request.schema_,
+        "response": method.response.schema_ if method.response else None,
+        "input_item": method.input_item.schema_ if method.input_item else None,
+        "output_item": method.output_item.schema_ if method.output_item else None,
+    }
+    canonical = json.dumps(schemas, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _resolve_type(ref: TypeRef) -> type[BaseModel]:
