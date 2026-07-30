@@ -232,6 +232,8 @@ class WebSocketRouter:
                 await self._open_call(client, frame)
                 continue
             call_id = getattr(frame, "call_id", None)
+            if not isinstance(call_id, str):
+                continue
             async with self._lock:
                 route = self._routes.get(call_id)
                 if route is None or route.client is not client:
@@ -246,6 +248,8 @@ class WebSocketRouter:
         while True:
             frame = await instance.connection.receive()
             call_id = getattr(frame, "call_id", None)
+            if not isinstance(call_id, str):
+                continue
             async with self._lock:
                 route = self._routes.get(call_id)
                 if route is None or route.instance is not instance:

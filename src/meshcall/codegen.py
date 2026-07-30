@@ -75,12 +75,15 @@ def _render_method(
         response = _required_type(method.response, aliases)
         prefix.extend(
             [
+                "        *,",
+                "        timeout: float | None = None,",
                 f"    ) -> {response}:",
                 "        return await self._unary(",
                 "            self.service_name,",
                 f"            {method.name!r},",
                 "            request,",
                 f"            {response},",
+                "            timeout=timeout,",
                 "        )",
             ]
         )
@@ -90,12 +93,15 @@ def _render_method(
         output = _required_type(method.output_item, aliases)
         prefix.extend(
             [
+                "        *,",
+                "        timeout: float | None = None,",
                 f"    ) -> RpcServerStream[{output}]:",
                 "        return self._server_stream(",
                 "            self.service_name,",
                 f"            {method.name!r},",
                 "            request,",
                 f"            {output},",
+                "            timeout=timeout,",
                 "        )",
             ]
         )
@@ -107,6 +113,8 @@ def _render_method(
         prefix.extend(
             [
                 f"        items: AsyncIterable[{input_item}],",
+                "        *,",
+                "        timeout: float | None = None,",
                 f"    ) -> {response}:",
                 "        return await self._client_stream(",
                 "            self.service_name,",
@@ -115,6 +123,7 @@ def _render_method(
                 "            items,",
                 f"            {input_item},",
                 f"            {response},",
+                "            timeout=timeout,",
                 "        )",
             ]
         )
@@ -126,6 +135,8 @@ def _render_method(
     result_generic = result if method.response else "None"
     prefix.extend(
         [
+            "        *,",
+            "        timeout: float | None = None,",
             f"    ) -> RpcDuplexClient[{input_item}, {output_item}, {result_generic}]:",
             "        return self._duplex(",
             "            self.service_name,",
@@ -134,6 +145,7 @@ def _render_method(
             f"            {input_item},",
             f"            {output_item},",
             f"            {result},",
+            "            timeout=timeout,",
             "        )",
         ]
     )

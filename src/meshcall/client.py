@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 from collections.abc import AsyncIterable
 from typing import Any, Self
@@ -79,14 +80,21 @@ class ClientBase:
         method: str,
         request: BaseModel,
         response_type: type[BaseModel],
+        *,
+        timeout: float | None = None,
     ) -> Any:
         call = await self._open_call(
             service,
             method,
             request,
             response_type=response_type,
+            timeout=timeout,
         )
-        return await call.result()
+        try:
+            return await call.result()
+        except asyncio.CancelledError:
+            await asyncio.shield(call.cancel("caller_cancelled"))
+            raise
 
     def _server_stream(
         self,
@@ -94,6 +102,8 @@ class ClientBase:
         method: str,
         request: BaseModel,
         item_type: type[BaseModel],
+        *,
+        timeout: float | None = None,
     ) -> RpcServerStream[Any]:
         return _ClientServerStream(
             asyncio.create_task(
@@ -102,6 +112,7 @@ class ClientBase:
                     method,
                     request,
                     output_type=item_type,
+                    timeout=timeout,
                 )
             )
         )
@@ -114,6 +125,8 @@ class ClientBase:
         items: AsyncIterable[BaseModel],
         input_type: type[BaseModel],
         response_type: type[BaseModel],
+        *,
+        timeout: float | None = None,
     ) -> Any:
         call = await self._open_call(
             service,
@@ -121,6 +134,7 @@ class ClientBase:
             request,
             response_type=response_type,
             input_type=input_type,
+            timeout=timeout,
         )
         pump = asyncio.create_task(
             self._pump_input(call, items),
@@ -128,6 +142,9 @@ class ClientBase:
         )
         try:
             return await call.result()
+        except asyncio.CancelledError:
+            await asyncio.shield(call.cancel("caller_cancelled"))
+            raise
         finally:
             if not pump.done():
                 pump.cancel()
@@ -142,6 +159,8 @@ class ClientBase:
         input_type: type[BaseModel],
         output_type: type[BaseModel],
         result_type: type[BaseModel] | None,
+        *,
+        timeout: float | None = None,
     ) -> RpcDuplexClient[Any, Any, Any]:
         return _ClientDuplex(
             asyncio.create_task(
@@ -152,6 +171,7 @@ class ClientBase:
                     response_type=result_type,
                     input_type=input_type,
                     output_type=output_type,
+                    timeout=timeout,
                 )
             )
         )
@@ -165,7 +185,10 @@ class ClientBase:
         response_type: type[BaseModel] | None = None,
         input_type: type[BaseModel] | None = None,
         output_type: type[BaseModel] | None = None,
+        timeout: float | None = None,
     ) -> _ClientCall:
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout must be positive")
         await self.start()
         connection = self._connection
         if connection is None:
@@ -187,6 +210,11 @@ class ClientBase:
                     service=service,
                     method=method,
                     payload=request.model_dump(mode="json"),
+                    deadline_unix_ms=(
+                        int((time.time() + timeout) * 1000)
+                        if timeout is not None
+                        else None
+                    ),
                 )
             )
             if output_type is not None:
@@ -249,6 +277,8 @@ class ClientBase:
 
     async def _dispatch(self, frame: Frame) -> None:
         call_id = getattr(frame, "call_id", None)
+        if not isinstance(call_id, str):
+            return
         call = self._calls.get(call_id)
         if call is None:
             return

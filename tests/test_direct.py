@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
 
 from meshcall import RpcDuplex, RpcInputStream, RpcServer, method, service
 from meshcall.client import ClientBase
 from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
-from meshcall.errors import DriverStateError
+from meshcall.errors import DriverStateError, ErrorCode, MeshCallError
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 
 
@@ -25,11 +27,30 @@ class NumberResult(BaseModel):
     total: int
 
 
+handler_cancelled = asyncio.Event()
+
+
 @service(name="test.v1.NumberService")
 class NumberService:
     @staticmethod
     @method()
     async def unary(request: NumberRequest) -> NumberResult:
+        return NumberResult(total=request.value)
+
+    @staticmethod
+    @method()
+    async def slow(request: NumberRequest) -> NumberResult:
+        await asyncio.sleep(request.value / 1000)
+        return NumberResult(total=request.value)
+
+    @staticmethod
+    @method()
+    async def cancellable(request: NumberRequest) -> NumberResult:
+        try:
+            await asyncio.sleep(request.value)
+        except asyncio.CancelledError:
+            handler_cancelled.set()
+            raise
         return NumberResult(total=request.value)
 
     @staticmethod
@@ -69,6 +90,28 @@ class NumberServiceClient(ClientBase):
         return await self._unary(
             self.service_name,
             "unary",
+            request,
+            NumberResult,
+        )
+
+    async def slow(
+        self,
+        request: NumberRequest,
+        *,
+        timeout: float | None = None,
+    ) -> NumberResult:
+        return await self._unary(
+            self.service_name,
+            "slow",
+            request,
+            NumberResult,
+            timeout=timeout,
+        )
+
+    async def cancellable(self, request: NumberRequest) -> NumberResult:
+        return await self._unary(
+            self.service_name,
+            "cancellable",
             request,
             NumberResult,
         )
@@ -121,6 +164,20 @@ async def test_all_call_shapes_over_tcp_websocket() -> None:
     )
     try:
         assert await client.unary(NumberRequest(value=7)) == NumberResult(total=7)
+
+        with pytest.raises(MeshCallError) as deadline_error:
+            await client.slow(NumberRequest(value=100), timeout=0.01)
+        assert deadline_error.value.code == ErrorCode.DEADLINE_EXCEEDED
+
+        handler_cancelled.clear()
+        cancelled_call = asyncio.create_task(
+            client.cancellable(NumberRequest(value=10))
+        )
+        await asyncio.sleep(0.01)
+        cancelled_call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled_call
+        await asyncio.wait_for(handler_cancelled.wait(), timeout=1)
 
         stream = client.download(NumberRequest(value=40))
         assert [item.value async for item in stream] == list(range(40))

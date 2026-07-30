@@ -133,6 +133,8 @@ class _ServerSession:
             await self._open(frame)
             return
         call_id = getattr(frame, "call_id", None)
+        if not isinstance(call_id, str):
+            return
         call = self.calls.get(call_id)
         if call is None:
             return

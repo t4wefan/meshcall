@@ -25,5 +25,6 @@ def test_stream_credit_names_the_producer_direction() -> None:
     )
 
     decoded = decode_frame(encode_frame(frame))
+    assert isinstance(decoded, StreamWindowFrame)
     assert decoded.direction == "server"
     assert decoded.credit == 32
