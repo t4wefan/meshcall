@@ -17,6 +17,7 @@ meshcall = "meshcall.cli:main"
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.26",
+    "ruff>=0.16.0",
 ]
 
 [build-system]
