@@ -21,6 +21,7 @@ from meshcall.errors import ContractError
 from meshcall.ir import (
     BalanceKind,
     BalancePolicy,
+    BindingKind,
     MethodContract,
     ServiceContract,
     StreamKind,
@@ -62,6 +63,7 @@ class Balance:
 class MethodOptions:
     balance: BalancePolicy | None
     stream: StreamKind | None
+    binding: BindingKind | None
 
 
 class Method:
@@ -80,7 +82,7 @@ class Method:
         def decorate(
             func: Callable[MethodParams, MethodReturnT],
         ) -> Callable[MethodParams, MethodReturnT]:
-            _mark_method(func, balance=balance, stream=None)
+            _mark_method(func, balance=balance, stream=None, binding=None)
             return func
 
         return decorate
@@ -133,6 +135,18 @@ class MethodDeclaration:
         def static(self) -> _StaticShape:
             return _StaticShape(self.stream, self.balance)
 
+    def __call__(
+        self,
+        func: Callable[MethodParams, MethodReturnT],
+    ) -> Callable[MethodParams, MethodReturnT]:
+        _mark_method(
+            func,
+            balance=self.balance,
+            stream=self.stream,
+            binding=BindingKind.INSTANCE,
+        )
+        return func
+
 
 class _StaticShape:
     def __init__(
@@ -147,7 +161,12 @@ class _StaticShape:
         self,
         func: Callable[MethodParams, MethodReturnT],
     ) -> staticmethod[MethodParams, MethodReturnT]:
-        _mark_method(func, balance=self.balance, stream=self.stream)
+        _mark_method(
+            func,
+            balance=self.balance,
+            stream=self.stream,
+            binding=BindingKind.STATIC,
+        )
         return staticmethod(func)
 
 
@@ -159,6 +178,7 @@ def _mark_method(
     *,
     balance: BalancePolicy | None,
     stream: StreamKind | None,
+    binding: BindingKind | None,
 ) -> None:
     existing = getattr(func, "__meshcall_method__", None)
     if existing is not None and not isinstance(existing, MethodOptions):
@@ -168,11 +188,15 @@ def _mark_method(
             raise ContractError(f"{func.__qualname__} declares balance twice")
         if existing.stream is not None and stream is not None:
             raise ContractError(f"{func.__qualname__} declares its RPC shape twice")
+        if existing.binding is not None and binding is not None:
+            raise ContractError(f"{func.__qualname__} declares its binding twice")
         balance = balance or existing.balance
         stream = stream or existing.stream
+        binding = binding or existing.binding
     func.__meshcall_method__ = MethodOptions(  # type: ignore[attr-defined]
         balance=balance,
         stream=stream,
+        binding=binding,
     )
 
 
@@ -212,25 +236,40 @@ def extract_service_contract(
     methods: list[MethodContract] = []
     for attribute_name, descriptor in cls.__dict__.items():
         func: Callable[..., Any] | None = None
+        descriptor_binding: BindingKind | None = None
         if isinstance(descriptor, staticmethod):
             func = descriptor.__func__
+            descriptor_binding = BindingKind.STATIC
+        elif isinstance(descriptor, classmethod):
+            if hasattr(descriptor.__func__, "__meshcall_method__"):
+                raise ContractError(
+                    f"{cls.__qualname__}.{attribute_name} cannot be a classmethod"
+                )
         elif hasattr(descriptor, "__meshcall_method__"):
-            raise ContractError(
-                f"{cls.__qualname__}.{attribute_name} must use "
-                "@method.<shape>(...).static or @staticmethod"
-            )
+            func = descriptor
+            descriptor_binding = BindingKind.INSTANCE
 
         if func is None:
             continue
         options = getattr(func, "__meshcall_method__", None)
         if not isinstance(options, MethodOptions):
             continue
+        binding = options.binding or descriptor_binding
+        if binding is not descriptor_binding:
+            raise ContractError(
+                f"{cls.__qualname__}.{attribute_name} has inconsistent binding"
+            )
+        if binding is None:
+            raise ContractError(
+                f"{cls.__qualname__}.{attribute_name} does not declare a binding"
+            )
         methods.append(
             _extract_method(
                 func,
                 name=attribute_name,
                 balance=options.balance or balance,
                 declared_stream=options.stream,
+                binding=binding,
             )
         )
 
@@ -252,6 +291,7 @@ def _extract_method(
     name: str,
     balance: BalancePolicy,
     declared_stream: StreamKind | None,
+    binding: BindingKind,
 ) -> MethodContract:
     if not (inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)):
         raise ContractError(f"RPC method {func.__qualname__} must be async")
@@ -267,7 +307,18 @@ def _extract_method(
     request_type: Any | None = None
     stream_annotation: Any | None = None
 
-    for parameter in signature.parameters.values():
+    parameters = list(signature.parameters.values())
+    if binding is BindingKind.INSTANCE:
+        if not parameters or parameters[0].kind not in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            raise ContractError(
+                f"Instance RPC method {func.__qualname__} needs a receiver parameter"
+            )
+        parameters = parameters[1:]
+
+    for parameter in parameters:
         if parameter.kind not in (
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -316,6 +367,7 @@ def _extract_method(
             MethodContract(
                 name=name,
                 stream=StreamKind.SERVER,
+                binding=binding,
                 request=request_ref,
                 output_item=_type_ref(output_type),
                 balance=balance,
@@ -330,6 +382,7 @@ def _extract_method(
             MethodContract(
                 name=name,
                 stream=StreamKind.UNARY,
+                binding=binding,
                 request=request_ref,
                 response=_type_ref(return_type),
                 balance=balance,
@@ -350,6 +403,7 @@ def _extract_method(
             MethodContract(
                 name=name,
                 stream=StreamKind.CLIENT,
+                binding=binding,
                 request=request_ref,
                 response=_type_ref(return_type),
                 input_item=_type_ref(input_type),
@@ -373,6 +427,7 @@ def _extract_method(
             MethodContract(
                 name=name,
                 stream=StreamKind.DUPLEX,
+                binding=binding,
                 request=request_ref,
                 response=response_ref,
                 input_item=_type_ref(input_type),

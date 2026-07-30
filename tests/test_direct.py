@@ -32,17 +32,20 @@ handler_cancelled = asyncio.Event()
 
 @service(name="test.v1.NumberService")
 class NumberService:
-    @method.unary().static
-    async def unary(request: NumberRequest) -> NumberResult:
-        return NumberResult(total=request.value)
+    def __init__(self, offset: int = 0) -> None:
+        self.offset = offset
+
+    @method.unary()
+    async def unary(self, request: NumberRequest) -> NumberResult:
+        return NumberResult(total=request.value + self.offset)
 
     @method.unary().static
     async def slow(request: NumberRequest) -> NumberResult:
         await asyncio.sleep(request.value / 1000)
         return NumberResult(total=request.value)
 
-    @method.unary().static
-    async def cancellable(request: NumberRequest) -> NumberResult:
+    @method.unary()
+    async def cancellable(self, request: NumberRequest) -> NumberResult:
         try:
             await asyncio.sleep(request.value)
         except asyncio.CancelledError:
@@ -50,13 +53,17 @@ class NumberService:
             raise
         return NumberResult(total=request.value)
 
-    @method.server_stream().static
-    async def download(request: NumberRequest) -> AsyncIterator[NumberItem]:
+    @method.server_stream()
+    async def download(
+        self,
+        request: NumberRequest,
+    ) -> AsyncIterator[NumberItem]:
         for value in range(request.value):
             yield NumberItem(value=value)
 
-    @method.client_stream().static
+    @method.client_stream()
     async def upload(
+        self,
         request: NumberRequest,
         items: RpcInputStream[NumberItem],
     ) -> NumberResult:
@@ -65,8 +72,9 @@ class NumberService:
             total += item.value
         return NumberResult(total=total)
 
-    @method.duplex().static
+    @method.duplex()
     async def duplex(
+        self,
         request: NumberRequest,
         channel: RpcDuplex[NumberItem, NumberItem],
     ) -> NumberResult:
@@ -199,12 +207,12 @@ async def test_all_call_shapes_over_tcp_websocket() -> None:
 async def test_unary_over_unix_websocket() -> None:
     socket_path = Path("/tmp") / f"meshcall-{uuid.uuid4().hex}.sock"
     driver = WebSocketDirectServerDriver(unix_path=socket_path)
-    server = RpcServer(services=[NumberService], driver=driver)
+    server = RpcServer(services=[NumberService(offset=5)], driver=driver)
     await server.start()
     client = NumberServiceClient(WebSocketClientDriver(unix_path=socket_path))
     try:
         result = await client.unary(NumberRequest(value=9))
-        assert result == NumberResult(total=9)
+        assert result == NumberResult(total=14)
     finally:
         await client.stop()
         await server.stop()

@@ -17,7 +17,7 @@ class CountItem(BaseModel):
 
 @service(name="example.v1.CounterService")
 class CounterService:
-    @method.server_stream().static
-    async def count(request: CountRequest) -> AsyncIterator[CountItem]:
+    @method.server_stream()
+    async def count(self, request: CountRequest) -> AsyncIterator[CountItem]:
         for value in range(request.stop):
             yield CountItem(value=value)

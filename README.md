@@ -50,17 +50,18 @@ class CountItem(BaseModel):
 
 @service(name="example.v1.CounterService")
 class CounterService:
-    @method.server_stream().static
-    async def count(request: CountRequest) -> AsyncIterator[CountItem]:
+    @method.server_stream()
+    async def count(self, request: CountRequest) -> AsyncIterator[CountItem]:
         for value in range(request.stop):
             yield CountItem(value=value)
 ```
 
-Service methods must be static and asynchronous. Use `method.unary().static`,
-`server_stream().static`, `client_stream().static`, or `duplex().static` to
-state the RPC shape and binding style. Pass `balance=...` to the shape when a
-method needs to override the service's load-balancing policy. The signature is
-independently inferred and checked against the declaration.
+Service methods are asynchronous instance methods by default. Use
+`method.unary()`, `server_stream()`, `client_stream()`, or `duplex()` to state
+the RPC shape. Append `.static` when a method doesn't need a service instance.
+Pass `balance=...` to the shape when a method needs to override the service's
+load-balancing policy. The signature is independently inferred and checked
+against the declaration.
 
 ## Generate a client
 
@@ -82,6 +83,11 @@ driver = WebSocketDirectServerDriver(host="127.0.0.1", port=8765)
 server = RpcServer(services=[CounterService], driver=driver)
 await server.start()
 ```
+
+Passing a service class constructs one instance with no arguments when the
+server starts. For constructor arguments or dependency injection, pass an
+already constructed instance instead: `services=[CounterService(...)]`. The
+server reuses that service instance across calls.
 
 TCP client:
 

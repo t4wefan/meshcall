@@ -13,6 +13,11 @@ class StreamKind(StrEnum):
     DUPLEX = "duplex"
 
 
+class BindingKind(StrEnum):
+    INSTANCE = "instance"
+    STATIC = "static"
+
+
 class BalanceKind(StrEnum):
     ROUND_ROBIN = "round_robin"
     LEAST_INFLIGHT = "least_inflight"
@@ -41,6 +46,7 @@ class MethodContract(BaseModel):
 
     name: str
     stream: StreamKind
+    binding: BindingKind
     request: TypeRef
     response: TypeRef | None = None
     input_item: TypeRef | None = None
@@ -63,4 +69,3 @@ class ContractDocument(BaseModel):
 
     protocol: str = "meshcall/1"
     services: tuple[ServiceContract, ...]
-

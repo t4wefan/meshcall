@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from meshcall import (
     Balance,
+    BindingKind,
     ContractError,
     RpcDuplex,
     RpcInputStream,
@@ -29,20 +30,25 @@ class Result(BaseModel):
 
 @service(name="test.v1.TestService", balance=Balance.least_inflight())
 class TestService:
-    @method.unary().static
-    async def unary(request: Request) -> Result:
+    @method.unary()
+    async def unary(self, request: Request) -> Result:
         return Result(total=request.value)
 
     @method.server_stream(balance=Balance.round_robin()).static
     async def download(request: Request) -> AsyncIterator[Item]:
         yield Item(value=request.value)
 
-    @method.client_stream().static
-    async def upload(request: Request, items: RpcInputStream[Item]) -> Result:
+    @method.client_stream()
+    async def upload(
+        self,
+        request: Request,
+        items: RpcInputStream[Item],
+    ) -> Result:
         return Result(total=request.value)
 
-    @method.duplex().static
+    @method.duplex()
     async def duplex(
+        self,
         request: Request,
         channel: RpcDuplex[Item, Item],
     ) -> Result:
@@ -59,20 +65,28 @@ def test_extracts_all_method_shapes() -> None:
         StreamKind.CLIENT,
         StreamKind.DUPLEX,
     ]
+    assert [method.binding for method in contract.methods] == [
+        BindingKind.INSTANCE,
+        BindingKind.STATIC,
+        BindingKind.INSTANCE,
+        BindingKind.INSTANCE,
+    ]
     assert contract.methods[0].balance.kind == "least_inflight"
     assert contract.methods[1].balance.kind == "round_robin"
     assert contract.methods[3].input_item is not None
     assert contract.methods[3].output_item is not None
 
 
-def test_rejects_instance_rpc_method() -> None:
-    with pytest.raises(ContractError, match=r"must use @method\.<shape>"):
+def test_legacy_method_syntax_infers_instance_binding() -> None:
+    @service(name="test.v1.LegacyInstanceService")
+    class LegacyInstanceService:
+        @method()
+        async def unary(self, request: Request) -> Result:
+            return Result(total=request.value)
 
-        @service(name="test.v1.InvalidService")
-        class InvalidService:
-            @method()
-            async def invalid(self, request: Request) -> Result:
-                return Result(total=request.value)
+    contract = get_service_contract(LegacyInstanceService)
+    assert contract.methods[0].stream is StreamKind.UNARY
+    assert contract.methods[0].binding is BindingKind.INSTANCE
 
 
 def test_legacy_staticmethod_syntax_remains_supported() -> None:
@@ -85,6 +99,7 @@ def test_legacy_staticmethod_syntax_remains_supported() -> None:
 
     contract = get_service_contract(LegacyService)
     assert contract.methods[0].stream is StreamKind.UNARY
+    assert contract.methods[0].binding is BindingKind.STATIC
 
 
 def test_rejects_declared_shape_mismatch() -> None:

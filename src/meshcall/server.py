@@ -5,6 +5,7 @@ import importlib
 import inspect
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -22,7 +23,13 @@ from meshcall.errors import (
     ProtocolError,
 )
 from meshcall.flow import CreditWindow
-from meshcall.ir import MethodContract, ServiceContract, StreamKind, TypeRef
+from meshcall.ir import (
+    BindingKind,
+    MethodContract,
+    ServiceContract,
+    StreamKind,
+    TypeRef,
+)
 from meshcall.protocol import (
     CallCancelFrame,
     CallErrorFrame,
@@ -64,19 +71,42 @@ class RuntimeMethod:
 
 
 class ServerRuntime:
-    def __init__(self, services: tuple[type[Any], ...]) -> None:
+    def __init__(self, services: Sequence[object]) -> None:
         self._contracts: list[ServiceContract] = []
         self._methods: dict[tuple[str, str], RuntimeMethod] = {}
-        for service_type in services:
+        for service in services:
+            service_type = service if inspect.isclass(service) else type(service)
             contract = get_service_contract(service_type)
             if any(existing.name == contract.name for existing in self._contracts):
                 raise ContractError(f"Duplicate service name: {contract.name}")
             self._contracts.append(contract)
+            service_instance = None if inspect.isclass(service) else service
+            if service_instance is None and any(
+                method.binding is BindingKind.INSTANCE for method in contract.methods
+            ):
+                try:
+                    service_instance = service_type()
+                except TypeError as exc:
+                    raise ContractError(
+                        f"Service {service_type.__qualname__} has instance RPC "
+                        "methods and cannot be constructed without arguments; "
+                        "pass a service instance to RpcServer"
+                    ) from exc
             for method in contract.methods:
+                owner = (
+                    service_type
+                    if method.binding is BindingKind.STATIC
+                    else service_instance
+                )
+                if owner is None:
+                    raise ContractError(
+                        f"Service {service_type.__qualname__} has no instance for "
+                        f"method {method.name}"
+                    )
                 self._methods[(contract.name, method.name)] = RuntimeMethod(
                     service_name=contract.name,
                     contract=method,
-                    handler=getattr(service_type, method.name),
+                    handler=getattr(owner, method.name),
                     request_type=_resolve_type(method.request),
                     response_type=_resolve_optional_type(method.response),
                     input_type=_resolve_optional_type(method.input_item),
@@ -432,7 +462,7 @@ class RpcServer:
     def __init__(
         self,
         *,
-        services: list[type[Any]] | tuple[type[Any], ...],
+        services: Sequence[object],
         driver: ServerDriver,
     ) -> None:
         self._services = list(services)
@@ -445,10 +475,10 @@ class RpcServer:
         self._closed = asyncio.Event()
         self._closed.set()
 
-    def include(self, service_type: type[Any]) -> None:
+    def include(self, service: object) -> None:
         if self.state is not ServerState.IDLE:
             raise DriverStateError("Services are frozen after server start begins")
-        self._services.append(service_type)
+        self._services.append(service)
 
     async def start(self) -> None:
         async with self._state_lock:
