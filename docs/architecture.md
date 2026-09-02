@@ -42,8 +42,9 @@ iteration run on the service worker loop.
 Cross-loop operations use thread-safe future submission. A synchronously
 blocking handler can delay other work assigned to the current service worker,
 but it cannot prevent the RPC loop from enforcing a deadline or maintaining
-other connections. TypeScript currently has a unary runtime but does not yet
-provide equivalent worker-thread isolation.
+other connections. The TypeScript client consumes unary, server-streaming, and
+client-streaming calls; TypeScript service handlers are still not worker-thread
+isolated and must avoid synchronously blocking Node's event loop.
 
 ## Call ownership
 

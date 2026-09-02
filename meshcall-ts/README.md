@@ -9,5 +9,7 @@ yarn run check
 yarn test
 ```
 
-The package currently provides the TypeScript unary runtime and portable
-contract helpers. Cross-language streaming remains a future milestone.
+The package provides the TypeScript client runtime for unary,
+server-streaming, and client-streaming calls, plus portable contract helpers.
+The TypeScript service runtime remains unary-only for now; duplex is still an
+experimental protocol capability.

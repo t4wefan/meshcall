@@ -6,8 +6,9 @@ generated client packages provide a static API, and a shared logical protocol
 supports direct WebSocket connections and routed service instances.
 
 This repository is a monorepo. The Python runtime package lives in
-`meshcall-py`, the TypeScript runtime package lives in `meshcall-ts`, runnable
-examples live in `demo`, and design/protocol documentation lives in `docs`.
+`meshcall-py`, the TypeScript runtime package lives in `meshcall-ts`, the
+standalone real-world example lives in `best-practice`, runnable examples live
+in `demo`, and design/protocol documentation lives in `docs`.
 
 ## Repository layout
 
@@ -15,6 +16,7 @@ examples live in `demo`, and design/protocol documentation lives in `docs`.
 meshcall/
 ├── meshcall-py/   # Python package, uv project, and Python tests
 ├── meshcall-ts/   # TypeScript package, Yarn project, and TypeScript tests
+├── best-practice/ # Standalone Python server + TypeScript interactive CLI
 ├── demo/          # Independent demo projects
 │   ├── quickstart/ # uv project: uv run demo
 │   ├── py2ts/      # uv + Yarn: Python service -> TypeScript client
@@ -41,8 +43,9 @@ The current implementation includes:
 - a dedicated Python service worker loop, isolated from RPC transport and
   deadline handling.
 
-Cross-language streaming, typed notifications, and the Tags DSL remain future
-milestones. The current Python/TypeScript interoperability target is unary RPC.
+The `best-practice/` application exercises Python-to-TypeScript unary,
+client-streaming, and server-streaming calls. Typed notifications and the Tags
+DSL remain future milestones.
 
 ## Development
 
@@ -148,12 +151,36 @@ uv run meshcall generate \
 The same service contract can also generate a complete TypeScript package by
 adding `--language typescript` and using a separate output directory.
 
+## Best-practice application
+
+`best-practice/` is the recommended small real-world shape: the Python RPC
+server and the TypeScript interactive CLI are separate processes. The server
+keeps sessions in memory, returns deterministic fake LLM chunks, and waits
+briefly between chunks so the stream is visible in a terminal.
+
+Start them in two terminals:
+
+```bash
+cd best-practice
+uv run server
+```
+
+```bash
+cd best-practice/ts-client
+yarn install --frozen-lockfile
+yarn build
+MESHCALL_SERVER_URL=ws://127.0.0.1:8765 yarn cli
+```
+
+The CLI supports ordinary prompts plus `/new`, `/sessions`, `/tokens TEXT`,
+`/help`, and `/quit`. `assemble_prompt` demonstrates client streaming and
+`stream_chat` demonstrates server streaming.
+
 ## Cross-language demos
 
-The cross-language demos are complete projects that contain both sides of the
-round trip. They are intentionally unary because the current TypeScript
-runtime supports unary RPC; the Python streaming demos remain in
-`quickstart/` and `showcase/`.
+The compact cross-language demos are complete projects that contain both sides
+of their round trip. They remain intentionally unary; `best-practice/` is the
+streaming Python-to-TypeScript example.
 
 Python service to TypeScript client:
 
@@ -375,9 +402,10 @@ Router listeners and service/client connections also accept `unix_path=`.
 - Duplex is an experimental protocol/runtime capability. It is intentionally
   excluded from the recommended decorators, showcase, and cross-language
   target; its service and client API may change.
-- TypeScript cross-language generation/runtime currently supports unary methods
-  only. Python-to-Python package generation contains experimental duplex support
-  in addition to the recommended unary and one-way streaming shapes.
+- TypeScript cross-language generation/runtime supports unary,
+  server-streaming, and client-streaming methods. Python-to-Python package
+  generation contains experimental duplex support in addition to the
+  recommended unary and one-way streaming shapes.
 - The TypeScript client can use a compatible Direct or Router endpoint, but the
   TypeScript server currently exposes a Direct WebSocket listener only; Router
   service-instance registration is still Python-only.
