@@ -40,6 +40,7 @@ from meshcall.protocol import (
 )
 from meshcall.streams import RpcDuplex, RpcInputStream
 from meshcall.transport import FrameConnection
+from meshcall.worker import WorkerLoop, submit_to_loop
 
 INITIAL_STREAM_CREDIT = 16
 _STREAM_END = object()
@@ -64,7 +65,12 @@ class RuntimeMethod:
 
 
 class ServerRuntime:
-    def __init__(self, services: tuple[type[Any], ...]) -> None:
+    def __init__(
+        self,
+        services: tuple[type[Any], ...],
+        worker: WorkerLoop,
+    ) -> None:
+        self.worker = worker
         self._contracts: list[ServiceContract] = []
         self._methods: dict[tuple[str, str], RuntimeMethod] = {}
         for service_type in services:
@@ -104,7 +110,7 @@ class ServerRuntime:
         )
 
     async def serve_connection(self, connection: FrameConnection) -> None:
-        session = _ServerSession(connection, self._methods)
+        session = _ServerSession(connection, self._methods, self.worker)
         try:
             while True:
                 frame = await connection.receive()
@@ -120,9 +126,11 @@ class _ServerSession:
         self,
         connection: FrameConnection,
         methods: dict[tuple[str, str], RuntimeMethod],
+        worker: WorkerLoop,
     ) -> None:
         self.connection = connection
         self.methods = methods
+        self.worker = worker
         self.calls: dict[str, _ServerCall] = {}
 
     async def handle(self, frame: Frame) -> None:
@@ -199,6 +207,7 @@ class _ServerCall:
         self.open_frame = open_frame
         self.call_id = open_frame.call_id
         self.method = method
+        self.rpc_loop = asyncio.get_running_loop()
         self.input_queue: asyncio.Queue[Any] = asyncio.Queue()
         self.send_credit = CreditWindow()
         self.input_allowance = 0
@@ -242,14 +251,7 @@ class _ServerCall:
             return
         self.input_allowance -= 1
         self.input_sequence += 1
-        try:
-            item = self.method.input_type.model_validate(frame.payload)
-        except ValidationError as exc:
-            await self._application_failure(
-                MeshCallError(ErrorCode.INVALID_ARGUMENT, str(exc))
-            )
-            return
-        await self.input_queue.put(item)
+        await self.input_queue.put(frame.payload)
 
     async def receive_end(self, frame: StreamEndFrame) -> None:
         if frame.direction != "client" or self.method.input_type is None:
@@ -276,17 +278,26 @@ class _ServerCall:
                 )
             )
 
-    async def send_output(self, item: BaseModel) -> None:
+    async def next_input_payload(self) -> Any:
+        value = await self.input_queue.get()
+        if value is not _STREAM_END:
+            await self.input_consumed()
+        return value
+
+    async def send_output_payload(self, payload: Any) -> None:
         if self.method.output_type is None or self.output_closed:
             raise ProtocolError("Call output stream is closed")
+        if self.terminal:
+            raise MeshCallError(ErrorCode.CANCELLED, "Call is closed")
         await self.send_credit.acquire()
-        validated = self.method.output_type.model_validate(item)
+        if self.terminal:
+            raise MeshCallError(ErrorCode.CANCELLED, "Call is closed")
         await self.connection.send(
             StreamItemFrame(
                 call_id=self.call_id,
                 direction="server",
                 sequence=self.output_sequence,
-                payload=validated.model_dump(mode="json"),
+                payload=payload,
             )
         )
         self.output_sequence += 1
@@ -309,18 +320,17 @@ class _ServerCall:
                         credit=INITIAL_STREAM_CREDIT,
                     )
                 )
-            request = self.method.request_type.model_validate(self.open_frame.payload)
             deadline = self.open_frame.deadline_unix_ms
             if deadline is None:
-                result = await self._execute(request)
+                payload = await self.session.worker.run(self._execute_worker())
             else:
                 remaining = deadline / 1000 - time.time()
                 if remaining <= 0:
                     raise TimeoutError
                 async with asyncio.timeout(remaining):
-                    result = await self._execute(request)
+                    payload = await self.session.worker.run(self._execute_worker())
             await self.close_output()
-            await self._send_result(result)
+            await self._send_result(payload)
         except TimeoutError:
             await self._send_error(
                 MeshCallError(ErrorCode.DEADLINE_EXCEEDED, "Call deadline exceeded")
@@ -348,26 +358,41 @@ class _ServerCall:
             error = MeshCallError(ErrorCode.CANCELLED, "Call is closed")
             await self.send_credit.close(error)
 
-    async def _execute(self, request: BaseModel) -> BaseModel | None:
+    async def _execute_worker(self) -> Any:
+        request = self.method.request_type.model_validate(self.open_frame.payload)
         kind = self.method.contract.stream
         if kind is StreamKind.UNARY:
-            return await self.method.handler(request)
-        if kind is StreamKind.SERVER:
+            result = await self.method.handler(request)
+        elif kind is StreamKind.SERVER:
             iterator = self.method.handler(request)
             async for item in iterator:
-                await self.send_output(item)
-            return None
-        inbound = _ServerInputStream(self)
-        if kind is StreamKind.CLIENT:
-            return await self.method.handler(request, inbound)
-        channel = _ServerDuplex(self)
-        return await self.method.handler(request, channel)
+                await self._send_worker_output(item)
+            result = None
+        else:
+            inbound = _ServerInputStream(self)
+            if kind is StreamKind.CLIENT:
+                result = await self.method.handler(request, inbound)
+            else:
+                channel = _ServerDuplex(self)
+                result = await self.method.handler(request, channel)
 
-    async def _send_result(self, result: BaseModel | None) -> None:
-        payload: Any = None
-        if self.method.response_type is not None:
-            validated = self.method.response_type.model_validate(result)
-            payload = validated.model_dump(mode="json")
+        if self.method.response_type is None:
+            return None
+        validated = self.method.response_type.model_validate(result)
+        return validated.model_dump(mode="json")
+
+    async def _send_worker_output(self, item: BaseModel) -> None:
+        output_type = self.method.output_type
+        if output_type is None:
+            raise ProtocolError("Call does not declare an output stream")
+        validated = output_type.model_validate(item)
+        payload = validated.model_dump(mode="json")
+        await self._run_on_rpc(self.send_output_payload(payload))
+
+    async def _run_on_rpc(self, coroutine: Any) -> Any:
+        return await asyncio.wrap_future(submit_to_loop(self.rpc_loop, coroutine))
+
+    async def _send_result(self, payload: Any) -> None:
         await self._send_terminal(
             CallResultFrame(call_id=self.call_id, payload=payload)
         )
@@ -411,21 +436,28 @@ class _ServerInputStream(RpcInputStream[BaseModel]):
         return self
 
     async def __anext__(self) -> BaseModel:
-        value = await self.call.input_queue.get()
+        value = await asyncio.wrap_future(
+            submit_to_loop(
+                self.call.rpc_loop,
+                self.call.next_input_payload(),
+            )
+        )
         if value is _STREAM_END:
             raise StopAsyncIteration
         if isinstance(value, BaseException):
             raise value
-        await self.call.input_consumed()
-        return value
+        input_type = self.call.method.input_type
+        if input_type is None:
+            raise ProtocolError("Call does not declare an input stream")
+        return input_type.model_validate(value)
 
 
 class _ServerDuplex(_ServerInputStream, RpcDuplex[BaseModel, BaseModel]):
     async def send(self, item: BaseModel) -> None:
-        await self.call.send_output(item)
+        await self.call._send_worker_output(item)
 
     async def close_send(self) -> None:
-        await self.call.close_output()
+        await self.call._run_on_rpc(self.call.close_output())
 
 
 class RpcServer:
@@ -442,6 +474,7 @@ class RpcServer:
         self._state_lock = asyncio.Lock()
         self._binding: DriverBinding | None = None
         self._runtime: ServerRuntime | None = None
+        self._worker: WorkerLoop | None = None
         self._closed = asyncio.Event()
         self._closed.set()
 
@@ -459,12 +492,17 @@ class RpcServer:
             self.state = ServerState.STARTING
             self._closed.clear()
             binding: DriverBinding | None = None
+            worker: WorkerLoop | None = None
             try:
                 binding = self.driver.acquire_binding(self.owner_id)
                 self._binding = binding
-                runtime = ServerRuntime(tuple(self._services))
+                worker = WorkerLoop(name=f"meshcall-worker-{self.owner_id[:8]}")
+                await worker.start()
+                runtime = ServerRuntime(tuple(self._services), worker)
                 await self.driver.start(binding, runtime)
             except BaseException:
+                if worker is not None:
+                    await worker.stop()
                 if binding is not None:
                     self.driver.release_binding(binding)
                 self._binding = None
@@ -472,6 +510,7 @@ class RpcServer:
                 self._closed.set()
                 raise
             self._runtime = runtime
+            self._worker = worker
             self.state = ServerState.RUNNING
 
     async def stop(self) -> None:
@@ -482,14 +521,20 @@ class RpcServer:
                 raise DriverStateError(f"Cannot stop server in state {self.state}")
             self.state = ServerState.STOPPING
             binding = self._binding
+            worker = self._worker
             try:
                 await self.driver.stop(binding)
             finally:
-                self.driver.release_binding(binding)
-                self._binding = None
-                self._runtime = None
-                self.state = ServerState.IDLE
-                self._closed.set()
+                try:
+                    if worker is not None:
+                        await worker.stop()
+                finally:
+                    self.driver.release_binding(binding)
+                    self._binding = None
+                    self._runtime = None
+                    self._worker = None
+                    self.state = ServerState.IDLE
+                    self._closed.set()
 
     async def wait_closed(self) -> None:
         await self._closed.wait()
