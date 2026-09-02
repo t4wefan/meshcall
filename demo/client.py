@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from examples.generated_client import CounterServiceClient
+from demo.generated_client import CounterServiceClient
 from meshcall.drivers import WebSocketClientDriver
 
 

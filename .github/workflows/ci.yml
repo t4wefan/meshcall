@@ -5,8 +5,11 @@ on:
   pull_request:
 
 jobs:
-  test:
+  python:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: meshcall-py
     strategy:
       fail-fast: false
       matrix:
@@ -18,6 +21,22 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: uv sync --frozen
-      - run: uv run ruff check src tests examples
-      - run: uv run pyright src tests examples
+      - run: uv run ruff check src tests ../demo
+      - run: uv run pyright src tests ../demo
       - run: uv run pytest -q
+
+  typescript:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: meshcall-ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: meshcall-ts/yarn.lock
+      - run: yarn install --frozen-lockfile
+      - run: yarn run check
+      - run: yarn test

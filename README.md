@@ -5,6 +5,21 @@ Pydantic models or explicit TypeScript JSON Schemas define payload contracts,
 generated client packages provide a static API, and a shared logical protocol
 supports direct WebSocket connections and routed service instances.
 
+This repository is a monorepo. The Python runtime package lives in
+`meshcall-py`, the TypeScript runtime package lives in `meshcall-ts`, runnable
+examples live in `demo`, and design/protocol documentation lives in `docs`.
+
+## Repository layout
+
+```text
+meshcall/
+├── meshcall-py/   # Python package, uv project, and Python tests
+├── meshcall-ts/   # TypeScript package, Yarn project, and TypeScript tests
+├── demo/          # Runnable examples and generated demo clients
+├── docs/          # Architecture and protocol documentation
+└── README.md      # Monorepo overview
+```
+
 The current implementation includes:
 
 - Python 3.11+ and `asyncio`;
@@ -27,21 +42,23 @@ milestones. The current Python/TypeScript interoperability target is unary RPC.
 ## Development
 
 ```bash
-uv sync
-uv run ruff check src tests
-uv run pyright src tests
-uv run pytest -q
+uv sync --directory meshcall-py --project .
+uv run --directory meshcall-py --project . ruff check src tests ../demo
+uv run --directory meshcall-py --project . pyright src tests ../demo
+uv run --directory meshcall-py --project . pytest -q
 
-yarn --cwd typescript install --frozen-lockfile
-yarn --cwd typescript run check
-yarn --cwd typescript test
+yarn --cwd meshcall-ts install --frozen-lockfile
+yarn --cwd meshcall-ts run check
+yarn --cwd meshcall-ts test
 
-MESHCALL_RUN_INTEROP=1 uv run pytest -q tests/test_multilang_interop.py
+MESHCALL_RUN_INTEROP=1 uv run --directory meshcall-py --project . \
+  pytest -q tests/test_multilang_interop.py
 ```
 
-The normal test suite is headless and doesn't require an external service.
-Cross-language tests start short-lived local Python and Node servers and are
-opt-in through `MESHCALL_RUN_INTEROP=1`.
+Run these commands from the monorepo root. The normal test suite is headless
+and doesn't require an external service. Cross-language tests start short-lived
+local Python and Node servers and are opt-in through
+`MESHCALL_RUN_INTEROP=1`.
 
 ## Define a service
 
@@ -85,31 +102,31 @@ the RPC shape from the signature unless an explicit stream decorator is used.
 
 ## Complete runnable showcase
 
-The complete showcase in `examples/showcase.py` starts a short-lived local
+The complete showcase in `demo/showcase.py` starts a short-lived local
 WebSocket server and calls it through a generated client. It demonstrates the
 recommended instance-method API, expanded parameters, a request-model method,
 Pydantic payloads, unary RPC, server streaming, and client streaming:
 
 ```bash
-uv run python -m examples.showcase
+uv run --project meshcall-py python -m demo.showcase
 ```
 
 The checked-in client is intentionally a generated single-file client so the
 example can be run immediately. Regenerate it with:
 
 ```bash
-uv run meshcall generate \
-  examples.showcase_service:ShowcaseService \
+uv run --project meshcall-py meshcall generate \
+  demo.showcase_service:ShowcaseService \
   --single-file \
-  --output examples/generated_showcase_client.py
+  --output demo/generated_showcase_client.py
 ```
 
 For the normal production workflow, generate the default complete Python uv
 package instead:
 
 ```bash
-uv run meshcall generate \
-  examples.showcase_service:ShowcaseService \
+uv run --project meshcall-py meshcall generate \
+  demo.showcase_service:ShowcaseService \
   --output generated/showcase-client
 ```
 
@@ -121,8 +138,8 @@ adding `--language typescript` and using a separate output directory.
 Package generation is the default. `--output` names a directory.
 
 ```bash
-uv run meshcall generate \
-  examples.service:CounterService \
+uv run --project meshcall-py meshcall generate \
+  demo.service:CounterService \
   --output generated/counter-client
 ```
 
@@ -145,7 +162,7 @@ with `uv build`. Every generated method accepts an optional `timeout=` keyword.
 For a unary Python service, generate a TypeScript Yarn package with:
 
 ```bash
-uv run meshcall generate \
+uv run --project meshcall-py meshcall generate \
   your_app.service:GreetingService \
   --language typescript \
   --output generated/greeting-client
@@ -159,8 +176,8 @@ The output contains `package.json`, `tsconfig.json`, and separate
 Single-file output is opt-in:
 
 ```bash
-uv run meshcall generate \
-  examples.service:CounterService \
+uv run --project meshcall-py meshcall generate \
+  demo.service:CounterService \
   --output generated/counter_client.py \
   --single-file
 ```
@@ -176,11 +193,11 @@ TypeScript).
 Export a Python contract and generate a package in either language:
 
 ```bash
-uv run meshcall export \
+uv run --project meshcall-py meshcall export \
   your_app.service:GreetingService \
   --output generated/greeting.meshcall.json
 
-uv run meshcall generate-contract \
+uv run --project meshcall-py meshcall generate-contract \
   generated/greeting.meshcall.json \
   --language typescript \
   --output generated/greeting-ts-client
@@ -234,7 +251,7 @@ await writeContract([service], "generated/math.meshcall.json");
 Then generate the Python uv package:
 
 ```bash
-uv run meshcall generate-contract \
+uv run --project meshcall-py meshcall generate-contract \
   generated/math.meshcall.json \
   --language python \
   --output generated/math-py-client

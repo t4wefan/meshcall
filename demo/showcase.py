@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from examples.generated_showcase_client import (
+from demo.generated_showcase_client import (
     NumberItem,
     ShowcaseServiceClient,
     WelcomeRequest,
 )
-from examples.showcase_service import ShowcaseService
+from demo.showcase_service import ShowcaseService
 from meshcall import RpcServer
 from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
 

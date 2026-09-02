@@ -20,8 +20,9 @@ from meshcall.package_codegen import (
     write_typescript_client_package,
 )
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-TYPESCRIPT_ROOT = REPOSITORY_ROOT / "typescript"
+PYTHON_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = PYTHON_PACKAGE_ROOT.parent
+TYPESCRIPT_ROOT = REPOSITORY_ROOT / "meshcall-ts"
 RUNTIME_INDEX = TYPESCRIPT_ROOT / "dist" / "src" / "index.js"
 INTEROP_ROOT = Path(__file__).parent / "interop"
 RUN_INTEROP = os.environ.get("MESHCALL_RUN_INTEROP") == "1"
@@ -42,7 +43,7 @@ def build_typescript_runtime() -> None:
     if not (TYPESCRIPT_ROOT / "node_modules").is_dir():
         pytest.fail(
             "TypeScript dependencies are missing; run "
-            "`yarn --cwd typescript install --frozen-lockfile`"
+            "`yarn --cwd meshcall-ts install --frozen-lockfile`"
         )
     subprocess.run(
         ["yarn", "run", "build"],
