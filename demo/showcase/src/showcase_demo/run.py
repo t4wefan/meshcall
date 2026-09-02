@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from demo.showcase.generated_client import (
+from meshcall import RpcServer
+from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
+from showcase_demo.generated_client import (
     NumberItem,
     ShowcaseServiceClient,
     WelcomeRequest,
 )
-from demo.showcase.service import ShowcaseService
-from meshcall import RpcServer
-from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
+from showcase_demo.service import ShowcaseService
 
 
 async def number_items() -> AsyncIterator[NumberItem]:

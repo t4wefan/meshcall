@@ -25,6 +25,21 @@ jobs:
       - run: uv run pyright src tests ../demo
       - run: uv run pytest -q
 
+  demos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv run --locked demo
+        working-directory: demo/quickstart
+      - run: uv run --locked demo
+        working-directory: demo/showcase
+      - run: uv run --locked demo
+        working-directory: demo/router
+
   typescript:
     runs-on: ubuntu-latest
     defaults:

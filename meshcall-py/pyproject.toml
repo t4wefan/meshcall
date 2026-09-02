@@ -34,4 +34,9 @@ line-length = 88
 target-version = "py311"
 
 [tool.pyright]
-extraPaths = [".."]
+extraPaths = [
+    "..",
+    "../demo/quickstart/src",
+    "../demo/showcase/src",
+    "../demo/router/src",
+]

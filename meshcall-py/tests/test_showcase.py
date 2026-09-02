@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from demo.showcase import run_demo
+from showcase_demo.run import run_demo
 
 
 @pytest.mark.asyncio

@@ -3,12 +3,15 @@
 Every demo is an importable Python package. A demo keeps its service,
 client/server entry points, and generated artifacts together so it can be
 copied or extended without relying on loose files in the parent directory.
+Each demo directory is also a complete uv project with its own `pyproject.toml`
+and `uv.lock`; from inside any demo directory, `uv run demo` is the one-command
+entry point.
 
 ## Packages
 
 - `quickstart/` — the smallest direct WebSocket server and generated client.
 - `showcase/` — the complete recommended API example. Run it with
-  `python -m demo.showcase`.
+  `uv run demo`.
 - `router/` — a router process and a service process that connects to it.
 
 The showcase deliberately does not demonstrate duplex RPC. Duplex is still an
@@ -16,23 +19,40 @@ experimental capability and is tested separately from the recommended demos.
 
 ## Run the demos
 
-Run the complete showcase directly from the repository root:
+Run a demo from its own project directory:
 
 ```bash
-uv run --project meshcall-py python -m demo.showcase
+cd demo/showcase
+uv run demo
 ```
 
-The quickstart uses two terminals:
+The quickstart's complete short-lived flow is also one command:
 
 ```bash
-uv run --project meshcall-py python -m demo.quickstart.server
-uv run --project meshcall-py python -m demo.quickstart.client
+cd demo/quickstart
+uv run demo
 ```
 
-The router demo uses three terminals:
+The quickstart's deployment-shaped two-process form uses two terminals:
 
 ```bash
-uv run --project meshcall-py python -m demo.router.router
-uv run --project meshcall-py python -m demo.router.server
-uv run --project meshcall-py python -m demo.router.client
+cd demo/quickstart
+uv run python -m quickstart_demo.server
+uv run python -m quickstart_demo.client
+```
+
+The router's complete short-lived flow is also one command:
+
+```bash
+cd demo/router
+uv run demo
+```
+
+The router's deployment-shaped three-process form uses three terminals:
+
+```bash
+cd demo/router
+uv run python -m router_demo.router
+uv run python -m router_demo.server
+uv run python -m router_demo.client
 ```

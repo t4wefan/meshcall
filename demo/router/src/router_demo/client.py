@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from demo.router.generated_client import CounterServiceClient
 from meshcall.drivers import WebSocketClientDriver
+from router_demo.generated_client import CounterServiceClient
 
 
 async def main() -> None:

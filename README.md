@@ -15,10 +15,10 @@ examples live in `demo`, and design/protocol documentation lives in `docs`.
 meshcall/
 ├── meshcall-py/   # Python package, uv project, and Python tests
 ├── meshcall-ts/   # TypeScript package, Yarn project, and TypeScript tests
-├── demo/          # Self-contained Python/TypeScript demo packages
-│   ├── quickstart/
-│   ├── router/
-│   └── showcase/
+├── demo/          # Independent demo projects
+│   ├── quickstart/ # uv project: uv run demo
+│   ├── router/    # uv project: uv run demo
+│   └── showcase/  # uv project: uv run demo
 ├── docs/          # Architecture and protocol documentation
 └── README.md      # Monorepo overview
 ```
@@ -49,6 +49,10 @@ uv sync --directory meshcall-py --project .
 uv run --directory meshcall-py --project . ruff check src tests ../demo
 uv run --directory meshcall-py --project . pyright src tests ../demo
 uv run --directory meshcall-py --project . pytest -q
+
+uv run --project demo/quickstart demo
+uv run --project demo/showcase demo
+uv run --project demo/router demo
 
 yarn --cwd meshcall-ts install --frozen-lockfile
 yarn --cwd meshcall-ts run check
@@ -105,31 +109,35 @@ the RPC shape from the signature unless an explicit stream decorator is used.
 
 ## Complete runnable showcase
 
-The complete showcase in `demo/showcase/` starts a short-lived local
-WebSocket server and calls it through a generated client. It demonstrates the
-recommended instance-method API, expanded parameters, a request-model method,
-Pydantic payloads, unary RPC, server streaming, and client streaming:
+The complete showcase is an independent uv project in `demo/showcase/`. It
+starts a short-lived local WebSocket server and calls it through a generated
+client. It demonstrates the recommended instance-method API, expanded
+parameters, a request-model method, Pydantic payloads, unary RPC, server
+streaming, and client streaming.
+
+From the showcase directory:
 
 ```bash
-uv run --project meshcall-py python -m demo.showcase
+cd demo/showcase
+uv run demo
 ```
 
 The checked-in client is intentionally a generated single-file client so the
-example can be run immediately. Regenerate it with:
+example can run immediately. Regenerate it from `demo/showcase/` with:
 
 ```bash
-uv run --project meshcall-py meshcall generate \
-  demo.showcase.service:ShowcaseService \
+uv run meshcall generate \
+  showcase_demo.service:ShowcaseService \
   --single-file \
-  --output demo/showcase/generated_client.py
+  --output src/showcase_demo/generated_client.py
 ```
 
 For the normal production workflow, generate the default complete Python uv
-package instead:
+client package instead, still from `demo/showcase/`:
 
 ```bash
-uv run --project meshcall-py meshcall generate \
-  demo.showcase.service:ShowcaseService \
+uv run meshcall generate \
+  showcase_demo.service:ShowcaseService \
   --output generated/showcase-client
 ```
 
@@ -141,8 +149,8 @@ adding `--language typescript` and using a separate output directory.
 Package generation is the default. `--output` names a directory.
 
 ```bash
-uv run --project meshcall-py meshcall generate \
-  demo.quickstart.service:CounterService \
+uv run --project demo/quickstart meshcall generate \
+  quickstart_demo.service:CounterService \
   --output generated/counter-client
 ```
 
@@ -179,8 +187,8 @@ The output contains `package.json`, `tsconfig.json`, and separate
 Single-file output is opt-in:
 
 ```bash
-uv run --project meshcall-py meshcall generate \
-  demo.quickstart.service:CounterService \
+uv run --project demo/quickstart meshcall generate \
+  quickstart_demo.service:CounterService \
   --output generated/counter_client.py \
   --single-file
 ```

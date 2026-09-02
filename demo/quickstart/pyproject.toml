@@ -1,0 +1,23 @@
+[project]
+name = "meshcall-demo-quickstart"
+version = "0.1.0"
+description = "A complete direct WebSocket MeshCall demo"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "meshcall",
+    "pydantic>=2.11",
+]
+
+[project.scripts]
+demo = "quickstart_demo.run:main"
+
+[tool.uv.sources]
+meshcall = { path = "../../meshcall-py" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quickstart_demo"]
