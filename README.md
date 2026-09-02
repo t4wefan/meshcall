@@ -267,6 +267,9 @@ Router listeners and service/client connections also accept `unix_path=`.
   instances.
 - TypeScript cross-language generation/runtime currently supports unary methods
   only. Python-to-Python package generation supports all four stream shapes.
+- The TypeScript client can use a compatible Direct or Router endpoint, but the
+  TypeScript server currently exposes a Direct WebSocket listener only; Router
+  service-instance registration is still Python-only.
 - TypeScript JSON Schemas currently drive contract export and client generation;
   runtime request/response schema validation is not implemented yet.
 - Python handlers run on a dedicated service worker loop so blocking business
