@@ -7,22 +7,77 @@ from pathlib import Path
 from typing import Any
 
 from meshcall.codegen import write_client
+from meshcall.codegen_portable import write_portable_python_client
+from meshcall.codegen_typescript import write_typescript_client
 from meshcall.contract import get_service_contract
+from meshcall.contract_io import load_contract, select_service, write_contract
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="meshcall")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    generate = subparsers.add_parser("generate", help="generate a Python client")
+    generate = subparsers.add_parser("generate", help="generate a client from Python")
     generate.add_argument("service", help="import path in module:Class form")
     generate.add_argument("--output", "-o", required=True)
     generate.add_argument("--class-name")
+    generate.add_argument(
+        "--language",
+        choices=("python", "typescript"),
+        default="python",
+    )
+    generate.add_argument("--runtime-import", default="@meshcall/runtime")
+
+    export = subparsers.add_parser("export", help="export a portable contract")
+    export.add_argument("service", help="import path in module:Class form")
+    export.add_argument("--output", "-o", required=True)
+
+    portable = subparsers.add_parser(
+        "generate-contract",
+        help="generate a client from a portable contract",
+    )
+    portable.add_argument("contract")
+    portable.add_argument("--output", "-o", required=True)
+    portable.add_argument("--service")
+    portable.add_argument("--class-name")
+    portable.add_argument(
+        "--language",
+        choices=("python", "typescript"),
+        required=True,
+    )
+    portable.add_argument("--runtime-import", default="@meshcall/runtime")
     args = parser.parse_args()
 
     if args.command == "generate":
         service_type = _import_object(args.service)
         contract = get_service_contract(service_type)
-        write_client(contract, args.output, class_name=args.class_name)
+        if args.language == "python":
+            write_client(contract, args.output, class_name=args.class_name)
+        else:
+            write_typescript_client(
+                contract,
+                args.output,
+                class_name=args.class_name,
+                runtime_import=args.runtime_import,
+            )
+    elif args.command == "export":
+        service_type = _import_object(args.service)
+        write_contract((get_service_contract(service_type),), args.output)
+    elif args.command == "generate-contract":
+        document = load_contract(args.contract)
+        contract = select_service(document, args.service)
+        if args.language == "python":
+            write_portable_python_client(
+                contract,
+                args.output,
+                class_name=args.class_name,
+            )
+        else:
+            write_typescript_client(
+                contract,
+                args.output,
+                class_name=args.class_name,
+                runtime_import=args.runtime_import,
+            )
 
 
 def _import_object(path: str) -> Any:
