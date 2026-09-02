@@ -1,0 +1,70 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "demo.v1.TypeScriptGreetingService",
+      "source_module": "ts2py_service",
+      "source_qualname": "TypeScriptGreetingService",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "methods": [
+        {
+          "name": "greet",
+          "stream": "unary",
+          "request": {
+            "module": "ts2py_service",
+            "qualname": "GreetingRequest",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "repeat": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 5
+                }
+              },
+              "required": [
+                "name",
+                "repeat"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "response": {
+            "module": "ts2py_service",
+            "qualname": "GreetingResult",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string"
+                },
+                "handled_by": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message",
+                "handled_by"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "request_style": "model",
+          "request_fields": []
+        }
+      ]
+    }
+  ]
+}

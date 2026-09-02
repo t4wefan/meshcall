@@ -17,8 +17,10 @@ meshcall/
 ├── meshcall-ts/   # TypeScript package, Yarn project, and TypeScript tests
 ├── demo/          # Independent demo projects
 │   ├── quickstart/ # uv project: uv run demo
+│   ├── py2ts/      # uv + Yarn: Python service -> TypeScript client
 │   ├── router/    # uv project: uv run demo
-│   └── showcase/  # uv project: uv run demo
+│   ├── showcase/  # uv project: uv run demo
+│   └── ts2py/      # uv + Yarn: TypeScript service -> Python client
 ├── docs/          # Architecture and protocol documentation
 └── README.md      # Monorepo overview
 ```
@@ -51,8 +53,10 @@ uv run --directory meshcall-py --project . pyright src tests ../demo
 uv run --directory meshcall-py --project . pytest -q
 
 uv run --project demo/quickstart demo
+uv run --project demo/py2ts demo
 uv run --project demo/showcase demo
 uv run --project demo/router demo
+uv run --project demo/ts2py demo
 
 yarn --cwd meshcall-ts install --frozen-lockfile
 yarn --cwd meshcall-ts run check
@@ -143,6 +147,34 @@ uv run meshcall generate \
 
 The same service contract can also generate a complete TypeScript package by
 adding `--language typescript` and using a separate output directory.
+
+## Cross-language demos
+
+The cross-language demos are complete projects that contain both sides of the
+round trip. They are intentionally unary because the current TypeScript
+runtime supports unary RPC; the Python streaming demos remain in
+`quickstart/` and `showcase/`.
+
+Python service to TypeScript client:
+
+```bash
+cd demo/py2ts
+uv run demo
+```
+
+The Python service is in `src/py2ts_demo/service.py`, and the generated
+TypeScript Yarn package is in `ts-client/`.
+
+TypeScript service to Python client:
+
+```bash
+cd demo/ts2py
+uv run demo
+```
+
+The TypeScript Yarn service is in `ts-server/`, its portable contract is
+`ts-server/service.meshcall.json`, and the generated Python uv package is in
+`py-client/`.
 
 ## Generate a complete client package
 

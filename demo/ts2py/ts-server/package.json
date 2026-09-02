@@ -1,0 +1,19 @@
+{
+  "name": "@meshcall/demo-ts2py-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "export-contract": "yarn run build && node scripts/export_contract.mjs service.meshcall.json",
+    "start": "yarn run build && node dist/server.js"
+  },
+  "dependencies": {
+    "@meshcall/runtime": "file:../../../meshcall-ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.2"
+  }
+}

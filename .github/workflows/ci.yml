@@ -33,12 +33,19 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - run: uv run --locked demo
         working-directory: demo/quickstart
+      - run: uv run --locked demo
+        working-directory: demo/py2ts
       - run: uv run --locked demo
         working-directory: demo/showcase
       - run: uv run --locked demo
         working-directory: demo/router
+      - run: uv run --locked demo
+        working-directory: demo/ts2py
 
   typescript:
     runs-on: ubuntu-latest

@@ -177,8 +177,10 @@ from {module_name} import {imports}
 
 
 def _python_init(client_name: str, type_names: tuple[str, ...]) -> str:
-    model_imports = ", ".join(type_names)
-    exports = ", ".join(repr(name) for name in (client_name, *type_names))
+    model_names = tuple(sorted(type_names))
+    model_imports = ", ".join(model_names)
+    export_names = tuple(sorted((client_name, *type_names)))
+    exports = ", ".join(repr(name) for name in export_names)
     return (
         f"from .client import {client_name}\n"
         f"from .models import {model_imports}\n\n"

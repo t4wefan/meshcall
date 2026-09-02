@@ -37,6 +37,9 @@ target-version = "py311"
 extraPaths = [
     "..",
     "../demo/quickstart/src",
+    "../demo/py2ts/src",
     "../demo/showcase/src",
     "../demo/router/src",
+    "../demo/ts2py/src",
+    "../demo/ts2py/py-client/src",
 ]

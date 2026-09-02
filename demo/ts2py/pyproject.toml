@@ -1,0 +1,24 @@
+[project]
+name = "meshcall-demo-ts2py"
+version = "0.1.0"
+description = "A TypeScript service with a generated Python client"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "meshcall",
+    "meshcall-demo-ts2py-client",
+]
+
+[project.scripts]
+demo = "ts2py_demo.run:main"
+
+[tool.uv.sources]
+meshcall = { path = "../../meshcall-py" }
+meshcall-demo-ts2py-client = { path = "py-client" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ts2py_demo"]

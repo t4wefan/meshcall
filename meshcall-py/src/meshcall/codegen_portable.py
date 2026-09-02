@@ -77,7 +77,7 @@ def render_portable_python_client_module(
     stream_imports = _stream_imports(contract)
     if stream_imports:
         lines.append(f"from meshcall.streams import {', '.join(stream_imports)}")
-    lines.extend([f"from {models_import} import {type_names}", "", ""])
+    lines.extend(["", f"from {models_import} import {type_names}", "", ""])
     lines.extend(
         _render_client_class(
             contract,

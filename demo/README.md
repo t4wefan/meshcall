@@ -10,9 +10,11 @@ entry point.
 ## Packages
 
 - `quickstart/` — the smallest direct WebSocket server and generated client.
+- `py2ts/` — a Python service and a generated TypeScript client package.
 - `showcase/` — the complete recommended API example. Run it with
   `uv run demo`.
 - `router/` — a router process and a service process that connects to it.
+- `ts2py/` — a TypeScript service and a generated Python uv client package.
 
 The showcase deliberately does not demonstrate duplex RPC. Duplex is still an
 experimental capability and is tested separately from the recommended demos.
@@ -55,4 +57,17 @@ cd demo/router
 uv run python -m router_demo.router
 uv run python -m router_demo.server
 uv run python -m router_demo.client
+```
+
+The cross-language demos each contain both a uv project and a Yarn project.
+Run them from their own directories:
+
+```bash
+cd demo/py2ts
+uv run demo
+```
+
+```bash
+cd demo/ts2py
+uv run demo
 ```
