@@ -560,6 +560,9 @@ class ServerStreamState<Item> {
   }
 
   public arm(options: CallOptions): void {
+    if (this.terminal) {
+      return;
+    }
     if (options.timeoutMs !== undefined) {
       this.timer = setTimeout(() => {
         this.abort(
