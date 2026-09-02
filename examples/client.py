@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from examples.generated_client import CounterServiceClient
-from examples.service import CountRequest
+from examples.generated_client import CounterServiceClient, CountRequest
 from meshcall.drivers import WebSocketClientDriver
 
 

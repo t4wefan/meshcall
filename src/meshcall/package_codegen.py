@@ -14,6 +14,7 @@ from meshcall.codegen_typescript import (
     render_typescript_client_module,
     render_typescript_models,
     typescript_client_class_name,
+    typescript_type_names,
 )
 from meshcall.ir import ServiceContract
 
@@ -39,13 +40,19 @@ def write_python_client_package(
             package_version,
             meshcall_requirement,
         ),
-        Path("README.md"): _python_readme(distribution_name, module_name),
+        Path("README.md"): _python_readme(
+            distribution_name,
+            module_name,
+            client_name,
+            type_names,
+        ),
         source_root / "models.py": render_portable_python_models(contract),
         source_root / "client.py": render_portable_python_client_module(
             contract,
             class_name=client_name,
         ),
         source_root / "__init__.py": _python_init(client_name, type_names),
+        source_root / "py.typed": "",
     }
     return _write_package(output, files)
 
@@ -62,6 +69,7 @@ def write_typescript_client_package(
 ) -> Path:
     generated_name = package_name or _default_package_name(contract)
     client_name = class_name or typescript_client_class_name(contract)
+    type_names = typescript_type_names(contract)
     files = {
         Path("package.json"): _typescript_package_json(
             generated_name,
@@ -70,7 +78,11 @@ def write_typescript_client_package(
             runtime_version,
         ),
         Path("tsconfig.json"): _typescript_tsconfig(),
-        Path("README.md"): _typescript_readme(generated_name),
+        Path("README.md"): _typescript_readme(
+            generated_name,
+            client_name,
+            type_names,
+        ),
         Path(".gitignore"): "node_modules/\ndist/\n",
         Path("src/models.ts"): render_typescript_models(contract),
         Path("src/client.ts"): render_typescript_client_module(
@@ -136,19 +148,31 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = [{json.dumps(f"src/{module_name}")}]
+
+[tool.uv]
+package = true
 '''
 
 
-def _python_readme(distribution_name: str, module_name: str) -> str:
+def _python_readme(
+    distribution_name: str,
+    module_name: str,
+    client_name: str,
+    type_names: tuple[str, ...],
+) -> str:
+    imports = ", ".join((client_name, *type_names))
     return f"""# {distribution_name}
 
 Generated MeshCall Python client package.
 
 ```bash
 uv sync
+uv build
 ```
 
-Import the generated API from `{module_name}`.
+```python
+from {module_name} import {imports}
+```
 """
 
 
@@ -174,7 +198,16 @@ def _typescript_package_json(
         "type": "module",
         "main": "dist/index.js",
         "types": "dist/index.d.ts",
+        "exports": {
+            ".": {
+                "types": "./dist/index.d.ts",
+                "import": "./dist/index.js",
+            }
+        },
         "files": ["dist"],
+        "license": "UNLICENSED",
+        "sideEffects": False,
+        "packageManager": "yarn@1.22.22",
         "scripts": {
             "build": "tsc -p tsconfig.json",
             "check": "tsc -p tsconfig.json --noEmit",
@@ -204,7 +237,12 @@ def _typescript_tsconfig() -> str:
     return json.dumps(document, indent=2) + "\n"
 
 
-def _typescript_readme(package_name: str) -> str:
+def _typescript_readme(
+    package_name: str,
+    client_name: str,
+    type_names: tuple[str, ...],
+) -> str:
+    imports = ", ".join((client_name, *type_names))
     return f"""# {package_name}
 
 Generated MeshCall TypeScript client package.
@@ -212,5 +250,9 @@ Generated MeshCall TypeScript client package.
 ```bash
 yarn install
 yarn build
+```
+
+```typescript
+import {{ {imports} }} from {json.dumps(package_name)};
 ```
 """

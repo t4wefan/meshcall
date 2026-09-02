@@ -22,9 +22,18 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     generate = subparsers.add_parser("generate", help="generate a client from Python")
     generate.add_argument("service", help="import path in module:Class form")
-    generate.add_argument("--output", "-o", required=True)
+    generate.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="package directory, or a file path when --single-file is used",
+    )
     generate.add_argument("--class-name")
-    generate.add_argument("--single-file", action="store_true")
+    generate.add_argument(
+        "--single-file",
+        action="store_true",
+        help="generate one self-contained source file instead of a package",
+    )
     generate.add_argument("--package-name")
     generate.add_argument("--package-version", default="0.1.0")
     generate.add_argument(
@@ -45,10 +54,19 @@ def main() -> None:
         help="generate a client from a portable contract",
     )
     portable.add_argument("contract")
-    portable.add_argument("--output", "-o", required=True)
+    portable.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="package directory, or a file path when --single-file is used",
+    )
     portable.add_argument("--service")
     portable.add_argument("--class-name")
-    portable.add_argument("--single-file", action="store_true")
+    portable.add_argument(
+        "--single-file",
+        action="store_true",
+        help="generate one self-contained source file instead of a package",
+    )
     portable.add_argument("--package-name")
     portable.add_argument("--package-version", default="0.1.0")
     portable.add_argument(

@@ -98,6 +98,8 @@ class SingleService:
     main()
 
     generated = output.read_text(encoding="utf-8")
-    assert "# External dependency: uv add 'meshcall>=0.1.0'" in generated
+    assert "uv add 'meshcall>=0.1.0' 'pydantic>=2.11'" in generated
+    assert "class Request(BaseModel):" in generated
+    assert "class Result(BaseModel):" in generated
     assert "class SingleServiceClient(ClientBase):" in generated
     compile(generated, str(output), "exec")

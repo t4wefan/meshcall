@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from pydantic import BaseModel, Field
+from test_contract import TestService
 
 from meshcall import method, service
 from meshcall.codegen_portable import render_portable_python_client
@@ -79,9 +82,36 @@ def test_default_generators_write_complete_packages(tmp_path) -> None:
     assert (python_module / "__init__.py").is_file()
     assert (python_module / "models.py").is_file()
     assert (python_module / "client.py").is_file()
+    assert (python_module / "py.typed").is_file()
+    assert "[tool.uv]" in (python_root / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
 
     assert (typescript_root / "package.json").is_file()
     assert (typescript_root / "tsconfig.json").is_file()
     assert (typescript_root / "src" / "index.ts").is_file()
     assert (typescript_root / "src" / "models.ts").is_file()
     assert (typescript_root / "src" / "client.ts").is_file()
+    package_json = json.loads(
+        (typescript_root / "package.json").read_text(encoding="utf-8")
+    )
+    assert package_json["packageManager"] == "yarn@1.22.22"
+    assert package_json["exports"]["."]["types"] == "./dist/index.d.ts"
+
+
+def test_python_package_generation_preserves_all_stream_shapes(tmp_path) -> None:
+    package_root = write_python_client_package(
+        get_service_contract(TestService),
+        tmp_path / "python-streaming-client",
+    )
+    module_root = package_root / "src" / "meshcall_test_v1_testservice_client"
+    source = (module_root / "client.py").read_text(encoding="utf-8")
+
+    compile(source, str(module_root / "client.py"), "exec")
+    assert "async def unary(" in source
+    assert "def download(" in source
+    assert "async def upload(" in source
+    assert "def duplex(" in source
+    assert "RpcServerStream[Item]" in source
+    assert "AsyncIterable[Item]" in source
+    assert "RpcDuplexClient[Item, Item, Result]" in source
