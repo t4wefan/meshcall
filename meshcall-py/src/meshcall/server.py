@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from loguru import logger
+from loguru import logger as default_logger
 from pydantic import BaseModel, ValidationError
 
 from meshcall.contract import (
@@ -34,6 +34,7 @@ from meshcall.ir import (
     StreamKind,
     TypeRef,
 )
+from meshcall.logging import RpcLogger
 from meshcall.protocol import (
     CallCancelFrame,
     CallErrorFrame,
@@ -81,8 +82,17 @@ class ServerRuntime:
         self,
         services: Sequence[object],
         worker: WorkerLoop,
+        *,
+        access_log: bool = True,
+        log_level: str | int = "INFO",
+        colorize: bool = False,
+        logger: RpcLogger | None = None,
     ) -> None:
         self.worker = worker
+        self.access_log = access_log
+        self.log_level = log_level
+        self.colorize = colorize
+        self.logger: RpcLogger = logger if logger is not None else default_logger
         self._contracts: list[ServiceContract] = []
         self._methods: dict[tuple[str, str], RuntimeMethod] = {}
         for service in services:
@@ -151,7 +161,15 @@ class ServerRuntime:
         )
 
     async def serve_connection(self, connection: FrameConnection) -> None:
-        session = _ServerSession(connection, self._methods, self.worker)
+        session = _ServerSession(
+            connection,
+            self._methods,
+            self.worker,
+            access_log=self.access_log,
+            log_level=self.log_level,
+            colorize=self.colorize,
+            logger=self.logger,
+        )
         try:
             while True:
                 frame = await connection.receive()
@@ -168,10 +186,19 @@ class _ServerSession:
         connection: FrameConnection,
         methods: dict[tuple[str, str], RuntimeMethod],
         worker: WorkerLoop,
+        *,
+        access_log: bool,
+        log_level: str | int,
+        colorize: bool,
+        logger: RpcLogger,
     ) -> None:
         self.connection = connection
         self.methods = methods
         self.worker = worker
+        self.access_log = access_log
+        self.log_level = log_level
+        self.colorize = colorize
+        self.logger = logger
         self.calls: dict[str, _ServerCall] = {}
 
     async def handle(self, frame: Frame) -> None:
@@ -197,24 +224,51 @@ class _ServerSession:
             call.cancel(frame.reason)
 
     async def _open(self, frame: CallOpenFrame) -> None:
+        started_at = time.perf_counter()
         if frame.call_id in self.calls:
-            await self.connection.send(
-                _error_frame(
-                    frame.call_id,
-                    ErrorCode.PROTOCOL_ERROR,
-                    "Duplicate call_id",
+            try:
+                await self.connection.send(
+                    _error_frame(
+                        frame.call_id,
+                        ErrorCode.PROTOCOL_ERROR,
+                        "Duplicate call_id",
+                    )
                 )
-            )
+            finally:
+                _log_access(
+                    self.logger,
+                    enabled=self.access_log,
+                    call_id=frame.call_id,
+                    service=frame.service,
+                    method=frame.method,
+                    started_at=started_at,
+                    status=ErrorCode.PROTOCOL_ERROR.value,
+                    level=self.log_level,
+                    colorize=self.colorize,
+                )
             return
         method = self.methods.get((frame.service, frame.method))
         if method is None:
-            await self.connection.send(
-                _error_frame(
-                    frame.call_id,
-                    ErrorCode.METHOD_NOT_FOUND,
-                    f"Unknown method {frame.service}.{frame.method}",
+            try:
+                await self.connection.send(
+                    _error_frame(
+                        frame.call_id,
+                        ErrorCode.METHOD_NOT_FOUND,
+                        f"Unknown method {frame.service}.{frame.method}",
+                    )
                 )
-            )
+            finally:
+                _log_access(
+                    self.logger,
+                    enabled=self.access_log,
+                    call_id=frame.call_id,
+                    service=frame.service,
+                    method=frame.method,
+                    started_at=started_at,
+                    status=ErrorCode.METHOD_NOT_FOUND.value,
+                    level=self.log_level,
+                    colorize=self.colorize,
+                )
             return
         call = _ServerCall(self, frame, method)
         self.calls[frame.call_id] = call
@@ -258,6 +312,12 @@ class _ServerCall:
         self.output_closed = False
         self.terminal = False
         self._terminal_lock = asyncio.Lock()
+        self.logger = session.logger.bind(
+            meshcall_service=method.service_name,
+            meshcall_method=method.contract.name,
+            meshcall_call_id=self.call_id,
+        )
+        self.started_at = time.perf_counter()
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -383,11 +443,9 @@ class _ServerCall:
         except MeshCallError as exc:
             await self._send_error(exc)
         except ValidationError as exc:
-            await self._send_error(
-                MeshCallError(ErrorCode.INVALID_ARGUMENT, str(exc))
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
+            await self._send_error(MeshCallError(ErrorCode.INVALID_ARGUMENT, str(exc)))
+        except Exception:
+            self.logger.exception(  # noqa: PLE1205
                 "Unhandled exception in {}.{}",
                 self.method.service_name,
                 self.method.contract.name,
@@ -403,10 +461,16 @@ class _ServerCall:
         request = self.method.request_type.model_validate(self.open_frame.payload)
         kind = self.method.contract.stream
         if kind is StreamKind.UNARY:
-            args, kwargs = self.method.method_binding.arguments(request)
+            args, kwargs = self.method.method_binding.arguments(
+                request,
+                logger=self.logger,
+            )
             result = await self.method.handler(*args, **kwargs)
         elif kind is StreamKind.SERVER:
-            args, kwargs = self.method.method_binding.arguments(request)
+            args, kwargs = self.method.method_binding.arguments(
+                request,
+                logger=self.logger,
+            )
             iterator = self.method.handler(*args, **kwargs)
             async for item in iterator:
                 await self._send_worker_output(item)
@@ -414,11 +478,19 @@ class _ServerCall:
         else:
             inbound = _ServerInputStream(self)
             if kind is StreamKind.CLIENT:
-                args, kwargs = self.method.method_binding.arguments(request, inbound)
+                args, kwargs = self.method.method_binding.arguments(
+                    request,
+                    inbound,
+                    logger=self.logger,
+                )
                 result = await self.method.handler(*args, **kwargs)
             else:
                 channel = _ServerDuplex(self)
-                args, kwargs = self.method.method_binding.arguments(request, channel)
+                args, kwargs = self.method.method_binding.arguments(
+                    request,
+                    channel,
+                    logger=self.logger,
+                )
                 result = await self.method.handler(*args, **kwargs)
 
         if self.method.response_type is None:
@@ -464,6 +536,20 @@ class _ServerCall:
                 await self.connection.send(frame)
             except ConnectionError:
                 pass
+            finally:
+                _log_access(
+                    self.logger,
+                    enabled=self.session.access_log,
+                    call_id=self.call_id,
+                    service=self.method.service_name,
+                    method=self.method.contract.name,
+                    started_at=self.started_at,
+                    status=(
+                        "ok" if isinstance(frame, CallResultFrame) else frame.error.code
+                    ),
+                    level=self.session.log_level,
+                    colorize=self.session.colorize,
+                )
 
     async def _protocol_failure(self, message: str) -> None:
         await self._application_failure(ProtocolError(message))
@@ -511,9 +597,17 @@ class RpcServer:
         *,
         services: Sequence[object],
         driver: ServerDriver,
+        access_log: bool = True,
+        log_level: str | int = "INFO",
+        colorize: bool = False,
+        logger: RpcLogger | None = None,
     ) -> None:
         self._services = list(services)
         self.driver = driver
+        self.access_log = access_log
+        self.log_level = log_level
+        self.colorize = colorize
+        self.logger: RpcLogger = logger if logger is not None else default_logger
         self.owner_id = uuid.uuid4().hex
         self.state = ServerState.IDLE
         self._state_lock = asyncio.Lock()
@@ -543,7 +637,14 @@ class RpcServer:
                 self._binding = binding
                 worker = WorkerLoop(name=f"meshcall-worker-{self.owner_id[:8]}")
                 await worker.start()
-                runtime = ServerRuntime(tuple(self._services), worker)
+                runtime = ServerRuntime(
+                    tuple(self._services),
+                    worker,
+                    access_log=self.access_log,
+                    log_level=self.log_level,
+                    colorize=self.colorize,
+                    logger=self.logger,
+                )
                 await self.driver.start(binding, runtime)
             except BaseException:
                 if worker is not None:
@@ -587,6 +688,36 @@ class RpcServer:
     async def run(self) -> None:
         await self.start()
         await self.wait_closed()
+
+
+def _log_access(
+    logger: Any,
+    *,
+    enabled: bool,
+    call_id: str,
+    service: str,
+    method: str,
+    started_at: float,
+    status: str,
+    level: str | int,
+    colorize: bool,
+) -> None:
+    if not enabled:
+        return
+    message = (
+        "<level>RPC call {}.{} status={} duration_ms={:.2f} call_id={}</level>"
+        if colorize
+        else "RPC call {}.{} status={} duration_ms={:.2f} call_id={}"
+    )
+    logger.opt(colors=colorize).log(
+        level,
+        message,
+        service,
+        method,
+        status,
+        (time.perf_counter() - started_at) * 1000,
+        call_id,
+    )
 
 
 def _resolve_optional_type(ref: TypeRef | None) -> type[BaseModel] | None:

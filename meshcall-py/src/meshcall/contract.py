@@ -29,6 +29,7 @@ from meshcall.ir import (
     StreamKind,
     TypeRef,
 )
+from meshcall.logging import RpcLogger
 from meshcall.streams import RpcDuplex, RpcInputStream
 
 ServiceT = TypeVar("ServiceT", bound=type[Any])
@@ -69,6 +70,7 @@ class MethodOptions:
 
 
 _NO_STREAM = object()
+_NO_LOGGER = object()
 
 
 @dataclass(frozen=True)
@@ -80,11 +82,14 @@ class MethodBinding:
     parameter_names: tuple[str, ...]
     positional_only_parameters: frozenset[str]
     stream_parameter: str | None
+    logger_parameter: str | None
 
     def arguments(
         self,
         request: BaseModel,
         stream: Any = _NO_STREAM,
+        *,
+        logger: Any = _NO_LOGGER,
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         if self.request_style is RequestStyle.MODEL:
             if self.request_parameter is None:
@@ -93,9 +98,7 @@ class MethodBinding:
                 )
             values: dict[str, Any] = {self.request_parameter: request}
         else:
-            values = {
-                name: getattr(request, name) for name in self.request_fields
-            }
+            values = {name: getattr(request, name) for name in self.request_fields}
 
         if self.stream_parameter is None:
             if stream is not _NO_STREAM:
@@ -104,6 +107,11 @@ class MethodBinding:
             if stream is _NO_STREAM:
                 raise ContractError("RPC method is missing its stream parameter")
             values[self.stream_parameter] = stream
+
+        if self.logger_parameter is not None:
+            if logger is _NO_LOGGER:
+                raise ContractError("RPC method is missing its logger parameter")
+            values[self.logger_parameter] = logger
 
         args: list[Any] = []
         kwargs: dict[str, Any] = {}
@@ -296,7 +304,9 @@ def get_service_method_binding(
         raise ContractError(f"{cls.__qualname__} has no extracted RPC method bindings")
     binding = bindings.get(method_name)
     if not isinstance(binding, MethodBinding):
-        raise ContractError(f"RPC method {cls.__qualname__}.{method_name} has no binding")
+        raise ContractError(
+            f"RPC method {cls.__qualname__}.{method_name} has no binding"
+        )
     return binding
 
 
@@ -394,6 +404,7 @@ def _extract_method(
     request_parameters: list[inspect.Parameter] = []
     stream_annotation: Any | None = None
     stream_parameter: inspect.Parameter | None = None
+    logger_parameter: inspect.Parameter | None = None
     for parameter in parameters:
         if parameter.kind not in (
             inspect.Parameter.POSITIONAL_ONLY,
@@ -403,13 +414,24 @@ def _extract_method(
             raise ContractError(
                 f"RPC method {func.__qualname__} cannot use *args or **kwargs"
             )
+        annotation = hints.get(parameter.name)
+        origin = get_origin(annotation)
+        if parameter.name == "logger" or annotation is RpcLogger:
+            if origin in (RpcInputStream, RpcDuplex):
+                raise ContractError(
+                    f"RPC method {func.__qualname__} cannot use logger as a stream"
+                )
+            if logger_parameter is not None:
+                raise ContractError(
+                    f"RPC method {func.__qualname__} has more than one logger"
+                )
+            logger_parameter = parameter
+            continue
         if parameter.name not in hints:
             raise ContractError(
                 f"Parameter {parameter.name!r} on {func.__qualname__} needs a type"
             )
 
-        annotation = hints[parameter.name]
-        origin = get_origin(annotation)
         if origin in (RpcInputStream, RpcDuplex):
             if stream_parameter is not None:
                 raise ContractError(
@@ -456,6 +478,9 @@ def _extract_method(
         ),
         stream_parameter=(
             stream_parameter.name if stream_parameter is not None else None
+        ),
+        logger_parameter=(
+            logger_parameter.name if logger_parameter is not None else None
         ),
     )
 
@@ -575,9 +600,7 @@ def _create_request_model(
     fields: dict[str, tuple[Any, Any]] = {
         parameter.name: (
             hints[parameter.name],
-            ...
-            if parameter.default is inspect.Parameter.empty
-            else parameter.default,
+            ... if parameter.default is inspect.Parameter.empty else parameter.default,
         )
         for parameter in parameters
     }

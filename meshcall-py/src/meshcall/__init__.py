@@ -27,6 +27,7 @@ from meshcall.ir import (
     RequestStyle,
     StreamKind,
 )
+from meshcall.logging import RpcLogger
 from meshcall.package_codegen import (
     write_python_client_package,
     write_typescript_client_package,
@@ -46,6 +47,7 @@ __all__ = [
     "RequestStyle",
     "RpcDuplex",
     "RpcInputStream",
+    "RpcLogger",
     "RpcServer",
     "StreamKind",
     "WebSocketRouter",

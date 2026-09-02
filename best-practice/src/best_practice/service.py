@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from meshcall import RpcInputStream, method, service
+from meshcall import RpcInputStream, RpcLogger, method, service
 from meshcall.errors import ErrorCode, MeshCallError
 
 _TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
@@ -74,26 +74,43 @@ class LlmService:
         self._lock = asyncio.Lock()
 
     @method()
-    async def new_session(self, title: str = "New session") -> NewSessionResponse:
+    async def new_session(
+        self,
+        title: str = "New session",
+        *,
+        logger: RpcLogger,
+    ) -> NewSessionResponse:
         session = _Session(
             id=uuid4().hex,
             title=title.strip() or "New session",
         )
         async with self._lock:
             self._sessions[session.id] = session
+        logger.info(  # noqa: PLE1205
+            "created session id={} title={!r}",
+            session.id,
+            session.title,
+        )
         return NewSessionResponse(session=session.info())
 
     @method()
-    async def list_sessions(self) -> ListSessionsResponse:
+    async def list_sessions(self, logger: RpcLogger) -> ListSessionsResponse:
         async with self._lock:
             sessions = [session.info() for session in self._sessions.values()]
+        logger.debug("listed {} sessions", len(sessions))  # noqa: PLE1205
         return ListSessionsResponse(sessions=sessions)
 
     @method()
-    async def count_tokens(self, text: str) -> TokenCountResponse:
+    async def count_tokens(
+        self,
+        text: str,
+        logger: RpcLogger,
+    ) -> TokenCountResponse:
         """Count simple lexical tokens; this deliberately is not a model tokenizer."""
+        count = len(_TOKEN_PATTERN.findall(text))
+        logger.debug("counted {} tokens", count)  # noqa: PLE1205
         return TokenCountResponse(
-            count=len(_TOKEN_PATTERN.findall(text)),
+            count=count,
             tokenizer="simple-regex",
         )
 
@@ -101,9 +118,14 @@ class LlmService:
     async def assemble_prompt(
         self,
         items: RpcInputStream[PromptChunk],
+        logger: RpcLogger,
     ) -> PromptAssembly:
         """Collect prompt chunks to demonstrate client-to-server backpressure."""
         chunks = [item async for item in items]
+        logger.debug(  # noqa: PLE1205
+            "assembled prompt from {} chunks",
+            len(chunks),
+        )
         return PromptAssembly(
             text="".join(item.text for item in chunks),
             chunk_count=len(chunks),
@@ -115,6 +137,8 @@ class LlmService:
         session_id: str,
         prompt: str,
         max_tokens: int = 64,
+        *,
+        logger: RpcLogger,
     ) -> AsyncIterator[ChatChunk]:
         if max_tokens <= 0:
             raise MeshCallError(
@@ -129,6 +153,10 @@ class LlmService:
                     f"Unknown session: {session_id}",
                 )
             session.messages.append(("user", prompt))
+        logger.info(  # noqa: PLE1205
+            "streaming response for prompt={!r}",
+            prompt,
+        )
 
         response = (
             f"I received: {prompt}\n"
@@ -146,3 +174,7 @@ class LlmService:
             session = self._sessions.get(session_id)
             if session is not None:
                 session.messages.append(("assistant", assistant))
+        logger.debug(  # noqa: PLE1205
+            "streamed {} response chunks",
+            len(assistant.split()),
+        )

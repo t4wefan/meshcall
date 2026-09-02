@@ -42,6 +42,8 @@ The current implementation includes:
 - immutable `call_id` to service-instance routing and disconnect cleanup;
 - a dedicated Python service worker loop, isolated from RPC transport and
   deadline handling.
+- built-in Python server access logs with method, status, duration, and
+  Loguru-style service logger injection.
 
 The `best-practice/` application exercises Python-to-TypeScript unary,
 client-streaming, and server-streaming calls. Typed notifications and the Tags
@@ -81,7 +83,7 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
-from meshcall import method, service
+from meshcall import RpcLogger, method, service
 
 
 class CountItem(BaseModel):
@@ -91,7 +93,12 @@ class CountItem(BaseModel):
 @service(name="example.v1.CounterService")
 class CounterService:
     @method.server_stream()
-    async def count(self, stop: int) -> AsyncIterator[CountItem]:
+    async def count(
+        self,
+        stop: int,
+        logger: RpcLogger,
+    ) -> AsyncIterator[CountItem]:
+        logger.debug("counting to {}", stop)
         for value in range(stop):
             yield CountItem(value=value)
 ```
@@ -333,9 +340,39 @@ TCP server:
 
 ```python
 driver = WebSocketDirectServerDriver(host="127.0.0.1", port=8765)
-server = RpcServer(services=[CounterService], driver=driver)
+server = RpcServer(
+    services=[CounterService],
+    driver=driver,
+    access_log=True,
+    log_level="INFO",
+    colorize=False,
+)
 await server.start()
 ```
+
+`access_log` is enabled by default. After each call reaches a terminal result
+or error, the server emits a Loguru-style access entry containing
+`service.method`, `status`, `duration_ms`, and `call_id`. Set
+`access_log=False` to turn off these per-call entries while keeping other
+application and exception logs. `log_level` chooses the level used for access
+entries, and `colorize` enables the Loguru color tags for that entry. The
+default logger is Loguru's global logger; a compatible logger can be supplied
+with `RpcServer(..., logger=my_logger)`.
+
+RPC methods may reserve a parameter named `logger` (typed as `RpcLogger`) for
+server-side logging. It is injected per call, is not part of the wire request,
+and therefore does not appear in the generated client method:
+
+```python
+@method()
+async def greet(self, name: str, logger: RpcLogger) -> Greeting:
+    logger.info("greeting {}", name)
+    return Greeting(...)
+```
+
+The injected logger is bound with the service, method, and `call_id`, and its
+usage follows Loguru's normal `debug`, `info`, `warning`, `error`, and
+`exception` methods.
 
 Passing a service class constructs one instance with no arguments when the
 server starts. For constructor arguments or dependency injection, pass an

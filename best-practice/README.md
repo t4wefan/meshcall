@@ -25,6 +25,19 @@ uv run server
 The server listens on `ws://127.0.0.1:8765` by default. Set
 `MESHCALL_BEST_PRACTICE_PORT` to use another port.
 
+The Python server writes one access log after every completed call. Each entry
+contains the service method, status, elapsed milliseconds, and `call_id`. The
+service methods also demonstrate an injected `logger: RpcLogger` parameter for
+application logs. Startup logging can be adjusted without editing the demo:
+
+```bash
+MESHCALL_LOG_LEVEL=DEBUG MESHCALL_LOG_COLOR=1 uv run server
+MESHCALL_ACCESS_LOG=0 uv run server
+```
+
+The library equivalent is `RpcServer(..., access_log=False)`; `log_level` and
+`colorize` are also available as server options.
+
 ## Start the interactive CLI
 
 In a second terminal:

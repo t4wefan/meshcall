@@ -31,6 +31,11 @@ drivers own connection setup, role handshakes, TCP/Unix endpoints, and server
 registration. Duplex remains experimental protocol/runtime plumbing and is
 intentionally omitted from the recommended usage surface.
 
+The reserved `logger: RpcLogger` method parameter is dependency injection, not
+an RPC field. It is removed while extracting the request model and supplied by
+the server with service, method, and `call_id` context, so generated clients do
+not expose it.
+
 ## RPC and service loop isolation
 
 Every Python `RpcServer` owns a persistent service worker loop running in a
@@ -45,6 +50,12 @@ but it cannot prevent the RPC loop from enforcing a deadline or maintaining
 other connections. The TypeScript client consumes unary, server-streaming, and
 client-streaming calls; TypeScript service handlers are still not worker-thread
 isolated and must avoid synchronously blocking Node's event loop.
+
+Access logging is also owned by the RPC loop. It is emitted at the single
+terminal-frame arbitration point, after a result or error status is known, so a
+streaming call produces exactly one access entry even if cancellation races
+with normal completion. Unknown methods and duplicate call IDs are logged at
+the `call.open` rejection point because they never create a call object.
 
 ## Call ownership
 
