@@ -6,7 +6,11 @@ import {
   MeshCallClient,
   MeshCallError,
   MeshCallServer,
+  defineService,
+  defineType,
+  renderContract,
   type ServiceDefinition,
+  unaryMethod,
 } from "../src/index.js";
 
 interface AddRequest {
@@ -36,6 +40,57 @@ const service = {
     },
   },
 } satisfies ServiceDefinition;
+
+const addRequest = defineType<AddRequest>("AddRequest", {
+  type: "object",
+  properties: {
+    left: { type: "number" },
+    right: { type: "number" },
+  },
+  required: ["left", "right"],
+  additionalProperties: false,
+});
+
+const addResult = defineType<AddResult>("AddResult", {
+  type: "object",
+  properties: { total: { type: "number" } },
+  required: ["total"],
+  additionalProperties: false,
+});
+
+const exportableService = defineService({
+  name: "test.v1.ExportedMathService",
+  sourceModule: "runtime.test",
+  sourceQualname: "ExportedMathService",
+  methods: {
+    add: unaryMethod({
+      request: addRequest,
+      response: addResult,
+      handler: (request) => ({ total: request.left + request.right }),
+    }),
+  },
+});
+
+test("TypeScript services export a portable contract", () => {
+  assert.doesNotThrow(
+    () => new MeshCallServer({ services: [exportableService] }),
+  );
+  const contract = JSON.parse(renderContract([exportableService])) as {
+    services: Array<{
+      name: string;
+      methods: Array<{
+        name: string;
+        request: { qualname: string };
+        response: { qualname: string };
+      }>;
+    }>;
+  };
+
+  assert.equal(contract.services[0]?.name, exportableService.name);
+  assert.equal(contract.services[0]?.methods[0]?.name, "add");
+  assert.equal(contract.services[0]?.methods[0]?.request.qualname, "AddRequest");
+  assert.equal(contract.services[0]?.methods[0]?.response.qualname, "AddResult");
+});
 
 test("unary client and server round trip", async () => {
   const server = new MeshCallServer({ services: [service] });

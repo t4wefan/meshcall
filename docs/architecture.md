@@ -3,13 +3,15 @@
 ## Layers
 
 ```text
-Pydantic service class
-        |
-        v
-Contract extraction ----> static Python client generation
-        |
-        v
-Client / server call state machines
+Python/Pydantic service ---- contract extraction ---+
+                                                    |
+TypeScript schema service ---- contract export -----+--> portable contract
+                                                            |
+                                                            +--> Python uv package
+                                                            |
+                                                            +--> TypeScript Yarn package
+
+Python RPC event loop <---- thread-safe bridge ----> service worker event loop
         |
         v
 Logical Frame connection and fair scheduler
@@ -23,6 +25,20 @@ The contract layer has no networking dependency. The Runtime operates on logical
 frames and doesn't know whether the connection is direct or routed. WebSocket
 drivers own connection setup, role handshakes, TCP/Unix endpoints, and server
 registration.
+
+## RPC and service loop isolation
+
+Every Python `RpcServer` owns a persistent service worker loop running in a
+dedicated thread. WebSocket receive/send, call state, deadlines, cancellation,
+flow-control credit, and terminal-frame arbitration remain on the RPC loop.
+Pydantic request validation, the user handler, response validation, and stream
+iteration run on the service worker loop.
+
+Cross-loop operations use thread-safe future submission. A synchronously
+blocking handler can delay other work assigned to the current service worker,
+but it cannot prevent the RPC loop from enforcing a deadline or maintaining
+other connections. TypeScript currently has a unary runtime but does not yet
+provide equivalent worker-thread isolation.
 
 ## Call ownership
 
@@ -60,4 +76,3 @@ task can't operate through a newly acquired generation.
 - Deadline expiry cancels the service task and returns `deadline_exceeded`.
 - Instance disconnect terminates its routed calls with retryable `unavailable`.
 - Connection loss terminates all local active calls; no recovery is attempted.
-

@@ -1,4 +1,15 @@
 export { MeshCallClient, type CallOptions } from "./client.js";
+export {
+  type ContractUnaryMethod,
+  defineService,
+  defineType,
+  type ExportableServiceDefinition,
+  type JsonSchema,
+  renderContract,
+  type TypeContract,
+  unaryMethod,
+  writeContract,
+} from "./contract.js";
 export { MeshCallError } from "./errors.js";
 export {
   type BalanceKind,

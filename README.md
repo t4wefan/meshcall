@@ -1,23 +1,28 @@
 # MeshCall
 
-MeshCall is an asynchronous, typed RPC framework for Python services. Pydantic
-models define payload contracts, generated clients provide a static API, and a
-shared logical protocol supports direct WebSocket connections and routed service
-instances.
+MeshCall is an asynchronous, typed RPC framework for Python and TypeScript.
+Pydantic models or explicit TypeScript JSON Schemas define payload contracts,
+generated client packages provide a static API, and a shared logical protocol
+supports direct WebSocket connections and routed service instances.
 
 The current implementation includes:
 
 - Python 3.11+ and `asyncio`;
 - Pydantic v2 service contracts and JSON Schema extraction;
-- static Python client generation;
+- portable JSON contracts and Python/TypeScript client generation;
+- complete Python uv packages and TypeScript Yarn packages by default;
+- optional self-contained single-file clients with dependency instructions;
 - unary, server-streaming, client-streaming, and duplex calls;
 - WebSocket Direct and WebSocket Router drivers over TCP or Unix sockets;
 - cancellation, deadlines, half-close, per-direction flow control, and fair
   per-call sending;
 - round-robin, least-inflight, random, sticky, and disabled balancing;
-- immutable `call_id` to service-instance routing and disconnect cleanup.
+- immutable `call_id` to service-instance routing and disconnect cleanup;
+- a dedicated Python service worker loop, isolated from RPC transport and
+  deadline handling.
 
-Typed notifications and the Tags DSL are the next milestone.
+Cross-language streaming, typed notifications, and the Tags DSL remain future
+milestones. The current Python/TypeScript interoperability target is unary RPC.
 
 ## Development
 
@@ -26,9 +31,17 @@ uv sync
 uv run ruff check src tests
 uv run pyright src tests
 uv run pytest -q
+
+yarn --cwd typescript install --frozen-lockfile
+yarn --cwd typescript run check
+yarn --cwd typescript test
+
+MESHCALL_RUN_INTEROP=1 uv run pytest -q tests/test_multilang_interop.py
 ```
 
-The test suite is headless and doesn't require an external service.
+The normal test suite is headless and doesn't require an external service.
+Cross-language tests start short-lived local Python and Node servers and are
+opt-in through `MESHCALL_RUN_INTEROP=1`.
 
 ## Define a service
 
@@ -60,16 +73,129 @@ class CounterService:
 Service methods must be static and asynchronous. Request, response, and stream
 item types are Pydantic models. MeshCall infers the RPC shape from the signature.
 
-## Generate a client
+## Generate a complete client package
+
+Package generation is the default. `--output` names a directory.
 
 ```bash
 uv run meshcall generate \
   examples.service:CounterService \
-  --output examples/generated_client.py
+  --output generated/counter-client
 ```
 
-Generated methods retain concrete request, response, and stream item types. Every
+The Python output is an installable uv package:
+
+```text
+generated/counter-client/
+├── pyproject.toml
+├── README.md
+└── src/meshcall_example_v1_counterservice_client/
+    ├── __init__.py
+    ├── client.py
+    ├── models.py
+    └── py.typed
+```
+
+It supports all four Python RPC shapes and can be checked with `uv build`. Every
 generated method accepts an optional `timeout=` keyword.
+
+For a unary Python service, generate a TypeScript Yarn package with:
+
+```bash
+uv run meshcall generate \
+  your_app.service:GreetingService \
+  --language typescript \
+  --output generated/greeting-client
+```
+
+The output contains `package.json`, `tsconfig.json`, and separate
+`src/models.ts`, `src/client.ts`, and `src/index.ts` modules.
+
+## Generate one self-contained file
+
+Single-file output is opt-in:
+
+```bash
+uv run meshcall generate \
+  examples.service:CounterService \
+  --output generated/counter_client.py \
+  --single-file
+```
+
+The Python file contains its Pydantic model classes at module scope as well as
+the generated client. TypeScript single files similarly contain all generated
+interfaces and the client. Their header comments list the external packages to
+install (`meshcall` plus `pydantic` for Python, or `@meshcall/runtime` for
+TypeScript).
+
+## Portable contracts and cross-language generation
+
+Export a Python contract and generate a package in either language:
+
+```bash
+uv run meshcall export \
+  your_app.service:GreetingService \
+  --output generated/greeting.meshcall.json
+
+uv run meshcall generate-contract \
+  generated/greeting.meshcall.json \
+  --language typescript \
+  --output generated/greeting-ts-client
+```
+
+TypeScript cannot reflect interfaces after compilation, so a TypeScript service
+attaches JSON Schema explicitly and exports the same portable contract:
+
+```typescript
+import {
+  defineService,
+  defineType,
+  unaryMethod,
+  writeContract,
+} from "@meshcall/runtime";
+
+interface AddRequest { left: number; right: number }
+interface AddResult { total: number }
+
+const request = defineType<AddRequest>("AddRequest", {
+  type: "object",
+  properties: {
+    left: { type: "number" },
+    right: { type: "number" },
+  },
+  required: ["left", "right"],
+});
+
+const result = defineType<AddResult>("AddResult", {
+  type: "object",
+  properties: { total: { type: "number" } },
+  required: ["total"],
+});
+
+const service = defineService({
+  name: "example.v1.MathService",
+  sourceModule: "math-service",
+  sourceQualname: "MathService",
+  methods: {
+    add: unaryMethod({
+      request,
+      response: result,
+      handler: ({ left, right }) => ({ total: left + right }),
+    }),
+  },
+});
+
+await writeContract([service], "generated/math.meshcall.json");
+```
+
+Then generate the Python uv package:
+
+```bash
+uv run meshcall generate-contract \
+  generated/math.meshcall.json \
+  --language python \
+  --output generated/math-py-client
+```
 
 ## WebSocket Direct
 
@@ -139,6 +265,13 @@ Router listeners and service/client connections also accept `unix_path=`.
 - Stream credit is item-based; encoded frames have a byte-size limit.
 - Active calls aren't resumed after disconnect and don't migrate between service
   instances.
+- TypeScript cross-language generation/runtime currently supports unary methods
+  only. Python-to-Python package generation supports all four stream shapes.
+- TypeScript JSON Schemas currently drive contract export and client generation;
+  runtime request/response schema validation is not implemented yet.
+- Python handlers run on a dedicated service worker loop so blocking business
+  code cannot block the RPC loop. TypeScript handlers are not worker-thread
+  isolated yet and must avoid synchronously blocking Node's event loop.
 - Router authentication and authorization aren't implemented yet; don't expose
   an untrusted Router endpoint to the public internet.
 - Typed notifications, dynamic subscriptions, middleware, gRPC, and HTTP aren't
@@ -146,4 +279,3 @@ Router listeners and service/client connections also accept `unix_path=`.
 
 See [the protocol specification](docs/protocol.md) and
 [the implementation architecture](docs/architecture.md) for details.
-
