@@ -20,7 +20,7 @@ class RpcInputStream(AsyncIterator[InputT], ABC, Generic[InputT]):
 
 
 class RpcDuplex(RpcInputStream[InputT], ABC, Generic[InputT, OutputT]):
-    """Typed duplex channel supplied to a service method."""
+    """Experimental typed duplex channel supplied to a service method."""
 
     @abstractmethod
     async def send(self, item: OutputT) -> None: ...

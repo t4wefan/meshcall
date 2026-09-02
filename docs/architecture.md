@@ -22,12 +22,14 @@ Logical Frame connection and fair scheduler
 ```
 
 The contract layer has no networking dependency. Unary is the default method
-shape; explicit stream decorators select server, client, or duplex streaming.
-Ordinary service parameters are wrapped into an internal Pydantic request model
-for validation and transport. A single Pydantic request parameter remains the
-object-style alternative. The Runtime operates on logical frames and doesn't
-know whether the connection is direct or routed. WebSocket drivers own
-connection setup, role handshakes, TCP/Unix endpoints, and server registration.
+shape; explicit stream decorators select the recommended server or client
+streaming shapes. Ordinary service parameters are wrapped into an internal
+Pydantic request model for validation and transport. A single Pydantic request
+parameter remains the object-style alternative. The Runtime operates on logical
+frames and doesn't know whether the connection is direct or routed. WebSocket
+drivers own connection setup, role handshakes, TCP/Unix endpoints, and server
+registration. Duplex remains experimental protocol/runtime plumbing and is
+intentionally omitted from the recommended usage surface.
 
 ## RPC and service loop isolation
 

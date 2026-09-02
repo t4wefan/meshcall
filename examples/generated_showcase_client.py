@@ -7,7 +7,7 @@ from collections.abc import AsyncIterable
 from pydantic import BaseModel
 
 from meshcall.client import ClientBase
-from meshcall.streams import RpcDuplexClient, RpcServerStream
+from meshcall.streams import RpcServerStream
 
 
 class ShowcaseServiceGreetRequest(BaseModel):
@@ -49,20 +49,6 @@ class TotalResult(BaseModel):
 
 class NumberItem(BaseModel):
     value: int
-
-
-class ShowcaseServiceEchoRequest(BaseModel):
-    label: str
-
-
-class EchoSummary(BaseModel):
-    count: int
-    total: int
-
-
-class EchoItem(BaseModel):
-    value: int
-    label: str
 
 
 class ShowcaseServiceClient(ClientBase):
@@ -137,24 +123,5 @@ class ShowcaseServiceClient(ClientBase):
             items,
             NumberItem,
             TotalResult,
-            timeout=timeout,
-        )
-
-    def echo(
-        self,
-        label: str,
-        *,
-        timeout: float | None = None,
-    ) -> RpcDuplexClient[NumberItem, EchoItem, EchoSummary]:
-        request = ShowcaseServiceEchoRequest(
-            label=label,
-        )
-        return self._duplex(
-            self.service_name,
-            'echo',
-            request,
-            NumberItem,
-            EchoItem,
-            EchoSummary,
             timeout=timeout,
         )

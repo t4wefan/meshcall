@@ -21,7 +21,7 @@ async def number_items() -> AsyncIterator[NumberItem]:
 
 
 async def run_demo() -> None:
-    """Start a short-lived local server and exercise every Python call shape."""
+    """Start a short-lived local server and exercise the recommended API."""
     server_driver = WebSocketDirectServerDriver(host="127.0.0.1", port=0)
     server = RpcServer(
         services=[ShowcaseService(greeting_prefix="Hi")],
@@ -53,22 +53,9 @@ async def run_demo() -> None:
         total = await client.sum_values(10, number_items())
         print(f"   total={total.total}")
 
-        print("5. duplex stream")
-        channel = client.echo("echo", timeout=5)
-        await channel.send(NumberItem(value=4))
-        await channel.send(NumberItem(value=8))
-        await channel.close_send()
-        echoed = [item async for item in channel]
-        summary = await channel.result()
-        print(
-            "   echoed="
-            f"{[(item.value, item.label) for item in echoed]} "
-            f"summary={summary.model_dump()}"
-        )
-
-        print("6. generated client models and signatures")
+        print("5. generated client models and signatures")
         print("   all request/response payloads were validated by Pydantic")
-        print("   all five methods came from the generated client module")
+        print("   all four methods came from the generated client module")
     finally:
         await client.stop()
         await server.stop()

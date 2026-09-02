@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
-from meshcall import RpcDuplex, RpcInputStream, method, service
+from meshcall import RpcInputStream, method, service
 
 
 class GreetingResult(BaseModel):
@@ -36,19 +36,9 @@ class TotalResult(BaseModel):
     total: int
 
 
-class EchoItem(BaseModel):
-    value: int
-    label: str
-
-
-class EchoSummary(BaseModel):
-    count: int
-    total: int
-
-
 @service(name="demo.v1.ShowcaseService")
 class ShowcaseService:
-    """Stateful service using expanded parameters and typed models."""
+    """Stateful service using the recommended MeshCall Python API."""
 
     def __init__(self, greeting_prefix: str = "Hello") -> None:
         self.greeting_prefix = greeting_prefix
@@ -86,18 +76,3 @@ class ShowcaseService:
         async for item in items:
             total += item.value
         return TotalResult(total=total)
-
-    @method.duplex()
-    async def echo(
-        self,
-        label: str,
-        channel: RpcDuplex[NumberItem, EchoItem],
-    ) -> EchoSummary:
-        """Duplex: consume and produce typed items while the call is open."""
-        count = 0
-        total = 0
-        async for item in channel:
-            count += 1
-            total += item.value
-            await channel.send(EchoItem(value=item.value, label=label))
-        return EchoSummary(count=count, total=total)

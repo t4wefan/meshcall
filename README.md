@@ -12,7 +12,7 @@ The current implementation includes:
 - portable JSON contracts and Python/TypeScript client generation;
 - complete Python uv packages and TypeScript Yarn packages by default;
 - optional self-contained single-file clients with dependency instructions;
-- unary, server-streaming, client-streaming, and duplex calls;
+- unary, server-streaming, and client-streaming calls;
 - WebSocket Direct and WebSocket Router drivers over TCP or Unix sockets;
 - cancellation, deadlines, half-close, per-direction flow control, and fair
   per-call sending;
@@ -66,10 +66,12 @@ class CounterService:
 ```
 
 Unary is the default, so a unary method can use `@method()` directly. Use
-`method.server_stream()`, `method.client_stream()`, or `method.duplex()` for
-the other RPC shapes. Service methods are instance methods by default; append
+`method.server_stream()` or `method.client_stream()` for the recommended
+streaming shapes. Service methods are instance methods by default; append
 `.static` when a method does not need a service instance. The legacy
-`@staticmethod` plus `@method()` form remains supported.
+`@staticmethod` plus `@method()` form remains supported. Duplex is currently an
+experimental capability and is intentionally omitted from the recommended API
+examples.
 
 For a method such as `count(self, stop: int)`, MeshCall creates an internal
 Pydantic request model with a `stop` field. The wire payload is still one JSON
@@ -86,7 +88,7 @@ the RPC shape from the signature unless an explicit stream decorator is used.
 The complete showcase in `examples/showcase.py` starts a short-lived local
 WebSocket server and calls it through a generated client. It demonstrates the
 recommended instance-method API, expanded parameters, a request-model method,
-Pydantic payloads, and all four Python RPC shapes:
+Pydantic payloads, unary RPC, server streaming, and client streaming:
 
 ```bash
 uv run python -m examples.showcase
@@ -137,8 +139,8 @@ generated/counter-client/
     └── py.typed
 ```
 
-It supports all four Python RPC shapes and can be checked with `uv build`. Every
-generated method accepts an optional `timeout=` keyword.
+It supports the recommended unary and streaming RPC shapes and can be checked
+with `uv build`. Every generated method accepts an optional `timeout=` keyword.
 
 For a unary Python service, generate a TypeScript Yarn package with:
 
@@ -299,7 +301,6 @@ Router listeners and service/client connections also accept `unix_path=`.
 
 - A return type of `AsyncIterator[T]` creates a server stream.
 - An `RpcInputStream[T]` parameter creates a client stream.
-- An `RpcDuplex[InputT, OutputT]` parameter creates a duplex stream.
 - `close_send()` half-closes the local sending direction.
 - `cancel()` cancels the complete call.
 - Breaking out of a custom stream iterator does not implicitly cancel it; call
@@ -311,8 +312,12 @@ Router listeners and service/client connections also accept `unix_path=`.
 - Stream credit is item-based; encoded frames have a byte-size limit.
 - Active calls aren't resumed after disconnect and don't migrate between service
   instances.
+- Duplex is an experimental protocol/runtime capability. It is intentionally
+  excluded from the recommended decorators, showcase, and cross-language
+  target; its service and client API may change.
 - TypeScript cross-language generation/runtime currently supports unary methods
-  only. Python-to-Python package generation supports all four stream shapes.
+  only. Python-to-Python package generation contains experimental duplex support
+  in addition to the recommended unary and one-way streaming shapes.
 - The TypeScript client can use a compatible Direct or Router endpoint, but the
   TypeScript server currently exposes a Direct WebSocket listener only; Router
   service-instance registration is still Python-only.

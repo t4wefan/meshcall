@@ -165,6 +165,7 @@ class Method:
         *,
         balance: BalancePolicy | None = None,
     ) -> MethodDeclaration:
+        """Declare the experimental duplex method shape."""
         return MethodDeclaration(
             stream=StreamKind.DUPLEX,
             balance=balance,

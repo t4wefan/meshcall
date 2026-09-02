@@ -26,7 +26,7 @@ Each method has one of four shapes:
 | unary | no | no | yes |
 | server_stream | no | yes | no |
 | client_stream | yes | no | yes |
-| duplex | yes | yes | optional |
+| duplex (experimental) | yes | yes | optional |
 
 ## Stream directions
 
@@ -53,6 +53,9 @@ Exactly one `call.result` or `call.error` terminates a call. `call.cancel` is a
 request to terminate; it is not itself a terminal acknowledgement. The first
 terminal frame accepted by a runtime wins, and later frames are ignored.
 
+The duplex shape is retained as an experimental protocol capability. Its public
+service and client API is not part of the current recommended usage surface.
+
 A connection loss terminates every active call on that connection. Version 1
 does not resume streams or migrate them between service instances.
 
@@ -61,4 +64,3 @@ does not resume streams or migrate them between service instances.
 Protocol errors use stable machine-readable codes. Internal exception details
 and tracebacks are never sent by default. Application errors may use namespaced
 codes, but must still use the common error envelope.
-
