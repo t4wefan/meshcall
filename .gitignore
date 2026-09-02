@@ -6,4 +6,5 @@ __pycache__/
 *.py[cod]
 build/
 dist/
-
+node_modules/
+.yarn/
