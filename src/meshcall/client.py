@@ -209,7 +209,7 @@ class ClientBase:
                     call_id=call_id,
                     service=service,
                     method=method,
-                    payload=request.model_dump(mode="json"),
+                    payload=request.model_dump(mode="json", exclude_unset=True),
                     deadline_unix_ms=(
                         int((time.time() + timeout) * 1000)
                         if timeout is not None

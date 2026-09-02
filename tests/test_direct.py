@@ -32,20 +32,17 @@ handler_cancelled = asyncio.Event()
 
 @service(name="test.v1.NumberService")
 class NumberService:
-    @staticmethod
     @method()
-    async def unary(request: NumberRequest) -> NumberResult:
+    async def unary(self, request: NumberRequest) -> NumberResult:
         return NumberResult(total=request.value)
 
-    @staticmethod
     @method()
-    async def slow(request: NumberRequest) -> NumberResult:
+    async def slow(self, request: NumberRequest) -> NumberResult:
         await asyncio.sleep(request.value / 1000)
         return NumberResult(total=request.value)
 
-    @staticmethod
     @method()
-    async def cancellable(request: NumberRequest) -> NumberResult:
+    async def cancellable(self, request: NumberRequest) -> NumberResult:
         try:
             await asyncio.sleep(request.value)
         except asyncio.CancelledError:
@@ -53,15 +50,14 @@ class NumberService:
             raise
         return NumberResult(total=request.value)
 
-    @staticmethod
-    @method()
-    async def download(request: NumberRequest) -> AsyncIterator[NumberItem]:
+    @method.server_stream()
+    async def download(self, request: NumberRequest) -> AsyncIterator[NumberItem]:
         for value in range(request.value):
             yield NumberItem(value=value)
 
-    @staticmethod
-    @method()
+    @method.client_stream()
     async def upload(
+        self,
         request: NumberRequest,
         items: RpcInputStream[NumberItem],
     ) -> NumberResult:
@@ -70,9 +66,9 @@ class NumberService:
             total += item.value
         return NumberResult(total=total)
 
-    @staticmethod
-    @method()
+    @method.duplex()
     async def duplex(
+        self,
         request: NumberRequest,
         channel: RpcDuplex[NumberItem, NumberItem],
     ) -> NumberResult:
@@ -149,6 +145,106 @@ class NumberServiceClient(ClientBase):
             self.service_name,
             "duplex",
             request,
+            NumberItem,
+            NumberItem,
+            NumberResult,
+        )
+
+
+class ExpandedUnaryRequest(BaseModel):
+    left: int
+    right: int = 1
+
+
+class ExpandedDownloadRequest(BaseModel):
+    start: int
+    stop: int
+
+
+class ExpandedUploadRequest(BaseModel):
+    offset: int
+
+
+class ExpandedDuplexRequest(BaseModel):
+    offset: int
+
+
+@service(name="test.v1.ExpandedService")
+class ExpandedService:
+    @method()
+    async def unary(self, left: int, right: int = 1) -> NumberResult:
+        return NumberResult(total=left + right)
+
+    @method.server_stream()
+    async def download(self, start: int, stop: int) -> AsyncIterator[NumberItem]:
+        for value in range(start, stop):
+            yield NumberItem(value=value)
+
+    @method.client_stream()
+    async def upload(
+        self,
+        offset: int,
+        items: RpcInputStream[NumberItem],
+    ) -> NumberResult:
+        total = offset
+        async for item in items:
+            total += item.value
+        return NumberResult(total=total)
+
+    @method.duplex()
+    async def duplex(
+        self,
+        offset: int,
+        channel: RpcDuplex[NumberItem, NumberItem],
+    ) -> NumberResult:
+        total = offset
+        async for item in channel:
+            total += item.value
+            await channel.send(NumberItem(value=item.value * 2))
+        return NumberResult(total=total)
+
+
+class ExpandedServiceClient(ClientBase):
+    service_name = "test.v1.ExpandedService"
+
+    async def unary(self, left: int, right: int = 1) -> NumberResult:
+        return await self._unary(
+            self.service_name,
+            "unary",
+            ExpandedUnaryRequest(left=left, right=right),
+            NumberResult,
+        )
+
+    def download(self, start: int, stop: int) -> RpcServerStream[NumberItem]:
+        return self._server_stream(
+            self.service_name,
+            "download",
+            ExpandedDownloadRequest(start=start, stop=stop),
+            NumberItem,
+        )
+
+    async def upload(
+        self,
+        offset: int,
+        items: AsyncIterable[NumberItem],
+    ) -> NumberResult:
+        return await self._client_stream(
+            self.service_name,
+            "upload",
+            ExpandedUploadRequest(offset=offset),
+            items,
+            NumberItem,
+            NumberResult,
+        )
+
+    def duplex(
+        self,
+        offset: int,
+    ) -> RpcDuplexClient[NumberItem, NumberItem, NumberResult]:
+        return self._duplex(
+            self.service_name,
+            "duplex",
+            ExpandedDuplexRequest(offset=offset),
             NumberItem,
             NumberItem,
             NumberResult,
@@ -235,3 +331,33 @@ async def test_server_driver_is_exclusive_and_reusable() -> None:
 
     await second.start()
     await second.stop()
+
+
+async def test_expanded_parameters_over_all_call_shapes() -> None:
+    driver = WebSocketDirectServerDriver(host="127.0.0.1", port=0)
+    server = RpcServer(services=[ExpandedService], driver=driver)
+    await server.start()
+    client = ExpandedServiceClient(
+        WebSocketClientDriver(f"ws://127.0.0.1:{driver.bound_port}")
+    )
+    try:
+        assert await client.unary(7) == NumberResult(total=8)
+
+        stream = client.download(3, 7)
+        assert [item.value async for item in stream] == [3, 4, 5, 6]
+
+        async def input_items() -> AsyncIterator[NumberItem]:
+            for value in (2, 3, 5):
+                yield NumberItem(value=value)
+
+        assert await client.upload(10, input_items()) == NumberResult(total=20)
+
+        channel = client.duplex(10)
+        await channel.send(NumberItem(value=2))
+        await channel.send(NumberItem(value=3))
+        await channel.close_send()
+        assert [item.value async for item in channel] == [4, 6]
+        assert await channel.result() == NumberResult(total=15)
+    finally:
+        await client.stop()
+        await server.stop()

@@ -11,10 +11,22 @@ from meshcall.codegen_typescript import (
     render_typescript_models,
     write_typescript_client,
 )
-from meshcall.contract import Balance, get_service_contract, method, service
+from meshcall.contract import (
+    Balance,
+    get_service_contract,
+    get_service_method_binding,
+    method,
+    service,
+)
 from meshcall.contract_io import load_contract, render_contract, write_contract
 from meshcall.errors import ContractError, MeshCallError, ProtocolError
-from meshcall.ir import BalanceKind, BalancePolicy, StreamKind
+from meshcall.ir import (
+    BalanceKind,
+    BalancePolicy,
+    BindingKind,
+    RequestStyle,
+    StreamKind,
+)
 from meshcall.package_codegen import (
     write_python_client_package,
     write_typescript_client_package,
@@ -27,15 +39,18 @@ __all__ = [
     "Balance",
     "BalanceKind",
     "BalancePolicy",
+    "BindingKind",
     "ContractError",
     "MeshCallError",
     "ProtocolError",
+    "RequestStyle",
     "RpcDuplex",
     "RpcInputStream",
     "RpcServer",
     "StreamKind",
     "WebSocketRouter",
     "get_service_contract",
+    "get_service_method_binding",
     "load_contract",
     "method",
     "render_client",

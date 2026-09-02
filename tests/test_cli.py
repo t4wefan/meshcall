@@ -24,9 +24,8 @@ class Result(BaseModel):
 
 @service(name="demo.v1.DemoService")
 class DemoService:
-    @staticmethod
     @method()
-    async def echo(request: Request) -> Result:
+    async def echo(self, request: Request) -> Result:
         return Result(value=request.value)
 """.lstrip(),
         encoding="utf-8",
@@ -73,9 +72,8 @@ class Result(BaseModel):
 
 @service(name="demo.v1.SingleService")
 class SingleService:
-    @staticmethod
     @method()
-    async def echo(request: Request) -> Result:
+    async def echo(self, request: Request) -> Result:
         return Result(value=request.value)
 """.lstrip(),
         encoding="utf-8",

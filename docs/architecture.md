@@ -21,10 +21,13 @@ Logical Frame connection and fair scheduler
         +---- WebSocket Router ---- service instance registry
 ```
 
-The contract layer has no networking dependency. The Runtime operates on logical
-frames and doesn't know whether the connection is direct or routed. WebSocket
-drivers own connection setup, role handshakes, TCP/Unix endpoints, and server
-registration.
+The contract layer has no networking dependency. Unary is the default method
+shape; explicit stream decorators select server, client, or duplex streaming.
+Ordinary service parameters are wrapped into an internal Pydantic request model
+for validation and transport. A single Pydantic request parameter remains the
+object-style alternative. The Runtime operates on logical frames and doesn't
+know whether the connection is direct or routed. WebSocket drivers own
+connection setup, role handshakes, TCP/Unix endpoints, and server registration.
 
 ## RPC and service loop isolation
 

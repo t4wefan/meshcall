@@ -7,19 +7,13 @@ from pydantic import BaseModel
 from meshcall import method, service
 
 
-class CountRequest(BaseModel):
-    stop: int
-
-
 class CountItem(BaseModel):
     value: int
 
 
 @service(name="example.v1.CounterService")
 class CounterService:
-    @staticmethod
-    @method()
-    async def count(request: CountRequest) -> AsyncIterator[CountItem]:
-        for value in range(request.stop):
+    @method.server_stream()
+    async def count(self, stop: int) -> AsyncIterator[CountItem]:
+        for value in range(stop):
             yield CountItem(value=value)
-

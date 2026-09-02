@@ -93,6 +93,8 @@ export function renderContract(
           input_item: null,
           output_item: null,
           balance: normalizeBalance(method.balance ?? serviceBalance),
+          request_style: "model",
+          request_fields: [],
         })),
       };
     }),

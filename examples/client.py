@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from examples.generated_client import CounterServiceClient, CountRequest
+from examples.generated_client import CounterServiceClient
 from meshcall.drivers import WebSocketClientDriver
 
 
@@ -11,7 +11,7 @@ async def main() -> None:
         WebSocketClientDriver("ws://127.0.0.1:8765")
     )
     async with client:
-        stream = client.count(CountRequest(stop=10), timeout=5)
+        stream = client.count(10, timeout=5)
         async for item in stream:
             print(item.value)
 

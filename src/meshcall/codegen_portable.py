@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from meshcall.ir import ServiceContract, StreamKind, TypeRef
+from meshcall.ir import RequestStyle, ServiceContract, StreamKind, TypeRef
 
 
 def render_portable_python_client(
@@ -160,6 +160,12 @@ def _render_client_class(
     ]
     for method in contract.methods:
         request = registry.name(method.request)
+        expanded = method.request_style is RequestStyle.EXPANDED
+        request_parameters = (
+            _expanded_python_parameters(method, registry)
+            if expanded
+            else [f"request: {request}"]
+        )
         lines.append("")
         if method.stream is StreamKind.UNARY:
             response = registry.name(_required_ref(method.response))
@@ -167,10 +173,11 @@ def _render_client_class(
                 [
                     f"    async def {method.name}(",
                     "        self,",
-                    f"        request: {request},",
+                    *[f"        {parameter}," for parameter in request_parameters],
                     "        *,",
                     "        timeout: float | None = None,",
                     f"    ) -> {response}:",
+                    *(_expanded_request_lines(method, request) if expanded else []),
                     "        return await self._unary(",
                     "            self.service_name,",
                     f"            {method.name!r},",
@@ -186,10 +193,11 @@ def _render_client_class(
                 [
                     f"    def {method.name}(",
                     "        self,",
-                    f"        request: {request},",
+                    *[f"        {parameter}," for parameter in request_parameters],
                     "        *,",
                     "        timeout: float | None = None,",
                     f"    ) -> RpcServerStream[{output}]:",
+                    *(_expanded_request_lines(method, request) if expanded else []),
                     "        return self._server_stream(",
                     "            self.service_name,",
                     f"            {method.name!r},",
@@ -206,11 +214,12 @@ def _render_client_class(
                 [
                     f"    async def {method.name}(",
                     "        self,",
-                    f"        request: {request},",
+                    *[f"        {parameter}," for parameter in request_parameters],
                     f"        items: AsyncIterable[{input_item}],",
                     "        *,",
                     "        timeout: float | None = None,",
                     f"    ) -> {response}:",
+                    *(_expanded_request_lines(method, request) if expanded else []),
                     "        return await self._client_stream(",
                     "            self.service_name,",
                     f"            {method.name!r},",
@@ -234,13 +243,14 @@ def _render_client_class(
                 [
                     f"    def {method.name}(",
                     "        self,",
-                    f"        request: {request},",
+                    *[f"        {parameter}," for parameter in request_parameters],
                     "        *,",
                     "        timeout: float | None = None,",
                     (
                         "    ) -> "
                         f"RpcDuplexClient[{input_item}, {output_item}, {result}]:"
                     ),
+                    *(_expanded_request_lines(method, request) if expanded else []),
                     "        return self._duplex(",
                     "            self.service_name,",
                     f"            {method.name!r},",
@@ -253,6 +263,49 @@ def _render_client_class(
                 ]
             )
     return lines
+
+
+def _expanded_python_parameters(
+    method: Any,
+    registry: _TypeRegistry,
+) -> list[str]:
+    schema = method.request.schema_
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    definitions = schema.get("$defs", {})
+    root_name = registry.name(method.request)
+    definition_names = {
+        key: f"{root_name}{_class_name(key, fallback='Value')}"
+        for key in definitions
+    }
+    parameters: list[str] = []
+    for field_name in method.request_fields:
+        property_schema = properties.get(field_name)
+        if not isinstance(property_schema, Mapping):
+            raise TypeError(
+                f"Expanded request field {field_name!r} is missing from "
+                f"{method.request.qualname}"
+            )
+        field_type = _python_type(property_schema, definition_names)
+        if field_name in required:
+            parameters.append(f"{field_name}: {field_type}")
+        elif "default" in property_schema:
+            parameters.append(
+                f"{field_name}: {field_type} = {property_schema['default']!r}"
+            )
+        else:
+            parameters.append(f"{field_name}: {field_type} | None = None")
+    return parameters
+
+
+def _expanded_request_lines(method: Any, request_name: str) -> list[str]:
+    if not method.request_fields:
+        return [f"        request = {request_name}()"]
+    return [
+        f"        request = {request_name}(",
+        *[f"            {field_name}={field_name}," for field_name in method.request_fields],
+        "        )",
+    ]
 
 
 def _stream_imports(contract: ServiceContract) -> list[str]:
@@ -324,13 +377,16 @@ def _render_python_model(
         field_name = _field_name(property_name)
         field_type = _python_type(property_schema, definition_names)
         is_required = property_name in required
-        if not is_required:
+        if not is_required and "default" not in property_schema:
             field_type = f"{field_type} | None"
-        default = "" if is_required else " = None"
+        default = ""
+        if not is_required:
+            default_value = property_schema.get("default", None)
+            default = f" = {default_value!r}"
         if field_name != property_name:
             field_options = f"alias={property_name!r}"
-            default_value = "..." if is_required else "None"
-            default = f" = Field({default_value}, {field_options})"
+            field_default = "..." if is_required else repr(property_schema.get("default"))
+            default = f" = Field({field_default}, {field_options})"
         lines.append(f"    {field_name}: {field_type}{default}")
     return lines
 

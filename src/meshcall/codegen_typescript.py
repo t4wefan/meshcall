@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from meshcall.ir import ServiceContract, StreamKind, TypeRef
+from meshcall.ir import RequestStyle, ServiceContract, StreamKind, TypeRef
 
 
 def render_typescript_client(
@@ -149,24 +149,96 @@ def _render_client_class(
     for method in contract.methods:
         request = registry.name(method.request)
         response = registry.name(_required_ref(method.response))
-        lines.extend(
-            [
-                "",
-                f"  public {method.name}(",
-                f"    request: {request},",
-                "    options?: CallOptions,",
-                f"  ): Promise<{response}> {{",
-                f"    return this.rpc.unary<{request}, {response}>(",
-                f"      {json.dumps(contract.name)},",
-                f"      {json.dumps(method.name)},",
-                "      request,",
-                "      options,",
-                "    );",
-                "  }",
-            ]
-        )
+        if method.request_style is RequestStyle.EXPANDED:
+            parameters = _expanded_typescript_parameters(method, registry)
+            payload = _expanded_typescript_payload(method)
+            lines.extend(
+                [
+                    "",
+                    f"  public {method.name}(",
+                    *[f"    {parameter}," for parameter in parameters],
+                    "    options?: CallOptions,",
+                    f"  ): Promise<{response}> {{",
+                    f"    return this.rpc.unary<{request}, {response}>(",
+                    f"      {json.dumps(contract.name)},",
+                    f"      {json.dumps(method.name)},",
+                    *payload,
+                    "      options,",
+                    "    );",
+                    "  }",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    f"  public {method.name}(",
+                    f"    request: {request},",
+                    "    options?: CallOptions,",
+                    f"  ): Promise<{response}> {{",
+                    f"    return this.rpc.unary<{request}, {response}>(",
+                    f"      {json.dumps(contract.name)},",
+                    f"      {json.dumps(method.name)},",
+                    "      request,",
+                    "      options,",
+                    "    );",
+                    "  }",
+                ]
+            )
     lines.extend(["}", ""])
     return lines
+
+
+def _expanded_typescript_parameters(
+    method: Any,
+    registry: _TypeRegistry,
+) -> list[str]:
+    schema = method.request.schema_
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    definitions = schema.get("$defs", {})
+    root_name = registry.name(method.request)
+    definition_names = {
+        key: f"{root_name}{_identifier(key, fallback='Value')}"
+        for key in definitions
+    }
+    parameters: list[str] = []
+    for field_name in method.request_fields:
+        if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", field_name):
+            raise TypeError(
+                f"Expanded request field {field_name!r} is not a valid "
+                "TypeScript parameter name"
+            )
+        property_schema = properties.get(field_name)
+        if not isinstance(property_schema, Mapping):
+            raise TypeError(
+                f"Expanded request field {field_name!r} is missing from "
+                f"{method.request.qualname}"
+            )
+        field_type = _typescript_type(property_schema, definition_names)
+        if field_name in required:
+            parameters.append(f"{field_name}: {field_type}")
+        elif "default" in property_schema:
+            parameters.append(
+                f"{field_name}: {field_type} = "
+                f"{json.dumps(property_schema['default'])}"
+            )
+        else:
+            parameters.append(f"{field_name}?: {field_type}")
+    return parameters
+
+
+def _expanded_typescript_payload(method: Any) -> list[str]:
+    if not method.request_fields:
+        return ["      {},"]
+    return [
+        "      {",
+        *[
+            f"        {_typescript_property(field_name)}: {field_name},"
+            for field_name in method.request_fields
+        ],
+        "      },",
+    ]
 
 
 def _render_typescript_declarations(

@@ -28,13 +28,23 @@ class GreetingResult(BaseModel):
 
 @service(name="test.v1.GreetingService")
 class GreetingService:
-    @staticmethod
     @method()
-    async def greet(request: GreetingRequest) -> GreetingResult:
+    async def greet(self, request: GreetingRequest) -> GreetingResult:
         return GreetingResult(
             message=f"Hello, {request.name}",
             length=len(request.name),
         )
+
+
+class ExpandedResult(BaseModel):
+    total: int
+
+
+@service(name="test.v1.ExpandedService")
+class ExpandedService:
+    @method()
+    async def add(self, left: int, right: int = 1) -> ExpandedResult:
+        return ExpandedResult(total=left + right)
 
 
 def test_renders_typescript_client_from_python_contract() -> None:
@@ -48,6 +58,31 @@ def test_renders_typescript_client_from_python_contract() -> None:
     assert "export class GreetingServiceClient" in source
     assert "Promise<GreetingResult>" in source
     assert '"test.v1.GreetingService"' in source
+
+
+def test_generators_preserve_expanded_service_signatures(tmp_path) -> None:
+    contract = get_service_contract(ExpandedService)
+    target = tmp_path / "expanded.meshcall.json"
+    target.write_text(render_contract((contract,)), encoding="utf-8")
+    loaded = load_contract(target).services[0]
+    assert loaded.methods[0].request_style == contract.methods[0].request_style
+    assert loaded.methods[0].request_fields == ("left", "right")
+
+    python_source = render_portable_python_client(contract)
+    typescript_source = render_typescript_client(contract)
+
+    compile(python_source, "generated_expanded_client.py", "exec")
+    assert "class ExpandedServiceAddRequest(BaseModel):" in python_source
+    assert "async def add(" in python_source
+    assert "left: int," in python_source
+    assert "right: int = 1," in python_source
+    assert "request = ExpandedServiceAddRequest(" in python_source
+
+    assert "export interface ExpandedServiceAddRequest" in typescript_source
+    assert "public add(" in typescript_source
+    assert "left: number," in typescript_source
+    assert "right: number = 1," in typescript_source
+    assert "left: left" in typescript_source
 
 
 def test_portable_contract_round_trip_and_python_generation(tmp_path) -> None:

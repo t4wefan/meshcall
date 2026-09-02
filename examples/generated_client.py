@@ -8,7 +8,7 @@ from meshcall.client import ClientBase
 from meshcall.streams import RpcServerStream
 
 
-class CountRequest(BaseModel):
+class CounterServiceCountRequest(BaseModel):
     stop: int
 
 
@@ -21,10 +21,13 @@ class CounterServiceClient(ClientBase):
 
     def count(
         self,
-        request: CountRequest,
+        stop: int,
         *,
         timeout: float | None = None,
     ) -> RpcServerStream[CountItem]:
+        request = CounterServiceCountRequest(
+            stop=stop,
+        )
         return self._server_stream(
             self.service_name,
             'count',

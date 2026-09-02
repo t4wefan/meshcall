@@ -13,7 +13,7 @@ const { PythonInteropServiceClient } = await import(
 const rpc = new MeshCallClient(url);
 const client = new PythonInteropServiceClient(rpc);
 try {
-  const result = await client.greet({ name: "TypeScript", repeat: 2 });
+  const result = await client.greet("TypeScript", 2);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally {
   await rpc.close();

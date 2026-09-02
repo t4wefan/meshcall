@@ -53,25 +53,33 @@ from pydantic import BaseModel
 from meshcall import method, service
 
 
-class CountRequest(BaseModel):
-    stop: int
-
-
 class CountItem(BaseModel):
     value: int
 
 
 @service(name="example.v1.CounterService")
 class CounterService:
-    @staticmethod
-    @method()
-    async def count(request: CountRequest) -> AsyncIterator[CountItem]:
-        for value in range(request.stop):
+    @method.server_stream()
+    async def count(self, stop: int) -> AsyncIterator[CountItem]:
+        for value in range(stop):
             yield CountItem(value=value)
 ```
 
-Service methods must be static and asynchronous. Request, response, and stream
-item types are Pydantic models. MeshCall infers the RPC shape from the signature.
+Unary is the default, so a unary method can use `@method()` directly. Use
+`method.server_stream()`, `method.client_stream()`, or `method.duplex()` for
+the other RPC shapes. Service methods are instance methods by default; append
+`.static` when a method does not need a service instance. The legacy
+`@staticmethod` plus `@method()` form remains supported.
+
+For a method such as `count(self, stop: int)`, MeshCall creates an internal
+Pydantic request model with a `stop` field. The wire payload is still one JSON
+object, while generated clients keep the expanded call shape:
+`client.count(10)`. A method that takes one Pydantic model, such as
+`greet(self, request: GreetingRequest)`, remains available and generates the
+object-style call `client.greet(request)`.
+
+Request, response, and stream item types are Pydantic models. MeshCall infers
+the RPC shape from the signature unless an explicit stream decorator is used.
 
 ## Generate a complete client package
 
@@ -207,12 +215,17 @@ server = RpcServer(services=[CounterService], driver=driver)
 await server.start()
 ```
 
+Passing a service class constructs one instance with no arguments when the
+server starts. For constructor arguments or dependency injection, pass an
+already constructed instance instead: `services=[CounterService(...)]`. The
+server reuses that service instance across calls.
+
 TCP client:
 
 ```python
 client = CounterServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
 async with client:
-    async for item in client.count(CountRequest(stop=10), timeout=5):
+    async for item in client.count(10, timeout=5):
         print(item.value)
 ```
 
