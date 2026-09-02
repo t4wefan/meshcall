@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 
 from pydantic import BaseModel, Field
 from test_contract import TestService
 
-from meshcall import method, service
+from meshcall import RpcInputStream, method, service
 from meshcall.codegen_portable import render_portable_python_client
 from meshcall.codegen_typescript import render_typescript_client
 from meshcall.contract import get_service_contract
@@ -47,6 +48,32 @@ class ExpandedService:
         return ExpandedResult(total=left + right)
 
 
+class StreamItem(BaseModel):
+    value: int
+
+
+class StreamResult(BaseModel):
+    total: int
+
+
+@service(name="test.v1.OneWayStreamService")
+class OneWayStreamService:
+    @method.server_stream()
+    async def download(self, start: int) -> AsyncIterator[StreamItem]:
+        yield StreamItem(value=start)
+
+    @method.client_stream()
+    async def upload(
+        self,
+        offset: int,
+        items: RpcInputStream[StreamItem],
+    ) -> StreamResult:
+        total = offset
+        async for item in items:
+            total += item.value
+        return StreamResult(total=total)
+
+
 def test_renders_typescript_client_from_python_contract() -> None:
     source = render_typescript_client(get_service_contract(GreetingService))
 
@@ -83,6 +110,17 @@ def test_generators_preserve_expanded_service_signatures(tmp_path) -> None:
     assert "left: number," in typescript_source
     assert "right: number = 1," in typescript_source
     assert "left: left" in typescript_source
+
+
+def test_typescript_generator_preserves_one_way_streaming_shapes() -> None:
+    source = render_typescript_client(get_service_contract(OneWayStreamService))
+
+    assert "type MeshCallServerStream" in source
+    assert "public download(" in source
+    assert "MeshCallServerStream<StreamItem>" in source
+    assert "this.rpc.serverStream<OneWayStreamServiceDownloadRequest, StreamItem>" in source
+    assert "items: AsyncIterable<StreamItem>," in source
+    assert "this.rpc.clientStream<OneWayStreamServiceUploadRequest, StreamItem, StreamResult>" in source
 
 
 def test_portable_contract_round_trip_and_python_generation(tmp_path) -> None:

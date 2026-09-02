@@ -1,4 +1,9 @@
-export { MeshCallClient, type CallOptions } from "./client.js";
+export {
+  INITIAL_STREAM_CREDIT,
+  MeshCallClient,
+  MeshCallServerStream,
+  type CallOptions,
+} from "./client.js";
 export {
   type ContractUnaryMethod,
   defineService,
