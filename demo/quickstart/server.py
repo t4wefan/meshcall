@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from demo.service import CounterService
+from demo.quickstart.service import CounterService
 from meshcall import RpcServer
 from meshcall.drivers import WebSocketDirectServerDriver
 

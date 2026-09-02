@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from demo.generated_showcase_client import (
+from demo.showcase.generated_client import (
     NumberItem,
     ShowcaseServiceClient,
     WelcomeRequest,
 )
-from demo.showcase_service import ShowcaseService
+from demo.showcase.service import ShowcaseService
 from meshcall import RpcServer
 from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
 
@@ -63,7 +63,3 @@ async def run_demo() -> None:
 
 def main() -> None:
     asyncio.run(run_demo())
-
-
-if __name__ == "__main__":
-    main()

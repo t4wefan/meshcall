@@ -15,7 +15,10 @@ examples live in `demo`, and design/protocol documentation lives in `docs`.
 meshcall/
 ├── meshcall-py/   # Python package, uv project, and Python tests
 ├── meshcall-ts/   # TypeScript package, Yarn project, and TypeScript tests
-├── demo/          # Runnable examples and generated demo clients
+├── demo/          # Self-contained Python/TypeScript demo packages
+│   ├── quickstart/
+│   ├── router/
+│   └── showcase/
 ├── docs/          # Architecture and protocol documentation
 └── README.md      # Monorepo overview
 ```
@@ -102,7 +105,7 @@ the RPC shape from the signature unless an explicit stream decorator is used.
 
 ## Complete runnable showcase
 
-The complete showcase in `demo/showcase.py` starts a short-lived local
+The complete showcase in `demo/showcase/` starts a short-lived local
 WebSocket server and calls it through a generated client. It demonstrates the
 recommended instance-method API, expanded parameters, a request-model method,
 Pydantic payloads, unary RPC, server streaming, and client streaming:
@@ -116,9 +119,9 @@ example can be run immediately. Regenerate it with:
 
 ```bash
 uv run --project meshcall-py meshcall generate \
-  demo.showcase_service:ShowcaseService \
+  demo.showcase.service:ShowcaseService \
   --single-file \
-  --output demo/generated_showcase_client.py
+  --output demo/showcase/generated_client.py
 ```
 
 For the normal production workflow, generate the default complete Python uv
@@ -126,7 +129,7 @@ package instead:
 
 ```bash
 uv run --project meshcall-py meshcall generate \
-  demo.showcase_service:ShowcaseService \
+  demo.showcase.service:ShowcaseService \
   --output generated/showcase-client
 ```
 
@@ -139,7 +142,7 @@ Package generation is the default. `--output` names a directory.
 
 ```bash
 uv run --project meshcall-py meshcall generate \
-  demo.service:CounterService \
+  demo.quickstart.service:CounterService \
   --output generated/counter-client
 ```
 
@@ -177,7 +180,7 @@ Single-file output is opt-in:
 
 ```bash
 uv run --project meshcall-py meshcall generate \
-  demo.service:CounterService \
+  demo.quickstart.service:CounterService \
   --output generated/counter_client.py \
   --single-file
 ```
