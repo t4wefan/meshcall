@@ -81,6 +81,39 @@ object-style call `client.greet(request)`.
 Request, response, and stream item types are Pydantic models. MeshCall infers
 the RPC shape from the signature unless an explicit stream decorator is used.
 
+## Complete runnable showcase
+
+The complete showcase in `examples/showcase.py` starts a short-lived local
+WebSocket server and calls it through a generated client. It demonstrates the
+recommended instance-method API, expanded parameters, a request-model method,
+Pydantic payloads, and all four Python RPC shapes:
+
+```bash
+uv run python -m examples.showcase
+```
+
+The checked-in client is intentionally a generated single-file client so the
+example can be run immediately. Regenerate it with:
+
+```bash
+uv run meshcall generate \
+  examples.showcase_service:ShowcaseService \
+  --single-file \
+  --output examples/generated_showcase_client.py
+```
+
+For the normal production workflow, generate the default complete Python uv
+package instead:
+
+```bash
+uv run meshcall generate \
+  examples.showcase_service:ShowcaseService \
+  --output generated/showcase-client
+```
+
+The same service contract can also generate a complete TypeScript package by
+adding `--language typescript` and using a separate output directory.
+
 ## Generate a complete client package
 
 Package generation is the default. `--output` names a directory.
