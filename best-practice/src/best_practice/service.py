@@ -8,10 +8,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from pydantic import BaseModel
-
-from meshcall import RpcInputStream, RpcLogger, method, service
+from meshcall import Balance, RpcInputStream, RpcLogger, method, service
 from meshcall.errors import ErrorCode, MeshCallError
+from pydantic import BaseModel
 
 _TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 _CHUNK_PATTERN = re.compile(r"\S+\s*", re.UNICODE)
@@ -65,7 +64,7 @@ class _Session:
         )
 
 
-@service(name="best_practice.v1.LlmService")
+@service(name="best_practice.v1.LlmService", balance=Balance.disabled())
 class LlmService:
     """A deterministic LLM facade with process-local session state."""
 

@@ -1,17 +1,32 @@
 # meshcall-best-practice-client
 
-Generated MeshCall TypeScript client package.
+Generated MeshCall client plus a handwritten CLI that connects to the
+authenticated Go Router. Prepare accounts and start Router and the Python
+worker using [the application README](../README.md).
+
+From this directory, after building the runtime and installing dependencies:
 
 ```bash
-yarn install
 yarn build
-MESHCALL_SERVER_URL=ws://127.0.0.1:8765 yarn cli
+yarn cli
 ```
 
-```typescript
-import { LlmServiceClient, LlmServiceNewSessionRequest, NewSessionResponse, LlmServiceListSessionsRequest, ListSessionsResponse, LlmServiceCountTokensRequest, TokenCountResponse, LlmServiceAssemblePromptRequest, PromptAssembly, PromptChunk, LlmServiceStreamChatRequest, ChatChunk } from "meshcall-best-practice-client";
+The CLI uses `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`) and the
+application's `.local/client.json`. It never starts Router or connects directly
+to the Python service. Select another credential file, such as a scoped token
+created by the separate issuer command, with:
+
+```bash
+MESHCALL_CLIENT_CREDENTIALS=../.local/chat-token.json yarn cli
 ```
 
-`src/client.ts` and `src/models.ts` are generated from the Python service.
-`src/cli.ts` is the small handwritten interactive layer. Start the Python
-server from `../` with `uv run server`, then use `yarn cli` to enter prompts.
+For a headless run using the normal client account:
+
+```bash
+node dist/cli.js "Hello MeshCall"
+```
+
+`src/client.ts` and `src/models.ts` are generated; `src/cli.ts` and `src/config.ts`
+are the handwritten application layer. The CLI checks Router authentication
+before calling the service. See the application README for token
+issuance/revocation, all three call shapes, and deployment configuration.

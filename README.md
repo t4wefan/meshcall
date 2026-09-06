@@ -23,7 +23,7 @@ meshcall/
 ├── meshcall-py/   # Python package, uv project, and Python tests
 ├── meshcall-ts/   # TypeScript package, Yarn project, and TypeScript tests
 ├── meshcall-router/ # Standalone Go Router, account auth, and management RPC
-├── best-practice/ # Standalone Python server + TypeScript interactive CLI
+├── best-practice/ # Authenticated Go Router + Python service + TypeScript CLI
 ├── demo/          # Independent demo projects
 │   ├── quickstart/ # uv project: uv run demo
 │   ├── py2ts/      # uv + Yarn: Python service -> TypeScript client
@@ -57,11 +57,10 @@ The current implementation includes:
 - Router account authentication and built-in RPC for issuing/revoking temporary
   tokens restricted by service, method and registration scope.
 
-Start with `demo/router/` for the recommended connection model. The older
-`best-practice/` application exercises Python-to-TypeScript unary,
-client-streaming, and server-streaming calls, but its current Direct deployment
-is a reference pending migration. Typed notifications and the Tags DSL remain
-future milestones.
+Start with `demo/router/` for a compact connection example, or `best-practice/`
+for independent Go Router, Python service and TypeScript CLI processes with
+separate accounts and scoped temporary tokens. Typed notifications and the
+Tags DSL remain future milestones.
 
 ## Start with Router
 
@@ -198,27 +197,34 @@ uv run meshcall generate \
 The same service contract can also generate a complete TypeScript package by
 adding `--language typescript` and using a separate output directory.
 
-## Application reference
+## Best-practice application
 
-`best-practice/` demonstrates application structure: the Python RPC
-server and the TypeScript interactive CLI are separate processes. It currently
-uses Direct and is pending migration to the recommended Router topology. The
-server keeps sessions in memory, returns deterministic fake LLM chunks, and waits
-briefly between chunks so the stream is visible in a terminal.
+`best-practice/` uses an independent Go Router, a registered Python service,
+and a TypeScript interactive CLI. The worker can only register the LLM service;
+the client can only call its five methods. A separate issuer command creates
+temporary tokens scoped to those methods. See [preparation and configuration](best-practice/README.md).
 
-Start them in two terminals:
+After building Go and the TypeScript packages, initialize local credentials:
 
 ```bash
 cd best-practice
-uv run server
+uv run --locked init-router --binary ../meshcall-router/bin/meshcall-router
 ```
 
+Then start one process per terminal:
+
 ```bash
-cd best-practice/ts-client
-yarn install --frozen-lockfile
-yarn build
-MESHCALL_SERVER_URL=ws://127.0.0.1:8765 yarn cli
+# From best-practice/
+../meshcall-router/bin/meshcall-router --port 8765 --auth-file .local/router-auth.json
+uv run --locked server
+
+# From best-practice/ts-client/
+yarn cli
 ```
+
+Both clients use `MESHCALL_ROUTER_URL`, defaulting to `ws://127.0.0.1:8765`.
+The service keeps sessions in memory and deliberately uses one registered
+instance. It returns deterministic fake LLM chunks with short delays.
 
 The CLI supports ordinary prompts plus `/new`, `/sessions`, `/tokens TEXT`,
 `/help`, and `/quit`. `assemble_prompt` demonstrates client streaming and
@@ -231,7 +237,8 @@ of their round trip. Their current runners use Direct and serve as contract and
 language-interoperability references. New applications should register these
 services with Router. `py2ts/` is a minimal unary example; `ts2py/` demonstrates
 unary and both streaming shapes from a TypeScript service to a Python client.
-`best-practice/` is the streaming Python-to-TypeScript application.
+`best-practice/` is the authenticated Router application for Python-to-TypeScript
+streaming.
 
 Python service to TypeScript client:
 

@@ -11,6 +11,8 @@ entry point.
 
 `router/` is the recommended connection example. It starts a Go Router, registers
 a Python service, calls it through a generated client, and shuts down the flow.
+For separate processes, account setup and scoped tokens, use
+[the best-practice application](../best-practice/README.md).
 Prepare the executable once, then run the demo from the monorepo root:
 
 ```bash

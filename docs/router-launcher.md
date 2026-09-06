@@ -145,9 +145,12 @@ as the same user.
 
 ## Migration and verification
 
-The documentation now points new applications at `demo/router/`. Existing
-`quickstart`, `showcase`, `py2ts`, `ts2py`, and `best-practice` runners still use
-Direct and are labeled as references. Migrate their orchestration after the
+The documentation points new applications at `demo/router/` for a compact
+example and [best-practice](../best-practice/README.md) for a separately managed,
+authenticated Router. The latter now includes explicit account initialization
+through the Go CLI and scoped token commands; it does not implement the proposed
+SDK bootstrap protocol. Existing `quickstart`, `showcase`, `py2ts`, and `ts2py`
+runners still use Direct as references. Migrate their orchestration after the
 authenticated managed-start flow is ready. Preserve Direct protocol coverage
 and avoid silently changing existing service constructor behavior.
 

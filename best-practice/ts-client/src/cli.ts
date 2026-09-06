@@ -2,15 +2,15 @@
 
 import { createInterface } from "node:readline/promises";
 
-import { MeshCallClient } from "@meshcall/runtime";
+import { MeshCallClient, RouterAuthClient } from "@meshcall/runtime";
 
+import { readCredentials, routerUrl } from "./config.js";
 import { LlmServiceClient } from "./index.js";
 
-const url = process.env.MESHCALL_SERVER_URL ?? "ws://127.0.0.1:8765";
 const defaultPrompt =
   "Why should a server stream tokens instead of waiting for one big answer?";
-const rpc = new MeshCallClient(url);
-const client = new LlmServiceClient(rpc);
+let rpc: MeshCallClient | undefined;
+let client: LlmServiceClient;
 
 let session: { id: string; title: string; message_count: number };
 
@@ -113,6 +113,11 @@ async function runOnce(prompt: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const url = routerUrl();
+  rpc = new MeshCallClient(url, undefined, { auth: await readCredentials() });
+  // Also reject an accidentally anonymous Router before making business calls.
+  await new RouterAuthClient(rpc).whoami({ timeoutMs: 5000 });
+  client = new LlmServiceClient(rpc);
   await createSession();
   const arguments_ = process.argv.slice(2);
   if (arguments_.length > 0) {
@@ -131,5 +136,5 @@ try {
   console.error(`meshcall cli: ${message}`);
   process.exitCode = 1;
 } finally {
-  await rpc.close();
+  await rpc?.close();
 }

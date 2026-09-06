@@ -113,6 +113,41 @@ jobs:
       - run: yarn run check
       - run: yarn test
 
+  best-practice:
+    needs: router
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: ${{ github.workspace }}/meshcall-router/bin
+      - run: chmod +x "$MESHCALL_ROUTER_BINARY"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: |
+            meshcall-ts/yarn.lock
+            best-practice/ts-client/yarn.lock
+      - run: yarn install --frozen-lockfile && yarn build
+        working-directory: meshcall-ts
+      - run: yarn install --frozen-lockfile && yarn run check && yarn build && yarn test
+        working-directory: best-practice/ts-client
+      - run: uv sync --frozen
+        working-directory: best-practice
+      - run: uv run ruff check src tests && uv run ruff format --check src tests && uv run pyright
+        working-directory: best-practice
+      - run: uv run --locked pytest -q
+        working-directory: best-practice
+        env:
+          MESHCALL_RUN_INTEROP: "1"
+
   interop:
     needs: router
     runs-on: ubuntu-latest
