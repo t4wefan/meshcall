@@ -4,8 +4,33 @@ on:
   push:
   pull_request:
 
+env:
+  MESHCALL_ROUTER_BINARY: ${{ github.workspace }}/meshcall-router/bin/meshcall-router
+
 jobs:
+  router:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: meshcall-router
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: meshcall-router/go.mod
+          cache-dependency-path: meshcall-router/go.sum
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
+        env:
+          CGO_ENABLED: "0"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: meshcall-router/bin/meshcall-router
+
   python:
+    needs: router
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -16,6 +41,11 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: ${{ github.workspace }}/meshcall-router/bin
+      - run: chmod +x "$MESHCALL_ROUTER_BINARY"
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -26,9 +56,15 @@ jobs:
       - run: uv run pytest -q
 
   demos:
+    needs: router
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: ${{ github.workspace }}/meshcall-router/bin
+      - run: chmod +x "$MESHCALL_ROUTER_BINARY"
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
@@ -48,12 +84,18 @@ jobs:
         working-directory: demo/ts2py
 
   typescript:
+    needs: router
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: meshcall-ts
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: ${{ github.workspace }}/meshcall-router/bin
+      - run: chmod +x "$MESHCALL_ROUTER_BINARY"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -64,9 +106,15 @@ jobs:
       - run: yarn test
 
   interop:
+    needs: router
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: ${{ github.workspace }}/meshcall-router/bin
+      - run: chmod +x "$MESHCALL_ROUTER_BINARY"
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"

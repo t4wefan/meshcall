@@ -19,6 +19,7 @@ from meshcall.protocol import (
     ServerRegisterAckFrame,
     ServerRegisterFrame,
 )
+from meshcall.router_auth import RouterCredentials
 from meshcall.transport import FrameConnection
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ class WebSocketClientDriver(ClientDriver):
         unix_path: str | Path | None = None,
         peer_id: str | None = None,
         max_frame_size: int = 1024 * 1024,
+        auth: RouterCredentials | None = None,
     ) -> None:
         if (uri is None) == (unix_path is None):
             raise ValueError("Set exactly one of uri or unix_path")
@@ -42,6 +44,7 @@ class WebSocketClientDriver(ClientDriver):
         self.unix_path = Path(unix_path) if unix_path is not None else None
         self.peer_id = peer_id or uuid.uuid4().hex
         self.max_frame_size = max_frame_size
+        self.auth = auth
         self._connection: FrameConnection | None = None
 
     async def connect(self) -> FrameConnection:
@@ -51,6 +54,7 @@ class WebSocketClientDriver(ClientDriver):
             uri=self.uri,
             unix_path=self.unix_path,
             max_frame_size=self.max_frame_size,
+            auth=self.auth,
         )
         connection = FrameConnection(websocket, max_frame_size=self.max_frame_size)
         await connection.send(HelloFrame(role="client", peer_id=self.peer_id))
@@ -173,6 +177,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         unix_path: str | Path | None = None,
         instance_id: str | None = None,
         max_frame_size: int = 1024 * 1024,
+        auth: RouterCredentials | None = None,
     ) -> None:
         super().__init__()
         if (uri is None) == (unix_path is None):
@@ -181,6 +186,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         self.unix_path = Path(unix_path) if unix_path is not None else None
         self.instance_id = instance_id or uuid.uuid4().hex
         self.max_frame_size = max_frame_size
+        self.auth = auth
         self._connection: FrameConnection | None = None
         self._runtime_task: asyncio.Task[None] | None = None
 
@@ -194,6 +200,7 @@ class WebSocketRouterServerDriver(ServerDriver):
             uri=self.uri,
             unix_path=self.unix_path,
             max_frame_size=self.max_frame_size,
+            auth=self.auth,
         )
         connection = FrameConnection(websocket, max_frame_size=self.max_frame_size)
         try:
@@ -244,13 +251,16 @@ async def _connect_endpoint(
     uri: str | None,
     unix_path: Path | None,
     max_frame_size: int,
+    auth: RouterCredentials | None = None,
 ) -> ClientConnection:
+    headers = {"Authorization": auth.authorization_header()} if auth is not None else None
     if unix_path is not None:
         return await unix_connect(
             str(unix_path),
             uri="ws://localhost/",
             max_size=max_frame_size,
+            additional_headers=headers,
         )
     if uri is None:
         raise DriverStateError("WebSocket URI is not configured")
-    return await connect(uri, max_size=max_frame_size)
+    return await connect(uri, max_size=max_frame_size, additional_headers=headers)

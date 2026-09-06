@@ -8,7 +8,8 @@ supports direct WebSocket connections and routed service instances.
 This repository is a monorepo. The Python runtime package lives in
 `meshcall-py`, the TypeScript runtime package lives in `meshcall-ts`, the
 standalone real-world example lives in `best-practice`, runnable examples live
-in `demo`, and design/protocol documentation lives in `docs`.
+in `demo`, and design/protocol documentation lives in `docs`. The shared Go
+Router lives in `meshcall-router`.
 
 ## Repository layout
 
@@ -16,6 +17,7 @@ in `demo`, and design/protocol documentation lives in `docs`.
 meshcall/
 ├── meshcall-py/   # Python package, uv project, and Python tests
 ├── meshcall-ts/   # TypeScript package, Yarn project, and TypeScript tests
+├── meshcall-router/ # Standalone Go Router, account auth, and management RPC
 ├── best-practice/ # Standalone Python server + TypeScript interactive CLI
 ├── demo/          # Independent demo projects
 │   ├── quickstart/ # uv project: uv run demo
@@ -45,7 +47,9 @@ The current implementation includes:
 - built-in Python server access logs with method, status, duration, and
   Loguru-style service logger injection.
 - TypeScript JSON Schema payload validation, call-bound loggers, and terminal access logs;
-- TypeScript service registration with the shared Python Router over TCP or Unix sockets.
+- Python and TypeScript launchers for one standalone Go Router;
+- Router account authentication and built-in RPC for issuing/revoking temporary
+  tokens restricted by service, method and registration scope.
 
 The `best-practice/` application exercises Python-to-TypeScript unary,
 client-streaming, and server-streaming calls. Typed notifications and the Tags
@@ -54,6 +58,9 @@ DSL remain future milestones.
 ## Development
 
 ```bash
+go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
+go -C meshcall-router test -race ./...
+
 uv sync --directory meshcall-py --project .
 uv run --directory meshcall-py --project . ruff check src tests ../demo
 uv run --directory meshcall-py --project . pyright src tests ../demo
@@ -75,7 +82,7 @@ MESHCALL_RUN_INTEROP=1 uv run --directory meshcall-py --project . \
 
 Run these commands from the monorepo root. The normal test suite is headless
 and doesn't require an external service. Cross-language tests start short-lived
-local Python and Node servers and are opt-in through
+local Go, Python and Node processes and are opt-in through
 `MESHCALL_RUN_INTEROP=1`.
 
 ## Define a service
@@ -400,6 +407,12 @@ WebSocketClientDriver(unix_path="/tmp/meshcall.sock")
 
 ## WebSocket Router
 
+Build the Go executable once as shown above (Go 1.26+). Python and TypeScript
+launchers use this same program; deploying a prebuilt binary requires no Go
+compiler. Set `MESHCALL_ROUTER_BINARY` when the executable is outside the source
+checkout. Account auth, per-service scopes and the built-in AuthService are
+explained in [Router architecture](docs/router.md).
+
 Run a Router listener:
 
 ```python
@@ -450,7 +463,7 @@ iterator cleanup, so leaving a `for await` loop cancels the call automatically.
   generation contains experimental duplex support in addition to the
   recommended unary and one-way streaming shapes.
 - Both runtimes support Direct listeners and service-instance registration with
-  the same Python Router, over TCP or Unix sockets. See
+  the same Go Router, over TCP or Unix sockets. See
   [Router architecture](docs/router.md) and the
   [TypeScript service API](meshcall-ts/README.md).
 - TypeScript type contracts validate requests, responses, and both stream
@@ -459,8 +472,11 @@ iterator cleanup, so leaving a `for await` loop cancels the call automatically.
 - Python handlers run on a dedicated service worker loop so blocking business
   code cannot block the RPC loop. TypeScript handlers are not worker-thread
   isolated yet and must avoid synchronously blocking Node's event loop.
-- Router authentication and authorization aren't implemented yet; don't expose
-  an untrusted Router endpoint to the public internet.
+- Go Router accounts support username/password auth, service/method ACLs and
+  scoped temporary tokens through built-in RPC. Auth files load at startup;
+  tokens are in memory and expire on restart. Network deployments use a TLS
+  reverse proxy; HA, account hot reload, and browser credential transport are
+  not implemented.
 - Typed notifications, dynamic subscriptions, middleware, gRPC, and HTTP aren't
   part of the current implementation.
 

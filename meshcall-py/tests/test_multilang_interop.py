@@ -13,8 +13,17 @@ from pathlib import Path
 
 import pytest
 from interop_service import PythonInteropService
+from router_fixtures import PASSWORD, write_auth_file
+from test_direct import NumberRequest, NumberResult, NumberService, NumberServiceClient
 
-from meshcall import RpcServer, WebSocketRouter, get_service_contract
+from meshcall import (
+    RouterAuthClient,
+    RouterCredentials,
+    RouterScope,
+    RpcServer,
+    WebSocketRouter,
+    get_service_contract,
+)
 from meshcall.contract_io import load_contract
 from meshcall.drivers import (
     WebSocketClientDriver,
@@ -285,8 +294,8 @@ async def test_typescript_instances_balance_pin_streams_and_clean_disconnects(
                     with pytest.raises(MeshCallError) as error:
                         _ = [item async for item in pending]
                     assert error.value.code == ErrorCode.UNAVAILABLE
-                    assert not router._routes
-                    assert all(instance.inflight == 0 for instance in router._instances.values())
+                    # Route cleanup is verified in Go; the SDK only owns a process.
+                    assert router.is_running
     finally:
         await router.stop()
 
@@ -338,3 +347,77 @@ async def _process_failure(process: asyncio.subprocess.Process) -> str:
     if process.stderr is not None:
         stderr = await process.stderr.read()
     return f"TypeScript server failed with {process.returncode}: {stderr.decode()}"
+
+
+async def _auth_peer(options: dict[str, object]) -> dict[str, object]:
+    process = await asyncio.create_subprocess_exec(
+        "node", str(INTEROP_ROOT / "router_auth_peer.mjs"), str(RUNTIME_INDEX),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate((json.dumps(options) + "\n").encode()), 10,
+        )
+        assert process.returncode == 0, stderr.decode()
+        return json.loads(stdout)
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
+@pytest.mark.parametrize("launcher", ["python", "typescript"])
+async def test_go_router_launchers_and_service_scoped_tokens_interoperate(
+    tmp_path: Path, launcher: str,
+) -> None:
+    name = get_service_contract(NumberService).name
+    auth_file = write_auth_file(tmp_path / "auth.json", name)
+    router = WebSocketRouter(auth_file=auth_file)
+    node: asyncio.subprocess.Process | None = None
+    try:
+        if launcher == "python":
+            await router.start()
+            port = router.bound_port
+        else:
+            node = await asyncio.create_subprocess_exec(
+                "node", str(INTEROP_ROOT / "router_auth_peer.mjs"), str(RUNTIME_INDEX),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            assert node.stdin is not None and node.stdout is not None
+            node.stdin.write((json.dumps({"action": "router", "authFile": str(auth_file)}) + "\n").encode())
+            await node.stdin.drain()
+            ready = json.loads(await asyncio.wait_for(node.stdout.readline(), 10))
+            assert ready["pid"] != node.pid
+            port = ready["port"]
+        uri = f"ws://127.0.0.1:{port}"
+        credentials = RouterCredentials(username="issuer", password=PASSWORD)
+        server = RpcServer(services=[NumberService], access_log=False,
+                           driver=WebSocketRouterServerDriver(uri, auth=credentials))
+        await server.start()
+        try:
+            async with RouterAuthClient(WebSocketClientDriver(uri, auth=credentials)) as management:
+                token = await management.issue_token(scopes=[RouterScope(service=name, methods=["*"])])
+                result = await _auth_peer({"action": "call", "endpoint": uri,
+                                           "auth": {"token": token.token}, "service": name})
+                assert result == {"unary": {"total": 7}, "count": 64, "upload": {"total": 2023}}
+                node_token = await _auth_peer({"action": "issue", "endpoint": uri,
+                                              "auth": {"username": "issuer", "password": PASSWORD}, "service": name})
+                async with NumberServiceClient(WebSocketClientDriver(
+                    uri, auth=RouterCredentials(token=str(node_token["token"])),
+                )) as client:
+                    assert await client.unary(NumberRequest(value=12)) == NumberResult(total=12)
+                assert await management.revoke_token(str(node_token["token_id"]))
+        finally:
+            await server.stop()
+    finally:
+        await router.stop()
+        if node is not None:
+            if node.stdin is not None:
+                node.stdin.close()
+            try:
+                await asyncio.wait_for(node.wait(), 5)
+            except TimeoutError:
+                node.kill()
+                await node.wait()

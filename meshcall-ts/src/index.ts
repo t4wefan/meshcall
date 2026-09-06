@@ -43,3 +43,9 @@ export {
   type UnaryContext,
   type UnaryMethod,
 } from "./server.js";
+
+export { WebSocketRouter, type WebSocketRouterOptions } from "./router.js";
+export {
+  RouterAuthClient, ROUTER_AUTH_SERVICE, type RouterCredentials, type RouterScope,
+  type RouterIdentity, type IssuedToken,
+} from "./router-auth.js";

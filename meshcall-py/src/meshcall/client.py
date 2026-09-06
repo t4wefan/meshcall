@@ -363,13 +363,20 @@ class _ClientCall:
             raise value
         if not self.terminal:
             self.output_allowance += 1
-            await self.connection.send(
-                StreamWindowFrame(
-                    call_id=self.call_id,
-                    direction="server",
-                    credit=1,
+            try:
+                await self.connection.send(
+                    StreamWindowFrame(
+                        call_id=self.call_id,
+                        direction="server",
+                        credit=1,
+                    )
                 )
-            )
+            except ConnectionError as exc:
+                error = MeshCallError(
+                    ErrorCode.UNAVAILABLE, "Connection was lost", retryable=True
+                )
+                await self.fail(error)
+                raise error from exc
         return value
 
     async def result(self) -> Any:

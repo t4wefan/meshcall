@@ -87,21 +87,22 @@ type route struct {
 }
 
 type Router struct {
-	config    Config
-	listener  net.Listener
-	http      *http.Server
-	ctx       context.Context
-	cancel    context.CancelFunc
-	mu        sync.Mutex
-	closed    bool
-	peers     map[*peer]struct{}
-	instances map[string]*peer
-	services  map[string]*pool
-	routes    map[string]*route
-	wg        sync.WaitGroup
-	closeOnce sync.Once
-	done      chan struct{}
-	ready     Ready
+	config     Config
+	listener   net.Listener
+	socketInfo os.FileInfo
+	http       *http.Server
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	closed     bool
+	peers      map[*peer]struct{}
+	instances  map[string]*peer
+	services   map[string]*pool
+	routes     map[string]*route
+	wg         sync.WaitGroup
+	closeOnce  sync.Once
+	done       chan struct{}
+	ready      Ready
 }
 
 func Start(config Config) (*Router, error) {
@@ -143,10 +144,18 @@ func Start(config Config) (*Router, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
-	// The net.UnixListener owns cleanup, including on startup failure.
+	var socketInfo os.FileInfo
+	if unix, ok := listener.(*net.UnixListener); ok {
+		unix.SetUnlinkOnClose(false)
+		socketInfo, err = os.Lstat(config.UnixPath)
+		if err != nil {
+			_ = listener.Close()
+			return nil, err
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Router{
-		config: config, listener: listener, ctx: ctx, cancel: cancel,
+		config: config, listener: listener, socketInfo: socketInfo, ctx: ctx, cancel: cancel,
 		peers: make(map[*peer]struct{}), instances: make(map[string]*peer),
 		services: make(map[string]*pool), routes: make(map[string]*route), done: make(chan struct{}),
 	}
@@ -159,7 +168,7 @@ func Start(config Config) (*Router, error) {
 		MaxHeaderBytes: 16 * 1024,
 	}
 	go func() {
-		if err := r.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := r.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
 			slog.Error("router listener stopped", "error", err)
 			go r.Close()
 		}
@@ -177,7 +186,13 @@ func (r *Router) Close() {
 		r.cancel()
 		r.mu.Unlock()
 		_ = r.http.Close()
+		_ = r.listener.Close() // Also covers Close racing with the Serve goroutine.
 		r.wg.Wait()
+		if r.socketInfo != nil {
+			if current, err := os.Lstat(r.config.UnixPath); err == nil && os.SameFile(r.socketInfo, current) {
+				_ = os.Remove(r.config.UnixPath)
+			}
+		}
 		close(r.done)
 	})
 }
@@ -194,10 +209,16 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	conn.SetReadLimit(int64(r.config.MaxFrameSize))
-	ctx, cancel := context.WithCancel(r.ctx)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if user != nil && !user.expires.IsZero() {
+		ctx, cancel = context.WithDeadline(r.ctx, user.expires)
+	} else {
+		ctx, cancel = context.WithCancel(r.ctx)
+	}
 	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(max(8*1024*1024, 2*r.config.MaxFrameSize))}
 	r.mu.Lock()
-	if r.closed {
+	if r.closed || !r.config.Auth.valid(user) {
 		r.mu.Unlock()
 		cancel()
 		_ = conn.CloseNow()
@@ -286,7 +307,7 @@ func allowedFrame(role string, f frame) bool {
 func (r *Router) register(p *peer, f frame) error {
 	seen := make(map[string]bool)
 	for _, s := range f.Services {
-		if s.Name == "" || seen[s.Name] || !p.user.allowsRegistration(s.Name) {
+		if s.Name == "" || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) {
 			return errors.New("duplicate, invalid, or unauthorized service")
 		}
 		seen[s.Name] = true
@@ -330,13 +351,25 @@ func (r *Router) register(p *peer, f frame) error {
 func (r *Router) forward(p *peer, f frame) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if p.ctx.Err() != nil || !r.config.Auth.valid(p.user) {
+		p.cancel()
+		return
+	}
 	if f.Kind == "call.open" {
-		if !p.user.allowsCall(f.Service, f.Method) {
+		if !(f.Service == AuthService && f.Method == "whoami") && !p.user.allowsCall(f.Service, f.Method) {
 			p.send(callError(f.CallID, "permission_denied", "Call is not permitted", false))
 			return
 		}
 		if r.routes[f.CallID] != nil {
 			p.send(callError(f.CallID, "protocol_error", "Duplicate call_id", false))
+			return
+		}
+		if f.Deadline != nil && time.Now().UnixMilli() >= *f.Deadline {
+			p.send(callError(f.CallID, "deadline_exceeded", "Call deadline exceeded", false))
+			return
+		}
+		if strings.HasPrefix(f.Service, reservedPrefix) {
+			r.management(p, f)
 			return
 		}
 		if len(r.routes) >= 65536 {

@@ -9,3 +9,4 @@ dist/
 node_modules/
 .yarn/
 generated/
+meshcall-router/bin/

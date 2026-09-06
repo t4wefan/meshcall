@@ -65,8 +65,9 @@ logger and abort signal. Declared schemas validate requests, responses, and
 stream items; raw legacy handlers without schemas remain unchecked.
 
 TypeScript supports TCP and Unix sockets for clients, Direct servers, and
-Router service connections. Both languages use the same Python Router; its
-registry, routing state, and failure boundaries are described in
+Router service connections. Both languages use the same Go Router; its
+process is launched by thin Python/TypeScript wrappers. Its registry, account
+authentication, scoped token RPC and failure boundaries are described in
 [Router architecture](router.md).
 
 ## Call ownership

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +15,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 )
 
 const passwordIterations = 600000
@@ -28,13 +29,17 @@ type User struct {
 	Call         []string `json:"call,omitempty"`
 	salt         []byte
 	key          []byte
+	expires      time.Time
+	tokenID      string
 }
 
-// Auth is immutable after startup. An absent file explicitly means development mode.
+// Accounts are immutable after startup; temporary tokens are synchronized separately.
 type Auth struct {
-	users map[string]*User
-	slots chan struct{}
-	dummy *User
+	users  map[string]*User
+	slots  chan struct{}
+	dummy  *User
+	mu     sync.Mutex
+	tokens map[string]*User
 }
 
 func HashPassword(password string) (string, error) {
@@ -71,7 +76,7 @@ func LoadAuth(path string) (*Auth, error) {
 	if d.Decode(new(any)) != io.EOF || len(config.Users) == 0 {
 		return nil, errors.New("auth file must contain at least one user")
 	}
-	auth := &Auth{users: make(map[string]*User), slots: make(chan struct{}, 8)}
+	auth := &Auth{users: make(map[string]*User), slots: make(chan struct{}, 8), tokens: make(map[string]*User)}
 	for i := range config.Users {
 		u := &config.Users[i]
 		if u.Username == "" || strings.ContainsAny(u.Username, ":\r\n") || len(u.Roles) == 0 {
@@ -85,9 +90,19 @@ func LoadAuth(path string) (*Auth, error) {
 				return nil, errors.New("auth role must be client or server")
 			}
 		}
-		for _, rule := range append(slices.Clone(u.Register), u.Call...) {
-			if rule == "" || (strings.Contains(rule, "*") && rule != "*" && (!strings.HasSuffix(rule, "/*") || strings.Count(rule, "*") != 1)) {
-				return nil, errors.New("ACL rules must be exact names, service/*, or *")
+		for _, rule := range u.Register {
+			if rule != "*" && (rule == "" || strings.ContainsAny(rule, "*/")) {
+				return nil, errors.New("register ACL requires exact service names or *")
+			}
+		}
+		for _, rule := range u.Call {
+			if rule == "*" {
+				continue
+			}
+			service, method, ok := strings.Cut(rule, "/")
+			if !ok || service == "" || strings.Contains(service, "*") || method == "" ||
+				strings.Contains(method, "/") || (strings.Contains(method, "*") && method != "*") {
+				return nil, errors.New("call ACL requires service/method, service/*, or *")
 			}
 		}
 		parts := strings.Split(u.PasswordHash, "$")
@@ -111,6 +126,19 @@ func LoadAuth(path string) (*Auth, error) {
 func (a *Auth) authenticate(w http.ResponseWriter, r *http.Request) (*User, bool) {
 	if a == nil {
 		return nil, true
+	}
+	if scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
+		digest := sha256.Sum256([]byte(token))
+		id := hex.EncodeToString(digest[:])
+		a.mu.Lock()
+		user := a.tokens[id]
+		valid := user != nil && time.Now().Before(user.expires)
+		a.mu.Unlock()
+		if valid {
+			return user, true
+		}
+		http.Error(w, "authentication failed", http.StatusUnauthorized)
+		return nil, false
 	}
 	// Bound expensive password checks. Do not retain credentials or log headers.
 	select {
@@ -139,6 +167,15 @@ func (a *Auth) authenticate(w http.ResponseWriter, r *http.Request) (*User, bool
 	return u, true
 }
 
+func (a *Auth) valid(user *User) bool {
+	if user == nil || user.tokenID == "" {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.tokens[user.tokenID] == user && time.Now().Before(user.expires)
+}
+
 func (u *User) allowsRole(role string) bool {
 	return u == nil || slices.Contains(u.Roles, role)
 }
@@ -149,9 +186,4 @@ func (u *User) allowsRegistration(name string) bool {
 
 func (u *User) allowsCall(service, method string) bool {
 	return u == nil || slices.Contains(u.Call, "*") || slices.Contains(u.Call, service+"/*") || slices.Contains(u.Call, service+"/"+method)
-}
-
-// Referenced by tests to exercise UTF-8 credentials exactly as both SDKs encode them.
-func basicHeader(username, password string) string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
 }

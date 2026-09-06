@@ -1,4 +1,4 @@
-"""Run a complete Router demo in one short-lived process."""
+"""Run a complete Router demo in short-lived Python and Go processes."""
 
 from __future__ import annotations
 

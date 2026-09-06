@@ -33,6 +33,13 @@ from meshcall.package_codegen import (
     write_typescript_client_package,
 )
 from meshcall.router import WebSocketRouter
+from meshcall.router_auth import (
+    IssuedToken,
+    RouterAuthClient,
+    RouterCredentials,
+    RouterIdentity,
+    RouterScope,
+)
 from meshcall.server import RpcServer
 from meshcall.streams import RpcDuplex, RpcInputStream
 
@@ -42,9 +49,14 @@ __all__ = [
     "BalancePolicy",
     "BindingKind",
     "ContractError",
+    "IssuedToken",
     "MeshCallError",
     "ProtocolError",
     "RequestStyle",
+    "RouterAuthClient",
+    "RouterCredentials",
+    "RouterIdentity",
+    "RouterScope",
     "RpcDuplex",
     "RpcInputStream",
     "RpcLogger",

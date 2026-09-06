@@ -16,7 +16,7 @@ exceeding the initial credit window. The Python subprocess orchestration uses as
 subprocess APIs and does not block the event loop.
 
 TypeScript method contracts validate payloads at runtime. The same service can
-register with the shared Python Router by configuring
+register with the shared Go Router by configuring
 `router: { endpoint: "ws://127.0.0.1:8765", instanceId: "greeting-ts-1" }` on
 `MeshCallServer`; see [Router architecture](../../docs/router.md).
 

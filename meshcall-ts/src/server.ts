@@ -13,12 +13,15 @@ import type { ServiceDefinition } from "./service.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import { compileMethod } from "./validation.js";
 
+import type { RouterCredentials } from "./router-auth.js";
+
 export type {
   ClientStreamMethod, RpcContext, ServerStreamMethod, ServiceDefinition,
   ServiceMethod, UnaryContext, UnaryMethod,
 } from "./service.js";
 
 export interface RouterConnectionOptions {
+  readonly auth?: RouterCredentials;
   readonly endpoint: WebSocketEndpoint;
   readonly instanceId?: string;
 }
@@ -223,7 +226,7 @@ export class MeshCallServer {
   }
 
   private async startRouter(router: RouterConnectionOptions): Promise<void> {
-    const socket = createSocket(router.endpoint, this.maxFrameSize, this.handshakeTimeout);
+    const socket = createSocket(router.endpoint, this.maxFrameSize, this.handshakeTimeout, router.auth);
     this.routerSocket = socket;
     const session = this.session(socket);
     await new Promise<void>((resolve, reject) => {

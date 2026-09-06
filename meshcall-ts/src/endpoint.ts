@@ -2,6 +2,8 @@ import { connect } from "node:net";
 import { resolve } from "node:path";
 import WebSocket from "ws";
 
+import { authorizationHeader, type RouterCredentials } from "./router-auth.js";
+
 export type WebSocketEndpoint = string | { readonly unixPath: string };
 
 export function unixSocketPath(path: string): string {
@@ -16,13 +18,15 @@ export function createSocket(
   endpoint: WebSocketEndpoint,
   maxPayload: number,
   handshakeTimeout: number,
+  auth?: RouterCredentials,
 ): WebSocket {
+  const headers = auth === undefined ? {} : { Authorization: authorizationHeader(auth) };
   if (typeof endpoint === "string") {
-    return new WebSocket(endpoint, { maxPayload, handshakeTimeout });
+    return new WebSocket(endpoint, { maxPayload, handshakeTimeout, headers });
   }
   const path = unixSocketPath(endpoint.unixPath);
   return new WebSocket("ws://localhost/", {
-    maxPayload, handshakeTimeout, createConnection: () => connect(path),
+    maxPayload, handshakeTimeout, headers, createConnection: () => connect(path),
   });
 }
 

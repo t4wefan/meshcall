@@ -19,6 +19,8 @@ import {
   PROTOCOL_VERSION,
 } from "./protocol.js";
 
+import type { RouterCredentials } from "./router-auth.js";
+
 export { INITIAL_STREAM_CREDIT } from "./flow.js";
 
 export interface CallOptions {
@@ -27,6 +29,7 @@ export interface CallOptions {
 }
 
 export interface MeshCallClientOptions {
+  readonly auth?: RouterCredentials;
   readonly maxFrameSize?: number;
   readonly handshakeTimeoutMs?: number;
 }
@@ -349,7 +352,7 @@ export class MeshCallClient {
   private async open(): Promise<void> {
     const maxSize = this.options.maxFrameSize ?? DEFAULT_MAX_FRAME_SIZE;
     const timeout = this.options.handshakeTimeoutMs ?? 10_000;
-    const socket = createSocket(this.url, maxSize, timeout);
+    const socket = createSocket(this.url, maxSize, timeout, this.options.auth);
     const writer = new FrameWriter(socket, maxSize);
     this.connectingSocket = socket;
     try {

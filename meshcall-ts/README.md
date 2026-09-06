@@ -4,13 +4,14 @@ The TypeScript runtime package for the MeshCall monorepo. Its package name is
 `@meshcall/runtime`.
 
 ```bash
+go -C ../meshcall-router build -o bin/meshcall-router ./cmd/meshcall-router
 yarn install --frozen-lockfile
 yarn run check
 yarn test
 ```
 
 Both the client and service runtimes support unary, server-streaming, and
-client-streaming calls over Direct WebSocket or the shared Python Router.
+client-streaming calls over Direct WebSocket or the shared Go Router.
 TCP and Unix sockets use the same runtime. Duplex remains experimental and is
 not exposed by the TypeScript service API.
 
@@ -85,3 +86,20 @@ Stream cancellation and failed calls clean up timers and credit waiters.
 Exiting a TypeScript `for await` loop also cancels its server stream.
 
 See [Router architecture](../docs/router.md) for balancing and deployment boundaries.
+
+## Start the Go Router and authenticate
+
+`new WebSocketRouter({ port: 8765, authFile: "/path/router-auth.json" })`
+starts the standalone Go executable when `start()` is awaited; `stop()` or
+`close()` reaps it. Set `binaryPath` or `MESHCALL_ROUTER_BINARY` for a prebuilt
+binary. Neither a Go compiler nor a Python runtime is needed to run it.
+
+Client credentials use the third constructor option:
+`new MeshCallClient(uri, undefined, { auth: { username, password } })`, or
+`{ auth: { token } }`. Service credentials go in `router.auth`.
+
+`RouterAuthClient` wraps a `MeshCallClient` and provides `whoami()`,
+`issueToken({ ttl_seconds, scopes })`, and `revokeToken(tokenId)`.
+Each scope has `service`, optional `methods` (`["*"]` for every method on that
+service), and optional `register`. The Router prevents delegation beyond the
+issuing account. See [configuration and token examples](../docs/router.md).
