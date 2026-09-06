@@ -11,6 +11,7 @@ import pytest
 from meshcall import RouterAuthClient, RouterScope, RpcServer, WebSocketRouter
 from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
 from meshcall.errors import MeshCallError
+from websockets.exceptions import InvalidStatus
 
 from best_practice.config import SERVICE_NAME, read_credentials
 from best_practice.init_router import initialize
@@ -123,7 +124,7 @@ async def test_cli_accounts_scoped_tokens_revocation_and_single_instance(
                 ),
             )
             try:
-                with pytest.raises(Exception, match="1008"):
+                with pytest.raises(ConnectionError):
                     await denied.start()
             finally:
                 await denied.stop()
@@ -140,9 +141,10 @@ async def test_cli_accounts_scoped_tokens_revocation_and_single_instance(
                         ]
                     )
                 assert error.value.code == "permission_denied"
-            with pytest.raises(Exception, match="401"):
+            with pytest.raises(InvalidStatus) as rejected:
                 async with RouterAuthClient(WebSocketClientDriver(uri)) as anonymous:
                     await anonymous.whoami()
+            assert rejected.value.response.status_code == 401
             # Exercise the actual token command and the actual TS CLI.
             token_file = directory / "token.json"
             prefix = [
