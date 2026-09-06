@@ -220,3 +220,26 @@ test("malformed logical frames are rejected before dispatch", () => {
     { kind: "call.open", call_id: "x", service: "s", method: "m" },
   ]) assert.throws(() => decodeFrame(JSON.stringify(frame)));
 });
+
+test("cancelling before a queued call opens does not execute its handler", { timeout: 5000 }, async (t) => {
+  let invoked = 0;
+  const counted = defineService({
+    ...service,
+    methods: {
+      ...service.methods,
+      echo: unaryMethod({
+        request: valueType, response: valueType,
+        handler: (request) => { invoked += 1; return request; },
+      }),
+    },
+  });
+  const app = await running({ services: [counted] });
+  t.after(app.close);
+  await app.client.connect();
+  const controller = new AbortController();
+  const result = app.client.unary(service.name, "echo", { value: 1 }, { signal: controller.signal });
+  queueMicrotask(() => controller.abort());
+  await assert.rejects(result, isError("cancelled"));
+  await app.client.unary(service.name, "echo", { value: 2 });
+  assert.equal(invoked, 1);
+});
