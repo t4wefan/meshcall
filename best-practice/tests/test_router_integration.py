@@ -109,8 +109,10 @@ async def test_cli_accounts_scoped_tokens_revocation_and_single_instance(
             assert "prompt chunks: 2" in stdout  # client stream
             assert "I received: Hello Router" in stdout  # server stream
             assert "(2 messages)" in stdout  # unary + process-local session state
-            code, _, stderr = await cli(uri, directory / "worker.json")
-            assert code != 0 and "1008" in stderr
+            code, stdout, stderr = await cli(uri, directory / "worker.json")
+            # Node maps a policy-close during hello to its transport error.
+            assert code != 0 and "[unavailable]" in stderr
+            assert "session " not in stdout
             # Client account cannot register or become a token issuer.
             denied = RpcServer(
                 services=[LlmService()],
