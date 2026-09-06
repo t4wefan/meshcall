@@ -496,14 +496,14 @@ class _ServerCall:
         if self.method.response_type is None:
             return None
         validated = self.method.response_type.model_validate(result)
-        return validated.model_dump(mode="json")
+        return validated.model_dump(mode="json", by_alias=True)
 
     async def _send_worker_output(self, item: BaseModel) -> None:
         output_type = self.method.output_type
         if output_type is None:
             raise ProtocolError("Call does not declare an output stream")
         validated = output_type.model_validate(item)
-        payload = validated.model_dump(mode="json")
+        payload = validated.model_dump(mode="json", by_alias=True)
         await self._run_on_rpc(self.send_output_payload(payload))
 
     async def _run_on_rpc(self, coroutine: Any) -> Any:

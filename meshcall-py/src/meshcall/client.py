@@ -209,7 +209,9 @@ class ClientBase:
                     call_id=call_id,
                     service=service,
                     method=method,
-                    payload=request.model_dump(mode="json", exclude_unset=True),
+                    payload=request.model_dump(
+                        mode="json", by_alias=True, exclude_unset=True
+                    ),
                     deadline_unix_ms=(
                         int((time.time() + timeout) * 1000)
                         if timeout is not None
@@ -341,7 +343,7 @@ class _ClientCall:
                 call_id=self.call_id,
                 direction="client",
                 sequence=self.input_sequence,
-                payload=validated.model_dump(mode="json"),
+                payload=validated.model_dump(mode="json", by_alias=True),
             )
         )
         self.input_sequence += 1

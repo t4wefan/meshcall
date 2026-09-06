@@ -365,6 +365,8 @@ def _render_python_model(
     schema: Mapping[str, Any],
     definition_names: Mapping[str, str],
 ) -> list[str]:
+    if "enum" in schema or "const" in schema:
+        return [f"{name} = {_python_type(schema, definition_names)}"]
     if schema.get("type") != "object" and "properties" not in schema:
         raise ValueError(f"Portable Python model {name} must use an object schema")
     required = set(schema.get("required", []))
