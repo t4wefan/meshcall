@@ -2,27 +2,33 @@ import { randomUUID } from "node:crypto";
 
 import WebSocket, { type RawData } from "ws";
 
+import { closeSocket, createSocket, type WebSocketEndpoint } from "./endpoint.js";
 import { MeshCallError } from "./errors.js";
+import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
+import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import {
   type CallCancelFrame,
   type CallErrorFrame,
   type CallOpenFrame,
   type CallResultFrame,
   decodeFrame,
-  encodeFrame,
   type Frame,
-  type HelloAckFrame,
   type StreamEndFrame,
   type StreamItemFrame,
   type StreamWindowFrame,
   PROTOCOL_VERSION,
 } from "./protocol.js";
 
-export const INITIAL_STREAM_CREDIT = 16;
+export { INITIAL_STREAM_CREDIT } from "./flow.js";
 
 export interface CallOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+}
+
+export interface MeshCallClientOptions {
+  readonly maxFrameSize?: number;
+  readonly handshakeTimeoutMs?: number;
 }
 
 interface InputState {
@@ -58,18 +64,32 @@ export class MeshCallServerStream<Item>
   public async cancel(reason = "client_closed"): Promise<void> {
     await (await this.open).cancel(reason);
   }
+
+  public async return(): Promise<IteratorResult<Item>> {
+    await this.cancel("iterator_closed");
+    return { done: true, value: undefined };
+  }
 }
 
 export class MeshCallClient {
   private socket: WebSocket | undefined;
+  private connectingSocket: WebSocket | undefined;
+  private writer: FrameWriter | undefined;
   private connectPromise: Promise<void> | undefined;
   private readonly calls = new Map<string, PendingCall>();
   private readonly streams = new Map<string, ServerStreamState<unknown>>();
 
   public constructor(
-    private readonly url: string,
+    private readonly url: WebSocketEndpoint,
     private readonly peerId: string = randomUUID().replaceAll("-", ""),
-  ) {}
+    private readonly options: MeshCallClientOptions = {},
+  ) {
+    for (const value of [options.maxFrameSize, options.handshakeTimeoutMs]) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+        throw new RangeError("Limits must be positive integers");
+      }
+    }
+  }
 
   public async connect(): Promise<void> {
     if (this.socket?.readyState === WebSocket.OPEN) {
@@ -95,6 +115,7 @@ export class MeshCallClient {
     this.validateOptions(options);
     this.ensureNotAborted(options);
     await this.connect();
+    this.ensureNotAborted(options);
 
     const callId = newCallId();
     const { result } = this.registerCall<Response>(callId, options);
@@ -120,6 +141,7 @@ export class MeshCallClient {
     this.validateOptions(options);
     this.ensureNotAborted(options);
     await this.connect();
+    this.ensureNotAborted(options);
 
     const callId = newCallId();
     const input: InputState = {
@@ -172,18 +194,13 @@ export class MeshCallClient {
   }
 
   public async close(): Promise<void> {
-    const socket = this.socket;
+    const sockets = new Set([this.socket, this.connectingSocket]);
     this.socket = undefined;
-    if (socket !== undefined) {
-      socket.removeAllListeners();
-      if (socket.readyState === WebSocket.OPEN) {
-        await new Promise<void>((resolve) => {
-          socket.once("close", () => resolve());
-          socket.close();
-        });
-      }
-    }
+    this.connectingSocket = undefined;
+    this.writer?.close();
+    this.writer = undefined;
     this.rejectAll(new MeshCallError("unavailable", "Client is closed"));
+    await Promise.all([...sockets].map((socket) => socket === undefined ? undefined : closeSocket(socket)));
   }
 
   private async openServerStream<Item>(
@@ -194,6 +211,7 @@ export class MeshCallClient {
   ): Promise<ServerStreamState<Item>> {
     this.ensureNotAborted(options);
     await this.connect();
+    this.ensureNotAborted(options);
 
     const callId = newCallId();
     const stream = new ServerStreamState<Item>(
@@ -329,38 +347,68 @@ export class MeshCallClient {
   }
 
   private async open(): Promise<void> {
-    const socket = new WebSocket(this.url);
-    await waitForOpen(socket);
-    socket.send(
-      encodeFrame({
-        kind: "hello",
-        protocol: PROTOCOL_VERSION,
-        role: "client",
-        peer_id: this.peerId,
-      }),
-    );
-    const response = await waitForFrame(socket);
-    if (response.kind !== "hello.ack") {
-      socket.close();
-      throw new MeshCallError("protocol_error", "Expected hello.ack");
+    const maxSize = this.options.maxFrameSize ?? DEFAULT_MAX_FRAME_SIZE;
+    const timeout = this.options.handshakeTimeoutMs ?? 10_000;
+    const socket = createSocket(this.url, maxSize, timeout);
+    const writer = new FrameWriter(socket, maxSize);
+    this.connectingSocket = socket;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let ready = false;
+        const fail = (error: unknown) => {
+          clearTimeout(timer);
+          reject(error);
+          writer.close();
+          socket.close();
+        };
+        const timer = setTimeout(() =>
+          fail(new MeshCallError("deadline_exceeded", "MeshCall handshake timed out")), timeout);
+        socket.once("open", () => {
+          void writer.send({
+            kind: "hello", protocol: PROTOCOL_VERSION, role: "client", peer_id: this.peerId,
+          }).catch(fail);
+        });
+        socket.on("message", (data) => {
+          if (ready) {
+            this.handleMessage(data);
+            return;
+          }
+          try {
+            const frame = decodeFrame(data);
+            if (frame.kind !== "hello.ack" || frame.protocol !== PROTOCOL_VERSION) {
+              throw new MeshCallError("protocol_error", "Expected compatible hello.ack");
+            }
+            ready = true;
+            this.socket = socket;
+            this.writer = writer;
+            clearTimeout(timer);
+            resolve();
+          } catch (error) {
+            fail(error);
+          }
+        });
+        socket.on("close", () => {
+          clearTimeout(timer);
+          writer.close();
+          const error = new MeshCallError("unavailable", "Connection was lost");
+          if (this.socket === socket) {
+            this.socket = undefined;
+            this.writer = undefined;
+            this.rejectAll(error);
+          }
+          reject(error);
+        });
+        socket.on("error", (error) => {
+          if (this.socket === socket) this.rejectAll(error);
+          fail(error);
+        });
+      });
+    } catch (error) {
+      await closeSocket(socket);
+      throw error;
+    } finally {
+      if (this.connectingSocket === socket) this.connectingSocket = undefined;
     }
-    const hello = response as HelloAckFrame;
-    if (hello.protocol !== PROTOCOL_VERSION) {
-      socket.close();
-      throw new MeshCallError(
-        "protocol_error",
-        `Unsupported protocol: ${hello.protocol}`,
-      );
-    }
-    this.socket = socket;
-    socket.on("message", (data) => this.handleMessage(data));
-    socket.on("close", () => {
-      if (this.socket === socket) {
-        this.socket = undefined;
-      }
-      this.rejectAll(new MeshCallError("unavailable", "Connection was lost"));
-    });
-    socket.on("error", (error) => this.rejectAll(error));
   }
 
   private handleMessage(data: RawData): void {
@@ -373,7 +421,7 @@ export class MeshCallClient {
       return;
     }
     if (frame.kind === "ping") {
-      void this.send({ kind: "pong", nonce: frame.nonce });
+      void this.send({ kind: "pong", nonce: frame.nonce }).catch(() => undefined);
       return;
     }
     if (frame.kind === "stream.window") {
@@ -511,7 +559,7 @@ export class MeshCallClient {
   }
 
   private validateOptions(options: CallOptions): void {
-    if (options.timeoutMs !== undefined && options.timeoutMs <= 0) {
+    if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
       throw new RangeError("timeoutMs must be positive");
     }
   }
@@ -523,19 +571,11 @@ export class MeshCallClient {
   }
 
   private async send(frame: Frame): Promise<void> {
-    const socket = this.socket;
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+    const writer = this.writer;
+    if (writer === undefined) {
       throw new MeshCallError("unavailable", "Client is not connected");
     }
-    await new Promise<void>((resolve, reject) => {
-      socket.send(encodeFrame(frame), (error) => {
-        if (error == null) {
-          resolve();
-        } else {
-          reject(error);
-        }
-      });
-    });
+    await writer.send(frame);
   }
 }
 
@@ -561,6 +601,10 @@ class ServerStreamState<Item> {
 
   public arm(options: CallOptions): void {
     if (this.terminal) {
+      return;
+    }
+    if (options.signal?.aborted === true) {
+      this.abort(new MeshCallError("cancelled", "Call was cancelled"), "caller_cancelled");
       return;
     }
     if (options.timeoutMs !== undefined) {
@@ -710,167 +754,6 @@ class ServerStreamState<Item> {
   }
 }
 
-class CreditWindow {
-  private credit = 0;
-  private closed = false;
-  private failure: unknown;
-  private readonly waiters: Array<{
-    resolve: () => void;
-    reject: (error: unknown) => void;
-  }> = [];
-
-  public acquire(): Promise<void> {
-    if (this.credit > 0) {
-      this.credit -= 1;
-      return Promise.resolve();
-    }
-    if (this.closed) {
-      return Promise.reject(this.failure);
-    }
-    return new Promise<void>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
-  }
-
-  public grant(credit: number): void {
-    if (!Number.isInteger(credit) || credit <= 0) {
-      throw new MeshCallError("protocol_error", "Stream credit must be positive");
-    }
-    if (this.closed) {
-      return;
-    }
-    this.credit += credit;
-    while (this.credit > 0 && this.waiters.length > 0) {
-      this.credit -= 1;
-      this.waiters.shift()?.resolve();
-    }
-  }
-
-  public close(error: unknown): void {
-    if (this.closed) {
-      return;
-    }
-    this.closed = true;
-    this.failure = error;
-    for (const waiter of this.waiters.splice(0)) {
-      waiter.reject(error);
-    }
-  }
-}
-
-class AsyncQueue<Item> {
-  private readonly values: Item[] = [];
-  private readonly waiters: Array<{
-    resolve: (result: IteratorResult<Item>) => void;
-    reject: (error: unknown) => void;
-  }> = [];
-  private ended = false;
-  private failed = false;
-  private failure: unknown;
-
-  public push(value: Item): void {
-    if (this.ended) {
-      return;
-    }
-    const waiter = this.waiters.shift();
-    if (waiter !== undefined) {
-      waiter.resolve({ done: false, value });
-    } else {
-      this.values.push(value);
-    }
-  }
-
-  public close(): void {
-    if (this.ended) {
-      return;
-    }
-    this.ended = true;
-    this.flush();
-  }
-
-  public fail(error: unknown): void {
-    if (this.failed) {
-      return;
-    }
-    this.ended = true;
-    this.failed = true;
-    this.failure = error;
-    this.flush();
-  }
-
-  public next(): Promise<IteratorResult<Item>> {
-    if (this.values.length > 0) {
-      const value = this.values.shift() as Item;
-      return Promise.resolve({ done: false, value });
-    }
-    if (this.failed) {
-      return Promise.reject(this.failure);
-    }
-    if (this.ended) {
-      return Promise.resolve({ done: true, value: undefined as never });
-    }
-    return new Promise<IteratorResult<Item>>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
-  }
-
-  private flush(): void {
-    while (this.values.length > 0 && this.waiters.length > 0) {
-      const value = this.values.shift() as Item;
-      this.waiters.shift()?.resolve({ done: false, value });
-    }
-    if (this.values.length > 0 || this.waiters.length === 0) {
-      return;
-    }
-    const waiters = this.waiters.splice(0);
-    if (this.failed) {
-      for (const waiter of waiters) {
-        waiter.reject(this.failure);
-      }
-    } else if (this.ended) {
-      for (const waiter of waiters) {
-        waiter.resolve({ done: true, value: undefined as never });
-      }
-    }
-  }
-}
-
 function newCallId(): string {
   return randomUUID().replaceAll("-", "");
-}
-
-async function waitForOpen(socket: WebSocket): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", resolve);
-    socket.once("error", reject);
-  });
-}
-
-async function waitForFrame(socket: WebSocket): Promise<Frame> {
-  return new Promise<Frame>((resolve, reject) => {
-    const onMessage = (data: RawData): void => {
-      cleanup();
-      try {
-        resolve(decodeFrame(data));
-      } catch (error) {
-        reject(error);
-      }
-    };
-    const onError = (error: Error): void => {
-      cleanup();
-      reject(error);
-    };
-    const onClose = (): void => {
-      cleanup();
-      reject(new MeshCallError("unavailable", "Connection closed during handshake"));
-    };
-    const cleanup = (): void => {
-      socket.off("message", onMessage);
-      socket.off("error", onError);
-      socket.off("close", onClose);
-    };
-    socket.on("message", onMessage);
-    socket.on("error", onError);
-    socket.on("close", onClose);
-  });
 }

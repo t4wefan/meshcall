@@ -3,7 +3,9 @@ import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import type { BalancePolicy } from "./protocol.js";
-import type { ServiceDefinition, UnaryMethod } from "./server.js";
+import type {
+  ClientStreamMethod, ServerStreamMethod, ServiceDefinition, UnaryMethod,
+} from "./service.js";
 
 export type JsonSchema = Readonly<Record<string, unknown>>;
 
@@ -20,11 +22,27 @@ export interface ContractUnaryMethod<Request, Response>
   readonly response: TypeContract<Response>;
 }
 
-type AnyContractUnaryMethod = ContractUnaryMethod<any, any>;
+export interface ContractServerStreamMethod<Request, Item>
+  extends ServerStreamMethod<Request, Item> {
+  readonly request: TypeContract<Request>;
+  readonly outputItem: TypeContract<Item>;
+}
+
+export interface ContractClientStreamMethod<Request, Item, Response>
+  extends ClientStreamMethod<Request, Item, Response> {
+  readonly request: TypeContract<Request>;
+  readonly inputItem: TypeContract<Item>;
+  readonly response: TypeContract<Response>;
+}
+
+export type ContractMethod =
+  | ContractUnaryMethod<any, any>
+  | ContractServerStreamMethod<any, any>
+  | ContractClientStreamMethod<any, any, any>;
 
 export type ExportableServiceDefinition<
-  Methods extends Readonly<Record<string, AnyContractUnaryMethod>> = Readonly<
-    Record<string, AnyContractUnaryMethod>
+  Methods extends Readonly<Record<string, ContractMethod>> = Readonly<
+    Record<string, ContractMethod>
   >,
 > = Omit<ServiceDefinition, "methods"> & {
   readonly sourceModule: string;
@@ -54,8 +72,20 @@ export function unaryMethod<Request, Response>(
   return { ...definition, stream: "unary" };
 }
 
+export function serverStreamMethod<Request, Item>(
+  definition: Omit<ContractServerStreamMethod<Request, Item>, "stream">,
+): ContractServerStreamMethod<Request, Item> {
+  return { ...definition, stream: "server_stream" };
+}
+
+export function clientStreamMethod<Request, Item, Response>(
+  definition: Omit<ContractClientStreamMethod<Request, Item, Response>, "stream">,
+): ContractClientStreamMethod<Request, Item, Response> {
+  return { ...definition, stream: "client_stream" };
+}
+
 export function defineService<
-  const Methods extends Readonly<Record<string, AnyContractUnaryMethod>>,
+  const Methods extends Readonly<Record<string, ContractMethod>>,
 >(
   definition: ExportableServiceDefinition<Methods>,
 ): ExportableServiceDefinition<Methods> {
@@ -87,11 +117,11 @@ export function renderContract(
         balance: serviceBalance,
         methods: Object.entries(service.methods).map(([name, method]) => ({
           name,
-          stream: "unary",
+          stream: method.stream,
           request: renderTypeRef(method.request),
-          response: renderTypeRef(method.response),
-          input_item: null,
-          output_item: null,
+          response: method.stream === "server_stream" ? null : renderTypeRef(method.response),
+          input_item: method.stream === "client_stream" ? renderTypeRef(method.inputItem) : null,
+          output_item: method.stream === "server_stream" ? renderTypeRef(method.outputItem) : null,
           balance: normalizeBalance(method.balance ?? serviceBalance),
           request_style: "model",
           request_fields: [],
