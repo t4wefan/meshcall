@@ -2,7 +2,7 @@
 
 import { createInterface } from "node:readline/promises";
 
-import { MeshCallClient, RouterAuthClient } from "@meshcall/runtime";
+import { MeshCallClient, MeshCallError, RouterAuthClient } from "@meshcall/runtime";
 
 import { readCredentials, routerUrl } from "./config.js";
 import { LlmServiceClient } from "./index.js";
@@ -133,7 +133,8 @@ try {
   await main();
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`meshcall cli: ${message}`);
+  const code = error instanceof MeshCallError ? `[${error.code}] ` : "";
+  console.error(`meshcall cli: ${code}${message}`);
   process.exitCode = 1;
 } finally {
   await rpc?.close();
