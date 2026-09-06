@@ -57,6 +57,18 @@ streaming call produces exactly one access entry even if cancellation races
 with normal completion. Unknown methods and duplicate call IDs are logged at
 the `call.open` rejection point because they never create a call object.
 
+The TypeScript runtime separates service definitions, JSON Schema validators,
+per-connection sessions, credit/queue primitives, frame scheduling, and endpoint
+lifecycle. Direct and Router connections share the same session implementation.
+Unary, server-streaming, and client-streaming handlers receive a call-bound
+logger and abort signal. Declared schemas validate requests, responses, and
+stream items; raw legacy handlers without schemas remain unchecked.
+
+TypeScript supports TCP and Unix sockets for clients, Direct servers, and
+Router service connections. Both languages use the same Python Router; its
+registry, routing state, and failure boundaries are described in
+[Router architecture](router.md).
+
 ## Call ownership
 
 The client creates a UUID `call_id`. A Direct server stores calls per connection.
@@ -72,7 +84,8 @@ balancing is the only policy that reads a declared request field.
 Client-to-server and server-to-client directions each maintain independent item
 credit. The receiver grants an initial window of 16 items and replenishes one
 credit when application code consumes an item. A producer waits for credit before
-fetching or sending the next item.
+sending the next item; an input pump may hold one prefetched item to discover
+iterator exhaustion without another window grant.
 
 The connection sender prioritizes cancellation, window, and Ping/Pong frames.
 Other frames are scheduled round-robin by `call_id`, preventing a large stream

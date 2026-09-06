@@ -11,6 +11,109 @@
       },
       "methods": [
         {
+          "name": "count",
+          "stream": "server_stream",
+          "request": {
+            "module": "ts2py_service",
+            "qualname": "CountRequest",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              },
+              "required": [
+                "count"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "ts2py_service",
+            "qualname": "NumberItem",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "request_style": "model",
+          "request_fields": []
+        },
+        {
+          "name": "sum",
+          "stream": "client_stream",
+          "request": {
+            "module": "ts2py_service",
+            "qualname": "SumRequest",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "offset": {
+                  "type": "integer",
+                  "default": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "response": {
+            "module": "ts2py_service",
+            "qualname": "SumResult",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "total": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "input_item": {
+            "module": "ts2py_service",
+            "qualname": "NumberItem",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "request_style": "model",
+          "request_fields": []
+        },
+        {
           "name": "greet",
           "stream": "unary",
           "request": {

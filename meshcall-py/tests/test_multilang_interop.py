@@ -7,14 +7,21 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 import pytest
 from interop_service import PythonInteropService
 
-from meshcall import RpcServer, get_service_contract
+from meshcall import RpcServer, WebSocketRouter, get_service_contract
 from meshcall.contract_io import load_contract
-from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
+from meshcall.drivers import (
+    WebSocketClientDriver,
+    WebSocketDirectServerDriver,
+    WebSocketRouterServerDriver,
+)
+from meshcall.errors import ErrorCode, MeshCallError
 from meshcall.package_codegen import (
     write_python_client_package,
     write_typescript_client_package,
@@ -54,8 +61,9 @@ def build_typescript_runtime() -> None:
     )
 
 
+@pytest.mark.parametrize("routed", [False, True])
 async def test_python_service_with_generated_typescript_package(
-    tmp_path: Path,
+    tmp_path: Path, routed: bool,
 ) -> None:
     package_root = write_typescript_client_package(
         get_service_contract(PythonInteropService),
@@ -65,9 +73,18 @@ async def test_python_service_with_generated_typescript_package(
     await _run_process("yarn", "install", cwd=package_root)
     await _run_process("yarn", "run", "build", cwd=package_root)
 
-    driver = WebSocketDirectServerDriver(host="127.0.0.1", port=0)
+    router = WebSocketRouter(port=0)
+    if routed:
+        await router.start()
+    uri = f"ws://127.0.0.1:{router.bound_port}" if routed else ""
+    driver = (
+        WebSocketRouterServerDriver(uri)
+        if routed else WebSocketDirectServerDriver(host="127.0.0.1", port=0)
+    )
     server = RpcServer(services=[PythonInteropService], driver=driver)
     await server.start()
+    if isinstance(driver, WebSocketDirectServerDriver):
+        uri = f"ws://127.0.0.1:{driver.bound_port}"
     try:
         generated_index = package_root / "dist" / "index.js"
         installed_runtime = (
@@ -82,12 +99,13 @@ async def test_python_service_with_generated_typescript_package(
         completed = await _run_process(
             "node",
             str(INTEROP_ROOT / "typescript_client.mjs"),
-            f"ws://127.0.0.1:{driver.bound_port}",
+            uri,
             str(generated_index),
             str(installed_runtime),
         )
     finally:
         await server.stop()
+        await router.stop()
 
     assert json.loads(completed.stdout) == {
         "message": "Hello, TypeScript! Hello, TypeScript!",
@@ -151,6 +169,126 @@ async def test_typescript_service_with_generated_python_package(
         }
     finally:
         await _stop_server_process(process)
+
+
+@asynccontextmanager
+async def running_typescript(root: Path, options: dict):
+    contract_path = root / f"{uuid.uuid4().hex}.json"
+    process = await asyncio.create_subprocess_exec(
+        "node", str(INTEROP_ROOT / "typescript_server.mjs"),
+        str(RUNTIME_INDEX), str(contract_path), json.dumps(options),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    try:
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=10)
+        if not line:
+            raise AssertionError(await _process_failure(process))
+        yield process, contract_path, json.loads(line)
+    finally:
+        await _stop_server_process(process)
+
+
+@contextmanager
+def generated_typescript_client(contract_path: Path, root: Path):
+    contract = load_contract(contract_path).services[0]
+    package = write_python_client_package(contract, root / "generated")
+    name = "meshcall_test_v1_typescriptinteropservice_client"
+    sys.path.insert(0, str(package / "src"))
+    try:
+        yield importlib.import_module(name)
+    finally:
+        sys.path.remove(str(package / "src"))
+        for imported in tuple(sys.modules):
+            if imported == name or imported.startswith(name + "."):
+                sys.modules.pop(imported, None)
+
+
+@pytest.mark.parametrize("routed", [False, True])
+@pytest.mark.parametrize("unix", [False, True])
+async def test_generated_python_streams_to_typescript_over_direct_and_router(
+    tmp_path: Path, routed: bool, unix: bool,
+) -> None:
+    socket = Path("/tmp") / f"meshcall-interop-{uuid.uuid4().hex}.sock"
+    router = WebSocketRouter(unix_path=socket) if unix else WebSocketRouter(port=0)
+    options: dict = {}
+    if routed:
+        await router.start()
+        endpoint = {"unixPath": str(socket)} if unix else f"ws://127.0.0.1:{router.bound_port}"
+        options = {"router": {"endpoint": endpoint}}
+    elif unix:
+        options = {"unixPath": str(socket)}
+    try:
+        async with (
+            asyncio.timeout(15),
+            running_typescript(tmp_path, options) as (_, contract, ready),
+        ):
+            driver = (
+                WebSocketClientDriver(unix_path=socket)
+                if unix else WebSocketClientDriver(
+                    f"ws://127.0.0.1:{router.bound_port if routed else ready['port']}"
+                )
+            )
+            with generated_typescript_client(contract, tmp_path) as generated:
+                async with generated.TypeScriptInteropServiceClient(driver) as client:
+                    request = generated.TypeScriptRequest(value=64, factor=2)
+                    assert (await client.multiply(request)).product == 128
+                    items = [item async for item in client.download(request)]
+                    assert [item.value for item in items] == list(range(0, 128, 2))
+
+                    async def input_items():
+                        for value in range(64):
+                            yield generated.TypeScriptItem(value=value, handled_by="python")
+
+                    assert (await client.upload(request, input_items())).product == 4096
+    finally:
+        await router.stop()
+    if unix:
+        assert not socket.exists()
+
+
+async def test_typescript_instances_balance_pin_streams_and_clean_disconnects(
+    tmp_path: Path,
+) -> None:
+    router = WebSocketRouter(port=0)
+    await router.start()
+    uri = f"ws://127.0.0.1:{router.bound_port}"
+    try:
+        async with (
+            asyncio.timeout(15),
+            running_typescript(
+                tmp_path, {"router": {"endpoint": uri, "instanceId": "ts-a"}},
+            ) as (process_a, contract, _),
+            running_typescript(
+                tmp_path, {"router": {"endpoint": uri, "instanceId": "ts-b"}},
+            ) as (process_b, _, _),
+        ):
+            with generated_typescript_client(contract, tmp_path) as generated:
+                async with generated.TypeScriptInteropServiceClient(
+                    WebSocketClientDriver(uri)
+                ) as client:
+                    request = generated.TypeScriptRequest(value=64, factor=1)
+                    instances = [(await client.multiply(request)).handled_by for _ in range(4)]
+                    assert instances == ["ts-a", "ts-b", "ts-a", "ts-b"]
+                    for expected in ("ts-a", "ts-b"):
+                        items = [item async for item in client.download(request)]
+                        assert len(items) == 64
+                        assert {item.handled_by for item in items} == {expected}
+                    pending = client.download(
+                        generated.TypeScriptRequest(value=100_000, factor=1)
+                    )
+                    first = await anext(pending)
+                    await _stop_server_process(
+                        process_a if first.handled_by == "ts-a" else process_b
+                    )
+                    with pytest.raises(MeshCallError) as error:
+                        _ = [item async for item in pending]
+                    assert error.value.code == ErrorCode.UNAVAILABLE
+                    assert not router._routes
+                    assert all(instance.inflight == 0 for instance in router._instances.values())
+    finally:
+        await router.stop()
 
 
 async def _run_process(

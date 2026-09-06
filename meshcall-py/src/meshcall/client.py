@@ -458,6 +458,10 @@ class _ClientCall:
         self.terminal = True
         if not self.result_future.done():
             self.result_future.set_exception(error)
+            if self.output_type is not None:
+                # Stream consumers receive the error through output_queue. They
+                # need not separately await the internal terminal result future.
+                self.result_future.exception()
         self.output_queue.put_nowait(error)
         await self.send_credit.close(error)
 

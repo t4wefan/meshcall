@@ -62,3 +62,25 @@ jobs:
       - run: yarn install --frozen-lockfile
       - run: yarn run check
       - run: yarn test
+
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: meshcall-ts/yarn.lock
+      - run: yarn install --frozen-lockfile
+        working-directory: meshcall-ts
+      - run: uv sync --frozen
+        working-directory: meshcall-py
+      - run: uv run --no-sync pytest -q tests/test_multilang_interop.py
+        working-directory: meshcall-py
+        env:
+          MESHCALL_RUN_INTEROP: "1"

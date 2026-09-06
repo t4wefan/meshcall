@@ -34,7 +34,7 @@ The current implementation includes:
 - portable JSON contracts and Python/TypeScript client generation;
 - complete Python uv packages and TypeScript Yarn packages by default;
 - optional self-contained single-file clients with dependency instructions;
-- unary, server-streaming, and client-streaming calls;
+- unary, server-streaming, and client-streaming clients and services in both languages;
 - WebSocket Direct and WebSocket Router drivers over TCP or Unix sockets;
 - cancellation, deadlines, half-close, per-direction flow control, and fair
   per-call sending;
@@ -44,6 +44,8 @@ The current implementation includes:
   deadline handling.
 - built-in Python server access logs with method, status, duration, and
   Loguru-style service logger injection.
+- TypeScript JSON Schema payload validation, call-bound loggers, and terminal access logs;
+- TypeScript service registration with the shared Python Router over TCP or Unix sockets.
 
 The `best-practice/` application exercises Python-to-TypeScript unary,
 client-streaming, and server-streaming calls. Typed notifications and the Tags
@@ -186,8 +188,9 @@ The CLI supports ordinary prompts plus `/new`, `/sessions`, `/tokens TEXT`,
 ## Cross-language demos
 
 The compact cross-language demos are complete projects that contain both sides
-of their round trip. They remain intentionally unary; `best-practice/` is the
-streaming Python-to-TypeScript example.
+of their round trip. `py2ts/` is a minimal unary example; `ts2py/` demonstrates
+unary and both streaming shapes from a TypeScript service to a Python client.
+`best-practice/` is the streaming Python-to-TypeScript application.
 
 Python service to TypeScript client:
 
@@ -236,7 +239,7 @@ generated/counter-client/
 It supports the recommended unary and streaming RPC shapes and can be checked
 with `uv build`. Every generated method accepts an optional `timeout=` keyword.
 
-For a unary Python service, generate a TypeScript Yarn package with:
+For a Python service using the recommended call shapes, generate a TypeScript Yarn package with:
 
 ```bash
 uv run --project meshcall-py meshcall generate \
@@ -430,6 +433,9 @@ Router listeners and service/client connections also accept `unix_path=`.
 - Breaking out of a custom stream iterator does not implicitly cancel it; call
   `await stream.cancel()` or use the stream as an async context manager.
 
+The last rule applies to Python streams. TypeScript server streams implement
+iterator cleanup, so leaving a `for await` loop cancels the call automatically.
+
 ## Current limits
 
 - JSON is the only physical encoding.
@@ -443,11 +449,13 @@ Router listeners and service/client connections also accept `unix_path=`.
   server-streaming, and client-streaming methods. Python-to-Python package
   generation contains experimental duplex support in addition to the
   recommended unary and one-way streaming shapes.
-- The TypeScript client can use a compatible Direct or Router endpoint, but the
-  TypeScript server currently exposes a Direct WebSocket listener only; Router
-  service-instance registration is still Python-only.
-- TypeScript JSON Schemas currently drive contract export and client generation;
-  runtime request/response schema validation is not implemented yet.
+- Both runtimes support Direct listeners and service-instance registration with
+  the same Python Router, over TCP or Unix sockets. See
+  [Router architecture](docs/router.md) and the
+  [TypeScript service API](meshcall-ts/README.md).
+- TypeScript type contracts validate requests, responses, and both stream
+  directions at runtime. Python and TypeScript retain their native validation
+  behavior; for example TypeScript does not coerce strings into numbers.
 - Python handlers run on a dedicated service worker loop so blocking business
   code cannot block the RPC loop. TypeScript handlers are not worker-thread
   isolated yet and must avoid synchronously blocking Node's event loop.

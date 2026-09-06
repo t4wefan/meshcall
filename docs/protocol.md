@@ -41,7 +41,9 @@ opposite direction or finish the call.
 
 Every streaming direction uses item credit. A `stream.window` frame grants the
 producer permission to send `credit` additional items in the frame's named
-direction. A producer must not fetch or send the next item without credit.
+direction. A producer must not send the next item without credit. A runtime may
+hold one prefetched item while waiting for credit so it can discover iterator
+exhaustion without another window grant.
 
 Item credit bounds queue length. The WebSocket driver also applies a byte limit
 to encoded frames and fair scheduling across active calls. A future protocol

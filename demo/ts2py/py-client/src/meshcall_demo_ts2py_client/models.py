@@ -4,6 +4,22 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class CountRequest(BaseModel):
+    count: int
+
+
+class NumberItem(BaseModel):
+    value: int
+
+
+class SumRequest(BaseModel):
+    offset: int = 0
+
+
+class SumResult(BaseModel):
+    total: int
+
+
 class GreetingRequest(BaseModel):
     name: str
     repeat: int

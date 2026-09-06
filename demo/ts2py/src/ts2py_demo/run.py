@@ -8,7 +8,9 @@ import shutil
 from pathlib import Path
 
 from meshcall_demo_ts2py_client import (
+    CountRequest,
     GreetingRequest,
+    SumRequest,
     TypeScriptGreetingServiceClient,
 )
 
@@ -47,7 +49,17 @@ async def run_demo() -> None:
             response = await client.greet(
                 GreetingRequest(name="Python", repeat=2)
             )
+            items = [item async for item in client.count(CountRequest(count=40))]
+
+            async def input_items():
+                for item in items:
+                    yield item
+
+            total = await client.sum(SumRequest(offset=10), input_items())
+            assert len(items) == 40
+            assert total.total == 790
         print(f"TypeScript service -> Python client: {response.model_dump()}")
+        print(f"Streaming: received {len(items)} items, uploaded total={total.total}")
     finally:
         await client.stop()
         await _stop_typescript_server(process)
