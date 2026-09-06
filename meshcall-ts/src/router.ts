@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,9 +35,19 @@ function routerBinary(configured?: string): string {
   const directory = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     resolve(directory, "../../bin", filename),
-    resolve(directory, "../../../meshcall-router/bin", filename),
-    ...(process.env.PATH ?? "").split(delimiter).filter(Boolean).map((path) => resolve(path, filename)),
   ];
+  for (const start of [directory, process.cwd()]) {
+    let root = start;
+    while (true) {
+      if (existsSync(resolve(root, "meshcall-router/go.mod"))) {
+        candidates.push(resolve(root, "meshcall-router/bin", filename));
+      }
+      const parent = dirname(root);
+      if (parent === root) break;
+      root = parent;
+    }
+  }
+  candidates.push(...(process.env.PATH ?? "").split(delimiter).filter(Boolean).map((path) => resolve(path, filename)));
   const found = candidates.find(executable);
   if (found !== undefined) return found;
   throw new Error("Go Router binary not found. Build meshcall-router or set MESHCALL_ROUTER_BINARY / binaryPath.");

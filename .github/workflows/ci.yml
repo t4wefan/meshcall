@@ -78,10 +78,18 @@ jobs:
         working-directory: demo/py2ts
       - run: uv run --locked demo
         working-directory: demo/showcase
-      - run: uv run --locked demo
+      - run: env -u MESHCALL_ROUTER_BINARY uv run --locked demo
         working-directory: demo/router
       - run: uv run --locked demo
         working-directory: demo/ts2py
+      - name: Start Go from the installed TypeScript package
+        working-directory: demo/ts2py/ts-server
+        run: |
+          env -u MESHCALL_ROUTER_BINARY node --input-type=module <<'JS'
+          import { WebSocketRouter } from "@meshcall/runtime";
+          const router = new WebSocketRouter();
+          try { await router.start(); } finally { await router.stop(); }
+          JS
 
   typescript:
     needs: router

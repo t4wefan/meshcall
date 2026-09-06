@@ -97,6 +97,16 @@ async def test_service_registration_scope_and_revocation(tmp_path: Path) -> None
                 scopes=[RouterScope(service=name, register_service=True)]
             )
             token = RouterCredentials(token=issued.token)
+            senders = {
+                task for task in asyncio.all_tasks()
+                if task.get_name() == "meshcall-frame-sender"
+            }
+            with pytest.raises(ConnectionError):
+                await WebSocketClientDriver(uri, auth=token).connect()
+            assert {
+                task for task in asyncio.all_tasks()
+                if task.get_name() == "meshcall-frame-sender"
+            } <= senders
             forbidden = RpcServer(
                 services=[RouteServiceA],
                 driver=WebSocketRouterServerDriver(uri, auth=token),

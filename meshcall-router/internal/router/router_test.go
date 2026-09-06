@@ -323,6 +323,19 @@ func TestQueuePreservesOpenBarrierAndBoundsMemory(t *testing.T) {
 	}
 }
 
+func TestEmptyPingNonceRemainsARequiredField(t *testing.T) {
+	r := runningRouter(t, nil)
+	conn := dial(t, r, "")
+	hello(t, conn, "client", "ping-client")
+	send(t, conn, frame{Kind: "ping", Nonce: ""})
+	if got := receive(t, conn); !bytes.Contains(got.raw, []byte(`"nonce":""`)) {
+		t.Fatal("empty nonce was omitted")
+	}
+	if _, err := decode([]byte(`{"kind":"ping"}`)); err == nil {
+		t.Fatal("missing nonce accepted")
+	}
+}
+
 func TestCanonicalStickyJSON(t *testing.T) {
 	for _, pair := range [][2]string{
 		{`{"z":12345678901234567890,"a":"中文😀<>&\u007f"}`, `{"a":"\u4e2d\u6587\ud83d\ude00<>&\u007f","z":12345678901234567890}`},

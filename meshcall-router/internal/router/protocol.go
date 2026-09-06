@@ -93,7 +93,12 @@ func decode(data []byte) (frame, error) {
 		if f.Kind == "stream.window" && (f.Credit == nil || *f.Credit <= 0) {
 			return f, errors.New("invalid stream credit")
 		}
-	case "call.result", "call.cancel", "ping", "pong":
+	case "ping", "pong":
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(data, &fields) != nil || len(fields["nonce"]) == 0 || fields["nonce"][0] != '"' {
+			return f, errors.New("missing or invalid nonce")
+		}
+	case "call.result", "call.cancel":
 	default:
 		return f, fmt.Errorf("unexpected frame kind %q", f.Kind)
 	}
@@ -110,6 +115,17 @@ func decode(data []byte) (frame, error) {
 func (f frame) bytes() []byte {
 	if f.raw != nil {
 		return f.raw
+	}
+	if f.Kind == "ping" || f.Kind == "pong" {
+		// nonce is required even when empty; other frame kinds must omit it.
+		data, err := json.Marshal(struct {
+			Kind  string `json:"kind"`
+			Nonce string `json:"nonce"`
+		}{f.Kind, f.Nonce})
+		if err != nil {
+			panic(err)
+		}
+		return data
 	}
 	data, err := json.Marshal(f)
 	if err != nil {

@@ -20,10 +20,21 @@ def _router_binary(binary_path: str | Path | None) -> str:
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             raise DriverStateError(f"Router binary is not executable: {candidate}")
         return str(candidate)
-    candidates = [
-        Path(__file__).parent / "bin" / executable,
-        Path(__file__).resolve().parents[3] / "meshcall-router" / "bin" / executable,
-    ]
+    candidates = [Path(__file__).parent / "bin" / executable]
+    # A demo can install a wheel into its own venv rather than an editable copy.
+    # Find the enclosing source checkout from either the package or the caller.
+    roots = dict.fromkeys(
+        [
+            *Path(__file__).resolve().parents,
+            Path.cwd(),
+            *Path.cwd().parents,
+        ]
+    )
+    candidates.extend(
+        root / "meshcall-router" / "bin" / executable
+        for root in roots
+        if (root / "meshcall-router" / "go.mod").is_file()
+    )
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)

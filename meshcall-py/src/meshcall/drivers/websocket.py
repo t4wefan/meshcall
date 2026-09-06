@@ -57,14 +57,16 @@ class WebSocketClientDriver(ClientDriver):
             auth=self.auth,
         )
         connection = FrameConnection(websocket, max_frame_size=self.max_frame_size)
-        await connection.send(HelloFrame(role="client", peer_id=self.peer_id))
-        response = await connection.receive()
-        if not isinstance(response, HelloAckFrame):
+        try:
+            await connection.send(HelloFrame(role="client", peer_id=self.peer_id))
+            response = await connection.receive()
+            if not isinstance(response, HelloAckFrame):
+                raise ProtocolError("Expected hello.ack from WebSocket endpoint")
+            if response.protocol != PROTOCOL_VERSION:
+                raise ProtocolError(f"Unsupported protocol: {response.protocol}")
+        except BaseException:
             await connection.close()
-            raise ProtocolError("Expected hello.ack from WebSocket endpoint")
-        if response.protocol != PROTOCOL_VERSION:
-            await connection.close()
-            raise ProtocolError(f"Unsupported protocol: {response.protocol}")
+            raise
         self._connection = connection
         return connection
 
