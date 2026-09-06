@@ -2,8 +2,13 @@
 
 MeshCall is an asynchronous, typed RPC framework for Python and TypeScript.
 Pydantic models or explicit TypeScript JSON Schemas define payload contracts,
-generated client packages provide a static API, and a shared logical protocol
-supports direct WebSocket connections and routed service instances.
+generated client packages provide a static API, and a shared Go Router connects
+clients to registered service instances over WebSocket.
+
+Router is the recommended connection model for new applications. Clients and
+services connect to the same Router endpoint, which owns registration,
+authorization, balancing, and call routing. Direct connections remain supported
+for compatibility and focused transport tests.
 
 This repository is a monorepo. The Python runtime package lives in
 `meshcall-py`, the TypeScript runtime package lives in `meshcall-ts`, the
@@ -37,7 +42,8 @@ The current implementation includes:
 - complete Python uv packages and TypeScript Yarn packages by default;
 - optional self-contained single-file clients with dependency instructions;
 - unary, server-streaming, and client-streaming clients and services in both languages;
-- WebSocket Direct and WebSocket Router drivers over TCP or Unix sockets;
+- recommended WebSocket Router connections over TCP or Unix sockets, with Direct
+  drivers retained for compatibility;
 - cancellation, deadlines, half-close, per-direction flow control, and fair
   per-call sending;
 - round-robin, least-inflight, random, sticky, and disabled balancing;
@@ -51,9 +57,33 @@ The current implementation includes:
 - Router account authentication and built-in RPC for issuing/revoking temporary
   tokens restricted by service, method and registration scope.
 
-The `best-practice/` application exercises Python-to-TypeScript unary,
-client-streaming, and server-streaming calls. Typed notifications and the Tags
-DSL remain future milestones.
+Start with `demo/router/` for the recommended connection model. The older
+`best-practice/` application exercises Python-to-TypeScript unary,
+client-streaming, and server-streaming calls, but its current Direct deployment
+is a reference pending migration. Typed notifications and the Tags DSL remain
+future milestones.
+
+## Start with Router
+
+```bash
+go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
+uv run --project demo/router demo
+```
+
+This explicitly starts a short-lived Go Router, registers a Python service,
+calls it through a generated client, and shuts down the flow. The demo uses
+anonymous loopback connections for local experimentation. Configure accounts
+before using Router for an application; the current runtime does not require
+auth when binding a network interface.
+
+For deployments, run a shared Router under Docker or another process manager
+and configure clients and services with its endpoint and credentials. For local
+development or a self-contained application, one application owner can start
+the same Go executable through the Python or TypeScript SDK. Each launcher
+object owns a separate child process; clients and services should reuse its
+endpoint. See [Router architecture](docs/router.md),
+[binary setup and Docker](meshcall-router/README.md), and
+[the SDK startup review](docs/router-launcher.md).
 
 ## Development
 
@@ -130,11 +160,12 @@ object-style call `client.greet(request)`.
 Request, response, and stream item types are Pydantic models. MeshCall infers
 the RPC shape from the signature unless an explicit stream decorator is used.
 
-## Complete runnable showcase
+## Service API showcase
 
 The complete showcase is an independent uv project in `demo/showcase/`. It
-starts a short-lived local WebSocket server and calls it through a generated
-client. It demonstrates the recommended instance-method API, expanded
+uses a Direct listener and calls it through a generated client. Its topology is
+a compatibility reference; use `demo/router/` for new connection setup. The
+showcase demonstrates the recommended instance-method API, expanded
 parameters, a request-model method, Pydantic payloads, unary RPC, server
 streaming, and client streaming.
 
@@ -167,11 +198,12 @@ uv run meshcall generate \
 The same service contract can also generate a complete TypeScript package by
 adding `--language typescript` and using a separate output directory.
 
-## Best-practice application
+## Application reference
 
-`best-practice/` is the recommended small real-world shape: the Python RPC
-server and the TypeScript interactive CLI are separate processes. The server
-keeps sessions in memory, returns deterministic fake LLM chunks, and waits
+`best-practice/` demonstrates application structure: the Python RPC
+server and the TypeScript interactive CLI are separate processes. It currently
+uses Direct and is pending migration to the recommended Router topology. The
+server keeps sessions in memory, returns deterministic fake LLM chunks, and waits
 briefly between chunks so the stream is visible in a terminal.
 
 Start them in two terminals:
@@ -195,7 +227,9 @@ The CLI supports ordinary prompts plus `/new`, `/sessions`, `/tokens TEXT`,
 ## Cross-language demos
 
 The compact cross-language demos are complete projects that contain both sides
-of their round trip. `py2ts/` is a minimal unary example; `ts2py/` demonstrates
+of their round trip. Their current runners use Direct and serve as contract and
+language-interoperability references. New applications should register these
+services with Router. `py2ts/` is a minimal unary example; `ts2py/` demonstrates
 unary and both streaming shapes from a TypeScript service to a Python client.
 `best-practice/` is the streaming Python-to-TypeScript application.
 
@@ -344,12 +378,25 @@ uv run --project meshcall-py meshcall generate-contract \
   --output generated/math-py-client
 ```
 
-## WebSocket Direct
+## WebSocket Router (recommended)
 
-TCP server:
+Build or install the Go executable as described in
+[binary setup](meshcall-router/README.md). For a deployed application, connect
+to an existing Router using a service account with registration permission:
 
 ```python
-driver = WebSocketDirectServerDriver(host="127.0.0.1", port=8765)
+import os
+
+from meshcall import RouterCredentials, RpcServer
+from meshcall.drivers import WebSocketRouterServerDriver
+
+driver = WebSocketRouterServerDriver(
+    os.environ["MESHCALL_ROUTER_URL"],
+    instance_id="counter-1",
+    auth=RouterCredentials(
+        username="worker", password=os.environ["ROUTER_WORKER_PASSWORD"],
+    ),
+)
 server = RpcServer(
     services=[CounterService],
     driver=driver,
@@ -358,7 +405,50 @@ server = RpcServer(
     colorize=False,
 )
 await server.start()
+# Call await server.stop() during application shutdown.
 ```
+
+Clients use the normal `WebSocketClientDriver`, point at the same Router URL,
+and authenticate with a client account or a scoped temporary token:
+
+```python
+from meshcall.drivers import WebSocketClientDriver
+
+client = CounterServiceClient(WebSocketClientDriver(
+    os.environ["MESHCALL_ROUTER_URL"],
+    auth=RouterCredentials(token=os.environ["ROUTER_CLIENT_TOKEN"]),
+))
+async with client:
+    async for item in client.count(10, timeout=5):
+        print(item.value)
+```
+
+The worker account must allow registration of `example.v1.CounterService`;
+the token must allow its `count` method. Account configuration and token issuance
+are described in [Router authentication](docs/router.md#accounts-and-permissions).
+Use `wss://` through a TLS reverse proxy for network connections.
+
+A stream is balanced only at `call.open`; all later frames stay pinned to the
+selected instance. Router listeners and service/client connections also accept
+`unix_path=` for local IPC.
+
+For local development, an application can explicitly own the Router process:
+
+```python
+from meshcall import WebSocketRouter
+
+async with WebSocketRouter(auth_file="/path/router-auth.json") as router:
+    uri = f"ws://127.0.0.1:{router.bound_port}"
+    # Start service/client connections to uri with their own credentials.
+    # Close those connections before leaving the Router context.
+```
+
+The launcher selects an available loopback port by default. The Go binary must
+already be available; `binary_path` or `MESHCALL_ROUTER_BINARY` selects an explicit
+executable. Creating a client does not start a Router. See
+[SDK startup and its current limits](docs/router-launcher.md).
+
+## Service logging and instances
 
 `access_log` is enabled by default. After each call reaches a terminal result
 or error, the server emits a Loguru-style access entry containing
@@ -389,53 +479,13 @@ server starts. For constructor arguments or dependency injection, pass an
 already constructed instance instead: `services=[CounterService(...)]`. The
 server reuses that service instance across calls.
 
-TCP client:
+## Direct compatibility
 
-```python
-client = CounterServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
-async with client:
-    async for item in client.count(10, timeout=5):
-        print(item.value)
-```
-
-For local IPC, configure both sides with the same short Unix socket path:
-
-```python
-WebSocketDirectServerDriver(unix_path="/tmp/meshcall.sock")
-WebSocketClientDriver(unix_path="/tmp/meshcall.sock")
-```
-
-## WebSocket Router
-
-Build the Go executable once as shown above (Go 1.26+). Python and TypeScript
-launchers use this same program; deploying a prebuilt binary requires no Go
-compiler. Set `MESHCALL_ROUTER_BINARY` when the executable is outside the source
-checkout. Account auth, per-service scopes and the built-in AuthService are
-explained in [Router architecture](docs/router.md).
-
-Run a Router listener:
-
-```python
-router = WebSocketRouter(host="127.0.0.1", port=8765)
-await router.start()
-```
-
-Connect one or more service instances:
-
-```python
-driver = WebSocketRouterServerDriver(
-    "ws://127.0.0.1:8765",
-    instance_id="counter-1",
-)
-server = RpcServer(services=[CounterService], driver=driver)
-await server.start()
-```
-
-Clients use the normal `WebSocketClientDriver` and connect to the Router URI. A
-stream is balanced only at `call.open`; all later items, windows, half-closes,
-errors, and cancellation frames remain pinned to the selected instance.
-
-Router listeners and service/client connections also accept `unix_path=`.
+`WebSocketDirectServerDriver` and TypeScript Direct listeners remain available
+for existing integrations and transport tests. They connect a client straight
+to a service and bypass Router registration, ACLs, scoped tokens, and balancing.
+New application examples should use Router. Existing Direct runners are
+identified as compatibility references in [the demo index](demo/README.md).
 
 ## Stream API
 
@@ -462,8 +512,9 @@ iterator cleanup, so leaving a `for await` loop cancels the call automatically.
   server-streaming, and client-streaming methods. Python-to-Python package
   generation contains experimental duplex support in addition to the
   recommended unary and one-way streaming shapes.
-- Both runtimes support Direct listeners and service-instance registration with
-  the same Go Router, over TCP or Unix sockets. See
+- Both runtimes support service-instance registration with the same Go Router,
+  over TCP or Unix sockets. Direct listeners remain supported for compatibility.
+  See
   [Router architecture](docs/router.md) and the
   [TypeScript service API](meshcall-ts/README.md).
 - TypeScript type contracts validate requests, responses, and both stream

@@ -1,7 +1,8 @@
 # MeshCall showcase demo
 
-This is a complete uv project. From this directory, run the recommended API
-showcase with:
+This is a complete uv project demonstrating service APIs. Its current runner
+uses Direct as a compatibility reference; start with [the Router demo](../router/README.md)
+for the recommended connection model. Run this service API showcase with:
 
 ```bash
 uv run demo

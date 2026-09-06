@@ -1,5 +1,8 @@
 # MeshCall quickstart demo
 
+This older quickstart uses Direct and is retained as a compatibility example.
+For new applications, start with [the Router demo](../router/README.md).
+
 This is a complete uv project. From this directory, run the whole example
 with:
 

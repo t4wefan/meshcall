@@ -1,5 +1,10 @@
 # MeshCall best practice
 
+This application currently uses Direct connections. Its service, streaming,
+logging, and CLI structure remain useful references; its connection setup is
+pending migration. Use [the Router demo](../demo/router/README.md) and
+[Router deployment](../docs/router.md) for new applications.
+
 This is a small, complete application with a real process boundary:
 
 - `src/best_practice/service.py` implements an in-memory Python LLM-shaped

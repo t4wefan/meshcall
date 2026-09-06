@@ -7,67 +7,42 @@ Each demo directory is also a complete uv project with its own `pyproject.toml`
 and `uv.lock`; from inside any demo directory, `uv run demo` is the one-command
 entry point.
 
-## Packages
+## Start with Router
 
-- `quickstart/` — the smallest direct WebSocket server and generated client.
-- `py2ts/` — a Python service and a generated TypeScript client package.
-- `showcase/` — the complete recommended API example. Run it with
-  `uv run demo`.
-- `router/` — a router process and a service process that connects to it.
-- `ts2py/` — a TypeScript service and a generated Python uv client package.
-
-The showcase deliberately does not demonstrate duplex RPC. Duplex is still an
-experimental capability and is tested separately from the recommended demos.
-
-## Run the demos
-
-Run a demo from its own project directory:
+`router/` is the recommended connection example. It starts a Go Router, registers
+a Python service, calls it through a generated client, and shuts down the flow.
+Prepare the executable once, then run the demo from the monorepo root:
 
 ```bash
-cd demo/showcase
-uv run demo
+go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
+uv run --project demo/router demo
 ```
 
-The quickstart's complete short-lived flow is also one command:
+The demo uses anonymous loopback connections for experimentation. Applications
+should configure accounts and scopes; see [Router authentication](../docs/router.md)
+and [SDK startup](../docs/router-launcher.md).
+
+For three local processes, open a terminal in `demo/router/` for each command:
 
 ```bash
-cd demo/quickstart
-uv run demo
-```
-
-The quickstart's deployment-shaped two-process form uses two terminals:
-
-```bash
-cd demo/quickstart
-uv run python -m quickstart_demo.server
-uv run python -m quickstart_demo.client
-```
-
-The router's complete short-lived flow is also one command:
-
-```bash
-cd demo/router
-uv run demo
-```
-
-The router's deployment-shaped three-process form uses three terminals:
-
-```bash
-cd demo/router
 uv run python -m router_demo.router
 uv run python -m router_demo.server
 uv run python -m router_demo.client
 ```
 
-The cross-language demos each contain both a uv project and a Yarn project.
-Run them from their own directories:
+## Service and compatibility references
 
-```bash
-cd demo/py2ts
-uv run demo
-```
+These runners currently use Direct. They remain useful for studying service
+contracts and interoperability, but their connection setup is pending migration
+to Router:
 
-```bash
-cd demo/ts2py
-uv run demo
-```
+- `quickstart/` — a small Direct server and generated client.
+- `showcase/` — service APIs, expanded parameters, unary and both streaming shapes.
+- `py2ts/` — a Python service and generated TypeScript client package.
+- `ts2py/` — a TypeScript service and generated Python uv client package.
+
+Run `uv run demo` from the respective directory. Cross-language demos include
+both a uv project and a Yarn project. Their READMEs document regeneration and
+any separate process entry points.
+
+Duplex remains experimental and is tested separately from these examples.

@@ -3,6 +3,11 @@
 The standalone Go implementation of MeshCall's Router. Python and TypeScript
 start this executable as a child process; they do not implement routing.
 
+Router is the recommended connection model. In deployments, run this program
+under Docker or another process manager and give clients/services its endpoint
+and their credentials. SDK launchers support applications that explicitly own
+a local Router. See [the startup review](../docs/router-launcher.md).
+
 ## Build and run
 
 From the monorepo root, with Go 1.26 or newer:
@@ -18,6 +23,12 @@ set `MESHCALL_ROUTER_BINARY`, pass `binary_path` / `binaryPath`, or place
 source checkout and a package-local `bin` directory. Current Python/npm packages
 do not bundle binaries; launchers never download, build, or fall back to a
 language-specific Router.
+
+Set an explicit trusted binary path for predictable SDK startup. Current source
+discovery also searches the caller's working directory and its ancestors before
+`PATH`; a source marker is not an integrity check. Readiness validates the wire
+protocol and child identity, but does not check a Router release or capability
+version. The startup review records proposed changes to these defaults.
 
 The CLI defaults to `127.0.0.1` and an automatically selected port. It prints one
 `router.ready` JSON line on stdout after binding. Diagnostics go to stderr.
@@ -37,6 +48,9 @@ See [Router authentication and RPC management](../docs/router.md) for the
 configuration format, scoped temporary tokens, and Python/TypeScript examples.
 Without an auth file, the listener is in development mode; AuthService cannot
 issue tokens. An invalid or empty supplied auth file fails startup.
+Development mode permits anonymous calls and service registration, even if a
+network interface is selected. Configure authentication before exposing the
+listener; the current runtime does not enforce that restriction automatically.
 
 `hash-password` reads a password from stdin and prints a salted
 PBKDF2-HMAC-SHA256 hash. For a hidden interactive password prompt:

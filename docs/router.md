@@ -1,14 +1,16 @@
 # Router architecture
 
+Router is the recommended topology for new MeshCall applications. Direct remains
+supported for compatibility and focused transport tests.
+
 MeshCall has one Router implementation: the standalone `meshcall-router` Go
-executable. Python and TypeScript `WebSocketRouter` APIs launch, supervise, and
+executable. Python and TypeScript `WebSocketRouter` APIs launch, manage, and
 stop that same executable. They do not maintain routing tables or run Go through
 an FFI layer. A deployed Router can also run independently of either language.
 
 ```mermaid
 flowchart LR
-  PL[Python launcher] -. owns process .-> R[Go Router]
-  TL[TypeScript launcher] -. owns process .-> R
+  O[One owner: process manager or SDK launcher] -. owns process .-> R[Go Router]
   PC[Python client] <-->|meshcall/1| R
   TC[TypeScript client] <-->|meshcall/1| R
   R <-->|registered connection| PS[Python services]
@@ -16,9 +18,13 @@ flowchart LR
   R --> A[Built-in AuthService]
 ```
 
-Choose one launcher, or launch the binary directly. Clients and services initiate
-WebSocket connections to the Router. TCP and Unix sockets carry the same logical
-frames. See [building and deploying the executable](../meshcall-router/README.md).
+For deployments, run Router under Docker or another process manager. Clients
+and services initiate authenticated WebSocket connections to its shared endpoint.
+TCP and Unix sockets carry the same logical frames. An application can explicitly
+own a local Router through one SDK launcher; each launcher owns a separate Go
+process and must share its endpoint with clients/services. Ordinary SDK clients
+do not start a Router. See [building and deploying the executable](../meshcall-router/README.md)
+and [the SDK startup review](router-launcher.md).
 
 ## Registration and routing
 
@@ -83,7 +89,10 @@ control frames take priority, and other calls rotate fairly.
 Pass `--auth-file /path/router-auth.json`, Python `auth_file=...`, or TypeScript
 `authFile: ...`. A configured file must contain at least one valid user; malformed
 or empty configuration fails startup. Omitting the file enables development
-mode. Development mode does not expose token issuance.
+mode. Development mode does not expose token issuance, but permits anonymous
+business calls and service registration. The current runtime also allows this
+mode on non-loopback interfaces; configure authentication before exposing the
+listener. Local application deployments should also use credentials.
 
 ```json
 {
@@ -230,16 +239,22 @@ try {
 
 ## Connecting services
 
-Python:
+Connect services to an existing authenticated Router. Python, using a service
+account configured to register `MyService`'s declared service name:
 
 ```python
-router = WebSocketRouter(host="127.0.0.1", port=8765)  # launches Go; auth_file=... enables accounts
-await router.start()
+import os
+
+from meshcall import RouterCredentials, RpcServer
+from meshcall.drivers import WebSocketRouterServerDriver
 
 server = RpcServer(
     services=[MyService],
     driver=WebSocketRouterServerDriver(
-        "ws://127.0.0.1:8765", instance_id="python-1",
+        os.environ["MESHCALL_ROUTER_URL"], instance_id="python-1",
+        auth=RouterCredentials(
+            username="worker", password=os.environ["ROUTER_WORKER_PASSWORD"],
+        ),
     ),
 )
 await server.start()
@@ -248,27 +263,61 @@ await server.start()
 TypeScript, using an existing service definition:
 
 ```typescript
-const router = new WebSocketRouter({ host: "127.0.0.1", port: 8765 });
-await router.start(); // launches the same Go executable; use authFile to enable accounts
+import { MeshCallServer } from "@meshcall/runtime";
 
 const server = new MeshCallServer({
   services: [myService],
   router: {
-    endpoint: "ws://127.0.0.1:8765",
+    endpoint: process.env.MESHCALL_ROUTER_URL!,
     instanceId: "typescript-1",
+    auth: { username: "worker", password: process.env.ROUTER_WORKER_PASSWORD! },
   },
 });
 await server.start();
 ```
 
-For an authenticated Router, add `auth=RouterCredentials(...)` to Python
-`WebSocketRouterServerDriver` and `WebSocketClientDriver`. In TypeScript, add
-`auth` inside `MeshCallServer`'s `router` options, and in the third options
-argument of `MeshCallClient`. Either form accepts an account or a token.
-Call `await router.stop()` in both languages when the owning application exits.
+Clients pass `auth=RouterCredentials(...)` to Python `WebSocketClientDriver`, or
+`auth` in the third options argument of TypeScript `MeshCallClient`. Either form
+accepts an account or a token. Use separate client and registration credentials
+with appropriate service scopes. Use `wss://` for network endpoints.
 
 Both clients connect to the Router's normal WebSocket address. They do not
 implement balancing or need to know the individual service addresses.
+
+## SDK-owned local Router
+
+Prepare the executable and an auth file before starting. Python:
+
+```python
+from meshcall import WebSocketRouter
+
+async with WebSocketRouter(auth_file="/path/router-auth.json") as router:
+    uri = f"ws://127.0.0.1:{router.bound_port}"
+    # Start services, then clients, using uri and their scoped credentials.
+    # Close those connections before leaving this context.
+```
+
+TypeScript:
+
+```typescript
+import { WebSocketRouter } from "@meshcall/runtime";
+
+const router = new WebSocketRouter({ authFile: "/path/router-auth.json" });
+try {
+  await router.start();
+  const uri = `ws://127.0.0.1:${router.boundPort}`;
+  // Start services, then clients, using uri and their scoped credentials.
+  // Close those connections before stopping Router.
+} finally {
+  await router.stop();
+}
+```
+
+These APIs own a Go child process and use an OS-assigned loopback port by default.
+They do not install the executable, generate initial accounts, or attach to an
+existing Router. `binary_path` / `binaryPath` selects an explicit executable.
+The current lifecycle handles readiness and shutdown; planned initialization,
+distribution, and security improvements are in [the startup review](router-launcher.md).
 
 ## Verification
 

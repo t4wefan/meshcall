@@ -1,5 +1,8 @@
 # MeshCall py2ts demo
 
+This runner uses Direct as a cross-language contract reference. New applications
+should use [Router connections](../../docs/router.md#connecting-services).
+
 This directory is a complete uv project containing a Python service and a
 generated TypeScript client package. From this directory, run the entire
 cross-language round trip with:

@@ -1,5 +1,11 @@
 # Implementation Architecture
 
+Router is the recommended topology for new applications. Python and TypeScript
+services register with the shared Go Router, and clients connect to its endpoint
+with their own credentials. Direct remains available for compatibility and
+transport tests. See [Router deployment](router.md) and
+[SDK process ownership](router-launcher.md).
+
 ## Layers
 
 ```text
@@ -16,9 +22,9 @@ Python RPC event loop <---- thread-safe bridge ----> service worker event loop
         v
 Logical Frame connection and fair scheduler
         |
-        +---- WebSocket Direct
+        +---- WebSocket Router ---- service instance registry (recommended)
         |
-        +---- WebSocket Router ---- service instance registry
+        +---- WebSocket Direct (compatibility)
 ```
 
 The contract layer has no networking dependency. Unary is the default method

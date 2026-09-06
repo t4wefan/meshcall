@@ -11,7 +11,8 @@ yarn test
 ```
 
 Both the client and service runtimes support unary, server-streaming, and
-client-streaming calls over Direct WebSocket or the shared Go Router.
+client-streaming calls through the shared Go Router, the recommended topology.
+Direct WebSocket listeners remain supported for compatibility and transport tests.
 TCP and Unix sockets use the same runtime. Duplex remains experimental and is
 not exposed by the TypeScript service API.
 
@@ -63,20 +64,28 @@ const counter = defineService({
     }),
   },
 });
-const server = new MeshCallServer({ services: [counter], port: 8765 });
+const server = new MeshCallServer({
+  services: [counter],
+  router: {
+    endpoint: process.env.MESHCALL_ROUTER_URL!,
+    instanceId: "counter-ts-1",
+    auth: { username: "worker", password: process.env.ROUTER_WORKER_PASSWORD! },
+  },
+});
 await server.start();
 // Await server.close() when the application shuts down.
 ```
 
-For Router mode, replace `port` with
-`router: { endpoint: "ws://127.0.0.1:8765", instanceId: "counter-ts-1" }`.
-Services register before `start()` resolves. A disconnect terminates active
-calls and sets `isRunning` to false; reconnect explicitly with `start()`.
+Set `MESHCALL_ROUTER_URL` to an existing Router endpoint and configure the worker
+account to register `example.v1.Counter`. Use `wss://` through a TLS reverse proxy
+for network connections. Services register before `start()` resolves. A
+disconnect terminates active calls and sets `isRunning` to false; reconnect
+explicitly with `start()`.
 The runtime does not replay calls.
 
-For local IPC use `unixPath: "/tmp/meshcall.sock"` on a Direct server, or
-`router: { endpoint: { unixPath: "/tmp/router.sock" } }` for Router mode.
-Clients accept either a URL or `{ unixPath: "/tmp/meshcall.sock" }`.
+For local IPC, replace `router.endpoint` with `{ unixPath: "/tmp/router.sock" }`
+and keep the same authentication options. Clients accept either a Router URL or
+`{ unixPath: "/tmp/router.sock" }`.
 
 `accessLog` defaults to true. `logLevel`, `colorize`, and a compatible `logger`
 configure terminal access entries; the default logger writes to stderr.
@@ -92,7 +101,11 @@ See [Router architecture](../docs/router.md) for balancing and deployment bounda
 `new WebSocketRouter({ port: 8765, authFile: "/path/router-auth.json" })`
 starts the standalone Go executable when `start()` is awaited; `stop()` or
 `close()` reaps it. Set `binaryPath` or `MESHCALL_ROUTER_BINARY` for a prebuilt
-binary. Neither a Go compiler nor a Python runtime is needed to run it.
+binary. Neither a Go compiler nor a Python runtime is needed to run it. The npm
+package does not bundle that binary. In deployments, connect to a Router owned
+by Docker or another process manager. Use the launcher when the application
+explicitly owns the Go child process, and close service/client connections
+before stopping it. See [startup review](../docs/router-launcher.md).
 
 Client credentials use the third constructor option:
 `new MeshCallClient(uri, undefined, { auth: { username, password } })`, or
