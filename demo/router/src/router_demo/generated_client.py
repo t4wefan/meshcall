@@ -19,6 +19,8 @@ class CountItem(BaseModel):
 
 
 class CounterServiceClient(ClientBase):
+    """A tiny service instance registered with the router."""
+
     service_name = "example.v1.CounterService"
 
     def count(

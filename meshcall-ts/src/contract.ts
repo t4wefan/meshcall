@@ -16,20 +16,33 @@ export interface TypeContract<Value> {
   readonly __valueType?: (value: Value) => Value;
 }
 
+/** Semantic hints shared by every method shape. */
+export interface MethodSemantics {
+  /** Shown to humans and to LLM callers; keep it to one or two sentences. */
+  readonly description?: string;
+  /** Safe to retry without an idempotency key. Implied by `readOnly`. */
+  readonly idempotent?: boolean;
+  readonly readOnly?: boolean;
+  /** Irreversible side effects; tools must ask before calling. */
+  readonly destructive?: boolean;
+  /** Replacement to use instead; empty string when there is none. */
+  readonly deprecated?: string;
+}
+
 export interface ContractUnaryMethod<Request, Response>
-  extends UnaryMethod<Request, Response> {
+  extends UnaryMethod<Request, Response>, MethodSemantics {
   readonly request: TypeContract<Request>;
   readonly response: TypeContract<Response>;
 }
 
 export interface ContractServerStreamMethod<Request, Item>
-  extends ServerStreamMethod<Request, Item> {
+  extends ServerStreamMethod<Request, Item>, MethodSemantics {
   readonly request: TypeContract<Request>;
   readonly outputItem: TypeContract<Item>;
 }
 
 export interface ContractClientStreamMethod<Request, Item, Response>
-  extends ClientStreamMethod<Request, Item, Response> {
+  extends ClientStreamMethod<Request, Item, Response>, MethodSemantics {
   readonly request: TypeContract<Request>;
   readonly inputItem: TypeContract<Item>;
   readonly response: TypeContract<Response>;
@@ -48,8 +61,56 @@ export type ExportableServiceDefinition<
   readonly sourceModule: string;
   readonly sourceQualname: string;
   readonly balance?: BalancePolicy;
+  readonly description?: string;
   readonly methods: Methods;
 };
+
+const NAME_SEGMENT = /^[A-Za-z][A-Za-z0-9_]*$/u;
+const MAJOR_SEGMENT = /^v(0|[1-9][0-9]*)$/u;
+const NUMERIC_SEGMENT = /^(0|[1-9][0-9]*)$/u;
+const PATCH_SEGMENT = /^(0|[1-9][0-9]*)(-[0-9A-Za-z-]+)?$/u;
+
+/**
+ * Normalise a service name to its full form and extract its version.
+ * `chat` → `chat.v0`; `chat.v1`, `demo.v1.Greeting`, `chat.v1.2.0-beta1` stay.
+ */
+export function normalizeServiceName(name: string): { name: string; version: string } {
+  const segments = name.split(".");
+  const normalized: string[] = [];
+  let version: string | undefined;
+  for (let index = 0; index < segments.length;) {
+    const segment = segments[index] as string;
+    if (MAJOR_SEGMENT.test(segment)) {
+      if (version !== undefined) throw new Error("Service name " + JSON.stringify(name) + " has more than one version segment");
+      const minor = segments[index + 1];
+      const patch = segments[index + 2];
+      if (minor !== undefined && patch !== undefined && NUMERIC_SEGMENT.test(minor) && PATCH_SEGMENT.test(patch)) {
+        version = segment.slice(1) + "." + minor + "." + patch;
+        normalized.push(segment, minor, patch);
+        index += 3;
+      } else {
+        version = segment.slice(1);
+        normalized.push(segment);
+        index += 1;
+      }
+      continue;
+    }
+    if (!NAME_SEGMENT.test(segment)) {
+      throw new Error("Invalid service name " + JSON.stringify(name) + ": segment " + JSON.stringify(segment)
+        + " must start with a letter and contain only letters, digits and underscores (a version looks like 'v1' or 'v1.2.0')");
+    }
+    normalized.push(segment);
+    index += 1;
+  }
+  if (version === undefined) {
+    version = "0";
+    normalized.push("v0");
+  }
+  if (!normalized.some((part) => NAME_SEGMENT.test(part) && !MAJOR_SEGMENT.test(part))) {
+    throw new Error("Service name " + JSON.stringify(name) + " needs a package or service segment");
+  }
+  return { name: normalized.join("."), version };
+}
 
 export function defineType<Value>(
   qualname: string,
@@ -89,9 +150,7 @@ export function defineService<
 >(
   definition: ExportableServiceDefinition<Methods>,
 ): ExportableServiceDefinition<Methods> {
-  if (!/^[A-Za-z][A-Za-z0-9_.]*$/.test(definition.name)) {
-    throw new Error(`Invalid service name: ${JSON.stringify(definition.name)}`);
-  }
+  const { name } = normalizeServiceName(definition.name);
   if (Object.keys(definition.methods).length === 0) {
     throw new Error(`Service ${definition.name} does not declare any methods`);
   }
@@ -99,8 +158,12 @@ export function defineService<
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(methodName)) {
       throw new Error(`Invalid cross-language method name: ${methodName}`);
     }
+    const method = definition.methods[methodName] as MethodSemantics;
+    if (method.readOnly === true && method.destructive === true) {
+      throw new Error(`Method ${methodName} cannot be both readOnly and destructive`);
+    }
   }
-  return definition;
+  return name === definition.name ? definition : { ...definition, name };
 }
 
 export function renderContract(
@@ -110,21 +173,31 @@ export function renderContract(
     protocol: "meshcall/1",
     services: services.map((service) => {
       const serviceBalance = normalizeBalance(service.balance);
+      const normalized = normalizeServiceName(service.name);
       return {
-        name: service.name,
+        name: normalized.name,
+        version: normalized.version,
         source_module: service.sourceModule,
         source_qualname: service.sourceQualname,
         balance: serviceBalance,
+        description: service.description ?? null,
         methods: Object.entries(service.methods).map(([name, method]) => ({
           name,
           stream: method.stream,
           request: renderTypeRef(method.request),
+          // Parameters are the request object's properties, in schema order.
+          parameters: Object.keys((method.request.schema.properties as Record<string, unknown> | undefined) ?? {}),
           response: method.stream === "server_stream" ? null : renderTypeRef(method.response),
           input_item: method.stream === "client_stream" ? renderTypeRef(method.inputItem) : null,
           output_item: method.stream === "server_stream" ? renderTypeRef(method.outputItem) : null,
           balance: normalizeBalance(method.balance ?? serviceBalance),
-          request_style: "model",
-          request_fields: [],
+          description: method.description ?? null,
+          annotations: {
+            idempotent: method.idempotent === true || method.readOnly === true,
+            read_only: method.readOnly === true,
+            destructive: method.destructive === true,
+          },
+          deprecated: method.deprecated ?? null,
         })),
       };
     }),

@@ -65,7 +65,7 @@ class _Session:
         )
 
 
-@service(name="best_practice.v1.LlmService")
+@service("best_practice.v1.LlmService")
 class LlmService:
     """A deterministic LLM facade with process-local session state."""
 
@@ -80,6 +80,7 @@ class LlmService:
         *,
         logger: RpcLogger,
     ) -> NewSessionResponse:
+        """Create a session and return it; each call creates a new one."""
         session = _Session(
             id=uuid4().hex,
             title=title.strip() or "New session",
@@ -93,14 +94,15 @@ class LlmService:
         )
         return NewSessionResponse(session=session.info())
 
-    @method()
+    @method(read_only=True)
     async def list_sessions(self, logger: RpcLogger) -> ListSessionsResponse:
+        """List the sessions held in this process."""
         async with self._lock:
             sessions = [session.info() for session in self._sessions.values()]
         logger.debug("listed {} sessions", len(sessions))  # noqa: PLE1205
         return ListSessionsResponse(sessions=sessions)
 
-    @method()
+    @method(read_only=True)
     async def count_tokens(
         self,
         text: str,
@@ -140,6 +142,7 @@ class LlmService:
         *,
         logger: RpcLogger,
     ) -> AsyncIterator[ChatChunk]:
+        """Stream a deterministic reply for ``prompt`` into ``session_id``."""
         if max_tokens <= 0:
             raise MeshCallError(
                 ErrorCode.INVALID_ARGUMENT,

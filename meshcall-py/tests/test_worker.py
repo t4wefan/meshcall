@@ -27,13 +27,13 @@ blocking_started = threading.Event()
 @service(name="test.v1.WorkerIsolationService")
 class WorkerIsolationService:
     @method()
-    async def block(self, request: WorkRequest) -> WorkResult:
+    async def block(self, delay: float) -> WorkResult:
         blocking_started.set()
-        time.sleep(request.delay)  # noqa: ASYNC251 - intentional regression case
+        time.sleep(delay)  # noqa: ASYNC251 - intentional regression case
         return WorkResult(worker_thread_id=threading.get_ident())
 
     @method()
-    async def identify(self, request: WorkRequest) -> WorkResult:
+    async def identify(self, delay: float) -> WorkResult:
         return WorkResult(worker_thread_id=threading.get_ident())
 
 

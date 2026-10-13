@@ -21,9 +21,9 @@ try {
     values.push(item.itemValue);
   }
   assert.deepEqual(values, Array.from({ length: 64 }, (_, i) => i));
-  const upload = await client.upload(7, (async function* () {
+  const upload = await client.upload((async function* () {
     for (const itemValue of values) yield { itemValue, status: "ready" };
-  })());
+  })(), 7);
   assert.equal(upload.total, 2023);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally {

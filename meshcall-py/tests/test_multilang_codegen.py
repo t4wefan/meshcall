@@ -92,8 +92,8 @@ def test_generators_preserve_expanded_service_signatures(tmp_path) -> None:
     target = tmp_path / "expanded.meshcall.json"
     target.write_text(render_contract((contract,)), encoding="utf-8")
     loaded = load_contract(target).services[0]
-    assert loaded.methods[0].request_style == contract.methods[0].request_style
-    assert loaded.methods[0].request_fields == ("left", "right")
+    assert loaded.methods[0].parameters == ("left", "right")
+    assert loaded.version == contract.version
 
     python_source = render_portable_python_client(contract)
     typescript_source = render_typescript_client(contract)

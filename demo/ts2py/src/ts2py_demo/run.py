@@ -7,12 +7,7 @@ import json
 import shutil
 from pathlib import Path
 
-from meshcall_demo_ts2py_client import (
-    CountRequest,
-    GreetingRequest,
-    SumRequest,
-    TypeScriptGreetingServiceClient,
-)
+from meshcall_demo_ts2py_client import TypeScriptGreetingServiceClient
 
 from meshcall.drivers import WebSocketClientDriver
 
@@ -46,16 +41,14 @@ async def run_demo() -> None:
     )
     try:
         async with client:
-            response = await client.greet(
-                GreetingRequest(name="Python", repeat=2)
-            )
-            items = [item async for item in client.count(CountRequest(count=40))]
+            response = await client.greet("Python", 2)
+            items = [item async for item in client.count(40)]
 
             async def input_items():
                 for item in items:
                     yield item
 
-            total = await client.sum(SumRequest(offset=10), input_items())
+            total = await client.sum(input_items(), 10)
             assert len(items) == 40
             assert total.total == 790
         print(f"TypeScript service -> Python client: {response.model_dump()}")

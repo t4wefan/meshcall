@@ -103,6 +103,6 @@ async def test_generated_aliases_round_trip_in_all_recommended_shapes(
                 for item in items:
                     yield item
 
-            assert (await client.upload(request, upload_items())).totalValue == 820
+            assert (await client.upload(upload_items(), request)).totalValue == 820
     finally:
         await server.stop()

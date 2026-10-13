@@ -3,12 +3,14 @@
   "services": [
     {
       "name": "demo.v1.TypeScriptGreetingService",
+      "version": "1",
       "source_module": "ts2py_service",
       "source_qualname": "TypeScriptGreetingService",
       "balance": {
         "kind": "round_robin",
         "key": null
       },
+      "description": null,
       "methods": [
         {
           "name": "count",
@@ -31,6 +33,9 @@
               "additionalProperties": false
             }
           },
+          "parameters": [
+            "count"
+          ],
           "response": null,
           "input_item": null,
           "output_item": {
@@ -53,8 +58,13 @@
             "kind": "round_robin",
             "key": null
           },
-          "request_style": "model",
-          "request_fields": []
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
         },
         {
           "name": "sum",
@@ -73,6 +83,9 @@
               "additionalProperties": false
             }
           },
+          "parameters": [
+            "offset"
+          ],
           "response": {
             "module": "ts2py_service",
             "qualname": "SumResult",
@@ -110,8 +123,13 @@
             "kind": "round_robin",
             "key": null
           },
-          "request_style": "model",
-          "request_fields": []
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
         },
         {
           "name": "greet",
@@ -138,6 +156,10 @@
               "additionalProperties": false
             }
           },
+          "parameters": [
+            "name",
+            "repeat"
+          ],
           "response": {
             "module": "ts2py_service",
             "qualname": "GreetingResult",
@@ -164,8 +186,13 @@
             "kind": "round_robin",
             "key": null
           },
-          "request_style": "model",
-          "request_fields": []
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
         }
       ]
     }

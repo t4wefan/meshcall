@@ -41,10 +41,10 @@ class Result(BaseModel):
 @service(name="test.v1.TimingService")
 class TimingService:
     @method()
-    async def echo_metadata(self, request: Request, ctx: RpcContext) -> Result:
+    async def echo_metadata(self, ctx: RpcContext, value: int = 0) -> Result:
         ctx.set_trailer("handled-by", "python")
         ctx.set_trailer("remaining-known", str(ctx.remaining() is not None))
-        return Result(total=request.value, echoed=dict(ctx.metadata))
+        return Result(total=value, echoed=dict(ctx.metadata))
 
     @method.server_stream()
     async def trickle(self, value: int, gap_ms: int) -> AsyncIterator[Item]:

@@ -32,10 +32,13 @@ demos() {
   step "demos end to end"
   for d in quickstart py2ts showcase router ts2py; do
     printf '%s... ' "$d"
+    # uv caches builds of path dependencies; force the ones that live in this repo.
+    reinstall="--reinstall-package meshcall"
+    [ "$d" = ts2py ] && reinstall="$reinstall --reinstall-package meshcall-demo-ts2py-client"
     if [ "$d" = router ]; then
-      (cd demo/$d && env -u MESHCALL_ROUTER_BINARY uv run --locked --reinstall-package meshcall demo >/dev/null)
+      (cd demo/$d && env -u MESHCALL_ROUTER_BINARY uv run --locked $reinstall demo >/dev/null)
     else
-      (cd demo/$d && uv run --locked --reinstall-package meshcall demo >/dev/null)
+      (cd demo/$d && uv run --locked $reinstall demo >/dev/null)
     fi
     echo ok
   done

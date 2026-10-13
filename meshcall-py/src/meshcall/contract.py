@@ -4,7 +4,7 @@ import inspect
 import re
 from collections.abc import AsyncIterator as AsyncIteratorABC
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
@@ -24,8 +24,8 @@ from meshcall.ir import (
     BalanceKind,
     BalancePolicy,
     BindingKind,
+    MethodAnnotations,
     MethodContract,
-    RequestStyle,
     ServiceContract,
     StreamKind,
     TypeRef,
@@ -36,7 +36,61 @@ from meshcall.streams import RpcDuplex, RpcInputStream
 ServiceT = TypeVar("ServiceT", bound=type[Any])
 MethodParams = ParamSpec("MethodParams")
 MethodReturnT = TypeVar("MethodReturnT")
-_SERVICE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.]*$")
+_NAME_SEGMENT = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_MAJOR_SEGMENT = re.compile(r"^v(0|[1-9][0-9]*)$")
+_NUMERIC_SEGMENT = re.compile(r"^(0|[1-9][0-9]*)$")
+_PATCH_SEGMENT = re.compile(r"^(0|[1-9][0-9]*)(-[0-9A-Za-z-]+)?$")
+
+
+def normalize_service_name(name: str) -> tuple[str, str]:
+    """Return ``(full_name, version)`` for a service name.
+
+    Names are dotted segments. Exactly one segment group is the version:
+    ``v<major>`` or ``v<major>.<minor>.<patch>[-<prerelease>]``. A name with
+    no version segment gets ``.v0`` appended, so ``chat`` and ``chat.v0`` are
+    the same service.
+    """
+    segments = name.split(".")
+    version: str | None = None
+    normalized: list[str] = []
+    names = 0
+    index = 0
+    while index < len(segments):
+        segment = segments[index]
+        if _MAJOR_SEGMENT.fullmatch(segment):
+            if version is not None:
+                raise ContractError(
+                    f"Service name {name!r} has more than one version segment"
+                )
+            tail = segments[index + 1 : index + 3]
+            if (
+                len(tail) == 2
+                and _NUMERIC_SEGMENT.fullmatch(tail[0])
+                and _PATCH_SEGMENT.fullmatch(tail[1])
+            ):
+                version = f"{segment[1:]}.{tail[0]}.{tail[1]}"
+                normalized.extend([segment, *tail])
+                index += 3
+            else:
+                version = segment[1:]
+                normalized.append(segment)
+                index += 1
+            continue
+        if not _NAME_SEGMENT.fullmatch(segment):
+            raise ContractError(
+                f"Invalid service name {name!r}: segment {segment!r} must start "
+                "with a letter and contain only letters, digits and underscores "
+                "(a version looks like 'v1' or 'v1.2.0')"
+            )
+        normalized.append(segment)
+        names += 1
+        index += 1
+    if names == 0:
+        raise ContractError(f"Service name {name!r} needs a package or service segment")
+    if version is None:
+        version = "0"
+        normalized.append("v0")
+    return ".".join(normalized), version
 
 
 class Balance:
@@ -68,6 +122,11 @@ class MethodOptions:
     balance: BalancePolicy | None
     stream: StreamKind | None
     binding: BindingKind | None
+    description: str | None = None
+    idempotent: bool | None = None
+    read_only: bool | None = None
+    destructive: bool | None = None
+    deprecated: str | None = None
 
 
 _NO_STREAM = object()
@@ -78,8 +137,6 @@ _NO_CONTEXT = object()
 @dataclass(frozen=True)
 class MethodBinding:
     request_type: type[BaseModel]
-    request_style: RequestStyle
-    request_parameter: str | None
     request_fields: tuple[str, ...]
     parameter_names: tuple[str, ...]
     positional_only_parameters: frozenset[str]
@@ -95,14 +152,9 @@ class MethodBinding:
         logger: Any = _NO_LOGGER,
         context: Any = _NO_CONTEXT,
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-        if self.request_style is RequestStyle.MODEL:
-            if self.request_parameter is None:
-                raise ContractError(
-                    "Model-style RPC method is missing its request parameter"
-                )
-            values: dict[str, Any] = {self.request_parameter: request}
-        else:
-            values = {name: getattr(request, name) for name in self.request_fields}
+        values: dict[str, Any] = {
+            name: getattr(request, name) for name in self.request_fields
+        }
 
         if self.stream_parameter is None:
             if stream is not _NO_STREAM:
@@ -140,53 +192,107 @@ class Method:
         self,
         *,
         balance: BalancePolicy | None = None,
+        description: str | None = None,
+        idempotent: bool | None = None,
+        read_only: bool | None = None,
+        destructive: bool | None = None,
+        deprecated: str | None = None,
     ) -> MethodDeclaration:
         """Declare the default unary method and infer its binding from the class."""
-        return MethodDeclaration(stream=None, balance=balance, binding=None)
+        return MethodDeclaration(
+            stream=None,
+            balance=balance,
+            binding=None,
+            description=description,
+            idempotent=idempotent,
+            read_only=read_only,
+            destructive=destructive,
+            deprecated=deprecated,
+        )
 
     def unary(
         self,
         *,
         balance: BalancePolicy | None = None,
+        description: str | None = None,
+        idempotent: bool | None = None,
+        read_only: bool | None = None,
+        destructive: bool | None = None,
+        deprecated: str | None = None,
     ) -> MethodDeclaration:
         return MethodDeclaration(
             stream=StreamKind.UNARY,
             balance=balance,
             binding=BindingKind.INSTANCE,
+            description=description,
+            idempotent=idempotent,
+            read_only=read_only,
+            destructive=destructive,
+            deprecated=deprecated,
         )
 
     def server_stream(
         self,
         *,
         balance: BalancePolicy | None = None,
+        description: str | None = None,
+        idempotent: bool | None = None,
+        read_only: bool | None = None,
+        destructive: bool | None = None,
+        deprecated: str | None = None,
     ) -> MethodDeclaration:
         return MethodDeclaration(
             stream=StreamKind.SERVER,
             balance=balance,
             binding=BindingKind.INSTANCE,
+            description=description,
+            idempotent=idempotent,
+            read_only=read_only,
+            destructive=destructive,
+            deprecated=deprecated,
         )
 
     def client_stream(
         self,
         *,
         balance: BalancePolicy | None = None,
+        description: str | None = None,
+        idempotent: bool | None = None,
+        read_only: bool | None = None,
+        destructive: bool | None = None,
+        deprecated: str | None = None,
     ) -> MethodDeclaration:
         return MethodDeclaration(
             stream=StreamKind.CLIENT,
             balance=balance,
             binding=BindingKind.INSTANCE,
+            description=description,
+            idempotent=idempotent,
+            read_only=read_only,
+            destructive=destructive,
+            deprecated=deprecated,
         )
 
     def duplex(
         self,
         *,
         balance: BalancePolicy | None = None,
+        description: str | None = None,
+        idempotent: bool | None = None,
+        read_only: bool | None = None,
+        destructive: bool | None = None,
+        deprecated: str | None = None,
     ) -> MethodDeclaration:
         """Declare the experimental duplex method shape."""
         return MethodDeclaration(
             stream=StreamKind.DUPLEX,
             balance=balance,
             binding=BindingKind.INSTANCE,
+            description=description,
+            idempotent=idempotent,
+            read_only=read_only,
+            destructive=destructive,
+            deprecated=deprecated,
         )
 
 
@@ -199,10 +305,22 @@ class MethodDeclaration:
         stream: StreamKind | None,
         balance: BalancePolicy | None,
         binding: BindingKind | None,
+        description: str | None = None,
+        idempotent: bool | None = None,
+        read_only: bool | None = None,
+        destructive: bool | None = None,
+        deprecated: str | None = None,
     ) -> None:
-        self.stream = stream
-        self.balance = balance
-        self.binding = binding
+        self.options = MethodOptions(
+            balance=balance,
+            stream=stream,
+            binding=binding,
+            description=description,
+            idempotent=idempotent,
+            read_only=read_only,
+            destructive=destructive,
+            deprecated=deprecated,
+        )
 
     if TYPE_CHECKING:
         static = staticmethod
@@ -210,91 +328,79 @@ class MethodDeclaration:
 
         @property
         def static(self) -> _StaticShape:
-            return _StaticShape(self.stream, self.balance)
+            return _StaticShape(self.options)
 
     def __call__(
         self,
         func: Callable[MethodParams, MethodReturnT],
     ) -> Callable[MethodParams, MethodReturnT]:
-        _mark_method(
-            func,
-            balance=self.balance,
-            stream=self.stream,
-            binding=self.binding,
-        )
+        _mark_method(func, self.options)
         return func
 
 
 class _StaticShape:
-    def __init__(
-        self,
-        stream: StreamKind | None,
-        balance: BalancePolicy | None,
-    ) -> None:
-        self.stream = stream
-        self.balance = balance
+    def __init__(self, options: MethodOptions) -> None:
+        self.options = options
 
     def __call__(
         self,
         func: Callable[MethodParams, MethodReturnT],
     ) -> staticmethod[MethodParams, MethodReturnT]:
-        _mark_method(
-            func,
-            balance=self.balance,
-            stream=self.stream,
-            binding=BindingKind.STATIC,
-        )
+        _mark_method(func, replace(self.options, binding=BindingKind.STATIC))
         return staticmethod(func)
 
 
 method = Method()
 
 
-def _mark_method(
-    func: Callable[..., Any],
-    *,
-    balance: BalancePolicy | None,
-    stream: StreamKind | None,
-    binding: BindingKind | None,
-) -> None:
+def _mark_method(func: Callable[..., Any], options: MethodOptions) -> None:
     existing = getattr(func, "__meshcall_method__", None)
     if existing is not None and not isinstance(existing, MethodOptions):
         raise ContractError(f"{func.__qualname__} has invalid RPC metadata")
     if isinstance(existing, MethodOptions):
-        if existing.balance is not None and balance is not None:
-            raise ContractError(f"{func.__qualname__} declares balance twice")
-        if existing.stream is not None and stream is not None:
-            raise ContractError(f"{func.__qualname__} declares its RPC shape twice")
-        if existing.binding is not None and binding is not None:
-            raise ContractError(f"{func.__qualname__} declares its binding twice")
-        balance = balance or existing.balance
-        stream = stream if stream is not None else existing.stream
-        binding = binding or existing.binding
-    func.__meshcall_method__ = MethodOptions(  # type: ignore[attr-defined]
-        balance=balance,
-        stream=stream,
-        binding=binding,
-    )
+        merged: dict[str, Any] = {}
+        for field_name in MethodOptions.__dataclass_fields__:
+            old, new = getattr(existing, field_name), getattr(options, field_name)
+            if old is not None and new is not None and old != new:
+                raise ContractError(f"{func.__qualname__} declares {field_name} twice")
+            merged[field_name] = new if new is not None else old
+        options = MethodOptions(**merged)
+    func.__meshcall_method__ = options  # type: ignore[attr-defined]
 
 
 def service(
-    *,
     name: str | None = None,
+    *,
     balance: BalancePolicy | None = None,
+    description: str | None = None,
 ) -> Callable[[ServiceT], ServiceT]:
+    """Declare an RPC service.
+
+    ``name`` is dotted and carries one version segment (``chat.v1``,
+    ``demo.v1.Greeting``); without one it is normalised to ``.v0``. Omitting
+    the name derives it from the class's module and qualified name. The class
+    docstring becomes the service description unless ``description`` is given.
+    """
+
     def decorate(cls: ServiceT) -> ServiceT:
-        service_name = name or f"{cls.__module__}.{cls.__qualname__}"
-        if not _SERVICE_NAME.fullmatch(service_name):
-            raise ContractError(f"Invalid service name: {service_name!r}")
+        raw_name = name or f"{cls.__module__}.{cls.__qualname__}"
+        full_name, version = normalize_service_name(raw_name)
         contract = extract_service_contract(
             cls,
-            name=service_name,
+            name=full_name,
+            version=version,
             balance=balance or Balance.round_robin(),
+            description=description if description is not None else _docstring(cls),
         )
         cls.__meshcall_contract__ = contract
         return cls
 
     return decorate
+
+
+def _docstring(obj: Any) -> str | None:
+    text = inspect.getdoc(obj)
+    return text.strip() or None if text else None
 
 
 def get_service_contract(cls: type[Any]) -> ServiceContract:
@@ -323,7 +429,9 @@ def extract_service_contract(
     cls: type[Any],
     *,
     name: str,
+    version: str = "0",
     balance: BalancePolicy,
+    description: str | None = None,
 ) -> ServiceContract:
     methods: list[MethodContract] = []
     bindings: dict[str, MethodBinding] = {}
@@ -363,6 +471,7 @@ def extract_service_contract(
             declared_stream=options.stream,
             binding=binding,
             service_type=cls,
+            options=options,
         )
         methods.append(extracted.contract)
         bindings[attribute_name] = extracted.binding
@@ -373,9 +482,11 @@ def extract_service_contract(
     cls.__meshcall_method_bindings__ = MappingProxyType(bindings)  # type: ignore[attr-defined]
     return ServiceContract(
         name=name,
+        version=version,
         source_module=cls.__module__,
         source_qualname=cls.__qualname__,
         balance=balance,
+        description=description,
         methods=tuple(methods),
     )
 
@@ -388,6 +499,7 @@ def _extract_method(
     declared_stream: StreamKind | None,
     binding: BindingKind,
     service_type: type[Any],
+    options: MethodOptions,
 ) -> _ExtractedMethod:
     if not (inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)):
         raise ContractError(f"RPC method {func.__qualname__} must be async")
@@ -459,33 +571,20 @@ def _extract_method(
         else:
             request_parameters.append(parameter)
 
-    request_model = (
-        _model_class(hints[request_parameters[0].name])
-        if len(request_parameters) == 1
-        else None
+    # Parameters are the request: every non-injected parameter becomes one
+    # field of a generated request model, in declaration order.
+    request_type = _create_request_model(
+        service_type,
+        name,
+        request_parameters,
+        hints,
+        func,
     )
-    if request_model is not None:
-        request_type = request_model
-        request_style = RequestStyle.MODEL
-        request_fields: tuple[str, ...] = ()
-        request_parameter = request_parameters[0].name
-    else:
-        request_type = _create_request_model(
-            service_type,
-            name,
-            request_parameters,
-            hints,
-            func,
-        )
-        request_style = RequestStyle.EXPANDED
-        request_fields = tuple(parameter.name for parameter in request_parameters)
-        request_parameter = None
-
+    request_fields = tuple(parameter.name for parameter in request_parameters)
     request_ref = _type_ref(request_type)
+    semantics = _method_semantics(func, options)
     method_binding = MethodBinding(
         request_type=request_type,
-        request_style=request_style,
-        request_parameter=request_parameter,
         request_fields=request_fields,
         parameter_names=tuple(parameter.name for parameter in parameters),
         positional_only_parameters=frozenset(
@@ -522,8 +621,8 @@ def _extract_method(
             request=request_ref,
             output_item=_type_ref(output_type),
             balance=balance,
-            request_style=request_style,
-            request_fields=request_fields,
+            parameters=request_fields,
+            **semantics,
         )
         return _validated_method(contract, declared_stream, func, method_binding)
 
@@ -536,8 +635,8 @@ def _extract_method(
             request=request_ref,
             response=_type_ref(return_type),
             balance=balance,
-            request_style=request_style,
-            request_fields=request_fields,
+            parameters=request_fields,
+            **semantics,
         )
         return _validated_method(contract, declared_stream, func, method_binding)
 
@@ -557,8 +656,8 @@ def _extract_method(
             response=_type_ref(return_type),
             input_item=_type_ref(input_type),
             balance=balance,
-            request_style=request_style,
-            request_fields=request_fields,
+            parameters=request_fields,
+            **semantics,
         )
         return _validated_method(contract, declared_stream, func, method_binding)
 
@@ -581,12 +680,33 @@ def _extract_method(
             input_item=_type_ref(input_type),
             output_item=_type_ref(output_type),
             balance=balance,
-            request_style=request_style,
-            request_fields=request_fields,
+            parameters=request_fields,
+            **semantics,
         )
         return _validated_method(contract, declared_stream, func, method_binding)
 
     raise ContractError(f"Unsupported stream annotation on {func.__qualname__}")
+
+
+def _method_semantics(
+    func: Callable[..., Any], options: MethodOptions
+) -> dict[str, Any]:
+    if options.read_only and options.destructive:
+        raise ContractError(
+            f"RPC method {func.__qualname__} cannot be both read_only and destructive"
+        )
+    read_only = bool(options.read_only)
+    return {
+        "description": options.description
+        if options.description is not None
+        else _docstring(func),
+        "annotations": MethodAnnotations(
+            idempotent=bool(options.idempotent) or read_only,
+            read_only=read_only,
+            destructive=bool(options.destructive),
+        ),
+        "deprecated": options.deprecated,
+    }
 
 
 @dataclass(frozen=True)
@@ -635,12 +755,6 @@ def _create_request_model(
         raise ContractError(
             f"Cannot build request model for {func.__qualname__}: {exc}"
         ) from exc
-
-
-def _model_class(annotation: Any) -> type[BaseModel] | None:
-    if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
-        return annotation
-    return None
 
 
 def _request_model_name(service_type: type[Any], method_name: str) -> str:

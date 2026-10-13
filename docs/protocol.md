@@ -57,6 +57,21 @@ empty. Keys beginning with `meshcall-` are reserved for the runtime. Metadata is
 opaque to the Router, which forwards it unchanged. Runtimes expose request
 metadata to handlers and interceptors and expose trailers to callers.
 
+## Service names
+
+A service name is a sequence of dotted segments. Every segment except the
+version starts with a letter and contains only letters, digits and
+underscores. Exactly one segment group is the version: `v<major>` or
+`v<major>.<minor>.<patch>[-<prerelease>]` (the prerelease suffix contains no
+dots). A name written without a version is the same service as the one with
+`.v0` appended, and runtimes normalise it before registering or calling:
+`chat` ≡ `chat.v0`. Examples: `chat.v1`, `demo.v1.Greeting`, `chat.v1.2.0`,
+`chat.v2.0.0-beta1`.
+
+Routing matches the full normalised name exactly; `chat.v1` and `chat.v1.2.0`
+are different services. `meshcall.router.` is reserved for the Router's own
+services.
+
 ## Calls
 
 A client creates a globally unique `call_id` and sends `call.open`. In Router

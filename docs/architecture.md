@@ -23,18 +23,21 @@ Logical Frame connection and fair scheduler
 
 The contract layer has no networking dependency. Unary is the default method
 shape; explicit stream decorators select the recommended server or client
-streaming shapes. Ordinary service parameters are wrapped into an internal
-Pydantic request model for validation and transport. A single Pydantic request
-parameter remains the object-style alternative. The Runtime operates on logical
+streaming shapes. Service parameters are the request: they are wrapped into one
+generated Pydantic request model for validation and transport, and a
+model-typed parameter is simply one field of it. Service names are normalised
+to carry exactly one version segment (`chat` → `chat.v0`). The Runtime operates on logical
 frames and doesn't know whether the connection is direct or routed. WebSocket
 drivers own connection setup, role handshakes, TCP/Unix endpoints, and server
 registration. Duplex remains experimental protocol/runtime plumbing and is
 intentionally omitted from the recommended usage surface.
 
-The reserved `logger: RpcLogger` method parameter is dependency injection, not
-an RPC field. It is removed while extracting the request model and supplied by
-the server with service, method, and `call_id` context, so generated clients do
-not expose it.
+Parameters named `logger` / typed `RpcLogger` and `ctx` / `context` / typed
+`RpcContext` are dependency injection, not RPC fields. They are removed while
+extracting the request model and supplied by the server per call, so generated
+clients do not expose them. Docstrings and the `read_only` / `idempotent` /
+`destructive` / `deprecated` method options are carried into the contract as
+`description`, `annotations` and `deprecated`.
 
 ## RPC and service loop isolation
 

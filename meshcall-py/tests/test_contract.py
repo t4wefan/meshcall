@@ -7,7 +7,6 @@ from meshcall import (
     Balance,
     BindingKind,
     ContractError,
-    RequestStyle,
     RpcDuplex,
     RpcInputStream,
     StreamKind,
@@ -72,12 +71,14 @@ def test_extracts_all_method_shapes() -> None:
         BindingKind.INSTANCE,
         BindingKind.INSTANCE,
     ]
-    assert [method.request_style for method in contract.methods] == [
-        RequestStyle.MODEL,
-        RequestStyle.MODEL,
-        RequestStyle.MODEL,
-        RequestStyle.MODEL,
+    # Parameters are the request: a single model parameter is one field.
+    assert [method.parameters for method in contract.methods] == [
+        ("request",),
+        ("request",),
+        ("request",),
+        ("request",),
     ]
+    assert contract.version == "1"
     assert contract.methods[0].balance.kind == "least_inflight"
     assert contract.methods[1].balance.kind == "round_robin"
     assert contract.methods[3].input_item is not None
@@ -92,8 +93,7 @@ def test_expands_parameters_into_a_request_model() -> None:
             return Result(total=left + right)
 
     method_contract = get_service_contract(ExpandedService).methods[0]
-    assert method_contract.request_style is RequestStyle.EXPANDED
-    assert method_contract.request_fields == ("left", "right")
+    assert method_contract.parameters == ("left", "right")
     assert method_contract.request.schema_["required"] == ["left"]
     assert method_contract.request.schema_["properties"]["right"]["default"] == 1
 
@@ -143,3 +143,67 @@ def test_rejects_declared_shape_mismatch() -> None:
             @method.unary()
             async def download(self, request: Request) -> AsyncIterator[Item]:
                 yield Item(value=request.value)
+
+
+def test_service_names_are_normalised_and_validated() -> None:
+    from meshcall.contract import normalize_service_name
+
+    assert normalize_service_name("chat") == ("chat.v0", "0")
+    assert normalize_service_name("chat.v0") == ("chat.v0", "0")
+    assert normalize_service_name("chat.v1") == ("chat.v1", "1")
+    assert normalize_service_name("demo.v1.Greeting") == ("demo.v1.Greeting", "1")
+    assert normalize_service_name("chat.v1.2.0") == ("chat.v1.2.0", "1.2.0")
+    assert normalize_service_name("chat.v2.0.0-beta1") == (
+        "chat.v2.0.0-beta1",
+        "2.0.0-beta1",
+    )
+    for bad in ("", "v1", "chat.v1.v2", "chat.1", "1chat.v1", "chat..v1", "chat.v1.2"):
+        with pytest.raises(ContractError):
+            normalize_service_name(bad)
+
+    @service("orders")
+    class Orders:
+        @method()
+        async def ping(self) -> Result:
+            return Result(total=0)
+
+    assert get_service_contract(Orders).name == "orders.v0"
+
+
+def test_descriptions_and_annotations_reach_the_contract() -> None:
+    @service("billing.v2", description="Invoices and payments.")
+    class Billing:
+        """Ignored because an explicit description was given."""
+
+        @method(read_only=True)
+        async def get_invoice(self, invoice_id: str) -> Result:
+            """Fetch one invoice by id."""
+            return Result(total=0)
+
+        @method(destructive=True, description="Void an invoice.", deprecated="cancel")
+        async def void_invoice(self, invoice_id: str) -> Result:
+            return Result(total=0)
+
+        @method.server_stream(idempotent=True)
+        async def history(self, invoice_id: str) -> AsyncIterator[Item]:
+            yield Item(value=1)
+
+    contract = get_service_contract(Billing)
+    assert contract.description == "Invoices and payments."
+    get, void, history = contract.methods
+    assert get.description == "Fetch one invoice by id."
+    assert get.annotations.read_only and get.annotations.idempotent
+    assert not get.annotations.destructive
+    assert void.description == "Void an invoice."
+    assert void.annotations.destructive and not void.annotations.idempotent
+    assert void.deprecated == "cancel"
+    assert history.annotations.idempotent and not history.annotations.read_only
+    assert history.description is None
+
+    with pytest.raises(ContractError, match="read_only and destructive"):
+
+        @service("bad.v1")
+        class Bad:
+            @method(read_only=True, destructive=True)
+            async def x(self) -> Result:
+                return Result(total=0)

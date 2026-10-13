@@ -2,6 +2,9 @@
 import { MeshCallClient, type CallOptions } from "meshcall";
 import type { PythonGreetingServiceGreetRequest, GreetingResult } from "./models.js";
 
+/**
+ * A Python service consumed by the generated TypeScript client.
+ */
 export class PythonGreetingServiceClient {
   public constructor(private readonly rpc: MeshCallClient) {}
 

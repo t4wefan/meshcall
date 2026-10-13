@@ -33,35 +33,35 @@ handler_cancelled = asyncio.Event()
 @service(name="test.v1.NumberService")
 class NumberService:
     @method()
-    async def unary(self, request: NumberRequest) -> NumberResult:
-        return NumberResult(total=request.value)
+    async def unary(self, value: int) -> NumberResult:
+        return NumberResult(total=value)
 
     @method()
-    async def slow(self, request: NumberRequest) -> NumberResult:
-        await asyncio.sleep(request.value / 1000)
-        return NumberResult(total=request.value)
+    async def slow(self, value: int) -> NumberResult:
+        await asyncio.sleep(value / 1000)
+        return NumberResult(total=value)
 
     @method()
-    async def cancellable(self, request: NumberRequest) -> NumberResult:
+    async def cancellable(self, value: int) -> NumberResult:
         try:
-            await asyncio.sleep(request.value)
+            await asyncio.sleep(value)
         except asyncio.CancelledError:
             handler_cancelled.set()
             raise
-        return NumberResult(total=request.value)
+        return NumberResult(total=value)
 
     @method.server_stream()
-    async def download(self, request: NumberRequest) -> AsyncIterator[NumberItem]:
-        for value in range(request.value):
-            yield NumberItem(value=value)
+    async def download(self, value: int) -> AsyncIterator[NumberItem]:
+        for current in range(value):
+            yield NumberItem(value=current)
 
     @method.client_stream()
     async def upload(
         self,
-        request: NumberRequest,
+        value: int,
         items: RpcInputStream[NumberItem],
     ) -> NumberResult:
-        total = request.value
+        total = value
         async for item in items:
             total += item.value
         return NumberResult(total=total)
@@ -69,10 +69,10 @@ class NumberService:
     @method.duplex()
     async def duplex(
         self,
-        request: NumberRequest,
+        value: int,
         channel: RpcDuplex[NumberItem, NumberItem],
     ) -> NumberResult:
-        total = request.value
+        total = value
         async for item in channel:
             total += item.value
             await channel.send(NumberItem(value=item.value * 2))

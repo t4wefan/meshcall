@@ -35,7 +35,7 @@ from meshcall.ir import (
     BalanceKind,
     BalancePolicy,
     BindingKind,
-    RequestStyle,
+    MethodAnnotations,
     StreamKind,
 )
 from meshcall.logging import RpcLogger
@@ -67,9 +67,9 @@ __all__ = [
     "ContractError",
     "IssuedToken",
     "MeshCallError",
+    "MethodAnnotations",
     "ProtocolError",
     "ReconnectPolicy",
-    "RequestStyle",
     "RouterAuthClient",
     "RouterCredentials",
     "RouterIdentity",

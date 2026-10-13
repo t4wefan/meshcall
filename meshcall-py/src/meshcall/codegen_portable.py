@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from meshcall.ir import RequestStyle, ServiceContract, StreamKind, TypeRef
+from meshcall.ir import MethodContract, ServiceContract, StreamKind, TypeRef
 
 
 def render_portable_python_client(
@@ -142,9 +142,39 @@ class _TypeRegistry:
             self._names[(ref.module, ref.qualname)] = (
                 base if count == 1 else f"{base}{count}"
             )
+        # Nested "$defs" (parameter and field types) keep their own class name
+        # when that name is unambiguous across the contract; a clash with a
+        # root type or a different definition of the same name gets the root
+        # name as a prefix. Each definition is rendered exactly once.
+        taken = set(self._names.values())
+        self.definitions: list[tuple[str, Mapping[str, Any]]] = []
+        self._definition_names: dict[tuple[str, str], dict[str, str]] = {}
+        by_key: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
+        for ref in self.refs:
+            names: dict[str, str] = {}
+            for key, definition in ref.schema_.get("$defs", {}).items():
+                existing = next(
+                    (
+                        name
+                        for name, schema in by_key.get(key, [])
+                        if schema == definition
+                    ),
+                    None,
+                )
+                if existing is None:
+                    bare = _class_name(key, fallback="Value")
+                    existing = bare if bare not in taken else f"{self.name(ref)}{bare}"
+                    taken.add(existing)
+                    by_key.setdefault(key, []).append((existing, definition))
+                    self.definitions.append((existing, definition))
+                names[key] = existing
+            self._definition_names[(ref.module, ref.qualname)] = names
 
     def name(self, ref: TypeRef) -> str:
         return self._names[(ref.module, ref.qualname)]
+
+    def definition_names(self, ref: TypeRef) -> Mapping[str, str]:
+        return self._definition_names[(ref.module, ref.qualname)]
 
 
 def _abc_import_line(contract: ServiceContract) -> str:
@@ -161,16 +191,12 @@ def _render_client_class(
 ) -> list[str]:
     lines = [
         f"class {class_name}(ClientBase):",
+        *_docstring_lines(contract.description, indent="    "),
         f"    service_name = {contract.name!r}",
     ]
     for method in contract.methods:
         request = registry.name(method.request)
-        expanded = method.request_style is RequestStyle.EXPANDED
-        request_parameters = (
-            _expanded_python_parameters(method, registry)
-            if expanded
-            else [f"request: {request}"]
-        )
+        request_parameters = _python_parameters(method, registry)
         lines.append("")
         if method.stream is StreamKind.UNARY:
             response = registry.name(_required_ref(method.response))
@@ -184,7 +210,8 @@ def _render_client_class(
                     "        idle_timeout: float | None = None,",
                     "        metadata: Mapping[str, str] | None = None,",
                     f"    ) -> {response}:",
-                    *(_expanded_request_lines(method, request) if expanded else []),
+                    *_docstring_lines(method.description, indent="        "),
+                    *_request_lines(method, request),
                     "        return await self.call_unary(",
                     "            self.service_name,",
                     f"            {method.name!r},",
@@ -208,7 +235,8 @@ def _render_client_class(
                     "        idle_timeout: float | None = None,",
                     "        metadata: Mapping[str, str] | None = None,",
                     f"    ) -> RpcServerStream[{output}]:",
-                    *(_expanded_request_lines(method, request) if expanded else []),
+                    *_docstring_lines(method.description, indent="        "),
+                    *_request_lines(method, request),
                     "        return self.call_server_stream(",
                     "            self.service_name,",
                     f"            {method.name!r},",
@@ -227,14 +255,17 @@ def _render_client_class(
                 [
                     f"    async def {method.name}(",
                     "        self,",
-                    *[f"        {parameter}," for parameter in request_parameters],
+                    # The stream comes first: it is always required, while
+                    # parameters may carry defaults.
                     f"        items: AsyncIterable[{input_item}],",
+                    *[f"        {parameter}," for parameter in request_parameters],
                     "        *,",
                     "        timeout: float | None = None,",
                     "        idle_timeout: float | None = None,",
                     "        metadata: Mapping[str, str] | None = None,",
                     f"    ) -> {response}:",
-                    *(_expanded_request_lines(method, request) if expanded else []),
+                    *_docstring_lines(method.description, indent="        "),
+                    *_request_lines(method, request),
                     "        return await self.call_client_stream(",
                     "            self.service_name,",
                     f"            {method.name!r},",
@@ -269,7 +300,8 @@ def _render_client_class(
                         "    ) -> "
                         f"RpcDuplexClient[{input_item}, {output_item}, {result}]:"
                     ),
-                    *(_expanded_request_lines(method, request) if expanded else []),
+                    *_docstring_lines(method.description, indent="        "),
+                    *_request_lines(method, request),
                     "        return self.call_duplex(",
                     "            self.service_name,",
                     f"            {method.name!r},",
@@ -286,24 +318,33 @@ def _render_client_class(
     return lines
 
 
-def _expanded_python_parameters(
-    method: Any,
+def _docstring_lines(text: str | None, *, indent: str) -> list[str]:
+    if not text:
+        return []
+    body = text.strip().replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+    if "\n" not in body:
+        return [f'{indent}"""{body}"""']
+    return [
+        f'{indent}"""{body.splitlines()[0]}',
+        *[f"{indent}{line}".rstrip() for line in body.splitlines()[1:]],
+        f'{indent}"""',
+    ]
+
+
+def _python_parameters(
+    method: MethodContract,
     registry: _TypeRegistry,
 ) -> list[str]:
     schema = method.request.schema_
     properties = schema.get("properties", {})
     required = set(schema.get("required", []))
-    definitions = schema.get("$defs", {})
-    root_name = registry.name(method.request)
-    definition_names = {
-        key: f"{root_name}{_class_name(key, fallback='Value')}" for key in definitions
-    }
+    definition_names = registry.definition_names(method.request)
     parameters: list[str] = []
-    for field_name in method.request_fields:
+    for field_name in method.parameters:
         property_schema = properties.get(field_name)
         if not isinstance(property_schema, Mapping):
             raise TypeError(
-                f"Expanded request field {field_name!r} is missing from "
+                f"Request parameter {field_name!r} is missing from "
                 f"{method.request.qualname}"
             )
         field_type = _python_type(property_schema, definition_names)
@@ -318,14 +359,14 @@ def _expanded_python_parameters(
     return parameters
 
 
-def _expanded_request_lines(method: Any, request_name: str) -> list[str]:
-    if not method.request_fields:
+def _request_lines(method: MethodContract, request_name: str) -> list[str]:
+    if not method.parameters:
         return [f"        request = {request_name}()"]
     return [
         f"        request = {request_name}(",
         *[
             f"            {field_name}={field_name},"
-            for field_name in method.request_fields
+            for field_name in method.parameters
         ],
         "        )",
     ]
@@ -343,10 +384,27 @@ def _stream_imports(contract: ServiceContract) -> list[str]:
 def _render_model_declarations(registry: _TypeRegistry) -> list[str]:
     lines: list[str] = []
     for ref in registry.refs:
+        names = registry.definition_names(ref)
+        for key in ref.schema_.get("$defs", {}):
+            block = _render_python_model(names[key], ref.schema_["$defs"][key], names)
+            if block[0] not in _rendered_heads(lines):
+                if lines:
+                    lines.extend(["", ""])
+                lines.extend(block)
         if lines:
             lines.extend(["", ""])
-        lines.extend(_render_python_models(registry.name(ref), ref.schema_))
+        lines.extend(_render_python_model(registry.name(ref), ref.schema_, names))
     return lines
+
+
+def _rendered_heads(lines: list[str]) -> set[str]:
+    return {
+        line
+        for line in lines
+        if line.startswith(("class ", "type "))
+        or " = " in line
+        and not line.startswith(" ")
+    }
 
 
 def _model_import_lines(model_lines: list[str]) -> list[str]:
@@ -363,24 +421,6 @@ def _model_import_lines(model_lines: list[str]) -> list[str]:
     if typing_imports:
         lines.extend(["", f"from typing import {', '.join(typing_imports)}"])
     lines.extend(["", f"from pydantic import {', '.join(pydantic_imports)}"])
-    return lines
-
-
-def _render_python_models(
-    root_name: str,
-    schema: Mapping[str, Any],
-) -> list[str]:
-    definitions = schema.get("$defs", {})
-    definition_names = {
-        key: f"{root_name}{_class_name(key, fallback='Value')}" for key in definitions
-    }
-    lines: list[str] = []
-    for key, definition in definitions.items():
-        lines.extend(
-            _render_python_model(definition_names[key], definition, definition_names)
-        )
-        lines.extend(["", ""])
-    lines.extend(_render_python_model(root_name, schema, definition_names))
     return lines
 
 

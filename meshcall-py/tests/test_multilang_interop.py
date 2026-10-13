@@ -152,12 +152,11 @@ async def test_typescript_service_with_generated_python_package(
         sys.path.insert(0, wheel_path)
         try:
             generated = importlib.import_module(module_name)
-            request = generated.TypeScriptRequest(value=6, factor=7)
             client = generated.TypeScriptInteropServiceClient(
                 WebSocketClientDriver(f"ws://127.0.0.1:{port}")
             )
             try:
-                response = await client.multiply(request)
+                response = await client.multiply(6, 7)
             finally:
                 await client.stop()
         finally:
@@ -246,9 +245,8 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
             )
             with generated_typescript_client(contract, tmp_path) as generated:
                 async with generated.TypeScriptInteropServiceClient(driver) as client:
-                    request = generated.TypeScriptRequest(value=64, factor=2)
-                    assert (await client.multiply(request)).product == 128
-                    items = [item async for item in client.download(request)]
+                    assert (await client.multiply(64, 2)).product == 128
+                    items = [item async for item in client.download(64, 2)]
                     assert [item.value for item in items] == list(range(0, 128, 2))
 
                     async def input_items():
@@ -257,7 +255,7 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
                                 value=value, handled_by="python"
                             )
 
-                    assert (await client.upload(request, input_items())).product == 4096
+                    assert (await client.upload(input_items(), 64, 2)).product == 4096
     finally:
         await router.stop()
     if unix:
@@ -286,18 +284,15 @@ async def test_typescript_instances_balance_pin_streams_and_clean_disconnects(
                 async with generated.TypeScriptInteropServiceClient(
                     WebSocketClientDriver(uri)
                 ) as client:
-                    request = generated.TypeScriptRequest(value=64, factor=1)
                     instances = [
-                        (await client.multiply(request)).handled_by for _ in range(4)
+                        (await client.multiply(64, 1)).handled_by for _ in range(4)
                     ]
                     assert instances == ["ts-a", "ts-b", "ts-a", "ts-b"]
                     for expected in ("ts-a", "ts-b"):
-                        items = [item async for item in client.download(request)]
+                        items = [item async for item in client.download(64, 1)]
                         assert len(items) == 64
                         assert {item.handled_by for item in items} == {expected}
-                    pending = client.download(
-                        generated.TypeScriptRequest(value=100_000, factor=1)
-                    )
+                    pending = client.download(100_000, 1)
                     first = await anext(pending)
                     await _stop_server_process(
                         process_a if first.handled_by == "ts-a" else process_b

@@ -43,20 +43,20 @@ class ShowcaseService:
     def __init__(self, greeting_prefix: str = "Hello") -> None:
         self.greeting_prefix = greeting_prefix
 
-    @method()
+    @method(read_only=True)
     async def greet(self, name: str, repeat: int = 1) -> GreetingResult:
-        """Default unary: ordinary parameters become one request object."""
+        """Parameters are the request: ``name`` and ``repeat`` are its fields."""
         return GreetingResult(
             message=" ".join(f"{self.greeting_prefix}, {name}!" for _ in range(repeat)),
             repeat=repeat,
         )
 
-    @method()
-    async def welcome(self, request: WelcomeRequest) -> WelcomeResult:
-        """Request-model style remains available when it reads better."""
+    @method(read_only=True)
+    async def welcome(self, profile: WelcomeRequest) -> WelcomeResult:
+        """A model-typed parameter is just one field of the request."""
         return WelcomeResult(
-            message=f"{self.greeting_prefix}, {request.name}!",
-            tags=request.tags,
+            message=f"{self.greeting_prefix}, {profile.name}!",
+            tags=profile.tags,
         )
 
     @method.server_stream()

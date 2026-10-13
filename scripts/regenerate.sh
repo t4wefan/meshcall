@@ -56,7 +56,9 @@ ts_package best-practice best_practice.service:LlmService meshcall-best-practice
 
 # --- Python package generated from a TypeScript service's contract ----------
 (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s build) >/dev/null
-(cd demo/ts2py/ts-server && yarn -s install --frozen-lockfile >/dev/null && yarn -s run export-contract >/dev/null)
+# yarn keeps a stale copy of a file: dependency whose version did not change;
+# drop it so the contract is exported with the current runtime.
+(cd demo/ts2py/ts-server && rm -rf node_modules/meshcall && yarn -s install --frozen-lockfile --check-files >/dev/null && yarn -s run export-contract >/dev/null)
 tmp="$SCRATCH/ts2py-py"
 py demo/ts2py meshcall generate-contract ts-server/service.meshcall.json --language python --package-name meshcall-demo-ts2py-client --output "$tmp"
 format_py "$tmp"/src/meshcall_demo_ts2py_client/*.py

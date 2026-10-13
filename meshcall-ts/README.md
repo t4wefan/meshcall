@@ -15,6 +15,12 @@ client-streaming calls over Direct WebSocket or the shared Go Router.
 TCP and Unix sockets use the same runtime. Duplex remains experimental and is
 not exposed by the TypeScript service API.
 
+Service names carry one version segment and are normalised (`chat` → `chat.v0`;
+`chat.v1`, `demo.v1.Greeting`, `chat.v1.2.0` are valid). Every method builder
+accepts `description`, `idempotent`, `readOnly`, `destructive` and
+`deprecated`; the service accepts `description`. These reach the contract and
+the generated clients.
+
 Define methods with `unaryMethod`, `serverStreamMethod`, or `clientStreamMethod`.
 Each builder takes a `request` type contract; unary and client-streaming methods
 declare `response`, server-streaming methods declare `outputItem`, and

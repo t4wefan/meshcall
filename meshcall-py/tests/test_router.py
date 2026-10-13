@@ -34,36 +34,48 @@ class RouteResult(BaseModel):
 @service(name="test.v1.RouteService", balance=Balance.round_robin())
 class RouteServiceA:
     @method()
-    async def round_robin(self, request: RouteRequest) -> RouteResult:
-        await asyncio.sleep(request.delay)
+    async def round_robin(
+        self, delay: float = 0, session_id: str = "default"
+    ) -> RouteResult:
+        await asyncio.sleep(delay)
         return RouteResult(instance="a")
 
     @method(balance=Balance.least_inflight())
-    async def least_inflight(self, request: RouteRequest) -> RouteResult:
-        await asyncio.sleep(request.delay)
+    async def least_inflight(
+        self, delay: float = 0, session_id: str = "default"
+    ) -> RouteResult:
+        await asyncio.sleep(delay)
         return RouteResult(instance="a")
 
     @method(balance=Balance.sticky(key="request.session_id"))
-    async def sticky(self, request: RouteRequest) -> RouteResult:
-        await asyncio.sleep(request.delay)
+    async def sticky(
+        self, delay: float = 0, session_id: str = "default"
+    ) -> RouteResult:
+        await asyncio.sleep(delay)
         return RouteResult(instance="a")
 
 
 @service(name="test.v1.RouteService", balance=Balance.round_robin())
 class RouteServiceB:
     @method()
-    async def round_robin(self, request: RouteRequest) -> RouteResult:
-        await asyncio.sleep(request.delay)
+    async def round_robin(
+        self, delay: float = 0, session_id: str = "default"
+    ) -> RouteResult:
+        await asyncio.sleep(delay)
         return RouteResult(instance="b")
 
     @method(balance=Balance.least_inflight())
-    async def least_inflight(self, request: RouteRequest) -> RouteResult:
-        await asyncio.sleep(request.delay)
+    async def least_inflight(
+        self, delay: float = 0, session_id: str = "default"
+    ) -> RouteResult:
+        await asyncio.sleep(delay)
         return RouteResult(instance="b")
 
     @method(balance=Balance.sticky(key="request.session_id"))
-    async def sticky(self, request: RouteRequest) -> RouteResult:
-        await asyncio.sleep(request.delay)
+    async def sticky(
+        self, delay: float = 0, session_id: str = "default"
+    ) -> RouteResult:
+        await asyncio.sleep(delay)
         return RouteResult(instance="b")
 
 

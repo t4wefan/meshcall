@@ -4,27 +4,21 @@ export interface LlmServiceNewSessionRequest {
   title?: string;
 }
 
-export interface NewSessionResponseSessionInfo {
+export interface SessionInfo {
   id: string;
   title: string;
   message_count: number;
 }
 
 export interface NewSessionResponse {
-  session: NewSessionResponseSessionInfo;
+  session: SessionInfo;
 }
 
 export interface LlmServiceListSessionsRequest {
 }
 
-export interface ListSessionsResponseSessionInfo {
-  id: string;
-  title: string;
-  message_count: number;
-}
-
 export interface ListSessionsResponse {
-  sessions: Array<ListSessionsResponseSessionInfo>;
+  sessions: Array<SessionInfo>;
 }
 
 export interface LlmServiceCountTokensRequest {

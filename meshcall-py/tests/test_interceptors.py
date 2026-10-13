@@ -40,9 +40,9 @@ class Result(BaseModel):
 @service(name="test.v1.InterceptService")
 class InterceptService:
     @method()
-    async def echo(self, request: Request, ctx: RpcContext) -> Result:
+    async def echo(self, ctx: RpcContext, value: int = 0) -> Result:
         ctx.set_trailer("handler", "ran")
-        return Result(total=request.value, seen=dict(ctx.metadata))
+        return Result(total=value, seen=dict(ctx.metadata))
 
     @method.server_stream()
     async def count(self, value: int) -> AsyncIterator[Item]:

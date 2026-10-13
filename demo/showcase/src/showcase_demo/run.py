@@ -50,7 +50,7 @@ async def run_demo() -> None:
         print(f"   received={values}")
 
         print("4. client stream")
-        total = await client.sum_values(10, number_items())
+        total = await client.sum_values(number_items(), 10)
         print(f"   total={total.total}")
 
         print("5. generated client models and signatures")

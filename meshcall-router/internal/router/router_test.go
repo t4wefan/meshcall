@@ -448,6 +448,19 @@ func TestDecodeCompatibilityRules(t *testing.T) {
 	}
 }
 
+func TestServiceNameValidation(t *testing.T) {
+	for _, name := range []string{"chat.v1", "demo.v1.Greeting", "chat.v1.2.0", "chat.v2.0.0-beta1", "a_b.v0", AuthService} {
+		if !validServiceName(name) {
+			t.Fatal("rejected valid name", name)
+		}
+	}
+	for _, name := range []string{"", "chat", "v1", "chat.v1.v2", "chat.1", "1chat.v1", "chat..v1", "chat.v1.2"} {
+		if validServiceName(name) {
+			t.Fatal("accepted invalid name", name)
+		}
+	}
+}
+
 func TestEmptyPingNonceRemainsARequiredField(t *testing.T) {
 	r := runningRouter(t, nil)
 	conn := dial(t, r, "")

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -336,6 +337,38 @@ func readFrame(ctx context.Context, conn *websocket.Conn) (frame, error) {
 	return f, nil
 }
 
+var (
+	nameSegment    = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+	majorSegment   = regexp.MustCompile(`^v(0|[1-9][0-9]*)$`)
+	numericSegment = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+	patchSegment   = regexp.MustCompile(`^(0|[1-9][0-9]*)(-[0-9A-Za-z-]+)?$`)
+)
+
+// validServiceName accepts the normalised form the SDKs register: dotted
+// segments with exactly one version group (`v1` or `v1.2.0[-pre]`).
+func validServiceName(name string) bool {
+	segments := strings.Split(name, ".")
+	versions, names := 0, 0
+	for i := 0; i < len(segments); {
+		s := segments[i]
+		switch {
+		case majorSegment.MatchString(s):
+			versions++
+			if i+2 < len(segments) && numericSegment.MatchString(segments[i+1]) && patchSegment.MatchString(segments[i+2]) {
+				i += 3
+			} else {
+				i++
+			}
+		case nameSegment.MatchString(s):
+			names++
+			i++
+		default:
+			return false
+		}
+	}
+	return versions == 1 && names > 0
+}
+
 func allowedFrame(role string, f frame) bool {
 	if role == "client" {
 		return f.Kind == "call.open" || f.Kind == "call.cancel" ||
@@ -350,7 +383,7 @@ func allowedFrame(role string, f frame) bool {
 func (r *Router) register(p *peer, f frame) error {
 	seen := make(map[string]bool)
 	for _, s := range f.Services {
-		if s.Name == "" || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) {
+		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) {
 			return errors.New("duplicate, invalid, or unauthorized service")
 		}
 		seen[s.Name] = true

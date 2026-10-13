@@ -21,12 +21,15 @@ class TypeScriptGreetingServiceClient(ClientBase):
 
     def count(
         self,
-        request: CountRequest,
+        count: int,
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[NumberItem]:
+        request = CountRequest(
+            count=count,
+        )
         return self.call_server_stream(
             self.service_name,
             "count",
@@ -39,13 +42,16 @@ class TypeScriptGreetingServiceClient(ClientBase):
 
     async def sum(
         self,
-        request: SumRequest,
         items: AsyncIterable[NumberItem],
+        offset: int = 0,
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> SumResult:
+        request = SumRequest(
+            offset=offset,
+        )
         return await self.call_client_stream(
             self.service_name,
             "sum",
@@ -60,12 +66,17 @@ class TypeScriptGreetingServiceClient(ClientBase):
 
     async def greet(
         self,
-        request: GreetingRequest,
+        name: str,
+        repeat: int,
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> GreetingResult:
+        request = GreetingRequest(
+            name=name,
+            repeat=repeat,
+        )
         return await self.call_unary(
             self.service_name,
             "greet",

@@ -25,6 +25,10 @@ class WelcomeRequest(BaseModel):
     tags: list[str]
 
 
+class ShowcaseServiceWelcomeRequest(BaseModel):
+    profile: WelcomeRequest
+
+
 class WelcomeResult(BaseModel):
     message: str
     tags: list[str]
@@ -52,6 +56,8 @@ class NumberItem(BaseModel):
 
 
 class ShowcaseServiceClient(ClientBase):
+    """Stateful service using the recommended MeshCall Python API."""
+
     service_name = "demo.v1.ShowcaseService"
 
     async def greet(
@@ -63,6 +69,7 @@ class ShowcaseServiceClient(ClientBase):
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> GreetingResult:
+        """Parameters are the request: ``name`` and ``repeat`` are its fields."""
         request = ShowcaseServiceGreetRequest(
             name=name,
             repeat=repeat,
@@ -79,12 +86,16 @@ class ShowcaseServiceClient(ClientBase):
 
     async def welcome(
         self,
-        request: WelcomeRequest,
+        profile: WelcomeRequest,
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> WelcomeResult:
+        """A model-typed parameter is just one field of the request."""
+        request = ShowcaseServiceWelcomeRequest(
+            profile=profile,
+        )
         return await self.call_unary(
             self.service_name,
             "welcome",
@@ -104,6 +115,7 @@ class ShowcaseServiceClient(ClientBase):
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[CountItem]:
+        """Server stream: the client receives typed items asynchronously."""
         request = ShowcaseServiceCountRequest(
             start=start,
             stop=stop,
@@ -120,13 +132,14 @@ class ShowcaseServiceClient(ClientBase):
 
     async def sum_values(
         self,
-        offset: int,
         items: AsyncIterable[NumberItem],
+        offset: int,
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> TotalResult:
+        """Client stream: the service consumes a typed inbound stream."""
         request = ShowcaseServiceSumValuesRequest(
             offset=offset,
         )

@@ -2,9 +2,15 @@
 import { MeshCallClient, type CallOptions, type MeshCallServerStream } from "meshcall";
 import type { LlmServiceNewSessionRequest, NewSessionResponse, LlmServiceListSessionsRequest, ListSessionsResponse, LlmServiceCountTokensRequest, TokenCountResponse, LlmServiceAssemblePromptRequest, PromptAssembly, PromptChunk, LlmServiceStreamChatRequest, ChatChunk } from "./models.js";
 
+/**
+ * A deterministic LLM facade with process-local session state.
+ */
 export class LlmServiceClient {
   public constructor(private readonly rpc: MeshCallClient) {}
 
+  /**
+   * Create a session and return it; each call creates a new one.
+   */
   public new_session(
     title: string = "New session",
     options?: CallOptions,
@@ -19,6 +25,9 @@ export class LlmServiceClient {
     );
   }
 
+  /**
+   * List the sessions held in this process.
+   */
   public list_sessions(
     options?: CallOptions,
   ): Promise<ListSessionsResponse> {
@@ -30,6 +39,9 @@ export class LlmServiceClient {
     );
   }
 
+  /**
+   * Count simple lexical tokens; this deliberately is not a model tokenizer.
+   */
   public count_tokens(
     text: string,
     options?: CallOptions,
@@ -44,6 +56,9 @@ export class LlmServiceClient {
     );
   }
 
+  /**
+   * Collect prompt chunks to demonstrate client-to-server backpressure.
+   */
   public assemble_prompt(
     items: AsyncIterable<PromptChunk>,
     options?: CallOptions,
@@ -57,6 +72,9 @@ export class LlmServiceClient {
     );
   }
 
+  /**
+   * Stream a deterministic reply for ``prompt`` into ``session_id``.
+   */
   public stream_chat(
     session_id: string,
     prompt: string,

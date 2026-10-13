@@ -147,23 +147,30 @@ streaming shapes. Service methods are instance methods by default; append
 experimental capability and is intentionally omitted from the recommended API
 examples.
 
-For a method such as `count(self, stop: int)`, MeshCall creates an internal
-Pydantic request model with a `stop` field. The wire payload is still one JSON
-object, while generated clients keep the expanded call shape:
-`client.count(10)`. A method that takes one Pydantic model, such as
-`greet(self, request: GreetingRequest)`, remains available and generates the
-object-style call `client.greet(request)`.
+**Parameters are the request.** For `count(self, stop: int)`, MeshCall builds
+one request model with a `stop` field; the wire payload is one JSON object and
+generated clients expose the same parameters: `client.count(10)`. A parameter
+typed as a Pydantic model is just one field of that request
+(`welcome(self, profile: WelcomeRequest)` → `client.welcome(profile)`). There is
+no separate "request object" style.
 
-Request, response, and stream item types are Pydantic models. MeshCall infers
-the RPC shape from the signature unless an explicit stream decorator is used.
+Response and stream item types are Pydantic models. MeshCall infers the RPC
+shape from the signature unless an explicit stream decorator is used.
+
+Service names carry a version segment and are normalised: `@service("chat")`
+registers `chat.v0`; `chat.v1`, `demo.v1.Greeting` and `chat.v1.2.0` are all
+valid and routed by exact name. Class and method docstrings become the
+contract's `description`; `@method(read_only=True)`, `idempotent=True`,
+`destructive=True` and `deprecated="replacement"` record method semantics that
+tooling, retry policies and LLM tool exposure rely on.
 
 ## Complete runnable showcase
 
 The complete showcase is an independent uv project in `demo/showcase/`. It
 starts a short-lived local WebSocket server and calls it through a generated
-client. It demonstrates the recommended instance-method API, expanded
-parameters, a request-model method, Pydantic payloads, unary RPC, server
-streaming, and client streaming.
+client. It demonstrates the recommended instance-method API, parameters as the
+request (including a model-typed parameter), Pydantic payloads, unary RPC,
+server streaming, and client streaming.
 
 From the showcase directory:
 
