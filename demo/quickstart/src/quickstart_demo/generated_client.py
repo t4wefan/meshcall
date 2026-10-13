@@ -19,6 +19,8 @@ class CountItem(BaseModel):
 
 
 class CounterServiceClient(ClientBase):
+    """The smallest complete MeshCall service: one streaming method."""
+
     service_name = "example.v1.CounterService"
 
     def count(
@@ -29,6 +31,7 @@ class CounterServiceClient(ClientBase):
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[CountItem]:
+        """Stream the integers from 0 up to, but not including, ``stop``."""
         request = CounterServiceCountRequest(
             stop=stop,
         )

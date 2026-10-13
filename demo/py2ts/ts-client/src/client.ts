@@ -8,6 +8,9 @@ import type { PythonGreetingServiceGreetRequest, GreetingResult } from "./models
 export class PythonGreetingServiceClient {
   public constructor(private readonly rpc: MeshCallClient) {}
 
+  /**
+   * Greet ``name`` ``repeat`` times and say which runtime answered.
+   */
   public greet(
     name: string,
     repeat: number = 1,

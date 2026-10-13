@@ -49,6 +49,8 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Test fixtures are deliberately terse; test_diagnostics asserts the warnings.
+filterwarnings = ["ignore::meshcall.diagnostics.MeshCallWarning"]
 
 [tool.ruff]
 line-length = 88

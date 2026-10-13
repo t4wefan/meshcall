@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
+import { recordWarnings } from "./diagnostics.js";
 import type { BalancePolicy } from "./protocol.js";
 import type {
   ClientStreamMethod, ServerStreamMethod, ServiceDefinition, UnaryMethod,
@@ -128,17 +129,47 @@ export function defineType<Value>(
 }
 
 export function unaryMethod<Request, Response>(
+  definition: Omit<ContractUnaryMethod<Request, Response>, "stream"> & { readonly description: string },
+): ContractUnaryMethod<Request, Response>;
+/**
+ * @deprecated W001: add `description` — it becomes the contract's description
+ * and the text LLM callers see. Pass `description: ""` to declare none on purpose.
+ */
+export function unaryMethod<Request, Response>(
+  definition: Omit<ContractUnaryMethod<Request, Response>, "stream">,
+): ContractUnaryMethod<Request, Response>;
+export function unaryMethod<Request, Response>(
   definition: Omit<ContractUnaryMethod<Request, Response>, "stream">,
 ): ContractUnaryMethod<Request, Response> {
   return { ...definition, stream: "unary" };
 }
 
 export function serverStreamMethod<Request, Item>(
+  definition: Omit<ContractServerStreamMethod<Request, Item>, "stream"> & { readonly description: string },
+): ContractServerStreamMethod<Request, Item>;
+/**
+ * @deprecated W001: add `description` — it becomes the contract's description
+ * and the text LLM callers see. Pass `description: ""` to declare none on purpose.
+ */
+export function serverStreamMethod<Request, Item>(
+  definition: Omit<ContractServerStreamMethod<Request, Item>, "stream">,
+): ContractServerStreamMethod<Request, Item>;
+export function serverStreamMethod<Request, Item>(
   definition: Omit<ContractServerStreamMethod<Request, Item>, "stream">,
 ): ContractServerStreamMethod<Request, Item> {
   return { ...definition, stream: "server_stream" };
 }
 
+export function clientStreamMethod<Request, Item, Response>(
+  definition: Omit<ContractClientStreamMethod<Request, Item, Response>, "stream"> & { readonly description: string },
+): ContractClientStreamMethod<Request, Item, Response>;
+/**
+ * @deprecated W001: add `description` — it becomes the contract's description
+ * and the text LLM callers see. Pass `description: ""` to declare none on purpose.
+ */
+export function clientStreamMethod<Request, Item, Response>(
+  definition: Omit<ContractClientStreamMethod<Request, Item, Response>, "stream">,
+): ContractClientStreamMethod<Request, Item, Response>;
 export function clientStreamMethod<Request, Item, Response>(
   definition: Omit<ContractClientStreamMethod<Request, Item, Response>, "stream">,
 ): ContractClientStreamMethod<Request, Item, Response> {
@@ -163,7 +194,7 @@ export function defineService<
       throw new Error(`Method ${methodName} cannot be both readOnly and destructive`);
     }
   }
-  return name === definition.name ? definition : { ...definition, name };
+  return recordWarnings(name === definition.name ? definition : { ...definition, name });
 }
 
 export function renderContract(

@@ -19,6 +19,7 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter, create_model
 
 from meshcall.context import RpcContext
+from meshcall.diagnostics import ContractWarning, emit_contract_warnings
 from meshcall.errors import ContractError
 from meshcall.ir import (
     BalanceKind,
@@ -410,6 +411,14 @@ def get_service_contract(cls: type[Any]) -> ServiceContract:
     return contract
 
 
+def get_service_warnings(cls: type[Any]) -> tuple[ContractWarning, ...]:
+    """Advisory warnings recorded when ``@service`` processed ``cls``."""
+    warnings = getattr(cls, "__meshcall_warnings__", None)
+    if not isinstance(warnings, tuple):
+        raise ContractError(f"{cls.__qualname__} is not decorated with @service")
+    return warnings
+
+
 def get_service_method_binding(
     cls: type[Any],
     method_name: str,
@@ -480,7 +489,7 @@ def extract_service_contract(
         raise ContractError(f"Service {name!r} does not declare any RPC methods")
 
     cls.__meshcall_method_bindings__ = MappingProxyType(bindings)  # type: ignore[attr-defined]
-    return ServiceContract(
+    contract = ServiceContract(
         name=name,
         version=version,
         source_module=cls.__module__,
@@ -489,6 +498,10 @@ def extract_service_contract(
         description=description,
         methods=tuple(methods),
     )
+    # Advisory findings surface at import time (or raise in strict mode) and
+    # again, summarised, when a server starts.
+    cls.__meshcall_warnings__ = tuple(emit_contract_warnings(contract, cls))  # type: ignore[attr-defined]
+    return contract
 
 
 def _extract_method(

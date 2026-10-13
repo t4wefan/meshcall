@@ -31,6 +31,15 @@ explains the runtime design; `docs/router.md` the Router.
    structured arguments over strings so type checkers see the rule; runtime
    `ContractError` is the last line of defence, not the first.
 
+## Strict mode
+
+Run with `MESHCALL_STRICT=1` when you write or change services. Advisory
+contract warnings (missing descriptions, unannotated mutating methods, …)
+then fail at import / `defineService` with a `hint` telling you exactly what
+to add. Fix the finding rather than silencing it unless the silence is
+clearly intended (`description=""`). See docs/architecture.md → Contract
+warnings.
+
 ## Verify
 
 ```bash

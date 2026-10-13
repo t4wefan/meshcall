@@ -12,16 +12,17 @@ class GreetingResult(BaseModel):
     handled_by: str
 
 
-@service(name="demo.v1.PythonGreetingService")
+@service("demo.v1.PythonGreetingService")
 class PythonGreetingService:
     """A Python service consumed by the generated TypeScript client."""
 
-    @method()
+    @method(read_only=True)
     async def greet(
         self,
         name: str,
         repeat: Annotated[int, Field(ge=1, le=5)] = 1,
     ) -> GreetingResult:
+        """Greet ``name`` ``repeat`` times and say which runtime answered."""
         return GreetingResult(
             message=" ".join(f"Hello, {name}!" for _ in range(repeat)),
             handled_by="python",

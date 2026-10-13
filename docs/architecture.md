@@ -132,6 +132,40 @@ task can't operate through a newly acquired generation.
   string maps that reach handlers through `RpcContext` and are otherwise opaque
   to the runtime.
 
+## Contract warnings
+
+Hard rules raise at import time (`ContractError` / a thrown `Error`): service
+name shape, untyped parameters, declared-vs-inferred shape mismatches,
+`read_only` together with `destructive`. Everything else about contract
+quality is an **advisory warning** with a stable code, a `hint` written as a
+direct instruction, and an explicit way to silence it:
+
+| Code | Finding | Silence |
+| --- | --- | --- |
+| W001 | service or method without a description | `description=""` |
+| W002 | mutating-looking name (`create_*`, `delete_*`, …) with no annotation | any of `idempotent`, `read_only`, `destructive` |
+| W003 | `read_only` on a mutating name, or `destructive` on a reading name | fix the name or the annotation |
+| W005 | `deprecated` without a named replacement | `deprecated="…"` with text |
+
+Where they surface, by language and moment:
+
+- **TypeScript, compile time**: the method builders' overload without
+  `description` is `@deprecated`, so editors strike it through and
+  `@typescript-eslint/no-deprecated` can fail the build. Name shape is a type
+  error via `normalizeServiceName`'s runtime check plus the documented
+  template literal form.
+- **Python, import time**: `warnings.warn(MeshCallWarning)` for each finding
+  when the `@service` decorator runs; pytest collects them, and
+  `python -W error::meshcall.MeshCallWarning` makes them fatal.
+- **Both, server start**: one summarised log line per start.
+- **Strict mode**: `MESHCALL_STRICT=1` (both), `MeshCallServer({ strictContracts: true })`
+  (TS) turn warnings into errors. `AGENTS.md` tells agents to run in strict
+  mode; CI may opt in.
+- **Project-wide ignore**: `MESHCALL_IGNORE_WARNINGS=W001,W002`.
+
+`lint_contract(contract)` / `lintService(definition)` return the findings
+without side effects, for tooling such as `meshcall check`.
+
 ## Interceptors
 
 Both runtimes expose one interception point per side, shaped the same way in

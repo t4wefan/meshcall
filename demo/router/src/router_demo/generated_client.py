@@ -31,6 +31,7 @@ class CounterServiceClient(ClientBase):
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[CountItem]:
+        """Stream the integers from 0 up to, but not including, ``stop``."""
         request = CounterServiceCountRequest(
             stop=stop,
         )

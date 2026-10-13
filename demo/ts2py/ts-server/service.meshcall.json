@@ -10,7 +10,7 @@
         "kind": "round_robin",
         "key": null
       },
-      "description": null,
+      "description": "A TypeScript service consumed by the generated Python client.",
       "methods": [
         {
           "name": "count",
@@ -58,10 +58,10 @@
             "kind": "round_robin",
             "key": null
           },
-          "description": null,
+          "description": "Stream the integers from 0 up to, but not including, count.",
           "annotations": {
-            "idempotent": false,
-            "read_only": false,
+            "idempotent": true,
+            "read_only": true,
             "destructive": false
           },
           "deprecated": null
@@ -123,9 +123,9 @@
             "kind": "round_robin",
             "key": null
           },
-          "description": null,
+          "description": "Add every streamed value to offset and return the total.",
           "annotations": {
-            "idempotent": false,
+            "idempotent": true,
             "read_only": false,
             "destructive": false
           },
@@ -186,10 +186,10 @@
             "kind": "round_robin",
             "key": null
           },
-          "description": null,
+          "description": "Greet name repeat times and say which runtime answered.",
           "annotations": {
-            "idempotent": false,
-            "read_only": false,
+            "idempotent": true,
+            "read_only": true,
             "destructive": false
           },
           "deprecated": null

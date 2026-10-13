@@ -36,7 +36,7 @@ class TotalResult(BaseModel):
     total: int
 
 
-@service(name="demo.v1.ShowcaseService")
+@service("demo.v1.ShowcaseService")
 class ShowcaseService:
     """Stateful service using the recommended MeshCall Python API."""
 
@@ -59,13 +59,13 @@ class ShowcaseService:
             tags=profile.tags,
         )
 
-    @method.server_stream()
+    @method.server_stream(read_only=True)
     async def count(self, start: int, stop: int) -> AsyncIterator[CountItem]:
         """Server stream: the client receives typed items asynchronously."""
         for value in range(start, stop):
             yield CountItem(value=value)
 
-    @method.client_stream()
+    @method.client_stream(idempotent=True)
     async def sum_values(
         self,
         offset: int,

@@ -20,7 +20,9 @@ from meshcall.contract import (
     MethodBinding,
     get_service_contract,
     get_service_method_binding,
+    get_service_warnings,
 )
+from meshcall.diagnostics import ContractWarning
 from meshcall.driver import DriverBinding, ServerDriver
 from meshcall.errors import (
     ContractError,
@@ -749,6 +751,7 @@ class RpcServer:
             self._runtime = runtime
             self._worker = worker
             self.state = ServerState.RUNNING
+            _log_contract_warnings(self.logger, self._services)
 
     async def stop(self) -> None:
         async with self._state_lock:
@@ -779,6 +782,26 @@ class RpcServer:
     async def run(self) -> None:
         await self.start()
         await self.wait_closed()
+
+
+def _log_contract_warnings(logger: Any, services: Sequence[object]) -> None:
+    """One summarised block per start; details were already warned at import."""
+    findings: list[ContractWarning] = []
+    for service in services:
+        service_type = service if inspect.isclass(service) else type(service)
+        findings.extend(get_service_warnings(service_type))
+    if not findings:
+        return
+    by_code: dict[str, int] = {}
+    for finding in findings:
+        by_code[finding.code] = by_code.get(finding.code, 0) + 1
+    summary = ", ".join(f"{code}×{count}" for code, count in sorted(by_code.items()))
+    logger.warning(  # noqa: PLE1205
+        "{} contract warning(s) ({}); run `meshcall check` for details and hints, "
+        "or set MESHCALL_STRICT=1 to fail on them",
+        len(findings),
+        summary,
+    )
 
 
 def _log_access(

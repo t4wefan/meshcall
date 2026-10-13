@@ -17,6 +17,8 @@ from .models import (
 
 
 class TypeScriptGreetingServiceClient(ClientBase):
+    """A TypeScript service consumed by the generated Python client."""
+
     service_name = "demo.v1.TypeScriptGreetingService"
 
     def count(
@@ -27,6 +29,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[NumberItem]:
+        """Stream the integers from 0 up to, but not including, count."""
         request = CountRequest(
             count=count,
         )
@@ -49,6 +52,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> SumResult:
+        """Add every streamed value to offset and return the total."""
         request = SumRequest(
             offset=offset,
         )
@@ -73,6 +77,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> GreetingResult:
+        """Greet name repeat times and say which runtime answered."""
         request = GreetingRequest(
             name=name,
             repeat=repeat,

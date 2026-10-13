@@ -26,6 +26,7 @@ export {
   serverStreamMethod,
   writeContract,
 } from "./contract.js";
+export { contractWarnings, lintService, renderWarning, type ContractWarning } from "./diagnostics.js";
 export { MeshCallError } from "./errors.js";
 export {
   DEFAULT_IDLE_TIMEOUT_MS,

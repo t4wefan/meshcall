@@ -29,6 +29,11 @@ and are released together from a `vX.Y.Z` tag.
   descriptions as docstrings / JSDoc.
 - Generators name nested definitions by their own name when unambiguous and
   render each once.
+- Advisory contract warnings (W001 description, W002 unannotated mutation,
+  W003 contradictory annotation, W005 empty deprecation) with hints and
+  explicit silencing; emitted at import (Python `MeshCallWarning`), recorded
+  by `defineService` (TS, plus a `@deprecated` overload when `description` is
+  missing), summarised at server start, fatal under `MESHCALL_STRICT=1`.
 
 ## [0.1.0] - 2026-10-13
 

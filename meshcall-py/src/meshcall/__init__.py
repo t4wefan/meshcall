@@ -26,10 +26,12 @@ from meshcall.contract import (
     Balance,
     get_service_contract,
     get_service_method_binding,
+    get_service_warnings,
     method,
     service,
 )
 from meshcall.contract_io import load_contract, render_contract, write_contract
+from meshcall.diagnostics import ContractWarning, MeshCallWarning, lint_contract
 from meshcall.errors import ContractError, MeshCallError, ProtocolError
 from meshcall.ir import (
     BalanceKind,
@@ -65,8 +67,10 @@ __all__ = [
     "ClientCallNext",
     "ClientInterceptor",
     "ContractError",
+    "ContractWarning",
     "IssuedToken",
     "MeshCallError",
+    "MeshCallWarning",
     "MethodAnnotations",
     "ProtocolError",
     "ReconnectPolicy",
@@ -87,6 +91,8 @@ __all__ = [
     "WebSocketRouter",
     "get_service_contract",
     "get_service_method_binding",
+    "get_service_warnings",
+    "lint_contract",
     "load_contract",
     "method",
     "render_client",

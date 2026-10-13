@@ -59,10 +59,13 @@ const sumResult = defineType<{ total: number }>("SumResult", {
 
 export const service = defineService({
   name: "demo.v1.TypeScriptGreetingService",
+  description: "A TypeScript service consumed by the generated Python client.",
   sourceModule: "ts2py_service",
   sourceQualname: "TypeScriptGreetingService",
   methods: {
     count: serverStreamMethod({
+      description: "Stream the integers from 0 up to, but not including, count.",
+      readOnly: true,
       request: countRequest, outputItem: numberItem,
       handler: async function* ({ count }, { signal }) {
         for (let value = 0; value < count; value += 1) {
@@ -72,6 +75,8 @@ export const service = defineService({
       },
     }),
     sum: clientStreamMethod({
+      description: "Add every streamed value to offset and return the total.",
+      idempotent: true,
       request: sumRequest, inputItem: numberItem, response: sumResult,
       handler: async ({ offset }, items, { logger }) => {
         let total = offset;
@@ -81,6 +86,8 @@ export const service = defineService({
       },
     }),
     greet: unaryMethod({
+      description: "Greet name repeat times and say which runtime answered.",
+      readOnly: true,
       request: greetingRequest,
       response: greetingResult,
       handler: async (payload) => ({

@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 
 import { closeSocket, createSocket, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
+import { contractWarnings, renderWarning } from "./diagnostics.js";
 import { MeshCallError } from "./errors.js";
 import {
   DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS, Liveness,
@@ -49,6 +50,8 @@ export interface MeshCallServerOptions {
   readonly reconnect?: ReconnectPolicy;
   /** Wrap every call; the first interceptor is outermost. */
   readonly interceptors?: ReadonlyArray<ServerInterceptor>;
+  /** Fail `start()` on advisory contract warnings (also `MESHCALL_STRICT=1`). */
+  readonly strictContracts?: boolean;
   readonly accessLog?: boolean;
   readonly logLevel?: LogLevel;
   readonly colorize?: boolean;
@@ -124,6 +127,20 @@ export class MeshCallServer {
     return this.running;
   }
 
+  /** One summarised block per start; details come from `contractWarnings()`. */
+  private logContractWarnings(): void {
+    const findings = this.options.services.flatMap((service) => contractWarnings(service));
+    if (findings.length === 0) return;
+    if (this.options.strictContracts === true) {
+      throw new Error("Strict mode: " + findings.length + " contract warning(s)\n" + findings.map(renderWarning).join("\n"));
+    }
+    const byCode = new Map<string, number>();
+    for (const f of findings) byCode.set(f.code, (byCode.get(f.code) ?? 0) + 1);
+    const summary = [...byCode.entries()].sort().map(([code, count]) => code + "×" + count).join(", ");
+    this.logger.warning(findings.length + " contract warning(s) (" + summary
+      + "); call contractWarnings(service) for details and hints, or set MESHCALL_STRICT=1 / strictContracts to fail on them");
+  }
+
   /** Router mode: whether the instance currently holds a registered connection. */
   public get routerConnected(): boolean {
     return this.routerSocket?.readyState === WebSocket.OPEN;
@@ -173,6 +190,7 @@ export class MeshCallServer {
         if (this.options.router === undefined) await this.startDirect();
         else await this.startRouter(this.options.router);
         this.running = true;
+        this.logContractWarnings();
       } catch (error) {
         await this.stop();
         throw error;

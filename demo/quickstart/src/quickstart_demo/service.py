@@ -11,9 +11,12 @@ class CountItem(BaseModel):
     value: int
 
 
-@service(name="example.v1.CounterService")
+@service("example.v1.CounterService")
 class CounterService:
-    @method.server_stream()
+    """The smallest complete MeshCall service: one streaming method."""
+
+    @method.server_stream(read_only=True)
     async def count(self, stop: int) -> AsyncIterator[CountItem]:
+        """Stream the integers from 0 up to, but not including, ``stop``."""
         for value in range(stop):
             yield CountItem(value=value)
