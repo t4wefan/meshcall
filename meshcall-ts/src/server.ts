@@ -29,8 +29,19 @@ export type {
 
 export interface RouterConnectionOptions {
   readonly auth?: RouterCredentials;
-  readonly endpoint: WebSocketEndpoint;
+  /**
+   * One Router, or several: the instance keeps one registration per Router,
+   * each with its own reconnect loop, so clients can fail over between them.
+   * `start()` succeeds once any Router accepted the registration.
+   */
+  readonly endpoint: WebSocketEndpoint | ReadonlyArray<WebSocketEndpoint>;
   readonly instanceId?: string;
+}
+
+interface RouterLink {
+  readonly endpoint: WebSocketEndpoint;
+  socket: WebSocket | undefined;
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 export interface MeshCallServerOptions {
@@ -67,12 +78,11 @@ export interface MeshCallServerOptions {
 export class MeshCallServer {
   private listener: WebSocketServer | undefined;
   private httpServer: HttpServer | undefined;
-  private routerSocket: WebSocket | undefined;
+  private readonly routerLinks: RouterLink[] = [];
   private readonly sessions = new Map<WebSocket, ServerSession>();
   private lifecycle: Promise<void> = Promise.resolve();
   private running = false;
   private stopping = false;
-  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly services: RuntimeServices;
   private readonly registration: RegisteredService[];
   private readonly logger: RpcLogger;
@@ -150,39 +160,45 @@ export class MeshCallServer {
       + "); call contractWarnings(service) for details and hints, or set MESHCALL_STRICT=1 / strictContracts to fail on them");
   }
 
-  /** Router mode: whether the instance currently holds a registered connection. */
+  /** Router mode: whether at least one Router holds this instance's registration. */
   public get routerConnected(): boolean {
-    return this.routerSocket?.readyState === WebSocket.OPEN;
+    return this.routerLinks.some((link) => link.socket?.readyState === WebSocket.OPEN);
+  }
+
+  /** Router mode: the endpoints currently holding a registration. */
+  public get routerEndpoints(): ReadonlyArray<WebSocketEndpoint> {
+    return this.routerLinks.filter((link) => link.socket?.readyState === WebSocket.OPEN).map((link) => link.endpoint);
   }
 
   /**
-   * Re-register with the Router after the connection drops. The server stays
-   * running throughout; calls that arrive in between fail at the Router with
-   * retryable `unavailable`.
+   * Re-register one link after its Router connection drops. The server stays
+   * running throughout; calls that arrive in between fail at that Router with
+   * retryable `unavailable` (other Routers keep serving).
    */
-  private scheduleRouterReconnect(): void {
+  private scheduleRouterReconnect(link: RouterLink, initialFailure = false): void {
     const router = this.options.router;
     const policy = this.options.reconnect ?? {};
-    if (router === undefined || !this.running || this.stopping || !(policy.enabled ?? true)) {
-      this.running = false;
+    if (router === undefined || this.stopping || !(policy.enabled ?? true)) {
+      if (!this.routerConnected) this.running = false;
       return;
     }
-    this.logger.warning("Router connection lost for instance %s; reconnecting", this.instanceId);
+    const where = "instance " + this.instanceId + " at " + JSON.stringify(link.endpoint);
+    if (!initialFailure) this.logger.warning("Router connection lost for %s; reconnecting", where);
     const delays = reconnectDelays(policy);
     const attempt = (): void => {
       const next = delays.next();
       if (next.done === true) {
-        this.logger.error("Giving up on Router reconnection for instance %s", this.instanceId);
-        this.running = false;
+        this.logger.error("Giving up on Router reconnection for %s", where);
+        if (!this.routerConnected) this.running = false;
         return;
       }
-      this.reconnectTimer = setTimeout(() => {
-        this.reconnectTimer = undefined;
+      link.timer = setTimeout(() => {
+        link.timer = undefined;
         if (this.stopping) return;
-        this.startRouter(router).then(
-          () => this.logger.info("Router connection restored for instance %s", this.instanceId),
+        this.startRouterLink(router, link).then(
+          () => this.logger.info("Router connection restored for %s", where),
           (error: unknown) => {
-            this.logger.warning("Router re-registration failed for instance %s: %s", this.instanceId, error);
+            this.logger.warning("Router re-registration failed for %s: %s", where, error);
             attempt();
           },
         );
@@ -223,13 +239,14 @@ export class MeshCallServer {
 
   private async drain(timeoutMs: number): Promise<void> {
     const deadline = performance.now() + timeoutMs;
-    const routerSocket = this.routerSocket;
-    if (routerSocket !== undefined) {
-      const session = this.sessions.get(routerSocket);
-      if (session !== undefined) {
+    const connected = this.routerLinks.filter((link) => link.socket !== undefined);
+    if (this.options.router !== undefined) {
+      await Promise.all(connected.map(async (link) => {
+        const session = link.socket === undefined ? undefined : this.sessions.get(link.socket);
+        if (session === undefined) return;
         await session.writer.send({ kind: "server.drain" });
         await withDeadline(session.awaitDrainAck(), deadline, "Router did not acknowledge drain");
-      }
+      }));
     } else {
       // Stop accepting; existing clients keep running their calls.
       this.listener?.close();
@@ -253,13 +270,16 @@ export class MeshCallServer {
       }
     }
     this.running = false;
-    if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = undefined;
+    for (const link of this.routerLinks) {
+      if (link.timer !== undefined) clearTimeout(link.timer);
+      link.timer = undefined;
+      link.socket = undefined;
+    }
+    this.routerLinks.length = 0;
     const listener = this.listener;
     const http = this.httpServer;
     this.listener = undefined;
     this.httpServer = undefined;
-    this.routerSocket = undefined;
     const sockets = [...this.sessions.keys()];
     for (const session of this.sessions.values()) session.close();
     await Promise.all(sockets.map(closeSocket));
@@ -294,9 +314,10 @@ export class MeshCallServer {
     socket.on("close", () => {
       session.close();
       this.sessions.delete(socket);
-      if (this.routerSocket === socket) {
-        this.routerSocket = undefined;
-        this.scheduleRouterReconnect();
+      const link = this.routerLinks.find((candidate) => candidate.socket === socket);
+      if (link !== undefined) {
+        link.socket = undefined;
+        this.scheduleRouterReconnect(link);
       }
     });
     socket.on("error", () => {
@@ -367,8 +388,28 @@ export class MeshCallServer {
   }
 
   private async startRouter(router: RouterConnectionOptions): Promise<void> {
-    const socket = createSocket(router.endpoint, this.maxFrameSize, this.handshakeTimeout, router.auth);
-    this.routerSocket = socket;
+    const endpoints = Array.isArray(router.endpoint)
+      ? [...(router.endpoint as ReadonlyArray<WebSocketEndpoint>)] : [router.endpoint as WebSocketEndpoint];
+    if (endpoints.length === 0) throw new RangeError("At least one Router endpoint is required");
+    this.routerLinks.length = 0;
+    for (const endpoint of endpoints) this.routerLinks.push({ endpoint, socket: undefined, timer: undefined });
+    const results = await Promise.allSettled(this.routerLinks.map((link) => this.startRouterLink(router, link)));
+    if (results.every((r) => r.status === "rejected")) {
+      throw (results[0] as PromiseRejectedResult).reason;
+    }
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        const link = this.routerLinks[index] as RouterLink;
+        this.logger.warning("Router %s refused instance %s at start (%s); retrying in the background",
+          JSON.stringify(link.endpoint), this.instanceId, result.reason);
+        this.scheduleRouterReconnect(link, true);
+      }
+    });
+  }
+
+  private async startRouterLink(router: RouterConnectionOptions, link: RouterLink): Promise<void> {
+    const socket = createSocket(link.endpoint, this.maxFrameSize, this.handshakeTimeout, router.auth);
+    link.socket = socket;
     const { session, liveness } = this.session(socket, "router");
     await new Promise<void>((resolve, reject) => {
       let state: "hello" | "register" | "ready" = "hello";

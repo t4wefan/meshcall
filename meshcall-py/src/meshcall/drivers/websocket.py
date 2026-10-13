@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from stat import S_ISSOCK
 from typing import TYPE_CHECKING
@@ -38,9 +39,16 @@ MAX_UNIX_SOCKET_PATH_BYTES = 103
 
 
 class WebSocketClientDriver(ClientDriver):
+    """Connect to a direct server or a Router.
+
+    ``uri`` may be a list: endpoints are tried in order starting from the last
+    one that worked, so several independent Routers give failover without any
+    Router-side coordination.
+    """
+
     def __init__(
         self,
-        uri: str | None = None,
+        uri: str | Sequence[str] | None = None,
         *,
         unix_path: str | Path | None = None,
         peer_id: str | None = None,
@@ -51,8 +59,14 @@ class WebSocketClientDriver(ClientDriver):
     ) -> None:
         if (uri is None) == (unix_path is None):
             raise ValueError("Set exactly one of uri or unix_path")
-        self.uri = uri
+        self.uris: tuple[str, ...] = (
+            () if uri is None else ((uri,) if isinstance(uri, str) else tuple(uri))
+        )
+        if uri is not None and not self.uris:
+            raise ValueError("uri list must not be empty")
+        self.uri = self.uris[0] if self.uris else None
         self.unix_path = Path(unix_path) if unix_path is not None else None
+        self._cursor = 0
         self.peer_id = peer_id or uuid.uuid4().hex
         self.max_frame_size = max_frame_size
         self.auth = auth
@@ -60,11 +74,35 @@ class WebSocketClientDriver(ClientDriver):
         self.ping_timeout = ping_timeout
         self._connection: FrameConnection | None = None
 
+    @property
+    def endpoint(self) -> str | None:
+        """The URI of the current (or most recently used) connection."""
+        return self.uris[self._cursor % len(self.uris)] if self.uris else None
+
     async def connect(self) -> FrameConnection:
         if self._connection is not None:
             return self._connection
+        if self.unix_path is not None:
+            self._connection = await self._connect_one(None)
+            return self._connection
+        # One pass over the endpoints, starting from the last good one.
+        last: BaseException | None = None
+        for offset in range(len(self.uris)):
+            index = (self._cursor + offset) % len(self.uris)
+            try:
+                connection = await self._connect_one(self.uris[index])
+            except (OSError, ConnectionError, MeshCallError) as exc:
+                last = exc
+                continue
+            self._cursor = index
+            self._connection = connection
+            return connection
+        assert last is not None
+        raise last
+
+    async def _connect_one(self, uri: str | None) -> FrameConnection:
         websocket = await _connect_endpoint(
-            uri=self.uri,
+            uri=uri,
             unix_path=self.unix_path,
             max_frame_size=self.max_frame_size,
             auth=self.auth,
@@ -85,13 +123,16 @@ class WebSocketClientDriver(ClientDriver):
         except BaseException:
             await connection.close()
             raise
-        self._connection = connection
         return connection
 
     async def close(self) -> None:
         if self._connection is not None:
             connection, self._connection = self._connection, None
             await connection.close()
+            # The next connect() starts from the following endpoint: a
+            # connection that just died is the least likely to come back first.
+            if len(self.uris) > 1:
+                self._cursor = (self._cursor + 1) % len(self.uris)
 
 
 class WebSocketDirectServerDriver(ServerDriver):
@@ -207,9 +248,17 @@ class WebSocketDirectServerDriver(ServerDriver):
 
 
 class WebSocketRouterServerDriver(ServerDriver):
+    """Register a service instance with one or more Routers.
+
+    With several URIs the instance keeps one registration per Router, each
+    with its own reconnect loop, so clients can fail over between Routers
+    without any Router-side coordination. ``start()`` succeeds as soon as one
+    Router accepted the registration; the others keep retrying.
+    """
+
     def __init__(
         self,
-        uri: str | None = None,
+        uri: str | Sequence[str] | None = None,
         *,
         unix_path: str | Path | None = None,
         instance_id: str | None = None,
@@ -222,7 +271,10 @@ class WebSocketRouterServerDriver(ServerDriver):
         super().__init__()
         if (uri is None) == (unix_path is None):
             raise ValueError("Set exactly one of uri or unix_path")
-        self.uri = uri
+        uris = () if uri is None else ((uri,) if isinstance(uri, str) else tuple(uri))
+        if uri is not None and not uris:
+            raise ValueError("uri list must not be empty")
+        self.uri = uris[0] if uris else None
         self.unix_path = Path(unix_path) if unix_path is not None else None
         self.instance_id = instance_id or uuid.uuid4().hex
         self.max_frame_size = max_frame_size
@@ -230,9 +282,47 @@ class WebSocketRouterServerDriver(ServerDriver):
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
         self.reconnect = reconnect
-        self._connection: FrameConnection | None = None
-        self._runtime_task: asyncio.Task[None] | None = None
+        endpoints: list[str | None] = list(uris) if uris else [None]
+        self._links = [_RouterLink(self, endpoint) for endpoint in endpoints]
         self._draining = False
+
+    @property
+    def connected(self) -> bool:
+        """Whether at least one Router currently holds this instance's registration."""
+        return any(link.connection is not None for link in self._links)
+
+    @property
+    def connected_endpoints(self) -> tuple[str | None, ...]:
+        return tuple(
+            link.endpoint for link in self._links if link.connection is not None
+        )
+
+    async def start(
+        self,
+        binding: DriverBinding,
+        runtime: ServerRuntime,
+    ) -> None:
+        self.check_binding(binding)
+        results = await asyncio.gather(
+            *(link.register(runtime) for link in self._links), return_exceptions=True
+        )
+        failures = [r for r in results if isinstance(r, BaseException)]
+        if len(failures) == len(self._links):
+            raise failures[0]
+        for link, result in zip(self._links, results, strict=True):
+            if isinstance(result, BaseException):
+                runtime.logger.warning(  # noqa: PLE1205
+                    "Router {} rejected or refused instance {} at start ({}); retrying in the background",
+                    link.endpoint,
+                    self.instance_id,
+                    result,
+                )
+            link.task = asyncio.create_task(
+                link.supervise(
+                    runtime, initial_failure=isinstance(result, BaseException)
+                ),
+                name=f"meshcall-router-server-{self.instance_id}",
+            )
 
     async def drain(
         self,
@@ -243,54 +333,55 @@ class WebSocketRouterServerDriver(ServerDriver):
     ) -> None:
         self.check_binding(binding)
         self._draining = True
-        connection = self._connection
         started = time.monotonic()
-        if connection is not None:
-            ack = connection.drain_ack()
-            await connection.send(ServerDrainFrame())
+        acks = [
+            link.send_drain() for link in self._links if link.connection is not None
+        ]
+        if acks:
             async with asyncio.timeout(timeout):
-                await ack
+                await asyncio.gather(*acks, return_exceptions=True)
         remaining = max(0.0, timeout - (time.monotonic() - started))
         await runtime.wait_idle(remaining)
 
-    @property
-    def connected(self) -> bool:
-        """Whether the instance currently holds a registered Router connection."""
-        return self._connection is not None
-
-    async def start(
-        self,
-        binding: DriverBinding,
-        runtime: ServerRuntime,
-    ) -> None:
+    async def stop(self, binding: DriverBinding) -> None:
         self.check_binding(binding)
-        # The first registration must succeed for start() to succeed; later
-        # losses are handled by the supervisor without changing server state.
-        self._connection = await self._register(runtime)
-        self._runtime_task = asyncio.create_task(
-            self._supervise(runtime),
-            name=f"meshcall-router-server-{self.instance_id}",
-        )
+        await asyncio.gather(*(link.close() for link in self._links))
 
-    async def _register(self, runtime: ServerRuntime) -> FrameConnection:
+
+class _RouterLink:
+    """One registration with one Router, supervised independently."""
+
+    def __init__(
+        self, driver: WebSocketRouterServerDriver, endpoint: str | None
+    ) -> None:
+        self.driver = driver
+        self.endpoint = endpoint
+        self.connection: FrameConnection | None = None
+        self.task: asyncio.Task[None] | None = None
+
+    async def register(self, runtime: ServerRuntime) -> None:
+        self.connection = await self._open(runtime)
+
+    async def _open(self, runtime: ServerRuntime) -> FrameConnection:
+        driver = self.driver
         websocket = await _connect_endpoint(
-            uri=self.uri,
-            unix_path=self.unix_path,
-            max_frame_size=self.max_frame_size,
-            auth=self.auth,
+            uri=self.endpoint,
+            unix_path=driver.unix_path,
+            max_frame_size=driver.max_frame_size,
+            auth=driver.auth,
         )
         connection = FrameConnection(
             websocket,
-            max_frame_size=self.max_frame_size,
-            ping_interval=self.ping_interval,
-            ping_timeout=self.ping_timeout,
+            max_frame_size=driver.max_frame_size,
+            ping_interval=driver.ping_interval,
+            ping_timeout=driver.ping_timeout,
         )
         try:
             await connection.send(
                 HelloFrame(
                     role="server",
-                    peer_id=self.instance_id,
-                    instance_id=self.instance_id,
+                    peer_id=driver.instance_id,
+                    instance_id=driver.instance_id,
                 )
             )
             hello_ack = await connection.receive()
@@ -300,7 +391,7 @@ class WebSocketRouterServerDriver(ServerDriver):
                 raise ProtocolError(f"Unsupported protocol: {hello_ack.protocol}")
             await connection.send(
                 ServerRegisterFrame(
-                    instance_id=self.instance_id,
+                    instance_id=driver.instance_id,
                     services=runtime.registration(),
                     max_inflight=runtime.max_inflight,
                 )
@@ -308,7 +399,7 @@ class WebSocketRouterServerDriver(ServerDriver):
             register_ack = await connection.receive()
             if (
                 not isinstance(register_ack, ServerRegisterAckFrame)
-                or register_ack.instance_id != self.instance_id
+                or register_ack.instance_id != driver.instance_id
             ):
                 raise ProtocolError("Expected matching server.register.ack")
         except BaseException:
@@ -316,61 +407,66 @@ class WebSocketRouterServerDriver(ServerDriver):
             raise
         return connection
 
-    async def _supervise(self, runtime: ServerRuntime) -> None:
-        """Serve the Router connection and re-register after it drops."""
-        while True:
-            connection = self._connection
-            if connection is None:
-                return
-            await runtime.serve_connection(connection)
-            if self._connection is not connection:
-                return  # stop() took the connection away
-            self._connection = None
-            await connection.close()  # releases the sender task of the dead socket
-            if self._draining:
-                return
-            if not self.reconnect.enabled:
-                runtime.logger.warning(  # noqa: PLE1205
-                    "Router connection lost for instance {}; reconnect disabled",
-                    self.instance_id,
-                )
-                return
-            runtime.logger.warning(  # noqa: PLE1205
-                "Router connection lost for instance {}; reconnecting",
-                self.instance_id,
-            )
-            for delay in self.reconnect.delays():
-                await asyncio.sleep(delay)
-                try:
-                    self._connection = await self._register(runtime)
-                except (OSError, ConnectionError, MeshCallError) as exc:
-                    runtime.logger.warning(  # noqa: PLE1205
-                        "Router re-registration failed for instance {}: {}",
-                        self.instance_id,
-                        exc,
-                    )
-                    continue
-                runtime.logger.info(  # noqa: PLE1205
-                    "Router connection restored for instance {}", self.instance_id
-                )
-                break
-            else:
-                runtime.logger.error(  # noqa: PLE1205
-                    "Giving up on Router reconnection for instance {}",
-                    self.instance_id,
-                )
-                return
+    async def send_drain(self) -> None:
+        connection = self.connection
+        if connection is None:
+            return
+        ack = connection.drain_ack()
+        await connection.send(ServerDrainFrame())
+        await ack
 
-    async def stop(self, binding: DriverBinding) -> None:
-        self.check_binding(binding)
-        connection, self._connection = self._connection, None
-        runtime_task, self._runtime_task = self._runtime_task, None
+    async def supervise(self, runtime: ServerRuntime, *, initial_failure: bool) -> None:
+        """Serve this Router's connection and re-register after it drops."""
+        driver = self.driver
+        where = f"instance {driver.instance_id} at {self.endpoint or driver.unix_path}"
+        while True:
+            if self.connection is None:
+                if driver._draining or not driver.reconnect.enabled:
+                    if not initial_failure:
+                        runtime.logger.warning(  # noqa: PLE1205
+                            "Router connection lost for {}; reconnect disabled", where
+                        )
+                    return
+                if not initial_failure:
+                    runtime.logger.warning(  # noqa: PLE1205
+                        "Router connection lost for {}; reconnecting", where
+                    )
+                initial_failure = False
+                for delay in driver.reconnect.delays():
+                    await asyncio.sleep(delay)
+                    try:
+                        self.connection = await self._open(runtime)
+                    except (OSError, ConnectionError, MeshCallError) as exc:
+                        runtime.logger.warning(  # noqa: PLE1205
+                            "Router re-registration failed for {}: {}", where, exc
+                        )
+                        continue
+                    runtime.logger.info(  # noqa: PLE1205
+                        "Router connection restored for {}", where
+                    )
+                    break
+                else:
+                    runtime.logger.error(  # noqa: PLE1205
+                        "Giving up on Router reconnection for {}", where
+                    )
+                    return
+            connection = self.connection
+            assert connection is not None
+            await runtime.serve_connection(connection)
+            if self.connection is not connection:
+                return  # stop() took the connection away
+            self.connection = None
+            await connection.close()  # releases the sender task of the dead socket
+
+    async def close(self) -> None:
+        connection, self.connection = self.connection, None
+        task, self.task = self.task, None
         if connection is not None:
             await connection.close()
-        if runtime_task is not None:
-            runtime_task.cancel()
+        if task is not None:
+            task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await runtime_task
+                await task
 
 
 async def _connect_endpoint(

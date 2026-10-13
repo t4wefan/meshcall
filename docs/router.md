@@ -100,6 +100,20 @@ per instance, across its registered services.
   provides no automatic call replay, stream resumption, route migration, or
   replicated Router state.
 
+## High availability without Router state
+
+Run several independent Routers. A service instance registers with each of
+them (Python `WebSocketRouterServerDriver([uri1, uri2])`, TypeScript
+`router: { endpoint: [uri1, uri2] }`), keeping one registration per Router
+with its own reconnect loop; `start()` succeeds once any Router accepts.
+Clients take the same list (`WebSocketClientDriver([uri1, uri2])`,
+`new MeshCallClient([uri1, uri2])`): they use one Router and move to the next
+when it fails, resuming from the last good one. Because every Router sees
+every instance and holds no state that peers cannot rebuild, no coordination
+between Routers is needed. Balancing, deduplication and circuit breaking are
+per Router: a duplicate idempotent call sent to two different Routers may
+execute twice, which handlers that honour the key tolerate.
+
 The Router is a single process responsible for registration, authorization and
 forwarding. Each peer has a queue bounded by both frame count (256) and bytes
 (at least 8 MiB, or twice the configured maximum frame size). A slow peer is

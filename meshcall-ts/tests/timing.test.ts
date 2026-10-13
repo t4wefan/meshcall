@@ -371,3 +371,35 @@ test("maxInflight is enforced locally in direct mode", { timeout: 5000 }, async 
   assert.deepEqual(rest, [1, 2]);
   assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 4 })).value, 4);
 });
+
+test("several Routers give failover without coordination", { timeout: 15000, skip: routerMissing }, async (t) => {
+  const routers = [new WebSocketRouter(), new WebSocketRouter()];
+  for (const router of routers) await router.start();
+  t.after(async () => { for (const router of routers) await router.stop(); });
+  const ports = routers.map((router) => router.boundPort);
+  const endpoints = ports.map((port) => "ws://127.0.0.1:" + port);
+  const reconnect = { initialDelayMs: 50, maxDelayMs: 200 };
+  const server = new MeshCallServer({
+    services: [service], router: { endpoint: endpoints, instanceId: "multi" }, accessLog: false, reconnect,
+  });
+  t.after(() => server.close());
+  await server.start();
+  assert.deepEqual([...server.routerEndpoints].sort(), [...endpoints].sort());
+  const client = new MeshCallClient(endpoints, undefined, { reconnect });
+  t.after(() => client.close());
+  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 1 })).value, 1);
+  assert.equal(client.endpoint, endpoints[0]);
+  // Lose the Router the client is on: the next call fails over to the other.
+  await routers[0]!.stop();
+  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 2 }, { timeoutMs: 5000 })).value, 2);
+  assert.equal(client.endpoint, endpoints[1]);
+  for (let i = 0; i < 100 && server.routerEndpoints.length !== 1; i += 1) await delay(20);
+  assert.deepEqual(server.routerEndpoints, [endpoints[1]]);
+  assert.equal(server.isRunning, true);
+  // Bring the first Router back: the service re-registers there too.
+  const restarted = new WebSocketRouter({ port: ports[0] as number });
+  t.after(() => restarted.stop());
+  await restarted.start();
+  for (let i = 0; i < 200 && server.routerEndpoints.length !== 2; i += 1) await delay(20);
+  assert.equal(server.routerEndpoints.length, 2);
+});

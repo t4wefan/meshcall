@@ -168,11 +168,22 @@ export class MeshCallClient {
   /** Trailers of settled non-stream calls, consumed once by the call entry point. */
   private readonly trailers = new Map<string, Readonly<Metadata>>();
 
+  private readonly endpoints: ReadonlyArray<WebSocketEndpoint>;
+  /** Index of the endpoint in use (or to try first); advances on failure. */
+  private cursor = 0;
+
+  /**
+   * `url` may be a list of endpoints: they are tried in order starting from
+   * the last one that worked, so several independent Routers give failover
+   * without any Router-side coordination.
+   */
   public constructor(
-    private readonly url: WebSocketEndpoint,
+    url: WebSocketEndpoint | ReadonlyArray<WebSocketEndpoint>,
     private readonly peerId: string = randomUUID().replaceAll("-", ""),
     private readonly options: MeshCallClientOptions = {},
   ) {
+    this.endpoints = Array.isArray(url) ? [...(url as ReadonlyArray<WebSocketEndpoint>)] : [url as WebSocketEndpoint];
+    if (this.endpoints.length === 0) throw new RangeError("At least one endpoint is required");
     for (const value of [options.maxFrameSize, options.handshakeTimeoutMs, options.pingTimeoutMs]) {
       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
         throw new RangeError("Limits must be positive integers");
@@ -206,13 +217,18 @@ export class MeshCallClient {
     }
   }
 
+  /** The endpoint of the current (or most recently used) connection. */
+  public get endpoint(): WebSocketEndpoint {
+    return this.endpoints[this.cursor % this.endpoints.length] as WebSocketEndpoint;
+  }
+
   private async openWithRetry(): Promise<void> {
     const policy = this.options.reconnect ?? {};
     const retry = (policy.enabled ?? true) && this.everConnected;
     const delays = retry ? reconnectDelays(policy) : undefined;
     for (;;) {
       try {
-        await this.open();
+        await this.openAnyEndpoint();
         this.everConnected = true;
         return;
       } catch (error) {
@@ -552,10 +568,26 @@ export class MeshCallClient {
     return frame;
   }
 
-  private async open(): Promise<void> {
+  /** One pass over the endpoints, starting from the last good one. */
+  private async openAnyEndpoint(): Promise<void> {
+    let last: unknown;
+    for (let offset = 0; offset < this.endpoints.length; offset += 1) {
+      const index = (this.cursor + offset) % this.endpoints.length;
+      try {
+        await this.open(this.endpoints[index] as WebSocketEndpoint);
+        this.cursor = index;
+        return;
+      } catch (error) {
+        last = error;
+      }
+    }
+    throw last;
+  }
+
+  private async open(endpoint: WebSocketEndpoint): Promise<void> {
     const maxSize = this.options.maxFrameSize ?? DEFAULT_MAX_FRAME_SIZE;
     const timeout = this.options.handshakeTimeoutMs ?? 10_000;
-    const socket = createSocket(this.url, maxSize, timeout, this.options.auth);
+    const socket = createSocket(endpoint, maxSize, timeout, this.options.auth);
     const writer = new FrameWriter(socket, maxSize);
     const liveness = new Liveness(socket, writer, {
       pingIntervalMs: this.options.pingIntervalMs === undefined
@@ -610,6 +642,9 @@ export class MeshCallClient {
             this.writer = undefined;
             this.liveness = undefined;
             this.rejectAll(error);
+            // Start the next connect from the following endpoint: the one
+            // that just died is the least likely to come back first.
+            if (this.endpoints.length > 1) this.cursor = (this.cursor + 1) % this.endpoints.length;
           }
           reject(error);
         });

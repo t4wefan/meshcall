@@ -280,3 +280,47 @@ async def test_drain_leaves_the_pool_and_finishes_in_flight_calls() -> None:
         await client.stop()
         await server_b.stop()
         await router.stop()
+
+
+async def test_multiple_routers_give_failover_without_coordination() -> None:
+    routers = [WebSocketRouter(host="127.0.0.1", port=0) for _ in range(2)]
+    for router in routers:
+        await router.start()
+    ports = [router.bound_port for router in routers]
+    uris = [f"ws://127.0.0.1:{port}" for port in ports]
+    policy = ReconnectPolicy(initial_delay=0.05, max_delay=0.2)
+    server_driver = WebSocketRouterServerDriver(
+        uris, instance_id="multi", reconnect=policy
+    )
+    server = RpcServer(services=[NumberService], driver=server_driver)
+    await server.start()
+    client_driver = WebSocketClientDriver(uris)
+    client = NumberServiceClient(client_driver, reconnect=policy)
+    try:
+        assert set(server_driver.connected_endpoints) == set(uris)
+        assert await client.unary(NumberRequest(value=1)) == NumberResult(total=1)
+        assert client_driver.endpoint == uris[0]
+        # Lose the Router the client is on: the next call fails over to the other.
+        await routers[0].stop()
+        assert await client.slow(NumberRequest(value=1), timeout=5) == NumberResult(
+            total=1
+        )
+        assert client_driver.endpoint == uris[1]
+        assert server_driver.connected_endpoints == (uris[1],)
+        assert server.state.value == "running"
+        # Bring the first Router back: the service re-registers there too.
+        restarted = WebSocketRouter(host="127.0.0.1", port=ports[0])
+        await restarted.start()
+        try:
+            for _ in range(100):
+                if len(server_driver.connected_endpoints) == 2:
+                    break
+                await asyncio.sleep(0.02)
+            assert set(server_driver.connected_endpoints) == set(uris)
+        finally:
+            await restarted.stop()
+    finally:
+        await client.stop()
+        await server.stop()
+        for router in routers[1:]:
+            await router.stop()

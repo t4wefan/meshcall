@@ -23,6 +23,9 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Multiple Router endpoints: clients fail over between Routers, Router-mode
+  servers hold one registration per Router (`connected_endpoints` /
+  `routerEndpoints`). No Router-side coordination.
 - `max_inflight` per instance (Python `RpcServer(max_inflight=)`, TS
   `maxInflight`), enforced locally and announced to the Router, which routes
   around full instances; a per-instance circuit breaker in the Router with

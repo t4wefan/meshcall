@@ -132,6 +132,8 @@ task can't operate through a newly acquired generation.
   (`server.drain` to the Router, or closing the listener) and waits up to the
   drain timeout for in-flight calls, then stops; nothing in flight fails.
 - Instance disconnect terminates its routed calls with retryable `unavailable`.
+- Clients and Router-mode servers accept a list of Router endpoints: clients
+  fail over to the next endpoint, servers keep one registration per Router.
 - Connection loss terminates all local active calls. Clients then reconnect
   lazily on the next call with exponential backoff and jitter
   (`ReconnectPolicy`), waiting at most that call's timeout. Router-mode
