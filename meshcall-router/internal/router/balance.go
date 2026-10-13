@@ -28,6 +28,7 @@ type pool struct {
 	contractMethods int
 	instances       []*peer
 	cursors         map[string]int
+	leastCursor     int
 }
 
 // serves reports whether p registered method on service.
@@ -52,9 +53,31 @@ func (p *pool) rebuildMethods() {
 	}
 }
 
+// instanceCost estimates the marginal cost of assigning one more call to p.
+// Quantizing latency and oldest in-flight age into 5 ms buckets keeps sub-ms
+// localhost jitter from perturbing deterministic tie-breaking while still
+// penalizing remote hops, high-RTT peers, slow instances, and stalling calls.
+func instanceCost(p *peer, now time.Time) time.Duration {
+	const quantum = 5 * time.Millisecond
+	var gatewayRTT time.Duration
+	if p.gateway != nil {
+		gatewayRTT = p.gateway.rtt
+	}
+	var ewma time.Duration
+	if p.inflight > 0 || p.ewma >= 100*time.Millisecond {
+		ewma = p.ewma
+	}
+	lat := ((ewma + gatewayRTT) / quantum) * quantum
+	if age := (p.oldestInflightAge(now) / quantum) * quantum; age > lat {
+		lat = age
+	}
+	unit := quantum + time.Duration(p.hops)*5*quantum + lat
+	return unit * time.Duration(p.inflight+1)
+}
+
 // selectInstance picks an instance for f. A non-nil avoid is skipped when any
 // other instance exists (redelivery after that instance lost the call).
-func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
+func (r *Router) selectInstance(caller *peer, f frame, avoid *peer) (*peer, *frame) {
 	fail := func(code, message string) (*peer, *frame) {
 		reason := ""
 		if code == "unavailable" {
@@ -72,18 +95,18 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		return fail("method_not_found", "Unknown method "+f.Service+"."+f.Method)
 	}
 	if f.InstanceID != "" {
-		return r.targetInstance(f)
+		return r.targetInstance(caller, f)
 	}
 	if p.targeted {
 		err := routerError(f.CallID, "invalid_argument", f.Service+" is a targeted service: call.open needs instance_id", false, "instance_required", "")
 		return nil, &err
 	}
-	// Eligibility: registered this method, not avoided, not at its cap,
-	// breaker admits it.
+	// Eligibility: registered this method, not bounced back to caller peer,
+	// not avoided, not at its cap, breaker admits it.
 	now := time.Now()
 	serving := make([]*peer, 0, len(p.instances))
 	for _, c := range p.instances {
-		if c.serves(f.Service, f.Method) {
+		if c.serves(f.Service, f.Method) && (caller == nil || (c != caller && c.gateway != caller)) {
 			serving = append(serving, c)
 		}
 	}
@@ -111,24 +134,46 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		}
 		return fail("unavailable", "No instances registered for "+f.Service)
 	}
-	if len(eligible) != len(p.instances) {
-		p = &pool{targeted: p.targeted, methods: p.methods, cursors: p.cursors, instances: eligible}
+	// Locality tiering: for non-cost-based policies, prefer the closest hop
+	// tier (local instances hops==0 first) and spill over to remote instances
+	// only when no closer instance is eligible.
+	candidates := eligible
+	if selected.Balance.Kind != "least_inflight" {
+		minHops := candidates[0].hops
+		for _, c := range candidates[1:] {
+			if c.hops < minHops {
+				minHops = c.hops
+			}
+		}
+		near := make([]*peer, 0, len(candidates))
+		for _, c := range candidates {
+			if c.hops == minHops {
+				near = append(near, c)
+			}
+		}
+		candidates = near
 	}
 	switch selected.Balance.Kind {
 	case "round_robin":
-		cursor := p.cursors[f.Method] % len(p.instances)
-		p.cursors[f.Method] = (cursor + 1) % len(p.instances)
-		return p.instances[cursor], nil
+		cursor := p.cursors[f.Method] % len(candidates)
+		p.cursors[f.Method] = (cursor + 1) % len(candidates)
+		return candidates[cursor], nil
 	case "least_inflight":
-		best := p.instances[0]
-		for _, candidate := range p.instances[1:] {
-			if candidate.inflight < best.inflight {
+		n := len(candidates)
+		start := p.leastCursor % n
+		p.leastCursor = (start + 1) % n
+		best := candidates[start]
+		bestCost := instanceCost(best, now)
+		for i := 1; i < n; i++ {
+			candidate := candidates[(start+i)%n]
+			if cost := instanceCost(candidate, now); cost < bestCost {
 				best = candidate
+				bestCost = cost
 			}
 		}
 		return best, nil
 	case "random":
-		return p.instances[rand.IntN(len(p.instances))], nil
+		return candidates[rand.IntN(len(candidates))], nil
 	case "sticky":
 		var value any
 		d := json.NewDecoder(bytes.NewReader(f.Payload))
@@ -151,21 +196,21 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 			return fail("invalid_argument", "Invalid sticky key")
 		}
 		digest := sha256.Sum256([]byte(canonical.String()))
-		return p.instances[binary.BigEndian.Uint64(digest[:8])%uint64(len(p.instances))], nil
+		return candidates[binary.BigEndian.Uint64(digest[:8])%uint64(len(candidates))], nil
 	default: // disabled
-		if len(p.instances) != 1 {
+		if len(candidates) != 1 {
 			return fail("unavailable", "Balance is disabled for "+f.Service+"."+f.Method)
 		}
-		return p.instances[0], nil
+		return candidates[0], nil
 	}
 }
 
 // targetInstance routes a call that names its instance. The caller chose the
 // instance, so the balance policy and the circuit breaker do not apply; only
 // existence, draining and the hard capacity cap do.
-func (r *Router) targetInstance(f frame) (*peer, *frame) {
+func (r *Router) targetInstance(caller *peer, f frame) (*peer, *frame) {
 	target := r.instances[f.InstanceID]
-	if target == nil || !slices.ContainsFunc(target.services, func(s service) bool { return s.Name == f.Service }) {
+	if target == nil || (caller != nil && (target == caller || target.gateway == caller)) || !slices.ContainsFunc(target.services, func(s service) bool { return s.Name == f.Service }) {
 		err := routerError(f.CallID, "unavailable", "Instance "+f.InstanceID+" is not registered for "+f.Service, false, "instance_unknown", f.InstanceID)
 		return nil, &err
 	}

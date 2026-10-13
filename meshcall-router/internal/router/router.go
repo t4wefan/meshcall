@@ -1,9 +1,11 @@
 package router
 
 import (
+	"bytes"
 	"container/list"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,11 +13,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +43,10 @@ type Config struct {
 	// BreakerCooldown; then one probe call is admitted. See breaker.go.
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
+	// Peers are WebSocket URLs (ws:// or wss://) of other Routers to peer with.
+	Peers []string
+	// PeerID uniquely identifies this Router in hello and router.sync frames.
+	PeerID string
 }
 
 const (
@@ -56,19 +64,60 @@ type Ready struct {
 }
 
 type peer struct {
-	conn        *websocket.Conn
-	ctx         context.Context
-	cancel      context.CancelFunc
-	out         *outbox
-	user        *User
-	id          string
-	role        string
-	instanceID  string
-	services    []service
-	inflight    int
-	maxInflight int // 0 = unlimited
-	health      health
-	draining    bool
+	conn         *websocket.Conn
+	ctx          context.Context
+	cancel       context.CancelFunc
+	out          *outbox
+	user         *User
+	id           string
+	peerID       string
+	role         string
+	instanceID   string
+	services     []service
+	inflight     int
+	maxInflight  int // 0 = unlimited
+	health       health
+	draining     bool
+	gateway      *peer               // non-nil for virtual instances learned via router.sync
+	hops         int                 // 0 for local instances, >= 1 for peer-routed instances
+	via          []string            // router peer_ids on the path to this virtual instance
+	advertised   []remoteInstance    // last router.sync received from this router peer
+	lastSentSync []byte              // last router.sync payload sent to this router peer
+	rtt          time.Duration       // EWMA ping/pong RTT for a router peer
+	ewma         time.Duration       // EWMA call duration for an instance
+	routes       map[*route]struct{} // active routes currently targeting this instance
+}
+
+func (p *peer) oldestInflightAge(now time.Time) time.Duration {
+	var oldest time.Duration
+	for rt := range p.routes {
+		if age := now.Sub(rt.started); age > oldest {
+			oldest = age
+		}
+	}
+	return oldest
+}
+
+func (p *peer) observeLatency(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	if p.ewma == 0 {
+		p.ewma = d
+	} else {
+		p.ewma = (p.ewma*4 + d) / 5
+	}
+}
+
+func (p *peer) observeRTT(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	if p.rtt == 0 {
+		p.rtt = d
+	} else {
+		p.rtt = (p.rtt*4 + d) / 5
+	}
 }
 
 func (p *peer) send(f frame) {
@@ -106,6 +155,7 @@ type route struct {
 	id       string
 	client   *peer
 	instance *peer
+	started  time.Time
 	deadline time.Time
 	index    int         // position in Router.deadlines, or -1
 	dedup    *dedupEntry // set when the call carries an idempotency key
@@ -113,6 +163,7 @@ type route struct {
 
 type Router struct {
 	config       Config
+	peerID       string
 	listener     net.Listener
 	socketInfo   os.FileInfo
 	http         *http.Server
@@ -121,6 +172,7 @@ type Router struct {
 	mu           sync.Mutex
 	closed       bool
 	peers        map[*peer]struct{}
+	routerPeers  map[*peer]struct{}
 	instances    map[string]*peer
 	services     map[string]*pool
 	routes       map[string]*route
@@ -162,6 +214,20 @@ func Start(config Config) (*Router, error) {
 	if config.Port < 0 || config.Port > 65535 {
 		return nil, errors.New("port must be between 0 and 65535")
 	}
+	for _, peerURL := range config.Peers {
+		u, err := url.Parse(peerURL)
+		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
+			return nil, errors.New("peer must be a valid ws:// or wss:// URL")
+		}
+	}
+	peerID := config.PeerID
+	if peerID == "" {
+		rawID := make([]byte, 16)
+		if _, err := rand.Read(rawID); err != nil {
+			return nil, err
+		}
+		peerID = "router-" + hex.EncodeToString(rawID)
+	}
 	var listener net.Listener
 	var err error
 	if config.UnixPath != "" {
@@ -202,8 +268,8 @@ func Start(config Config) (*Router, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Router{
-		config: config, listener: listener, socketInfo: socketInfo, ctx: ctx, cancel: cancel,
-		peers: make(map[*peer]struct{}), instances: make(map[string]*peer),
+		config: config, peerID: peerID, listener: listener, socketInfo: socketInfo, ctx: ctx, cancel: cancel,
+		peers: make(map[*peer]struct{}), routerPeers: make(map[*peer]struct{}), instances: make(map[string]*peer),
 		services: make(map[string]*pool), routes: make(map[string]*route), done: make(chan struct{}),
 		deadlineWake: make(chan struct{}, 1),
 		dedup:        make(map[string]*dedupEntry),
@@ -225,6 +291,10 @@ func Start(config Config) (*Router, error) {
 			go r.Close()
 		}
 	}()
+	for _, peerURL := range config.Peers {
+		r.wg.Add(1)
+		go r.dialPeerLoop(peerURL)
+	}
 	return r, nil
 }
 
@@ -252,6 +322,7 @@ type InstanceHealth struct {
 	Breaker     string // closed | open | half_open
 	Failures    int
 	Draining    bool
+	Hops        int
 }
 
 func (r *Router) Snapshot() Snapshot {
@@ -270,7 +341,7 @@ func (r *Router) Snapshot() Snapshot {
 	for id, p := range r.instances {
 		snapshot.Health[id] = InstanceHealth{
 			Inflight: p.inflight, MaxInflight: p.maxInflight,
-			Breaker: string(p.health.state(now)), Failures: p.health.failures, Draining: p.draining,
+			Breaker: string(p.health.state(now)), Failures: p.health.failures, Draining: p.draining, Hops: p.hops,
 		}
 	}
 	for name, pool := range r.services {
@@ -334,7 +405,11 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	} else {
 		ctx, cancel = context.WithCancel(r.ctx)
 	}
-	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(max(8*1024*1024, 2*r.config.MaxFrameSize))}
+	p := &peer{
+		conn: conn, ctx: ctx, cancel: cancel, user: user,
+		out:    newOutbox(max(8*1024*1024, 2*r.config.MaxFrameSize)),
+		routes: make(map[*route]struct{}),
+	}
 	r.mu.Lock()
 	if r.closed || !r.config.Auth.valid(user) {
 		r.mu.Unlock()
@@ -369,8 +444,15 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	if _, err := rand.Read(id); err != nil {
 		return
 	}
-	p.id, p.role = hex.EncodeToString(id), f.Role
-	p.send(frame{Kind: "hello.ack", Protocol: Protocol, Connection: p.id})
+	p.id, p.role, p.peerID = hex.EncodeToString(id), f.Role, f.PeerID
+	ack := frame{Kind: "hello.ack", Protocol: Protocol, Connection: p.id}
+	if p.role == "router" {
+		if p.peerID == r.peerID {
+			return
+		}
+		ack.PeerID = r.peerID
+	}
+	p.send(ack)
 	if p.role == "server" {
 		registration, err := readFrame(handshake, conn)
 		if err != nil || registration.Kind != "server.register" || f.InstanceID == "" || f.InstanceID != registration.InstanceID {
@@ -381,13 +463,124 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 			_ = conn.Close(websocket.StatusPolicyViolation, "registration rejected")
 			return
 		}
+	} else if p.role == "router" {
+		r.mu.Lock()
+		r.routerPeers[p] = struct{}{}
+		r.broadcastRouterSyncLocked()
+		r.mu.Unlock()
 	}
 	stop()
+	r.readLoop(p)
+}
+
+func (r *Router) dialPeerLoop(peerURL string) {
+	defer r.wg.Done()
+	for {
+		if r.ctx.Err() != nil {
+			return
+		}
+		r.dialAndServePeer(peerURL)
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (r *Router) dialAndServePeer(peerURL string) {
+	u, err := url.Parse(peerURL)
+	if err != nil {
+		return
+	}
+	var opts *websocket.DialOptions
+	if u.User != nil {
+		header := make(http.Header)
+		pw, _ := u.User.Password()
+		cred := base64.StdEncoding.EncodeToString([]byte(u.User.Username() + ":" + pw))
+		header.Set("Authorization", "Basic "+cred)
+		opts = &websocket.DialOptions{HTTPHeader: header}
+		clean := *u
+		clean.User = nil
+		peerURL = clean.String()
+	}
+	dialCtx, dialCancel := context.WithTimeout(r.ctx, 5*time.Second)
+	conn, _, err := websocket.Dial(dialCtx, peerURL, opts)
+	dialCancel()
+	if err != nil {
+		return
+	}
+	conn.SetReadLimit(int64(r.config.MaxFrameSize))
+	ctx, cancel := context.WithCancel(r.ctx)
+	p := &peer{
+		conn: conn, ctx: ctx, cancel: cancel, role: "router",
+		out:    newOutbox(max(8*1024*1024, 2*r.config.MaxFrameSize)),
+		routes: make(map[*route]struct{}),
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		cancel()
+		_ = conn.CloseNow()
+		return
+	}
+	r.peers[p] = struct{}{}
+	r.mu.Unlock()
+	writerDone := make(chan struct{})
+	go func() { defer close(writerDone); p.writeLoop(r.config.MaxFrameSize) }()
+	defer func() {
+		cancel()
+		p.out.close()
+		_ = conn.CloseNow()
+		<-writerDone
+		r.remove(p)
+	}()
+	handshake, stop := context.WithTimeout(ctx, 5*time.Second)
+	p.send(frame{Kind: "hello", Protocol: Protocol, Role: "router", PeerID: r.peerID})
+	ack, err := readFrame(handshake, conn)
+	stop()
+	if err != nil || ack.Kind != "hello.ack" || ack.PeerID == r.peerID {
+		return
+	}
+	p.id, p.peerID = ack.Connection, ack.PeerID
+	r.mu.Lock()
+	r.routerPeers[p] = struct{}{}
+	r.broadcastRouterSyncLocked()
+	r.mu.Unlock()
+	r.readLoop(p)
+}
+
+func (r *Router) readLoop(p *peer) {
+	var pingDone chan struct{}
+	if p.role == "router" {
+		pingDone = make(chan struct{})
+		interval := min(r.config.IdleTimeout/3, 5*time.Second)
+		go func() {
+			defer close(pingDone)
+			p.send(frame{Kind: "ping", Nonce: fmt.Sprintf("t:%d", time.Now().UnixNano())})
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-p.ctx.Done():
+					return
+				case <-ticker.C:
+					p.send(frame{Kind: "ping", Nonce: fmt.Sprintf("t:%d", time.Now().UnixNano())})
+				}
+			}
+		}()
+	}
+	defer func() {
+		if pingDone != nil {
+			p.cancel()
+			<-pingDone
+		}
+	}()
 	for {
 		// A peer that sends nothing for IdleTimeout is treated as gone; connecting
 		// peers keep the connection alive with protocol pings.
-		read, idle := context.WithTimeout(ctx, r.config.IdleTimeout)
-		f, err := readFrame(read, conn)
+		read, idle := context.WithTimeout(p.ctx, r.config.IdleTimeout)
+		f, err := readFrame(read, p.conn)
 		idle()
 		if err != nil {
 			// A malformed call frame that still names its call is answered for
@@ -403,12 +596,19 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 			continue
 		}
 		if f.Kind == "pong" {
+			if p.role == "router" && strings.HasPrefix(f.Nonce, "t:") {
+				if ns, err := strconv.ParseInt(f.Nonce[2:], 10, 64); err == nil {
+					r.mu.Lock()
+					p.observeRTT(time.Since(time.Unix(0, ns)))
+					r.mu.Unlock()
+				}
+			}
 			continue
 		}
 		if f.Kind == "server.drain" {
 			// Graceful exit: leave every pool now, keep serving routed calls.
 			if p.role != "server" {
-				_ = conn.Close(websocket.StatusPolicyViolation, "frame not allowed for role")
+				_ = p.conn.Close(websocket.StatusPolicyViolation, "frame not allowed for role")
 				return
 			}
 			r.drain(p)
@@ -416,7 +616,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 			continue
 		}
 		if !allowedFrame(p.role, f) {
-			_ = conn.Close(websocket.StatusPolicyViolation, "frame not allowed for role")
+			_ = p.conn.Close(websocket.StatusPolicyViolation, "frame not allowed for role")
 			return
 		}
 		r.forward(p, f)
@@ -468,22 +668,39 @@ func validServiceName(name string) bool {
 	return versions == 1 && names > 0
 }
 
-func allowedFrame(role string, f frame) bool {
-	if role == "client" {
-		return f.Kind == "call.open" || f.Kind == "call.cancel" ||
-			((f.Kind == "stream.item" || f.Kind == "stream.end") && f.Direction == "client") ||
-			(f.Kind == "stream.window" && f.Direction == "server")
-	}
+func allowedCallerFrame(f frame) bool {
+	return f.Kind == "call.open" || f.Kind == "call.cancel" ||
+		((f.Kind == "stream.item" || f.Kind == "stream.end") && f.Direction == "client") ||
+		(f.Kind == "stream.window" && f.Direction == "server")
+}
+
+func allowedCalleeFrame(f frame) bool {
 	return f.Kind == "call.result" || f.Kind == "call.error" ||
 		((f.Kind == "stream.item" || f.Kind == "stream.end") && f.Direction == "server") ||
 		(f.Kind == "stream.window" && f.Direction == "client")
 }
 
-func (r *Router) register(p *peer, f frame) error {
+func allowedFrame(role string, f frame) bool {
+	switch role {
+	case "client":
+		return allowedCallerFrame(f)
+	case "server":
+		return allowedCalleeFrame(f)
+	case "router":
+		return f.Kind == "router.sync" || allowedCallerFrame(f) || allowedCalleeFrame(f)
+	default:
+		return false
+	}
+}
+
+func validateServices(services []service, user *User, checkAuth bool) error {
 	seen := make(map[string]bool)
-	for _, s := range f.Services {
-		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) {
+	for _, s := range services {
+		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || (checkAuth && !user.allowsRegistration(s.Name)) {
 			return errors.New("duplicate, invalid, or unauthorized service")
+		}
+		if s.Contract != nil && !json.Valid(s.Contract) {
+			return errors.New("invalid service contract")
 		}
 		seen[s.Name] = true
 		methods := make(map[string]bool)
@@ -498,15 +715,11 @@ func (r *Router) register(p *peer, f frame) error {
 			methods[m.Name] = true
 		}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.instances[f.InstanceID] != nil {
-		return errors.New("duplicate instance_id")
-	}
-	for _, s := range f.Services {
-		if s.Contract != nil && !json.Valid(s.Contract) {
-			return errors.New("invalid service contract")
-		}
+	return nil
+}
+
+func (r *Router) compatibleWithPoolsLocked(services []service) error {
+	for _, s := range services {
 		// Supersets are fine (rolling upgrades); the same method must mean
 		// the same thing, and targeted is a property of the whole service.
 		if pool := r.services[s.Name]; pool != nil {
@@ -520,11 +733,11 @@ func (r *Router) register(p *peer, f frame) error {
 			}
 		}
 	}
-	p.instanceID, p.services, p.maxInflight = f.InstanceID, f.Services, f.MaxInflight
-	r.instances[p.instanceID] = p
-	// Queue the ack before exposing the instance to calls.
-	p.send(frame{Kind: "server.register.ack", InstanceID: p.instanceID})
-	for _, s := range f.Services {
+	return nil
+}
+
+func (r *Router) joinPoolsLocked(p *peer) {
+	for _, s := range p.services {
 		if r.services[s.Name] == nil {
 			r.services[s.Name] = &pool{targeted: s.Targeted, methods: make(map[string]method), cursors: make(map[string]int)}
 		}
@@ -539,7 +752,171 @@ func (r *Router) register(p *peer, f frame) error {
 		pool.instances = append(pool.instances, p)
 		slices.SortFunc(pool.instances, func(a, b *peer) int { return strings.Compare(a.instanceID, b.instanceID) })
 	}
+}
+
+func (r *Router) register(p *peer, f frame) error {
+	if err := validateServices(f.Services, p.user, true); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing := r.instances[f.InstanceID]; existing != nil {
+		if existing.gateway == nil {
+			return errors.New("duplicate instance_id")
+		}
+		// A direct local registration supersedes a virtual remote advertisement
+		// for the same instance_id.
+		r.leavePools(existing)
+		delete(r.instances, f.InstanceID)
+	}
+	if err := r.compatibleWithPoolsLocked(f.Services); err != nil {
+		return err
+	}
+	p.instanceID, p.services, p.maxInflight = f.InstanceID, f.Services, f.MaxInflight
+	r.instances[p.instanceID] = p
+	// Queue the ack before exposing the instance to calls.
+	p.send(frame{Kind: "server.register.ack", InstanceID: p.instanceID})
+	r.joinPoolsLocked(p)
+	r.broadcastRouterSyncLocked()
 	return nil
+}
+
+func (r *Router) reconcileRemoteInstancesLocked() {
+	type winner struct {
+		gateway *peer
+		adv     remoteInstance
+	}
+	rps := make([]*peer, 0, len(r.routerPeers))
+	for rp := range r.routerPeers {
+		rps = append(rps, rp)
+	}
+	slices.SortFunc(rps, func(a, b *peer) int {
+		if c := strings.Compare(a.peerID, b.peerID); c != 0 {
+			return c
+		}
+		return strings.Compare(a.id, b.id)
+	})
+	winners := make(map[string]winner)
+	for _, rp := range rps {
+		for _, adv := range rp.advertised {
+			if slices.Contains(adv.Via, r.peerID) || len(adv.Via) > 4 {
+				continue
+			}
+			if existing := r.instances[adv.InstanceID]; existing != nil && existing.gateway == nil {
+				continue
+			}
+			if validateServices(adv.Services, rp.user, false) != nil {
+				continue
+			}
+			cur, ok := winners[adv.InstanceID]
+			if !ok || len(adv.Via) < len(cur.adv.Via) {
+				winners[adv.InstanceID] = winner{gateway: rp, adv: adv}
+			} else if len(adv.Via) == len(cur.adv.Via) {
+				if existing := r.instances[adv.InstanceID]; existing != nil && existing.gateway == rp {
+					winners[adv.InstanceID] = winner{gateway: rp, adv: adv}
+				}
+			}
+		}
+	}
+	for id, inst := range r.instances {
+		if inst.gateway == nil {
+			continue
+		}
+		w, ok := winners[id]
+		if !ok || w.gateway != inst.gateway {
+			delete(r.instances, id)
+			r.leavePools(inst)
+			for callID, rt := range r.routes {
+				if rt.instance == inst {
+					lost := routerError(callID, "unavailable", "Service instance disconnected", true, "instance_lost", inst.instanceID)
+					if rt.dedup != nil && rt.dedup.route == rt {
+						r.dedupFail(rt.dedup, lost, inst)
+						rt.dedup = nil
+					}
+					r.endRoute(callID, rt)
+					rt.client.send(lost)
+				}
+			}
+		}
+	}
+	winIDs := make([]string, 0, len(winners))
+	for id := range winners {
+		winIDs = append(winIDs, id)
+	}
+	slices.Sort(winIDs)
+	for _, id := range winIDs {
+		w := winners[id]
+		if existing := r.instances[id]; existing != nil {
+			r.leavePools(existing)
+			if r.compatibleWithPoolsLocked(w.adv.Services) != nil {
+				delete(r.instances, id)
+				continue
+			}
+			existing.services = w.adv.Services
+			existing.maxInflight = w.adv.MaxInflight
+			existing.hops = len(w.adv.Via)
+			existing.via = slices.Clone(w.adv.Via)
+			r.joinPoolsLocked(existing)
+			continue
+		}
+		if r.compatibleWithPoolsLocked(w.adv.Services) != nil {
+			continue
+		}
+		inst := &peer{
+			conn:        w.gateway.conn,
+			ctx:         w.gateway.ctx,
+			cancel:      w.gateway.cancel,
+			out:         w.gateway.out,
+			user:        w.gateway.user,
+			id:          w.gateway.id,
+			role:        "server",
+			instanceID:  id,
+			services:    w.adv.Services,
+			maxInflight: w.adv.MaxInflight,
+			gateway:     w.gateway,
+			hops:        len(w.adv.Via),
+			via:         slices.Clone(w.adv.Via),
+			routes:      make(map[*route]struct{}),
+		}
+		r.instances[id] = inst
+		r.joinPoolsLocked(inst)
+	}
+}
+
+func (r *Router) broadcastRouterSyncLocked() {
+	if len(r.routerPeers) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(r.instances))
+	for id := range r.instances {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for target := range r.routerPeers {
+		list := make([]remoteInstance, 0, len(ids))
+		for _, id := range ids {
+			inst := r.instances[id]
+			if inst.draining || inst.gateway == target || len(inst.via) >= 4 {
+				continue
+			}
+			if target.peerID != "" && slices.Contains(inst.via, target.peerID) {
+				continue
+			}
+			via := append(slices.Clone(inst.via), r.peerID)
+			list = append(list, remoteInstance{
+				InstanceID:  inst.instanceID,
+				Services:    inst.services,
+				MaxInflight: inst.maxInflight,
+				Via:         via,
+			})
+		}
+		syncFrame := frame{Kind: "router.sync", Instances: list}
+		raw := syncFrame.bytes()
+		if !bytes.Equal(target.lastSentSync, raw) {
+			target.lastSentSync = raw
+			target.send(frame{Kind: "router.sync", raw: raw})
+		}
+	}
 }
 
 func (r *Router) forward(p *peer, f frame) {
@@ -547,6 +924,12 @@ func (r *Router) forward(p *peer, f frame) {
 	defer r.mu.Unlock()
 	if p.ctx.Err() != nil || !r.config.Auth.valid(p.user) {
 		p.cancel()
+		return
+	}
+	if f.Kind == "router.sync" {
+		p.advertised = f.Instances
+		r.reconcileRemoteInstancesLocked()
+		r.broadcastRouterSyncLocked()
 		return
 	}
 	if f.Kind == "call.open" {
@@ -584,14 +967,19 @@ func (r *Router) forward(p *peer, f frame) {
 				entry = nil
 			}
 		}
-		instance, errorFrame := r.selectInstance(f, avoid)
+		instance, errorFrame := r.selectInstance(p, f, avoid)
 		if errorFrame != nil {
 			p.send(*errorFrame)
 			return
 		}
-		rt := &route{id: f.CallID, client: p, instance: instance, index: -1}
+		now := time.Now()
+		rt := &route{id: f.CallID, client: p, instance: instance, started: now, index: -1}
 		r.routes[f.CallID] = rt
 		instance.inflight++
+		if instance.routes == nil {
+			instance.routes = make(map[*route]struct{})
+		}
+		instance.routes[rt] = struct{}{}
 		if f.TimeoutMS != nil {
 			r.track(rt, time.Duration(*f.TimeoutMS)*time.Millisecond)
 		}
@@ -605,17 +993,20 @@ func (r *Router) forward(p *peer, f frame) {
 	if rt == nil {
 		return
 	}
-	if p.role == "client" && rt.client == p {
+	if rt.client == p && allowedCallerFrame(f) {
 		rt.instance.send(f)
 		if f.Kind == "call.cancel" {
 			// The client has given up; forget the route now so a service that
 			// ignores cancellation cannot pin router capacity.
 			r.endRoute(f.CallID, rt)
 		}
-	} else if p.role == "server" && rt.instance == p {
+	} else if (rt.instance == p || rt.instance.gateway == p) && allowedCalleeFrame(f) {
 		rt.client.send(f)
 		if f.Kind == "call.result" || f.Kind == "call.error" {
-			r.observe(p, !instanceFailed(f))
+			if f.Kind == "call.result" {
+				rt.instance.observeLatency(time.Since(rt.started))
+			}
+			r.observe(rt.instance, !instanceFailed(f))
 			if rt.dedup != nil {
 				r.dedupSettle(rt.dedup, f)
 			}
@@ -644,6 +1035,7 @@ func (r *Router) drain(p *peer) {
 	}
 	p.draining = true
 	r.leavePools(p)
+	r.broadcastRouterSyncLocked()
 }
 
 func (r *Router) leavePools(p *peer) {
@@ -665,19 +1057,26 @@ func (r *Router) remove(p *peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.peers, p)
+	if p.role == "router" {
+		delete(r.routerPeers, p)
+		r.reconcileRemoteInstancesLocked()
+		r.broadcastRouterSyncLocked()
+	}
 	if r.instances[p.instanceID] == p {
 		delete(r.instances, p.instanceID)
 		r.leavePools(p)
+		r.reconcileRemoteInstancesLocked()
+		r.broadcastRouterSyncLocked()
 	}
 	for id, rt := range r.routes {
 		switch {
 		case rt.client == p:
 			r.endRoute(id, rt)
 			rt.instance.send(frame{Kind: "call.cancel", CallID: id, Reason: "client_disconnected"})
-		case rt.instance == p:
-			lost := routerError(id, "unavailable", "Service instance disconnected", true, "instance_lost", p.instanceID)
+		case rt.instance == p || rt.instance.gateway == p:
+			lost := routerError(id, "unavailable", "Service instance disconnected", true, "instance_lost", rt.instance.instanceID)
 			if rt.dedup != nil && rt.dedup.route == rt {
-				r.dedupFail(rt.dedup, lost, p)
+				r.dedupFail(rt.dedup, lost, rt.instance)
 				rt.dedup = nil
 			}
 			r.endRoute(id, rt)

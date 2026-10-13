@@ -973,3 +973,203 @@ func TestSupersetRegistrationsRoutePerMethod(t *testing.T) {
 		t.Fatalf("expected method_not_found after b left, got %+v", got)
 	}
 }
+
+func TestBidirectionalAndMultiHopRouterPeering(t *testing.T) {
+	hub := runningRouter(t, nil)
+	hubURL := fmt.Sprintf("ws://127.0.0.1:%d", hub.Ready().Port)
+
+	edge1, err := Start(Config{Peers: []string{hubURL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(edge1.Close)
+
+	edge2, err := Start(Config{Peers: []string{hubURL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(edge2.Close)
+
+	// Register a server on edge1 (behind simulated NAT; only edge1 dialed hub).
+	srvEdge1 := dial(t, edge1, "")
+	registerPeer(t, srvEdge1, "srv-edge1")
+
+	// Wait for hub (1 hop) and edge2 (2 hops) to learn the route via router.sync.
+	eventually(t, func() bool {
+		snap := hub.Snapshot()
+		return len(snap.Instances[testService]) == 1 && snap.Health["srv-edge1"].Hops == 1
+	})
+	eventually(t, func() bool {
+		snap := edge2.Snapshot()
+		return len(snap.Instances[testService]) == 1 && snap.Health["srv-edge1"].Hops == 2
+	})
+
+	// 1. Hub client -> edge1 server (reverse direction over outbound peer socket).
+	hubClient := dial(t, hub, "")
+	hello(t, hubClient, "client", "hub-c")
+	send(t, hubClient, frame{Kind: "call.open", CallID: "h1", Service: testService, Method: "echo", Payload: json.RawMessage(`{"from":"hub"}`)})
+	openFrame := receive(t, srvEdge1)
+	if openFrame.CallID != "h1" {
+		t.Fatalf("expected h1 on srv-edge1, got %+v", openFrame)
+	}
+	send(t, srvEdge1, frame{Kind: "call.result", CallID: "h1", Payload: openFrame.Payload})
+	if res := receive(t, hubClient); res.Kind != "call.result" || string(res.Payload) != `{"from":"hub"}` {
+		t.Fatalf("unexpected hub result: %+v", res)
+	}
+
+	// 2. Edge2 client -> hub -> edge1 server (2-hop unary + server_stream).
+	edge2Client := dial(t, edge2, "")
+	hello(t, edge2Client, "client", "edge2-c")
+	send(t, edge2Client, frame{
+		Kind: "call.open", CallID: "e2-stream", Service: testService, Method: "download",
+		InstanceID: "srv-edge1", Payload: json.RawMessage(`{"n":2}`),
+	})
+	if got := receive(t, srvEdge1); got.CallID != "e2-stream" {
+		t.Fatalf("expected e2-stream on srv-edge1, got %+v", got)
+	}
+	seq0, seq1 := int64(0), int64(1)
+	send(t, srvEdge1, frame{Kind: "stream.item", CallID: "e2-stream", Direction: "server", Sequence: &seq0, Payload: json.RawMessage(`1`)})
+	send(t, srvEdge1, frame{Kind: "stream.item", CallID: "e2-stream", Direction: "server", Sequence: &seq1, Payload: json.RawMessage(`2`)})
+	send(t, srvEdge1, frame{Kind: "stream.end", CallID: "e2-stream", Direction: "server"})
+	if item0 := receive(t, edge2Client); item0.Kind != "stream.item" || string(item0.Payload) != `1` {
+		t.Fatalf("unexpected item0: %+v", item0)
+	}
+	if item1 := receive(t, edge2Client); item1.Kind != "stream.item" || string(item1.Payload) != `2` {
+		t.Fatalf("unexpected item1: %+v", item1)
+	}
+	if end := receive(t, edge2Client); end.Kind != "stream.end" {
+		t.Fatalf("unexpected stream.end: %+v", end)
+	}
+
+	// 3. Disconnect srv-edge1 while an in-flight call is routed across edge2 -> hub -> edge1.
+	send(t, edge2Client, frame{Kind: "call.open", CallID: "e2-lost", Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, srvEdge1); got.CallID != "e2-lost" {
+		t.Fatalf("expected e2-lost on srv-edge1, got %+v", got)
+	}
+	_ = srvEdge1.CloseNow()
+	errFrame := receive(t, edge2Client)
+	if errFrame.Kind != "call.error" || errFrame.Error == nil || !bytes.Contains(errFrame.Error.Details, []byte("instance_lost")) {
+		t.Fatalf("expected instance_lost on multi-hop disconnect, got %+v", errFrame)
+	}
+	eventually(t, func() bool {
+		return len(edge2.Snapshot().Instances[testService]) == 0
+	})
+}
+
+func TestLocalityPreferredAndSpillover(t *testing.T) {
+	hub := runningRouter(t, nil)
+	hubURL := fmt.Sprintf("ws://127.0.0.1:%d", hub.Ready().Port)
+
+	edge, err := Start(Config{Peers: []string{hubURL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(edge.Close)
+
+	registerCapOne := func(r *Router, id string) *websocket.Conn {
+		conn := dial(t, r, "")
+		hello(t, conn, "server", id)
+		send(t, conn, frame{
+			Kind: "server.register", InstanceID: id, MaxInflight: 1,
+			Services: []service{{Name: testService, Methods: []method{
+				{Name: "echo", Stream: "unary", Balance: balance{Kind: "round_robin"}},
+			}}},
+		})
+		if got := receive(t, conn); got.Kind != "server.register.ack" {
+			t.Fatalf("register %s: %+v", id, got)
+		}
+		return conn
+	}
+
+	localSrv := registerCapOne(hub, "local-srv")
+	remoteSrv := registerCapOne(edge, "remote-srv")
+
+	eventually(t, func() bool {
+		return len(hub.Snapshot().Instances[testService]) == 2
+	})
+
+	client := dial(t, hub, "")
+	hello(t, client, "client", "c1")
+
+	// When local-srv has capacity, consecutive calls stay local (hops == 0) despite round_robin.
+	for i := range 2 {
+		callID := fmt.Sprintf("local-%d", i)
+		send(t, client, frame{Kind: "call.open", CallID: callID, Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+		if got := receive(t, localSrv); got.CallID != callID {
+			t.Fatalf("expected %s on localSrv, got %+v", callID, got)
+		}
+		send(t, localSrv, frame{Kind: "call.result", CallID: callID, Payload: json.RawMessage(`{"ok":true}`)})
+		receive(t, client)
+	}
+
+	// Hold a call in flight on local-srv (reaching max_inflight=1); next call spills over to remote-srv.
+	send(t, client, frame{Kind: "call.open", CallID: "hold-local", Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, localSrv); got.CallID != "hold-local" {
+		t.Fatalf("expected hold-local on localSrv, got %+v", got)
+	}
+	send(t, client, frame{Kind: "call.open", CallID: "spill-remote", Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, remoteSrv); got.CallID != "spill-remote" {
+		t.Fatalf("expected spill-remote on remoteSrv, got %+v", got)
+	}
+	send(t, remoteSrv, frame{Kind: "call.result", CallID: "spill-remote", Payload: json.RawMessage(`{"where":"remote"}`)})
+	if got := receive(t, client); got.CallID != "spill-remote" {
+		t.Fatalf("expected spill-remote result, got %+v", got)
+	}
+	send(t, localSrv, frame{Kind: "call.result", CallID: "hold-local", Payload: json.RawMessage(`{"where":"local"}`)})
+	if got := receive(t, client); got.CallID != "hold-local" {
+		t.Fatalf("expected hold-local result, got %+v", got)
+	}
+}
+
+func TestAdaptiveLeastInflightTieRotationAndLatency(t *testing.T) {
+	r := runningRouter(t, nil)
+
+	registerLeast := func(id string) *websocket.Conn {
+		conn := dial(t, r, "")
+		hello(t, conn, "server", id)
+		send(t, conn, frame{
+			Kind: "server.register", InstanceID: id,
+			Services: []service{{Name: testService, Methods: []method{
+				{Name: "echo", Stream: "unary", Balance: balance{Kind: "least_inflight"}},
+			}}},
+		})
+		if got := receive(t, conn); got.Kind != "server.register.ack" {
+			t.Fatalf("register %s: %+v", id, got)
+		}
+		return conn
+	}
+
+	s1 := registerLeast("s1")
+	s2 := registerLeast("s2")
+
+	client := dial(t, r, "")
+	hello(t, client, "client", "c-least")
+
+	// 1. Equal-cost idle instances rotate via leastCursor (s1 first, then s2).
+	send(t, client, frame{Kind: "call.open", CallID: "c1", Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, s1); got.CallID != "c1" {
+		t.Fatalf("expected c1 on s1, got %+v", got)
+	}
+	send(t, s1, frame{Kind: "call.result", CallID: "c1", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+
+	// Make s2 respond slowly (~110ms) so its EWMA latency puts it in a higher cost bucket than s1.
+	send(t, client, frame{Kind: "call.open", CallID: "c2", Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, s2); got.CallID != "c2" {
+		t.Fatalf("expected c2 on s2 (tie-break rotation), got %+v", got)
+	}
+	time.Sleep(110 * time.Millisecond)
+	send(t, s2, frame{Kind: "call.result", CallID: "c2", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+
+	// 2. Subsequent idle calls prefer s1 (lower EWMA cost) over s2 even when cursor would otherwise pick s2.
+	for i := range 2 {
+		cid := fmt.Sprintf("fast-%d", i)
+		send(t, client, frame{Kind: "call.open", CallID: cid, Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+		if got := receive(t, s1); got.CallID != cid {
+			t.Fatalf("expected %s on faster instance s1, got %+v", cid, got)
+		}
+		send(t, s1, frame{Kind: "call.result", CallID: cid, Payload: json.RawMessage(`{}`)})
+		receive(t, client)
+	}
+}

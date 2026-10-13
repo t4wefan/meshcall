@@ -336,9 +336,24 @@ class ClientBase:
             call_next = _bind_client_interceptor(interceptor, call_next)
         if self.retry.enabled and info.stream == "unary":
             call_next = _bind_client_interceptor(
-                _retry_interceptor(self.retry), call_next
+                _retry_interceptor(self.retry, self), call_next
             )
         return call_next(info)
+
+    async def _rotate_endpoint_if_idle(self) -> None:
+        uris = getattr(self.driver, "uris", ())
+        if len(uris) <= 1:
+            return
+        async with self._state_lock:
+            if self._connection is None or self._calls:
+                return
+            receive_task, self._receive_task = self._receive_task, None
+            self._connection = None
+            await self.driver.close()
+            if receive_task is not None:
+                receive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await receive_task
 
     async def _open_call(
         self,
@@ -498,14 +513,29 @@ class ClientBase:
         elif isinstance(frame, StreamEndFrame):
             await call.receive_end(frame)
         elif isinstance(frame, CallResultFrame):
+            self._calls.pop(call.call_id, None)
             await call.receive_result(frame)
-            self._calls.pop(call.call_id, None)
         elif isinstance(frame, CallErrorFrame):
-            await call.receive_error(frame)
             self._calls.pop(call.call_id, None)
+            await call.receive_error(frame)
 
 
-def _retry_interceptor(policy: RetryPolicy) -> ClientInterceptor:
+_ROTATABLE_ROUTER_REASONS = frozenset(
+    {"no_instances", "overloaded", "circuit_open", "instance_lost"}
+)
+
+
+def _is_rotatable_router_error(exc: MeshCallError) -> bool:
+    return (
+        isinstance(exc.details, Mapping)
+        and exc.details.get("source") == "router"
+        and exc.details.get("reason") in _ROTATABLE_ROUTER_REASONS
+    )
+
+
+def _retry_interceptor(
+    policy: RetryPolicy, client: ClientBase | None = None
+) -> ClientInterceptor:
     async def retry(info: ClientCallInfo, call_next: ClientCallNext) -> Any:
         options = info.options
         may_retry = options.idempotent or options.idempotency_key is not None
@@ -534,6 +564,8 @@ def _retry_interceptor(policy: RetryPolicy) -> ClientInterceptor:
                         raise
                     # The next attempt gets whatever budget is left.
                     info.options = options.replace(timeout=remaining - delay)
+                if client is not None and _is_rotatable_router_error(exc):
+                    await client._rotate_endpoint_if_idle()
                 await asyncio.sleep(delay)
                 attempt += 1
 

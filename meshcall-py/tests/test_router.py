@@ -17,7 +17,7 @@ from test_direct import (
 
 from meshcall import Balance, RpcServer, WebSocketRouter, method, service
 from meshcall.client import ClientBase
-from meshcall.context import ReconnectPolicy
+from meshcall.context import ReconnectPolicy, RetryPolicy
 from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
 from meshcall.errors import ErrorCode, MeshCallError
 
@@ -323,4 +323,66 @@ async def test_multiple_routers_give_failover_without_coordination() -> None:
         await client.stop()
         await server.stop()
         for router in routers[1:]:
+            await router.stop()
+
+
+async def test_router_peering_routes_calls_across_networks() -> None:
+    hub = WebSocketRouter(host="127.0.0.1", port=0)
+    await hub.start()
+    hub_uri = f"ws://127.0.0.1:{hub.bound_port}"
+    edge = WebSocketRouter(host="127.0.0.1", port=0, peers=[hub_uri])
+    await edge.start()
+    edge_uri = f"ws://127.0.0.1:{edge.bound_port}"
+    server = RpcServer(
+        services=[NumberService],
+        driver=WebSocketRouterServerDriver(edge_uri, instance_id="edge-srv"),
+    )
+    await server.start()
+    client = NumberServiceClient(
+        WebSocketClientDriver(hub_uri),
+        retry=RetryPolicy(max_attempts=5, initial_delay=0.02, max_delay=0.05),
+    )
+    try:
+        assert await client.call_unary(
+            NumberServiceClient.service_name,
+            "unary",
+            NumberRequest(value=7),
+            NumberResult,
+            idempotent=True,
+        ) == NumberResult(total=7)
+    finally:
+        await client.stop()
+        await server.stop()
+        await edge.stop()
+        await hub.stop()
+
+
+async def test_multi_router_client_rotates_on_router_unavailable_retry() -> None:
+    routers = [WebSocketRouter(host="127.0.0.1", port=0) for _ in range(2)]
+    for router in routers:
+        await router.start()
+    uris = [f"ws://127.0.0.1:{router.bound_port}" for router in routers]
+    server = RpcServer(
+        services=[NumberService],
+        driver=WebSocketRouterServerDriver(uris[1], instance_id="only-on-second"),
+    )
+    await server.start()
+    client_driver = WebSocketClientDriver(uris)
+    client = NumberServiceClient(
+        client_driver,
+        retry=RetryPolicy(max_attempts=2, initial_delay=0.01, max_delay=0.05),
+    )
+    try:
+        assert await client.call_unary(
+            NumberServiceClient.service_name,
+            "unary",
+            NumberRequest(value=5),
+            NumberResult,
+            idempotent=True,
+        ) == NumberResult(total=5)
+        assert client_driver.endpoint == uris[1]
+    finally:
+        await client.stop()
+        await server.stop()
+        for router in routers:
             await router.stop()

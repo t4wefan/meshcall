@@ -61,7 +61,7 @@ validation happens at the service and applicable client runtimes.
 | Policy | Selection |
 | --- | --- |
 | `round_robin` | Advances a cursor per service method through sorted instance IDs |
-| `least_inflight` | Chooses the instance with the fewest active calls; instance ID breaks ties |
+| `least_inflight` | Chooses the lowest-cost instance, weighting active calls by hop distance, observed latency / RTT, and oldest in-flight call age, and rotating tie-breaking across equal-cost candidates |
 | `random` | Chooses a random registered instance |
 | `sticky` | Hashes a declared request field, such as `request.session_id`, into the instance list |
 | `disabled` | Requires exactly one registered instance |
@@ -69,7 +69,11 @@ validation happens at the service and applicable client runtimes.
 Streams balance only when they open. An active stream never switches instances.
 Sticky selection is ordinary hashing modulo the current pool size, so changing
 the pool can change where future calls for the same key go. Inflight counts are
-per instance, across its registered services.
+per instance, across its registered services. When Routers are peered across
+networks, local instances (`hops == 0`) are preferred over remote peer-routed
+instances (`hops > 0`) whenever a healthy, non-full local instance is available;
+traffic spills over to remote instances when local instances are absent,
+draining, full, or circuit-open.
 
 A `call.open` that carries `instance_id` bypasses the policy and goes to that
 instance: `unavailable` / `instance_unknown` when it is not registered for
@@ -104,23 +108,24 @@ and `meshcall call … --instance ID` addresses one.
   retryable `unavailable`; the caller decides whether a new call is appropriate.
 - Deadlines are enforced in three layers (see [the protocol](protocol.md#timeouts)).
   The Router keeps one timer heap over all routed calls that carry `timeout_ms`
-  and fires at `timeout_ms + --deadline-grace` (default 500 ms). When it fires,
+  and fires at `timeout_ms + (hops + 1) * --deadline-grace` (default 500 ms). When it fires,
   the client receives `deadline_exceeded` with `details.source = "router"`, the
   instance receives `call.cancel` with reason `deadline_exceeded`, and the route
   is freed. This protects clients from an instance that stopped responding
   without closing its connection. The service's own, earlier deadline is still
   the normal path. The Router does not enforce `idle_timeout_ms`.
-- The Router never sends `ping`; it answers pings and closes any connection that
-  has sent nothing for `--idle-timeout` (default 45 s). Clients and service
-  instances ping every 15 s by default, so a healthy peer is never idle that
-  long. Services enforce running-call deadlines and stream credit; the Router
-  executes only its own management methods and never buffers an entire
-  business stream.
+- The Router answers pings from clients and service instances and closes any
+  connection that has sent nothing for `--idle-timeout` (default 45 s). When
+  dialling a peered Router (`--peer`), it also sends periodic `ping` frames to
+  keep the link alive and measure peer RTT. Clients and service instances ping
+  every 15 s by default, so a healthy peer is never idle that long. Services
+  enforce running-call deadlines and stream credit; the Router executes only
+  its own management methods and never buffers an entire business stream.
 - Restarting the Router loses its registrations and active routes. Version 1
   provides no automatic call replay, stream resumption, route migration, or
   replicated Router state.
 
-## High availability without Router state
+## High availability and cross-network peering without Router state
 
 Run several independent Routers. A service instance registers with each of
 them (Python `WebSocketRouterServerDriver([uri1, uri2])`, TypeScript
@@ -128,11 +133,25 @@ them (Python `WebSocketRouterServerDriver([uri1, uri2])`, TypeScript
 with its own reconnect loop; `start()` succeeds once any Router accepts.
 Clients take the same list (`WebSocketClientDriver([uri1, uri2])`,
 `new MeshCallClient([uri1, uri2])`): they use one Router and move to the next
-when it fails, resuming from the last good one. Because every Router sees
-every instance and holds no state that peers cannot rebuild, no coordination
-between Routers is needed. Balancing, deduplication and circuit breaking are
-per Router: a duplicate idempotent call sent to two different Routers may
-execute twice, which handlers that honour the key tolerate.
+when the connection drops or when a call returns a retryable Router-level error
+(`no_instances`, `overloaded`, `circuit_open`, `instance_lost`) with no other
+calls in flight on that connection. Because every Router holds no state that
+peers cannot rebuild, no persistent coordination between Routers is needed.
+Balancing, deduplication and circuit breaking are per Router: a duplicate
+idempotent call sent to two different Routers may execute twice, which handlers
+that honour the key tolerate.
+
+When clients or services sit in separate networks (for example an edge site or
+workstation behind NAT and a cloud hub), Routers can peer directly over an
+outbound WebSocket connection using `--peer ws://hub:8765` (repeatable; Python
+`WebSocketRouter(peers=[...])`, TypeScript `new WebSocketRouter({ peers: [...] })`).
+A single outbound `--peer` connection is bidirectional: both Routers exchange
+soft-state `router.sync` frames whenever registrations change and forward calls,
+streams, cancellations, and targeted `instance_id` calls in either direction
+(`edge → hub`, `hub → edge`, or multi-hop `edge-a → hub → edge-b`). If a peered
+Router disconnects, its advertised remote instances are removed immediately and
+any in-flight calls routed through it fail with retryable `unavailable`
+(`reason: "instance_lost"`).
 
 The Router is a single process responsible for registration, authorization and
 forwarding. Each peer has a queue bounded by both frame count (256) and bytes

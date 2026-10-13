@@ -245,8 +245,11 @@ my_app/
   stays reachable for diagnosis but also stays blamed by its callers.
 - Set `max_inflight` on instances with a real capacity limit (GPU, DB pool)
   so the Router routes around full instances instead of queueing on them.
-- Point services and clients at **all** Routers (`[uri1, uri2]`); no
-  Router-side coordination is needed.
+- Point services and clients at **all** reachable Routers (`[uri1, uri2]`); to
+  bridge separate networks or NAT boundaries, peer Routers with
+  `meshcall-router --peer ws://hub:8765` (`WebSocketRouter(peers=[...])` /
+  `new WebSocketRouter({ peers: [...] })`) so a single outbound link routes
+  calls and streams in both directions with local-first spillover.
 - Keep `MESHCALL_STRICT=1` in CI so missing descriptions and unannotated
   mutating methods fail the build, not a review.
 

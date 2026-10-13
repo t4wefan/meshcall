@@ -389,10 +389,24 @@ export class MeshCallClient {
       const policy = { ...DEFAULT_RETRY, ...(this.options.retry ?? {}) };
       if (policy.enabled) {
         const inner = next;
-        next = (info) => retryCall(policy, info, inner);
+        next = (info) => retryCall(policy, info, inner, () => this.rotateEndpointIfIdle());
       }
     }
     return next(info);
+  }
+
+  private async rotateEndpointIfIdle(): Promise<void> {
+    if (this.endpoints.length <= 1 || this.socket === undefined || this.calls.size > 0 || this.streams.size > 0) {
+      return;
+    }
+    const socket = this.socket;
+    this.socket = undefined;
+    this.writer?.close();
+    this.writer = undefined;
+    this.liveness?.stop();
+    this.liveness = undefined;
+    this.cursor = (this.cursor + 1) % this.endpoints.length;
+    await closeSocket(socket);
   }
 
   private trailerOf(callId: string): Readonly<Metadata> {
@@ -851,7 +865,31 @@ export class MeshCallClient {
   }
 }
 
-async function retryCall(policy: Required<RetryPolicy>, info: ClientCallInfo, next: ClientCallNext): Promise<unknown> {
+const ROTATABLE_ROUTER_REASONS = new Set([
+  "no_instances",
+  "overloaded",
+  "circuit_open",
+  "instance_lost",
+]);
+
+function isRotatableRouterError(error: MeshCallError): boolean {
+  const details = error.details;
+  if (details === null || details === undefined) {
+    return false;
+  }
+  return (
+    details.source === "router" &&
+    typeof details.reason === "string" &&
+    ROTATABLE_ROUTER_REASONS.has(details.reason)
+  );
+}
+
+async function retryCall(
+  policy: Required<RetryPolicy>,
+  info: ClientCallInfo,
+  next: ClientCallNext,
+  rotateEndpointIfIdle?: () => Promise<void>,
+): Promise<unknown> {
   const options = info.options;
   const mayRetry = options.idempotent === true || options.idempotencyKey !== undefined;
   const deadline = options.timeoutMs === undefined ? undefined : performance.now() + options.timeoutMs;
@@ -869,6 +907,9 @@ async function retryCall(policy: Required<RetryPolicy>, info: ClientCallInfo, ne
         || !policy.retryCodes.includes(error.code) || attempt >= policy.maxAttempts) {
         if (error instanceof MeshCallError) give(error);
         throw error;
+      }
+      if (rotateEndpointIfIdle !== undefined && isRotatableRouterError(error)) {
+        await rotateEndpointIfIdle();
       }
       const delay = retryDelayMs(policy, attempt);
       if (deadline !== undefined) {

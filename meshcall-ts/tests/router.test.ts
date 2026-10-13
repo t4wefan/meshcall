@@ -133,3 +133,54 @@ test("launcher rejects missing binaries and malformed auth before becoming ready
   assert.equal(missing.isRunning, false);
   await missing.stop();
 });
+
+test("router peering routes calls bidirectionally across a single outbound peer link", { timeout: 10000, skip: routerMissing }, async (t) => {
+  const hub = new WebSocketRouter();
+  t.after(() => hub.stop());
+  await hub.start();
+  const hubEndpoint = "ws://127.0.0.1:" + hub.boundPort;
+
+  const edge = new WebSocketRouter({ peers: [hubEndpoint] });
+  t.after(() => edge.stop());
+  await edge.start();
+  const edgeEndpoint = "ws://127.0.0.1:" + edge.boundPort;
+
+  const edgeServer = new MeshCallServer({ services: [service], router: { endpoint: edgeEndpoint }, accessLog: false });
+  t.after(() => edgeServer.close());
+  await edgeServer.start();
+
+  const hubClient = new MeshCallClient(hubEndpoint, undefined, {
+    retry: { maxAttempts: 6, initialDelayMs: 25, maxDelayMs: 100 },
+  });
+  t.after(() => hubClient.close());
+  assert.deepEqual(
+    await hubClient.unary(service.name, "echo", { value: 42 }, { idempotent: true }),
+    { value: 42 },
+  );
+});
+
+test("multi-router client rotates endpoint on retryable router availability errors", { timeout: 10000, skip: routerMissing }, async (t) => {
+  const router1 = new WebSocketRouter();
+  const router2 = new WebSocketRouter();
+  t.after(() => router1.stop());
+  t.after(() => router2.stop());
+  await router1.start();
+  await router2.start();
+  const ep1 = "ws://127.0.0.1:" + router1.boundPort;
+  const ep2 = "ws://127.0.0.1:" + router2.boundPort;
+
+  // Register only on router2; router1 returns unavailable(reason="no_instances").
+  const server = new MeshCallServer({ services: [service], router: { endpoint: ep2 }, accessLog: false });
+  t.after(() => server.close());
+  await server.start();
+
+  const client = new MeshCallClient([ep1, ep2], undefined, {
+    retry: { maxAttempts: 3, initialDelayMs: 10, maxDelayMs: 50 },
+  });
+  t.after(() => client.close());
+  assert.deepEqual(
+    await client.unary(service.name, "echo", { value: 7 }, { idempotent: true }),
+    { value: 7 },
+  );
+});
+

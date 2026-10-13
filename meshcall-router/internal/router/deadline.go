@@ -34,7 +34,8 @@ func (h *deadlineHeap) Pop() any {
 
 // track registers a deadline for a newly opened route. Called under r.mu.
 func (r *Router) track(rt *route, timeout time.Duration) {
-	rt.deadline = time.Now().Add(timeout + r.config.DeadlineGrace)
+	grace := time.Duration(rt.instance.hops+1) * r.config.DeadlineGrace
+	rt.deadline = rt.started.Add(timeout + grace)
 	heap.Push(&r.deadlines, rt)
 	if rt.index == 0 {
 		r.wake()
@@ -52,6 +53,7 @@ func (r *Router) untrack(rt *route) {
 func (r *Router) endRoute(id string, rt *route) {
 	delete(r.routes, id)
 	rt.instance.inflight--
+	delete(rt.instance.routes, rt)
 	r.untrack(rt)
 }
 
@@ -80,6 +82,7 @@ func (r *Router) expireLoop() {
 			}
 			delete(r.routes, id)
 			rt.instance.inflight--
+			delete(rt.instance.routes, rt)
 			r.observe(rt.instance, false)
 			if rt.dedup != nil && rt.dedup.route == rt {
 				r.dedupFail(rt.dedup, deadlineError(id), nil)

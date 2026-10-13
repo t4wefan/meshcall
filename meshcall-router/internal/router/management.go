@@ -223,6 +223,7 @@ type RegistryInstance struct {
 	MaxInflight int    `json:"max_inflight,omitempty"`
 	Breaker     string `json:"breaker"`
 	Draining    bool   `json:"draining"`
+	Hops        int    `json:"hops,omitempty"`
 }
 
 type registryMethod struct {
@@ -322,14 +323,14 @@ func (r *Router) describeService(name string) registryService {
 	for _, inst := range pool.instances {
 		out.Instances = append(out.Instances, RegistryInstance{
 			ID: inst.instanceID, Inflight: inst.inflight, MaxInflight: inst.maxInflight,
-			Breaker: string(inst.health.state(now)), Draining: inst.draining,
+			Breaker: string(inst.health.state(now)), Draining: inst.draining, Hops: inst.hops,
 		})
 	}
 	// Draining instances have left the pool but still hold the id.
 	for id, inst := range r.instances {
 		if inst.draining && slices.ContainsFunc(inst.services, func(s service) bool { return s.Name == name }) {
 			out.Instances = append(out.Instances, RegistryInstance{ID: id, Inflight: inst.inflight, MaxInflight: inst.maxInflight,
-				Breaker: string(inst.health.state(now)), Draining: true})
+				Breaker: string(inst.health.state(now)), Draining: true, Hops: inst.hops})
 		}
 	}
 	var entry contractEntry

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
 
@@ -23,6 +24,7 @@ class WebSocketRouter:
         max_frame_size: int = 1024 * 1024,
         binary_path: str | Path | None = None,
         auth_file: str | Path | None = None,
+        peers: Sequence[str] = (),
         startup_timeout: float = 10,
         shutdown_timeout: float = 5,
     ) -> None:
@@ -34,6 +36,10 @@ class WebSocketRouter:
             raise ValueError("max_frame_size must be between 1 and 67108864")
         if startup_timeout <= 0 or shutdown_timeout <= 0:
             raise ValueError("Process timeouts must be positive")
+        if isinstance(peers, str) or any(
+            not isinstance(peer, str) or not peer.strip() for peer in peers
+        ):
+            raise ValueError("peers must be a sequence of non-empty Router URLs")
         self.host = host or "127.0.0.1"
         self.port = 0 if port is None else port
         self.unix_path = Path(unix_path).absolute() if unix_path is not None else None
@@ -44,6 +50,7 @@ class WebSocketRouter:
         self.max_frame_size = max_frame_size
         self.binary_path = binary_path
         self.auth_file = Path(auth_file).absolute() if auth_file is not None else None
+        self.peers = tuple(peers)
         self.startup_timeout = startup_timeout
         self.shutdown_timeout = shutdown_timeout
         self._process: asyncio.subprocess.Process | None = None
@@ -98,6 +105,8 @@ class WebSocketRouter:
                 command.extend(["--unix-socket", str(self.unix_path)])
             if self.auth_file is not None:
                 command.extend(["--auth-file", str(self.auth_file)])
+            for peer in self.peers:
+                command.extend(["--peer", peer])
             self._stderr.clear()
             try:
                 process = await asyncio.create_subprocess_exec(

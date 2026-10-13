@@ -5,9 +5,11 @@ is the first transport, but the rules in this document are transport-independent
 
 ## Connection handshake
 
-The first frame sent by a connection is `hello`. Its role is either `client` or
-`server`. A server connection to a Router follows a successful handshake with a
-`server.register` frame containing its immutable service registration.
+The first frame sent by a connection is `hello`. Its role is `client`,
+`server`, or `router` (for Router-to-Router peering). A server connection to a
+Router follows a successful handshake with a `server.register` frame containing
+its immutable service registration; a peered Router connection exchanges
+`router.sync` frames whenever its reachable instance set changes.
 
 The protocol version is `meshcall/1`. A peer must reject an unsupported version
 before accepting calls.
@@ -39,6 +41,7 @@ unique string chosen by the client. All time values are integer milliseconds.
 | `server.register.ack` | `instance_id` | |
 | `server.drain` | — | instance → Router: leave every pool, keep serving routed calls |
 | `server.drain.ack` | `instance_id?` | Router → instance |
+| `router.sync` | `instances[{instance_id, services[], max_inflight?, via[]}]` | Router ↔ Router: soft-state advertisement of reachable instances |
 | `call.open` | `call_id`, `service`, `method`, `payload`, `timeout_ms?`, `idle_timeout_ms?`, `metadata?`, `idempotency_key?`, `instance_id?` | |
 | `call.result` | `call_id`, `payload?`, `metadata?` | terminal |
 | `call.error` | `call_id`, `error{code,message,retryable?,details?}`, `metadata?` | terminal |
@@ -108,6 +111,18 @@ instance is excluded the Router answers retryable `unavailable`
 (`reason: "circuit_open"`). Breaker state is in-memory and resets when the
 instance reconnects.
 
+When Routers are peered (`role: "router"`), each Router advertises its active
+instances via `router.sync` with the ordered `via` list of Router `peer_id`s
+traversed so far. A receiving Router ignores advertisements whose `via` list
+contains its own `peer_id` and forwards calls only to next-hop candidates with
+strictly fewer remaining hops, preventing routing loops. Local instances
+(`hops == 0`) are preferred over peer-routed instances (`hops > 0`) whenever a
+healthy, non-full local instance is available; traffic spills over to remote
+instances when local instances are absent, draining, at `max_inflight`, or
+circuit-open. Under `least_inflight`, the Router weights active calls by hop
+distance, observed latency / RTT, and oldest in-flight call age, and rotates
+tie-breaking across equal-cost candidates.
+
 ## Draining
 
 A service instance that is about to stop sends `server.drain`. The Router
@@ -166,8 +181,8 @@ registration is incompatible. `sticky` balancing is meaningless for a
 targeted service and ignored.
 
 A direct server (no Router) applies the same rules against its own id: a
-foreign `instance_id` is `instance_unknown`, a missing one on a targeted
-service is `instance_required`.
+foreign `instance_id` is `instance_required` if missing on a targeted service
+or `instance_unknown` if foreign.
 
 Idempotency deduplication includes the target: the same key sent to two
 instances is two calls. After `instance_lost` a targeted call has no other
@@ -190,14 +205,16 @@ layer before it so that in the normal case the most informative error wins:
 | Layer | Fires at | Action |
 | --- | --- | --- |
 | server | `timeout_ms` | cancels the handler and sends `call.error deadline_exceeded` |
-| Router | `timeout_ms + grace` (default 500 ms) | sends `call.error deadline_exceeded` with `details.source = "router"` to the client, `call.cancel` with reason `deadline_exceeded` to the instance, and frees the route |
+| Router | `timeout_ms + (hops + 1) * grace` (default `grace` = 500 ms) | sends `call.error deadline_exceeded` with `details.source = "router"` to the caller, `call.cancel` with reason `deadline_exceeded` downstream, and frees the route |
 | client | `timeout_ms + grace` (default `max(1 s, 10 %)`) | fails the call locally with `deadline_exceeded` and `details.source = "client"`, and sends `call.cancel` best-effort |
 
 The server layer is authoritative. The Router layer protects clients from a
-service instance that has stopped responding without closing its connection.
-The client layer protects callers from a Router or direct server that has
-stopped responding. The client budget covers connecting and the handshake as
-well as the call itself.
+service instance (or downstream peer Router) that has stopped responding
+without closing its connection; scaling the grace by `hops + 1` ensures the
+innermost Router fires before outer Routers without rewriting the forwarded
+`call.open` frame. The client layer protects callers from a Router or direct
+server that has stopped responding. The client budget covers connecting and the
+handshake as well as the call itself.
 
 `idle_timeout_ms` is enforced by the consuming peer only: the client for
 `direction = "server"` items and the server for `direction = "client"` items.

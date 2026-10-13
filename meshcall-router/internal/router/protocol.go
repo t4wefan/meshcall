@@ -32,6 +32,13 @@ type service struct {
 	Contract json.RawMessage `json:"contract,omitempty"`
 }
 
+type remoteInstance struct {
+	InstanceID  string    `json:"instance_id"`
+	Services    []service `json:"services"`
+	MaxInflight int       `json:"max_inflight,omitempty"`
+	Via         []string  `json:"via"`
+}
+
 type errorPayload struct {
 	Code      string          `json:"code"`
 	Message   string          `json:"message"`
@@ -42,29 +49,30 @@ type errorPayload struct {
 // Payload and metadata stay raw: the router never converts business numbers or
 // field names, and forwards fields it does not understand unchanged.
 type frame struct {
-	Kind         string          `json:"kind"`
-	CallID       string          `json:"call_id,omitempty"`
-	Protocol     string          `json:"protocol,omitempty"`
-	Role         string          `json:"role,omitempty"`
-	PeerID       string          `json:"peer_id,omitempty"`
-	Capabilities []string        `json:"capabilities,omitempty"`
-	Connection   string          `json:"connection_id,omitempty"`
-	InstanceID   string          `json:"instance_id,omitempty"`
-	Services     []service       `json:"services,omitempty"`
-	MaxInflight  int             `json:"max_inflight,omitempty"`
-	Service      string          `json:"service,omitempty"`
-	Method       string          `json:"method,omitempty"`
-	Payload      json.RawMessage `json:"payload,omitempty"`
-	TimeoutMS    *int64          `json:"timeout_ms,omitempty"`
-	Idempotency  string          `json:"idempotency_key,omitempty"`
-	IdleTimeout  *int64          `json:"idle_timeout_ms,omitempty"`
-	Metadata     json.RawMessage `json:"metadata,omitempty"`
-	Error        *errorPayload   `json:"error,omitempty"`
-	Reason       string          `json:"reason,omitempty"`
-	Direction    string          `json:"direction,omitempty"`
-	Sequence     *int64          `json:"sequence,omitempty"`
-	Credit       *int64          `json:"credit,omitempty"`
-	Nonce        string          `json:"nonce,omitempty"`
+	Kind         string           `json:"kind"`
+	CallID       string           `json:"call_id,omitempty"`
+	Protocol     string           `json:"protocol,omitempty"`
+	Role         string           `json:"role,omitempty"`
+	PeerID       string           `json:"peer_id,omitempty"`
+	Capabilities []string         `json:"capabilities,omitempty"`
+	Connection   string           `json:"connection_id,omitempty"`
+	InstanceID   string           `json:"instance_id,omitempty"`
+	Services     []service        `json:"services,omitempty"`
+	MaxInflight  int              `json:"max_inflight,omitempty"`
+	Instances    []remoteInstance `json:"instances,omitempty"`
+	Service      string           `json:"service,omitempty"`
+	Method       string           `json:"method,omitempty"`
+	Payload      json.RawMessage  `json:"payload,omitempty"`
+	TimeoutMS    *int64           `json:"timeout_ms,omitempty"`
+	Idempotency  string           `json:"idempotency_key,omitempty"`
+	IdleTimeout  *int64           `json:"idle_timeout_ms,omitempty"`
+	Metadata     json.RawMessage  `json:"metadata,omitempty"`
+	Error        *errorPayload    `json:"error,omitempty"`
+	Reason       string           `json:"reason,omitempty"`
+	Direction    string           `json:"direction,omitempty"`
+	Sequence     *int64           `json:"sequence,omitempty"`
+	Credit       *int64           `json:"credit,omitempty"`
+	Nonce        string           `json:"nonce,omitempty"`
 	raw          []byte
 }
 
@@ -81,12 +89,25 @@ func decode(data []byte) (frame, error) {
 	}
 	switch f.Kind {
 	case "hello":
-		if f.Protocol != Protocol || (f.Role != "client" && f.Role != "server") || f.PeerID == "" {
+		if f.Protocol != Protocol || (f.Role != "client" && f.Role != "server" && f.Role != "router") || f.PeerID == "" {
 			return f, errors.New("invalid hello or unsupported protocol")
+		}
+	case "hello.ack":
+		if f.Protocol != Protocol || f.Connection == "" {
+			return f, errors.New("invalid hello.ack")
 		}
 	case "server.register":
 		if f.InstanceID == "" || f.Services == nil || f.MaxInflight < 0 {
 			return f, errors.New("invalid registration")
+		}
+	case "router.sync":
+		if f.Instances == nil {
+			return f, errors.New("invalid router.sync")
+		}
+		for _, inst := range f.Instances {
+			if inst.InstanceID == "" || inst.Services == nil || inst.MaxInflight < 0 || len(inst.Via) == 0 {
+				return f, errors.New("invalid router.sync instance")
+			}
 		}
 	case "call.open":
 		if f.Service == "" || f.Method == "" || f.Payload == nil {
@@ -171,6 +192,20 @@ func (f frame) bytes() []byte {
 		}
 		return data
 	}
+	if f.Kind == "router.sync" {
+		instances := f.Instances
+		if instances == nil {
+			instances = []remoteInstance{}
+		}
+		data, err := json.Marshal(struct {
+			Kind      string           `json:"kind"`
+			Instances []remoteInstance `json:"instances"`
+		}{f.Kind, instances})
+		if err != nil {
+			panic(err)
+		}
+		return data
+	}
 	data, err := json.Marshal(f)
 	if err != nil {
 		panic(err) // Only internally constructed, JSON-safe control frames reach here.
@@ -203,5 +238,5 @@ func deadlineError(id string) frame {
 }
 
 func (f frame) priority() bool {
-	return f.Kind == "call.cancel" || f.Kind == "stream.window" || f.Kind == "ping" || f.Kind == "pong"
+	return f.Kind == "call.cancel" || f.Kind == "stream.window" || f.Kind == "ping" || f.Kind == "pong" || f.Kind == "router.sync"
 }

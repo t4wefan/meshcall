@@ -18,6 +18,7 @@ export interface WebSocketRouterOptions {
   readonly maxFrameSize?: number;
   readonly binaryPath?: string;
   readonly authFile?: string;
+  readonly peers?: ReadonlyArray<string>;
   readonly startupTimeoutMs?: number;
   readonly shutdownTimeoutMs?: number;
 }
@@ -158,6 +159,7 @@ export class WebSocketRouter {
   private readonly unixPath: string | undefined;
   private readonly startupTimeout: number;
   private readonly shutdownTimeout: number;
+  public readonly peers: ReadonlyArray<string>;
 
   public constructor(private readonly options: WebSocketRouterOptions = {}) {
     if (options.unixPath !== undefined && (options.host !== undefined || options.port !== undefined)) {
@@ -175,6 +177,11 @@ export class WebSocketRouter {
     for (const timeout of [this.startupTimeout, this.shutdownTimeout]) {
       if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new RangeError("Process timeouts must be positive integers");
     }
+    const peers = options.peers ?? [];
+    if (!Array.isArray(peers) || peers.some((peer) => typeof peer !== "string" || peer.trim() === "")) {
+      throw new TypeError("peers must be an array of non-empty Router URLs");
+    }
+    this.peers = Object.freeze([...peers]);
     this.unixPath = options.unixPath === undefined ? undefined : unixSocketPath(options.unixPath);
   }
 
@@ -197,6 +204,7 @@ export class WebSocketRouter {
       if (this.unixPath === undefined) args.push("--host", this.options.host ?? "127.0.0.1", "--port", String(this.options.port ?? 0));
       else args.push("--unix-socket", this.unixPath);
       if (this.options.authFile !== undefined) args.push("--auth-file", resolve(this.options.authFile));
+      for (const peer of this.peers) args.push("--peer", peer);
       const child = spawn(findRouterBinary(this.options.binaryPath), args, { stdio: "pipe", windowsHide: true });
       this.child = child;
       child.stdin.on("error", () => undefined);

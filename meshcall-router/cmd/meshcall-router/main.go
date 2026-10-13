@@ -48,6 +48,10 @@ func run() error {
 	flag.DurationVar(&config.IdleTimeout, "idle-timeout", router.DefaultIdleTimeout, "close connections that send nothing for this long")
 	flag.IntVar(&config.BreakerThreshold, "breaker-threshold", router.DefaultBreakerThreshold, "consecutive failures that open an instance's circuit")
 	flag.DurationVar(&config.BreakerCooldown, "breaker-cooldown", router.DefaultBreakerCooldown, "how long an open circuit excludes an instance before one probe call")
+	flag.Func("peer", "WebSocket URL of a peer Router (repeatable)", func(v string) error {
+		config.Peers = append(config.Peers, v)
+		return nil
+	})
 	flag.BoolVar(&parentStdin, "shutdown-on-stdin-close", false, "exit when the owning process closes stdin")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
