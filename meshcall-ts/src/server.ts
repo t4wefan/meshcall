@@ -8,9 +8,12 @@ import { closeSocket, createSocket, unixSocketPath, type WebSocketEndpoint } fro
 import { MeshCallError } from "./errors.js";
 import {
   DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS, Liveness,
+  reconnectDelays, type ReconnectPolicy,
 } from "./liveness.js";
 import { ConsoleRpcLogger, type LogLevel, type RpcLogger } from "./logging.js";
-import { decodeFrame, PROTOCOL_VERSION, type Frame, type RegisteredService } from "./protocol.js";
+import {
+  decodeFrame, FrameDecodeError, PROTOCOL_VERSION, type Frame, type RegisteredService,
+} from "./protocol.js";
 import { ServerSession, type RuntimeMethod, type RuntimeServices } from "./server-session.js";
 import type { ServiceDefinition } from "./service.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
@@ -42,6 +45,8 @@ export interface MeshCallServerOptions {
   /** Router mode: keepalive ping cadence toward the Router; `null` disables. */
   readonly pingIntervalMs?: number | null;
   readonly pingTimeoutMs?: number;
+  /** Router mode: how to re-register after the Router connection drops. */
+  readonly reconnect?: ReconnectPolicy;
   readonly accessLog?: boolean;
   readonly logLevel?: LogLevel;
   readonly colorize?: boolean;
@@ -55,6 +60,8 @@ export class MeshCallServer {
   private readonly sessions = new Map<WebSocket, ServerSession>();
   private lifecycle: Promise<void> = Promise.resolve();
   private running = false;
+  private stopping = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly services: RuntimeServices;
   private readonly registration: RegisteredService[];
   private readonly logger: RpcLogger;
@@ -115,9 +122,51 @@ export class MeshCallServer {
     return this.running;
   }
 
+  /** Router mode: whether the instance currently holds a registered connection. */
+  public get routerConnected(): boolean {
+    return this.routerSocket?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Re-register with the Router after the connection drops. The server stays
+   * running throughout; calls that arrive in between fail at the Router with
+   * retryable `unavailable`.
+   */
+  private scheduleRouterReconnect(): void {
+    const router = this.options.router;
+    const policy = this.options.reconnect ?? {};
+    if (router === undefined || !this.running || this.stopping || !(policy.enabled ?? true)) {
+      this.running = false;
+      return;
+    }
+    this.logger.warning("Router connection lost for instance %s; reconnecting", this.instanceId);
+    const delays = reconnectDelays(policy);
+    const attempt = (): void => {
+      const next = delays.next();
+      if (next.done === true) {
+        this.logger.error("Giving up on Router reconnection for instance %s", this.instanceId);
+        this.running = false;
+        return;
+      }
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = undefined;
+        if (this.stopping) return;
+        this.startRouter(router).then(
+          () => this.logger.info("Router connection restored for instance %s", this.instanceId),
+          (error: unknown) => {
+            this.logger.warning("Router re-registration failed for instance %s: %s", this.instanceId, error);
+            attempt();
+          },
+        );
+      }, next.value);
+    };
+    attempt();
+  }
+
   public start(): Promise<void> {
     const operation = this.lifecycle.then(async () => {
       if (this.running) return;
+      this.stopping = false;
       try {
         if (this.options.router === undefined) await this.startDirect();
         else await this.startRouter(this.options.router);
@@ -139,6 +188,9 @@ export class MeshCallServer {
 
   private async stop(): Promise<void> {
     this.running = false;
+    this.stopping = true;
+    if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
     const listener = this.listener;
     const http = this.httpServer;
     this.listener = undefined;
@@ -177,7 +229,7 @@ export class MeshCallServer {
       this.sessions.delete(socket);
       if (this.routerSocket === socket) {
         this.routerSocket = undefined;
-        this.running = false;
+        this.scheduleRouterReconnect();
       }
     });
     socket.on("error", () => {
@@ -237,7 +289,11 @@ export class MeshCallServer {
         } else {
           session.handle(frame);
         }
-      } catch {
+      } catch (error) {
+        if (ready && error instanceof FrameDecodeError && error.callId !== undefined) {
+          session.rejectFrame(error.callId, error.message);
+          return;
+        }
         socket.close(1002, "Invalid MeshCall frame");
       }
     });
@@ -289,6 +345,10 @@ export class MeshCallServer {
             session.handle(frame);
           }
         } catch (error) {
+          if (state === "ready" && error instanceof FrameDecodeError && error.callId !== undefined) {
+            session.rejectFrame(error.callId, error.message);
+            return;
+          }
           fail(error);
         }
       });

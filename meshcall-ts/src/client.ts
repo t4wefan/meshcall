@@ -10,6 +10,8 @@ import {
   DEFAULT_PING_INTERVAL_MS,
   DEFAULT_PING_TIMEOUT_MS,
   Liveness,
+  reconnectDelays,
+  type ReconnectPolicy,
   validateMetadata,
 } from "./liveness.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
@@ -20,6 +22,7 @@ import {
   type CallResultFrame,
   decodeFrame,
   type Frame,
+  FrameDecodeError,
   type Metadata,
   type StreamEndFrame,
   type StreamItemFrame,
@@ -53,6 +56,12 @@ export interface MeshCallClientOptions {
   /** Keepalive ping cadence; `null` disables pinging. */
   readonly pingIntervalMs?: number | null;
   readonly pingTimeoutMs?: number;
+  /**
+   * How a lost connection is re-established. In-flight calls fail with a
+   * retryable `unavailable`; the next call reconnects lazily with backoff,
+   * waiting at most its own `timeoutMs`.
+   */
+  readonly reconnect?: ReconnectPolicy;
 }
 
 interface InputState {
@@ -110,6 +119,8 @@ export class MeshCallClient {
   private writer: FrameWriter | undefined;
   private liveness: Liveness | undefined;
   private connectPromise: Promise<void> | undefined;
+  private everConnected = false;
+  private closed = false;
   private readonly calls = new Map<string, PendingCall>();
   private readonly streams = new Map<string, ServerStreamState<unknown>>();
 
@@ -128,8 +139,13 @@ export class MeshCallClient {
         throw new RangeError("Durations must be non-negative");
       }
     }
+    reconnectDelays(options.reconnect ?? {}).next(); // validate eagerly
   }
 
+  /**
+   * Connect if not connected. After a loss this retries with backoff per the
+   * reconnect policy; concurrent callers share one attempt sequence.
+   */
   public async connect(): Promise<void> {
     if (this.socket?.readyState === WebSocket.OPEN) {
       return;
@@ -137,11 +153,50 @@ export class MeshCallClient {
     if (this.connectPromise !== undefined) {
       return this.connectPromise;
     }
-    this.connectPromise = this.open();
+    this.closed = false;
+    this.connectPromise = this.openWithRetry();
     try {
       await this.connectPromise;
     } finally {
       this.connectPromise = undefined;
+    }
+  }
+
+  private async openWithRetry(): Promise<void> {
+    const policy = this.options.reconnect ?? {};
+    const retry = (policy.enabled ?? true) && this.everConnected;
+    const delays = retry ? reconnectDelays(policy) : undefined;
+    for (;;) {
+      try {
+        await this.open();
+        this.everConnected = true;
+        return;
+      } catch (error) {
+        const next = delays?.next();
+        if (next === undefined || next.done === true || this.closed) {
+          throw error instanceof MeshCallError ? error
+            : new MeshCallError("unavailable", "Could not connect: " + String(error), { retryable: true });
+        }
+        await new Promise((resolve) => setTimeout(resolve, next.value));
+      }
+    }
+  }
+
+  /** `connect()` bounded by the caller's local budget. */
+  private async connectWithin(options: CallOptions, startedAt: number): Promise<void> {
+    const budget = this.localBudgetMs(options, startedAt);
+    if (budget === undefined) {
+      await this.connect();
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(localDeadlineError()), budget);
+    });
+    try {
+      await Promise.race([this.connect(), expired]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -154,7 +209,7 @@ export class MeshCallClient {
     this.validateOptions(options);
     this.ensureNotAborted(options);
     const startedAt = performance.now();
-    await this.connect();
+    await this.connectWithin(options, startedAt);
     this.ensureNotAborted(options);
 
     const callId = newCallId();
@@ -181,7 +236,7 @@ export class MeshCallClient {
     this.validateOptions(options);
     this.ensureNotAborted(options);
     const startedAt = performance.now();
-    await this.connect();
+    await this.connectWithin(options, startedAt);
     this.ensureNotAborted(options);
 
     const callId = newCallId();
@@ -236,6 +291,7 @@ export class MeshCallClient {
   }
 
   public async close(): Promise<void> {
+    this.closed = true;
     const sockets = new Set([this.socket, this.connectingSocket]);
     this.socket = undefined;
     this.connectingSocket = undefined;
@@ -255,7 +311,7 @@ export class MeshCallClient {
   ): Promise<ServerStreamState<Item>> {
     this.ensureNotAborted(options);
     const startedAt = performance.now();
-    await this.connect();
+    await this.connectWithin(options, startedAt);
     this.ensureNotAborted(options);
 
     const callId = newCallId();
@@ -481,8 +537,16 @@ export class MeshCallClient {
     try {
       frame = decodeFrame(data);
     } catch (error) {
+      // A malformed frame that still names a call fails only that call.
+      const callId = error instanceof FrameDecodeError ? error.callId : undefined;
+      if (callId !== undefined && (this.calls.has(callId) || this.streams.has(callId))) {
+        const failure = new MeshCallError("protocol_error", String((error as Error).message));
+        this.rejectPending(callId, failure);
+        this.streams.get(callId)?.fail(failure);
+        return;
+      }
       this.rejectAll(error);
-      this.socket?.close();
+      this.socket?.close(1002, "Invalid MeshCall frame");
       return;
     }
     if (this.liveness?.observe(frame) === true) {

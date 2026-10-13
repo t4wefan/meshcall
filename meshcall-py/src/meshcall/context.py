@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import random
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
@@ -19,6 +20,45 @@ def client_deadline_grace(timeout: float) -> float:
     """Extra time the client waits past ``timeout`` for the peer's own
     ``deadline_exceeded`` before failing the call locally."""
     return max(1.0, timeout * 0.1)
+
+
+@dataclass(frozen=True)
+class ReconnectPolicy:
+    """Exponential backoff with jitter for re-establishing a lost connection.
+
+    Applies to clients reconnecting to a server or Router and to Router-mode
+    servers re-registering after the Router drops. ``max_attempts=None`` keeps
+    trying until the owner stops or (for clients) the call's timeout expires.
+    """
+
+    enabled: bool = True
+    initial_delay: float = 0.1
+    max_delay: float = 30.0
+    multiplier: float = 2.0
+    jitter: float = 0.2
+    max_attempts: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.initial_delay <= 0 or self.max_delay < self.initial_delay:
+            raise ValueError("initial_delay must be positive and <= max_delay")
+        if self.multiplier < 1 or not 0 <= self.jitter <= 1:
+            raise ValueError("multiplier must be >= 1 and jitter within [0, 1]")
+        if self.max_attempts is not None and self.max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+
+    def delays(self) -> Iterator[float]:
+        """Yield successive sleep durations; exhausted after ``max_attempts``."""
+        delay = self.initial_delay
+        attempt = 0
+        while self.max_attempts is None or attempt < self.max_attempts:
+            attempt += 1
+            spread = delay * self.jitter
+            yield max(0.0, delay + random.uniform(-spread, spread))
+            delay = min(self.max_delay, delay * self.multiplier)
+
+
+DEFAULT_RECONNECT = ReconnectPolicy()
+NO_RECONNECT = ReconnectPolicy(enabled=False)
 
 
 def validate_metadata(metadata: Mapping[str, str] | None) -> dict[str, str] | None:

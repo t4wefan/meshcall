@@ -9,7 +9,12 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ValidationError
 
-from meshcall.context import CallOptions, client_deadline_grace
+from meshcall.context import (
+    DEFAULT_RECONNECT,
+    CallOptions,
+    ReconnectPolicy,
+    client_deadline_grace,
+)
 from meshcall.driver import ClientDriver
 from meshcall.errors import ErrorCode, MeshCallError, ProtocolError
 from meshcall.flow import CreditWindow
@@ -36,6 +41,11 @@ class ClientBase:
     ``deadline_grace`` is how long past a call's ``timeout`` the client keeps
     waiting for the peer's own ``deadline_exceeded`` before failing the call
     locally; ``None`` uses ``max(1s, 10% of timeout)``.
+
+    ``reconnect`` controls how a lost connection is re-established. Calls in
+    flight when the connection drops fail with retryable ``unavailable``; the
+    next call reconnects lazily with backoff, waiting at most its own
+    ``timeout``.
     """
 
     def __init__(
@@ -43,21 +53,46 @@ class ClientBase:
         driver: ClientDriver,
         *,
         deadline_grace: float | None = None,
+        reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
     ) -> None:
         self.driver = driver
         self.deadline_grace = deadline_grace
+        self.reconnect = reconnect
         self._connection: FrameConnection | None = None
         self._calls: dict[str, _ClientCall] = {}
         self._state_lock = asyncio.Lock()
         self._receive_task: asyncio.Task[None] | None = None
+        self._ever_connected = False
 
     async def start(self) -> None:
+        """Connect if not connected, retrying with backoff after a loss."""
         async with self._state_lock:
             if self._connection is not None:
                 return
-            self._connection = await self.driver.connect()
+            delays = (
+                self.reconnect.delays()
+                if self.reconnect.enabled and self._ever_connected
+                else iter(())
+            )
+            while True:
+                try:
+                    self._connection = await self.driver.connect()
+                    break
+                except (OSError, ConnectionError, MeshCallError) as exc:
+                    delay = next(delays, None)
+                    if delay is None:
+                        if isinstance(exc, MeshCallError):
+                            raise
+                        raise MeshCallError(
+                            ErrorCode.UNAVAILABLE,
+                            f"Could not connect: {exc}",
+                            retryable=True,
+                        ) from exc
+                    await self.driver.close()
+                    await asyncio.sleep(delay)
+            self._ever_connected = True
             self._receive_task = asyncio.create_task(
-                self._receive_loop(),
+                self._receive_loop(self._connection),
                 name="meshcall-client-receiver",
             )
 
@@ -121,13 +156,15 @@ class ClientBase:
     ) -> RpcServerStream[Any]:
         options = CallOptions(timeout, idle_timeout, metadata)
         return _ClientServerStream(
-            asyncio.create_task(
-                self._open_call(
-                    service,
-                    method,
-                    request,
-                    output_type=item_type,
-                    options=options,
+            _observed(
+                asyncio.create_task(
+                    self._open_call(
+                        service,
+                        method,
+                        request,
+                        output_type=item_type,
+                        options=options,
+                    )
                 )
             )
         )
@@ -183,15 +220,17 @@ class ClientBase:
     ) -> RpcDuplexClient[Any, Any, Any]:
         options = CallOptions(timeout, idle_timeout, metadata)
         return _ClientDuplex(
-            asyncio.create_task(
-                self._open_call(
-                    service,
-                    method,
-                    request,
-                    response_type=result_type,
-                    input_type=input_type,
-                    output_type=output_type,
-                    options=options,
+            _observed(
+                asyncio.create_task(
+                    self._open_call(
+                        service,
+                        method,
+                        request,
+                        response_type=result_type,
+                        input_type=input_type,
+                        output_type=output_type,
+                        options=options,
+                    )
                 )
             )
         )
@@ -299,14 +338,24 @@ class ClientBase:
             await call.cancel("input_producer_failed")
             raise
 
-    async def _receive_loop(self) -> None:
-        connection = self._connection
-        if connection is None:
-            return
+    async def _receive_loop(self, connection: FrameConnection) -> None:
         failure: MeshCallError | None = None
         try:
             while True:
-                frame = await connection.receive()
+                try:
+                    frame = await connection.receive()
+                except ProtocolError as exc:
+                    # A malformed frame that still names a call fails only that
+                    # call; one we cannot attribute poisons the connection.
+                    call = (
+                        self._calls.pop(exc.call_id, None)
+                        if exc.call_id is not None
+                        else None
+                    )
+                    if call is None:
+                        raise
+                    await call.fail(exc)
+                    continue
                 await self._dispatch(frame)
         except asyncio.CancelledError:
             raise
@@ -317,9 +366,15 @@ class ClientBase:
                 retryable=True,
             )
         except Exception as exc:  # noqa: BLE001
-            failure = ProtocolError(str(exc))
+            failure = exc if isinstance(exc, MeshCallError) else ProtocolError(str(exc))
         finally:
             if failure is not None:
+                # Forget the dead connection so the next call reconnects.
+                if self._connection is connection:
+                    self._connection = None
+                    self._receive_task = None
+                    with contextlib.suppress(Exception):
+                        await self.driver.close()
                 calls = tuple(self._calls.values())
                 self._calls.clear()
                 for call in calls:
@@ -344,6 +399,21 @@ class ClientBase:
         elif isinstance(frame, CallErrorFrame):
             await call.receive_error(frame)
             self._calls.pop(call.call_id, None)
+
+
+def _observed(task: asyncio.Task[_ClientCall]) -> asyncio.Task[_ClientCall]:
+    """Mark a lazily consumed open task's failure as retrieved.
+
+    The caller sees the error when it first iterates; if it never does, this
+    stops asyncio from reporting the exception as never retrieved.
+    """
+
+    def retrieve(done: asyncio.Task[_ClientCall]) -> None:
+        if not done.cancelled():
+            done.exception()
+
+    task.add_done_callback(retrieve)
+    return task
 
 
 def _local_deadline_error(reason: str | None = None) -> MeshCallError:

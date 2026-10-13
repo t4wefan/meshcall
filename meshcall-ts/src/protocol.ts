@@ -145,17 +145,37 @@ export type Frame =
   | PingFrame
   | PongFrame;
 
+/**
+ * A frame failed validation. `callId` is set when the frame still named a
+ * call, so the receiver can fail that call instead of the whole connection.
+ */
+export class FrameDecodeError extends Error {
+  public constructor(message: string, public readonly callId: string | undefined) {
+    super(message);
+    this.name = "FrameDecodeError";
+  }
+}
+
 export function decodeFrame(data: RawData | string): Frame {
   const text = typeof data === "string" ? data
     : Array.isArray(data) ? Buffer.concat(data).toString()
     : data instanceof ArrayBuffer ? Buffer.from(data).toString() : data.toString();
-  const value: unknown = JSON.parse(text);
-  if (!isRecord(value) || typeof value.kind !== "string") {
-    throw new Error("Invalid MeshCall frame");
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new FrameDecodeError("Invalid MeshCall frame", undefined);
   }
+  if (!isRecord(value) || typeof value.kind !== "string") {
+    throw new FrameDecodeError("Invalid MeshCall frame", undefined);
+  }
+  const callId = typeof value.call_id === "string" && value.call_id !== "" ? value.call_id : undefined;
   const validate = validators.get(value.kind);
-  if (validate === undefined || !validate(value)) {
-    throw new Error("Invalid MeshCall " + value.kind + " frame");
+  if (validate === undefined) {
+    throw new FrameDecodeError("Unknown MeshCall frame kind " + value.kind, undefined);
+  }
+  if (!validate(value)) {
+    throw new FrameDecodeError("Invalid MeshCall " + value.kind + " frame", callId);
   }
   return value as unknown as Frame;
 }

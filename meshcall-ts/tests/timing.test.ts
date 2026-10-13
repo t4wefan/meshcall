@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 
 import {
   clientStreamMethod, defineService, defineType, MeshCallClient, MeshCallError, MeshCallServer,
-  serverStreamMethod, unaryMethod, type MeshCallServerOptions,
+  serverStreamMethod, unaryMethod, WebSocketRouter, type MeshCallServerOptions,
 } from "../src/index.js";
 import { decodeFrame, encodeFrame, PROTOCOL_VERSION, type CallOpenFrame } from "../src/protocol.js";
 
@@ -181,4 +181,73 @@ test("unknown frame fields are ignored and undefined payloads are sent as null",
   assert.throws(() => decodeFrame(JSON.stringify({
     kind: "call.open", call_id: "x", service: "s", method: "m", payload: {}, timeout_ms: 0,
   })));
+});
+
+test("the client reconnects after a direct server restart, bounded by the call timeout", { timeout: 10000 }, async (t) => {
+  const first = new MeshCallServer({ services: [service], accessLog: false });
+  await first.start();
+  const port = first.boundPort;
+  const client = new MeshCallClient("ws://127.0.0.1:" + port, undefined, {
+    reconnect: { initialDelayMs: 50, maxDelayMs: 200 },
+  });
+  t.after(() => client.close());
+  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 1 })).value, 1);
+  await first.close();
+  await assert.rejects(
+    client.unary(service.name, "echo", { value: 2 }, { timeoutMs: 300 }),
+    (error: unknown) => error instanceof MeshCallError
+      && (error.code === "unavailable" || error.code === "deadline_exceeded"),
+  );
+  const second = new MeshCallServer({ services: [service], port, accessLog: false });
+  t.after(() => second.close());
+  await second.start();
+  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 3 }, { timeoutMs: 5000 })).value, 3);
+});
+
+test("a Router-mode server re-registers after the Router restarts", { timeout: 15000 }, async (t) => {
+  const router = new WebSocketRouter();
+  await router.start();
+  const port = router.boundPort;
+  const endpoint = "ws://127.0.0.1:" + port;
+  const server = new MeshCallServer({
+    services: [service], router: { endpoint, instanceId: "phoenix" }, accessLog: false,
+    reconnect: { initialDelayMs: 50, maxDelayMs: 200 },
+  });
+  t.after(() => server.close());
+  await server.start();
+  const client = new MeshCallClient(endpoint, undefined, { reconnect: { initialDelayMs: 50, maxDelayMs: 200 } });
+  t.after(() => client.close());
+  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 1 })).value, 1);
+  await router.stop();
+  for (let i = 0; i < 100 && server.routerConnected; i += 1) await delay(20);
+  assert.equal(server.routerConnected, false);
+  assert.equal(server.isRunning, true);
+  const restarted = new WebSocketRouter({ port });
+  t.after(() => restarted.stop());
+  await restarted.start();
+  for (let i = 0; i < 200 && !server.routerConnected; i += 1) await delay(20);
+  assert.equal(server.routerConnected, true);
+  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 2 }, { timeoutMs: 5000 })).value, 2);
+});
+
+test("a malformed frame that names a call fails only that call", { timeout: 5000 }, async (t) => {
+  const app = await running();
+  t.after(app.close);
+  await app.client.connect();
+  const stream = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 3, gapMs: 500 });
+  const first = stream.next();
+  await delay(50);
+  // Reach past the public API to inject a bad window frame for the open call.
+  const socket = (app.client as unknown as { socket: import("ws").WebSocket }).socket;
+  const streams = (app.client as unknown as { streams: Map<string, unknown> }).streams;
+  const [callId] = streams.keys();
+  assert.ok(callId);
+  socket.send(JSON.stringify({ kind: "stream.window", call_id: callId, direction: "server", credit: -1 }));
+  await assert.rejects(first, isError("protocol_error"));
+  assert.equal((await app.client.unary<Value, Echo>(service.name, "echo", { value: 7 })).value, 7);
+  // The same on the server side: the client stays connected and other calls work.
+  const serverSocket = socket;
+  serverSocket.send(JSON.stringify({ kind: "call.cancel", call_id: "nope", reason: 5 }));
+  await delay(20);
+  assert.equal((await app.client.unary<Value, Echo>(service.name, "echo", { value: 8 })).value, 8);
 });

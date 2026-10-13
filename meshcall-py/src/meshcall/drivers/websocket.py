@@ -14,9 +14,11 @@ from meshcall.context import (
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_PING_INTERVAL,
     DEFAULT_PING_TIMEOUT,
+    DEFAULT_RECONNECT,
+    ReconnectPolicy,
 )
 from meshcall.driver import ClientDriver, DriverBinding, ServerDriver
-from meshcall.errors import DriverStateError, ProtocolError
+from meshcall.errors import DriverStateError, MeshCallError, ProtocolError
 from meshcall.protocol import (
     PROTOCOL_VERSION,
     HelloAckFrame,
@@ -197,6 +199,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         auth: RouterCredentials | None = None,
         ping_interval: float | None = DEFAULT_PING_INTERVAL,
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
+        reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
     ) -> None:
         super().__init__()
         if (uri is None) == (unix_path is None):
@@ -208,8 +211,14 @@ class WebSocketRouterServerDriver(ServerDriver):
         self.auth = auth
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
+        self.reconnect = reconnect
         self._connection: FrameConnection | None = None
         self._runtime_task: asyncio.Task[None] | None = None
+
+    @property
+    def connected(self) -> bool:
+        """Whether the instance currently holds a registered Router connection."""
+        return self._connection is not None
 
     async def start(
         self,
@@ -217,6 +226,15 @@ class WebSocketRouterServerDriver(ServerDriver):
         runtime: ServerRuntime,
     ) -> None:
         self.check_binding(binding)
+        # The first registration must succeed for start() to succeed; later
+        # losses are handled by the supervisor without changing server state.
+        self._connection = await self._register(runtime)
+        self._runtime_task = asyncio.create_task(
+            self._supervise(runtime),
+            name=f"meshcall-router-server-{self.instance_id}",
+        )
+
+    async def _register(self, runtime: ServerRuntime) -> FrameConnection:
         websocket = await _connect_endpoint(
             uri=self.uri,
             unix_path=self.unix_path,
@@ -240,6 +258,8 @@ class WebSocketRouterServerDriver(ServerDriver):
             hello_ack = await connection.receive()
             if not isinstance(hello_ack, HelloAckFrame):
                 raise ProtocolError("Expected hello.ack from WebSocket Router")
+            if hello_ack.protocol != PROTOCOL_VERSION:
+                raise ProtocolError(f"Unsupported protocol: {hello_ack.protocol}")
             await connection.send(
                 ServerRegisterFrame(
                     instance_id=self.instance_id,
@@ -255,11 +275,49 @@ class WebSocketRouterServerDriver(ServerDriver):
         except BaseException:
             await connection.close()
             raise
-        self._connection = connection
-        self._runtime_task = asyncio.create_task(
-            runtime.serve_connection(connection),
-            name=f"meshcall-router-server-{self.instance_id}",
-        )
+        return connection
+
+    async def _supervise(self, runtime: ServerRuntime) -> None:
+        """Serve the Router connection and re-register after it drops."""
+        while True:
+            connection = self._connection
+            if connection is None:
+                return
+            await runtime.serve_connection(connection)
+            if self._connection is not connection:
+                return  # stop() took the connection away
+            self._connection = None
+            if not self.reconnect.enabled:
+                runtime.logger.warning(  # noqa: PLE1205
+                    "Router connection lost for instance {}; reconnect disabled",
+                    self.instance_id,
+                )
+                return
+            runtime.logger.warning(  # noqa: PLE1205
+                "Router connection lost for instance {}; reconnecting",
+                self.instance_id,
+            )
+            for delay in self.reconnect.delays():
+                await asyncio.sleep(delay)
+                try:
+                    self._connection = await self._register(runtime)
+                except (OSError, ConnectionError, MeshCallError) as exc:
+                    runtime.logger.warning(  # noqa: PLE1205
+                        "Router re-registration failed for instance {}: {}",
+                        self.instance_id,
+                        exc,
+                    )
+                    continue
+                runtime.logger.info(  # noqa: PLE1205
+                    "Router connection restored for instance {}", self.instance_id
+                )
+                break
+            else:
+                runtime.logger.error(  # noqa: PLE1205
+                    "Giving up on Router reconnection for instance {}",
+                    self.instance_id,
+                )
+                return
 
     async def stop(self, binding: DriverBinding) -> None:
         self.check_binding(binding)
@@ -268,6 +326,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         if connection is not None:
             await connection.close()
         if runtime_task is not None:
+            runtime_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await runtime_task
 

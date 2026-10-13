@@ -34,8 +34,15 @@ class MeshCallError(Exception):
 
 
 class ProtocolError(MeshCallError):
-    def __init__(self, message: str) -> None:
+    """A frame violated the protocol.
+
+    ``call_id`` is set when the offending frame could still be attributed to a
+    call, so the receiver can fail that call alone instead of the connection.
+    """
+
+    def __init__(self, message: str, *, call_id: str | None = None) -> None:
         super().__init__(ErrorCode.PROTOCOL_ERROR, message)
+        self.call_id = call_id
 
 
 class ContractError(MeshCallError):
@@ -46,4 +53,3 @@ class ContractError(MeshCallError):
 class DriverStateError(MeshCallError):
     def __init__(self, message: str) -> None:
         super().__init__(ErrorCode.INTERNAL, message)
-

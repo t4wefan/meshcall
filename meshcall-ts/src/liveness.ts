@@ -11,6 +11,38 @@ export const DEFAULT_PING_TIMEOUT_MS = 10_000;
 export const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
 export const RESERVED_METADATA_PREFIX = "meshcall-";
 
+/**
+ * Exponential backoff with jitter for re-establishing a lost connection.
+ * `maxAttempts` undefined means keep trying until the owner closes or, for
+ * clients, the call's timeout expires.
+ */
+export interface ReconnectPolicy {
+  readonly enabled?: boolean;
+  readonly initialDelayMs?: number;
+  readonly maxDelayMs?: number;
+  readonly multiplier?: number;
+  readonly jitter?: number;
+  readonly maxAttempts?: number;
+}
+
+export const DEFAULT_RECONNECT: Required<Omit<ReconnectPolicy, "maxAttempts">> = {
+  enabled: true, initialDelayMs: 100, maxDelayMs: 30_000, multiplier: 2, jitter: 0.2,
+};
+
+export function* reconnectDelays(policy: ReconnectPolicy): Generator<number> {
+  const p = { ...DEFAULT_RECONNECT, ...policy };
+  if (p.initialDelayMs <= 0 || p.maxDelayMs < p.initialDelayMs || p.multiplier < 1
+    || p.jitter < 0 || p.jitter > 1 || (p.maxAttempts !== undefined && p.maxAttempts < 1)) {
+    throw new RangeError("Invalid reconnect policy");
+  }
+  let delay = p.initialDelayMs;
+  for (let attempt = 0; p.maxAttempts === undefined || attempt < p.maxAttempts; attempt += 1) {
+    const spread = delay * p.jitter;
+    yield Math.max(0, delay + (Math.random() * 2 - 1) * spread);
+    delay = Math.min(p.maxDelayMs, delay * p.multiplier);
+  }
+}
+
 /** Extra time a client waits past `timeoutMs` for the peer's own deadline error. */
 export function clientDeadlineGraceMs(timeoutMs: number): number {
   return Math.max(1000, timeoutMs * 0.1);

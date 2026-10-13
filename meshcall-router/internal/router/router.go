@@ -300,6 +300,12 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		f, err := readFrame(read, conn)
 		idle()
 		if err != nil {
+			// A malformed call frame that still names its call is answered for
+			// that call alone; anything else makes the connection unsafe.
+			if f.CallID != "" && p.role == "client" && f.Kind != "" {
+				p.send(callError(f.CallID, "protocol_error", "Invalid "+f.Kind+" frame", false))
+				continue
+			}
 			return
 		}
 		if f.Kind == "ping" {
@@ -322,7 +328,12 @@ func readFrame(ctx context.Context, conn *websocket.Conn) (frame, error) {
 	if err != nil {
 		return frame{}, err
 	}
-	return decode(data)
+	f, err := decode(data)
+	if err != nil {
+		// Keep whatever decoded so the caller can attribute the failure.
+		return frame{Kind: f.Kind, CallID: f.CallID}, err
+	}
+	return f, nil
 }
 
 func allowedFrame(role string, f frame) bool {

@@ -401,6 +401,31 @@ func TestDeadlineCancelAndIdleLifecycle(t *testing.T) {
 }
 
 func TestDecodeCompatibilityRules(t *testing.T) {
+	r := runningRouter(t, nil)
+	worker := dial(t, r, "")
+	registerPeer(t, worker, "worker")
+	client := dial(t, r, "")
+	hello(t, client, "client", "client")
+	// A malformed frame that names a call is answered for that call only.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Write(ctx, websocket.MessageText, []byte(`{"kind":"stream.window","call_id":"bad","direction":"server","credit":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := receive(t, client); got.Error == nil || got.Error.Code != "protocol_error" || got.CallID != "bad" {
+		t.Fatalf("malformed frame: %+v", got)
+	}
+	send(t, client, frame{Kind: "call.open", CallID: "ok", Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, worker); got.CallID != "ok" {
+		t.Fatal("connection did not survive a malformed call frame")
+	}
+	// A frame that cannot be attributed closes the connection.
+	if err := client.Write(ctx, websocket.MessageText, []byte(`not json`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.Read(ctx); err == nil {
+		t.Fatal("unattributable garbage kept the connection")
+	}
 	if _, err := decode([]byte(`{"kind":"call.cancel","call_id":"x","future_field":1}`)); err != nil {
 		t.Fatal("unknown field rejected:", err)
 	}

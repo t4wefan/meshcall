@@ -12,7 +12,7 @@ from meshcall.codegen_typescript import (
     render_typescript_models,
     write_typescript_client,
 )
-from meshcall.context import CallOptions, RpcContext
+from meshcall.context import CallOptions, ReconnectPolicy, RpcContext
 from meshcall.contract import (
     Balance,
     get_service_contract,
@@ -56,6 +56,7 @@ __all__ = [
     "IssuedToken",
     "MeshCallError",
     "ProtocolError",
+    "ReconnectPolicy",
     "RequestStyle",
     "RouterAuthClient",
     "RouterCredentials",

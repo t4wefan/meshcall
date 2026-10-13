@@ -82,8 +82,11 @@ await server.start();
 For Router mode, replace `port` with
 `router: { endpoint: "ws://127.0.0.1:8765", instanceId: "counter-ts-1" }`.
 Services register before `start()` resolves. A disconnect terminates active
-calls and sets `isRunning` to false; reconnect explicitly with `start()`.
-The runtime does not replay calls.
+calls; the server then re-registers with exponential backoff (`reconnect`
+option, a `ReconnectPolicy`) while `isRunning` stays true, and
+`routerConnected` reports the current state. Clients reconnect the same way
+on their next call, bounded by that call's `timeoutMs`. The runtime does not
+replay calls.
 
 For local IPC use `unixPath: "/tmp/meshcall.sock"` on a Direct server, or
 `router: { endpoint: { unixPath: "/tmp/router.sock" } }` for Router mode.

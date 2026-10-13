@@ -26,7 +26,9 @@ export {
   DEFAULT_IDLE_TIMEOUT_MS,
   DEFAULT_PING_INTERVAL_MS,
   DEFAULT_PING_TIMEOUT_MS,
+  DEFAULT_RECONNECT,
   clientDeadlineGraceMs,
+  type ReconnectPolicy,
 } from "./liveness.js";
 export { ConsoleRpcLogger, type RpcLogger, type LogContext, type LogLevel } from "./logging.js";
 export type { WebSocketEndpoint } from "./endpoint.js";

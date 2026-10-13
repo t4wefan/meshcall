@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import (
@@ -166,4 +167,16 @@ def decode_frame(data: str | bytes) -> Frame:
     try:
         return _FRAME_ADAPTER.validate_json(data)
     except ValidationError as exc:
-        raise ProtocolError(f"Invalid frame: {exc}") from exc
+        raise ProtocolError(
+            f"Invalid frame: {exc}", call_id=_salvage_call_id(data)
+        ) from exc
+
+
+def _salvage_call_id(data: str | bytes) -> str | None:
+    """Best-effort ``call_id`` from a frame that failed validation."""
+    try:
+        value = json.loads(data)
+    except ValueError:
+        return None
+    call_id = value.get("call_id") if isinstance(value, dict) else None
+    return call_id if isinstance(call_id, str) and call_id else None

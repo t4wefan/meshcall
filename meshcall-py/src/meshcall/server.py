@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import inspect
 import time
@@ -172,9 +173,17 @@ class ServerRuntime:
         )
         try:
             while True:
-                frame = await connection.receive()
+                try:
+                    frame = await connection.receive()
+                except ProtocolError as exc:
+                    # Fail only the named call when a malformed frame can still
+                    # be attributed to one; otherwise the connection is unsafe.
+                    if exc.call_id is None:
+                        raise
+                    await session.reject_frame(exc.call_id, exc)
+                    continue
                 await session.handle(frame)
-        except ConnectionError:
+        except (ConnectionError, ProtocolError):
             pass
         finally:
             await session.close()
@@ -274,6 +283,17 @@ class _ServerSession:
     def remove(self, call: _ServerCall) -> None:
         if self.calls.get(call.call_id) is call:
             self.calls.pop(call.call_id, None)
+
+    async def reject_frame(self, call_id: str, error: ProtocolError) -> None:
+        """Answer a malformed frame for ``call_id`` without dropping the peer."""
+        call = self.calls.get(call_id)
+        if call is not None:
+            await call._application_failure(error)
+            return
+        with contextlib.suppress(ConnectionError):
+            await self.connection.send(
+                _error_frame(call_id, ErrorCode.PROTOCOL_ERROR, error.message)
+            )
 
     async def close(self) -> None:
         calls = tuple(self.calls.values())

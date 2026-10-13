@@ -116,7 +116,15 @@ task can't operate through a newly acquired generation.
   when a `pong` is late (10 s); accepting peers drop connections silent for
   45 s. The transport layer handles this; runtimes never see ping or pong.
 - Instance disconnect terminates its routed calls with retryable `unavailable`.
-- Connection loss terminates all local active calls; no recovery is attempted.
+- Connection loss terminates all local active calls. Clients then reconnect
+  lazily on the next call with exponential backoff and jitter
+  (`ReconnectPolicy`), waiting at most that call's timeout. Router-mode
+  servers re-register with the same backoff while staying `RUNNING`; calls
+  that arrive in between fail at the Router with retryable `unavailable`.
+  Calls are never replayed automatically.
+- A malformed frame that still names a call fails only that call with
+  `protocol_error`; a frame that cannot be attributed closes the connection.
+  Oversize frames fail the sending call with `resource_exhausted`.
 - Call metadata (`call.open`) and trailers (`call.result` / `call.error`) are
   string maps that reach handlers through `RpcContext` and are otherwise opaque
   to the runtime.

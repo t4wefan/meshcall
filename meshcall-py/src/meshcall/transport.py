@@ -9,6 +9,7 @@ from typing import Protocol
 
 from websockets.exceptions import ConnectionClosed
 
+from meshcall.errors import ErrorCode, MeshCallError
 from meshcall.protocol import (
     CallCancelFrame,
     Frame,
@@ -67,7 +68,10 @@ class FrameConnection:
             raise self._closed
         encoded = encode_frame(frame)
         if len(encoded.encode()) > self._max_frame_size:
-            raise ValueError(f"Encoded frame exceeds {self._max_frame_size} byte limit")
+            raise MeshCallError(
+                ErrorCode.RESOURCE_EXHAUSTED,
+                f"Encoded frame exceeds {self._max_frame_size} byte limit",
+            )
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         pending = _PendingFrame(encoded=encoded, future=future)
         call_id = getattr(frame, "call_id", None)

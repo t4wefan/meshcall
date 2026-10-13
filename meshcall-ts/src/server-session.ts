@@ -87,6 +87,19 @@ export class ServerSession {
     if (this.calls.get(call.frame.call_id) === call) this.calls.delete(call.frame.call_id);
   }
 
+  /** Answer a malformed frame for `callId` without dropping the peer. */
+  public rejectFrame(callId: string, message: string): void {
+    const error = new MeshCallError("protocol_error", message);
+    const call = this.calls.get(callId);
+    if (call !== undefined) {
+      void call.fail(error);
+      return;
+    }
+    void this.writer.send({
+      kind: "call.error", call_id: callId, error: { code: error.code, message: error.message },
+    }).catch(() => undefined);
+  }
+
   public close(): void {
     if (this.closed) return;
     this.closed = true;

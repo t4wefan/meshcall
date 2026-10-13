@@ -17,6 +17,7 @@ from test_direct import (
 
 from meshcall import Balance, RpcServer, WebSocketRouter, method, service
 from meshcall.client import ClientBase
+from meshcall.context import ReconnectPolicy
 from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
 from meshcall.errors import ErrorCode, MeshCallError
 
@@ -112,8 +113,7 @@ async def test_router_balancing_and_stream_forwarding_over_tcp() -> None:
     number_client = NumberServiceClient(WebSocketClientDriver(uri))
     try:
         results = [
-            (await route_client.round_robin(RouteRequest())).instance
-            for _ in range(4)
+            (await route_client.round_robin(RouteRequest())).instance for _ in range(4)
         ]
         assert results == ["a", "b", "a", "b"]
 
@@ -126,11 +126,7 @@ async def test_router_balancing_and_stream_forwarding_over_tcp() -> None:
         assert (await first).instance == "a"
 
         sticky_results = {
-            (
-                await route_client.sticky(
-                    RouteRequest(session_id="session-123")
-                )
-            ).instance
+            (await route_client.sticky(RouteRequest(session_id="session-123"))).instance
             for _ in range(6)
         }
         assert len(sticky_results) == 1
@@ -190,3 +186,47 @@ async def test_router_over_unix_websocket() -> None:
         await server.stop()
         await router.stop()
     assert not socket_path.exists()
+
+
+async def test_router_server_reregisters_after_router_restart() -> None:
+    router = WebSocketRouter(host="127.0.0.1", port=0)
+    await router.start()
+    port = router.bound_port
+    uri = f"ws://127.0.0.1:{port}"
+    server_driver = WebSocketRouterServerDriver(
+        uri,
+        instance_id="phoenix",
+        reconnect=ReconnectPolicy(initial_delay=0.05, max_delay=0.2),
+    )
+    server = RpcServer(services=[NumberService], driver=server_driver)
+    await server.start()
+    client = NumberServiceClient(
+        WebSocketClientDriver(uri),
+        reconnect=ReconnectPolicy(initial_delay=0.05, max_delay=0.2),
+    )
+    try:
+        assert await client.unary(NumberRequest(value=1)) == NumberResult(total=1)
+        await router.stop()
+        for _ in range(50):
+            if not server_driver.connected:
+                break
+            await asyncio.sleep(0.02)
+        assert not server_driver.connected
+        assert server.state.value == "running"
+
+        restarted = WebSocketRouter(host="127.0.0.1", port=port)
+        await restarted.start()
+        try:
+            for _ in range(100):
+                if server_driver.connected:
+                    break
+                await asyncio.sleep(0.02)
+            assert server_driver.connected
+            assert await client.slow(NumberRequest(value=1), timeout=5) == NumberResult(
+                total=1
+            )
+        finally:
+            await restarted.stop()
+    finally:
+        await client.stop()
+        await server.stop()

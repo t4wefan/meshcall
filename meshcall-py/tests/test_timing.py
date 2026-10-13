@@ -12,6 +12,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from meshcall import RpcContext, RpcInputStream, RpcServer, method, service
 from meshcall.client import ClientBase
+from meshcall.context import NO_RECONNECT, ReconnectPolicy
 from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
 from meshcall.errors import ErrorCode, MeshCallError
 from meshcall.protocol import (
@@ -245,17 +246,98 @@ async def test_server_closes_idle_connection_and_client_keepalive_prevents_it() 
         await silent_client.start()
         await chatty_client.start()
         await asyncio.sleep(1.5)
-        # The server dropped the silent peer; its receive loop has ended.
-        assert silent_client._receive_task is not None
-        assert silent_client._receive_task.done()
-        with pytest.raises(MeshCallError) as error:
-            await silent_client.echo_metadata(Request())
-        assert error.value.code == ErrorCode.UNAVAILABLE
-        assert error.value.retryable
+        # The server dropped the silent peer; its receive loop has ended and
+        # the client forgot the dead connection.
+        assert silent_client._receive_task is None
+        assert silent_client._connection is None
+        # The next call reconnects transparently.
+        assert await silent_client.echo_metadata(Request(value=5)) == Result(total=5)
         assert await chatty_client.echo_metadata(Request(value=1)) == Result(total=1)
     finally:
         await silent_client.stop()
         await chatty_client.stop()
+        await server.stop()
+
+
+async def test_client_reconnects_after_server_restart_and_honours_timeout() -> None:
+    server, driver = await _running()
+    port = driver.bound_port
+    client = TimingClient(
+        WebSocketClientDriver(f"ws://127.0.0.1:{port}"),
+        reconnect=ReconnectPolicy(initial_delay=0.05, max_delay=0.2),
+    )
+    try:
+        assert await client.echo_metadata(Request(value=1)) == Result(total=1)
+        await server.stop()
+        # In-flight and immediate calls fail as retryable unavailable while the
+        # server is down; the reconnect loop keeps trying within the timeout.
+        with pytest.raises(MeshCallError) as error:
+            await client.echo_metadata(Request(value=2), timeout=0.3)
+        assert error.value.code in (ErrorCode.UNAVAILABLE, ErrorCode.DEADLINE_EXCEEDED)
+        # Bring the server back on the same port: the next call succeeds.
+        restarted = RpcServer(
+            services=[TimingService()],
+            driver=WebSocketDirectServerDriver(host="127.0.0.1", port=port),
+        )
+        await restarted.start()
+        try:
+            assert await client.echo_metadata(Request(value=3), timeout=5) == Result(
+                total=3
+            )
+        finally:
+            await restarted.stop()
+    finally:
+        await client.stop()
+
+
+async def test_reconnect_disabled_fails_fast() -> None:
+    server, driver = await _running()
+    client = TimingClient(
+        WebSocketClientDriver(f"ws://127.0.0.1:{driver.bound_port}"),
+        reconnect=NO_RECONNECT,
+    )
+    try:
+        await client.echo_metadata(Request())
+        await server.stop()
+        with pytest.raises(MeshCallError) as error:
+            await client.echo_metadata(Request(), timeout=5)
+        assert error.value.code == ErrorCode.UNAVAILABLE
+        assert error.value.retryable
+    finally:
+        await client.stop()
+
+
+async def test_malformed_frame_fails_only_its_call() -> None:
+    """A frame with a call_id but an invalid shape must not drop the connection."""
+    server, driver = await _running()
+    client = TimingClient(WebSocketClientDriver(f"ws://127.0.0.1:{driver.bound_port}"))
+    try:
+        await client.start()
+        connection = client._connection
+        assert connection is not None
+        # Open a slow stream, then inject a bad frame for it straight onto the socket.
+        stream = client.trickle(5, 500)
+        await asyncio.sleep(0.05)
+        (call_id,) = client._calls
+        await connection._websocket.send(
+            json.dumps(
+                {
+                    "kind": "stream.window",
+                    "call_id": call_id,
+                    "direction": "server",
+                    "credit": -1,
+                }
+            )
+        )
+        with pytest.raises(MeshCallError) as error:
+            async for _ in stream:
+                pass
+        assert error.value.code == ErrorCode.PROTOCOL_ERROR
+        # Other calls on the same connection keep working.
+        assert await client.echo_metadata(Request(value=9)) == Result(total=9)
+        assert client._connection is connection
+    finally:
+        await client.stop()
         await server.stop()
 
 
