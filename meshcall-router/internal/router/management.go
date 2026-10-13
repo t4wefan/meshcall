@@ -15,6 +15,7 @@ import (
 )
 
 const AuthService = "meshcall.router.v1.AuthService"
+const RegistryService = "meshcall.router.v1.Registry"
 const reservedPrefix = "meshcall.router."
 
 type Scope struct {
@@ -106,6 +107,10 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 // Called under Router.mu, as are all forwarding and registration mutations.
 func (r *Router) management(p *peer, f frame) {
 	fail := func(code, message string) { p.send(callError(f.CallID, code, message, false)) }
+	if f.Service == RegistryService {
+		r.registry(p, f)
+		return
+	}
 	if p.user == nil {
 		fail("unauthenticated", "Router accounts are not configured")
 		return
@@ -207,4 +212,134 @@ func readRequest(payload []byte, value any) bool {
 
 func nonNil(values []string) []string {
 	return append([]string{}, slices.Clone(values)...)
+}
+
+// --- Registry: what is registered, in what shape, and how healthy --------
+
+// RegistryInstance is one instance as reported by the Registry service.
+type RegistryInstance struct {
+	ID          string `json:"id"`
+	Inflight    int    `json:"inflight"`
+	MaxInflight int    `json:"max_inflight,omitempty"`
+	Breaker     string `json:"breaker"`
+	Draining    bool   `json:"draining"`
+}
+
+type registryMethod struct {
+	Name        string          `json:"name"`
+	Stream      string          `json:"stream"`
+	Balance     balance         `json:"balance"`
+	Description *string         `json:"description,omitempty"`
+	Annotations json.RawMessage `json:"annotations,omitempty"`
+	Deprecated  *string         `json:"deprecated,omitempty"`
+	Parameters  []string        `json:"parameters,omitempty"`
+}
+
+type registryService struct {
+	Name        string             `json:"name"`
+	Version     string             `json:"version,omitempty"`
+	Description *string            `json:"description,omitempty"`
+	Instances   []RegistryInstance `json:"instances"`
+	Methods     []registryMethod   `json:"methods"`
+}
+
+// contractEntry is the subset of a portable contract entry the Registry reads.
+type contractEntry struct {
+	Version     string  `json:"version"`
+	Description *string `json:"description"`
+	Methods     []struct {
+		Name        string          `json:"name"`
+		Description *string         `json:"description"`
+		Annotations json.RawMessage `json:"annotations"`
+		Deprecated  *string         `json:"deprecated"`
+		Parameters  []string        `json:"parameters"`
+	} `json:"methods"`
+}
+
+// Called under Router.mu. Readable without an account so that tooling works in
+// development mode; with accounts configured it needs a call permission on
+// meshcall.router.v1.Registry like any other service.
+func (r *Router) registry(p *peer, f frame) {
+	fail := func(code, message string) { p.send(callError(f.CallID, code, message, false)) }
+	var result any
+	switch f.Method {
+	case "list":
+		var request struct{}
+		if !readRequest(f.Payload, &request) {
+			fail("invalid_argument", "list expects an empty object")
+			return
+		}
+		names := make([]string, 0, len(r.services))
+		for name := range r.services {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		services := make([]registryService, 0, len(names))
+		for _, name := range names {
+			services = append(services, r.describeService(name))
+		}
+		result = struct {
+			Services []registryService `json:"services"`
+		}{services}
+	case "describe":
+		var request struct {
+			Service string `json:"service"`
+		}
+		if !readRequest(f.Payload, &request) || request.Service == "" {
+			fail("invalid_argument", "describe expects {\"service\": name}")
+			return
+		}
+		pool := r.services[request.Service]
+		if pool == nil {
+			fail("method_not_found", "No instances registered for "+request.Service)
+			return
+		}
+		described := r.describeService(request.Service)
+		result = struct {
+			registryService
+			Contract json.RawMessage `json:"contract,omitempty"`
+		}{described, pool.contract}
+	default:
+		fail("method_not_found", "Unknown Registry method "+f.Method)
+		return
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		fail("internal", "Could not encode registry result")
+		return
+	}
+	p.send(frame{Kind: "call.result", CallID: f.CallID, Payload: payload})
+}
+
+func (r *Router) describeService(name string) registryService {
+	pool := r.services[name]
+	out := registryService{Name: name, Instances: []RegistryInstance{}, Methods: []registryMethod{}}
+	now := time.Now()
+	for _, inst := range pool.instances {
+		out.Instances = append(out.Instances, RegistryInstance{
+			ID: inst.instanceID, Inflight: inst.inflight, MaxInflight: inst.maxInflight,
+			Breaker: string(inst.health.state(now)), Draining: inst.draining,
+		})
+	}
+	// Draining instances have left the pool but still hold the id.
+	for id, inst := range r.instances {
+		if inst.draining && slices.ContainsFunc(inst.services, func(s service) bool { return s.Name == name }) {
+			out.Instances = append(out.Instances, RegistryInstance{ID: id, Inflight: inst.inflight, MaxInflight: inst.maxInflight,
+				Breaker: string(inst.health.state(now)), Draining: true})
+		}
+	}
+	var entry contractEntry
+	if pool.contract != nil && json.Unmarshal(pool.contract, &entry) == nil {
+		out.Version, out.Description = entry.Version, entry.Description
+	}
+	for _, m := range pool.signature.Methods {
+		rm := registryMethod{Name: m.Name, Stream: m.Stream, Balance: m.Balance}
+		for _, cm := range entry.Methods {
+			if cm.Name == m.Name {
+				rm.Description, rm.Annotations, rm.Deprecated, rm.Parameters = cm.Description, cm.Annotations, cm.Deprecated, cm.Parameters
+			}
+		}
+		out.Methods = append(out.Methods, rm)
+	}
+	return out
 }

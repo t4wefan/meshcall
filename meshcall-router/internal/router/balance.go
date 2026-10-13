@@ -17,6 +17,7 @@ import (
 
 type pool struct {
 	signature service
+	contract  json.RawMessage
 	instances []*peer
 	cursors   map[string]int
 }

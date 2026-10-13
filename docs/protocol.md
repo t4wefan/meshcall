@@ -44,7 +44,14 @@ unique string chosen by the client. All time values are integer milliseconds.
 | `ping` | `nonce` | |
 | `pong` | `nonce` | echoes the ping nonce |
 
-`services[]` entries are `{name, methods[{name, stream, balance{kind, key?}}]}`.
+`services[]` entries are `{name, methods[{name, stream, balance{kind, key?}}], contract?}`.
+`contract` is the service's portable contract entry (the same object a
+`*.meshcall.json` document holds: version, description, methods with
+schemas, parameters and annotations). It is opaque to routing; the Router
+keeps the first one registered per service and serves it through the
+`meshcall.router.v1.Registry` service (`list`, `describe {service}`), which
+is readable without an account in development mode and needs a call
+permission like any other service otherwise.
 `stream` is one of `unary`, `server_stream`, `client_stream`, `duplex`;
 `balance.kind` is one of `round_robin`, `least_inflight`, `random`, `sticky`,
 `disabled`.

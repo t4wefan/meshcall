@@ -19,6 +19,7 @@ export {
   type ExportableServiceDefinition,
   type JsonSchema,
   type MethodSemantics,
+  contractEntry,
   normalizeServiceName,
   renderContract,
   type TypeContract,

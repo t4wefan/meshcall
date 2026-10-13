@@ -24,6 +24,15 @@ type method struct {
 type service struct {
 	Name    string   `json:"name"`
 	Methods []method `json:"methods"`
+	// Contract is the service's portable contract document entry (schemas,
+	// descriptions, annotations). Opaque to routing; served by the Registry.
+	Contract json.RawMessage `json:"contract,omitempty"`
+}
+
+// signature is what must match across instances of one service.
+func (s service) signature() service {
+	s.Contract = nil
+	return s
 }
 
 type errorPayload struct {

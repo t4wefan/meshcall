@@ -56,6 +56,8 @@ export interface RegisteredMethod {
 export interface RegisteredService {
   name: string;
   methods: Array<RegisteredMethod>;
+  /** The portable contract entry, served by the Router's Registry; opaque to routing. */
+  contract?: Record<string, unknown> | null;
 }
 
 export interface ServerRegisterFrame {
@@ -234,7 +236,7 @@ const method = {
 };
 const service = {
   type: "object",
-  properties: { name: string, methods: { type: "array", items: method } },
+  properties: { name: string, methods: { type: "array", items: method }, contract: { type: ["object", "null"] } },
   required: ["name", "methods"],
 };
 const ajv = new Ajv2020({ strict: false });

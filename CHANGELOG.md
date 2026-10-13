@@ -23,6 +23,9 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Registration carries the service's portable contract; the Router serves
+  it through `meshcall.router.v1.Registry` (`list`, `describe`). New
+  `meshcall` CLI: `router inspect` and `call` with contract-aware hints.
 - Multiple Router endpoints: clients fail over between Routers, Router-mode
   servers hold one registration per Router (`connected_endpoints` /
   `routerEndpoints`). No Router-side coordination.

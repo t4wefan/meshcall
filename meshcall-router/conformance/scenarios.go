@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"time"
@@ -35,6 +36,32 @@ func registration(h *harness) error {
 	}
 	if !reflect.DeepEqual(methods, want) {
 		return fmt.Errorf("registered methods %v, want %v", methods, want)
+	}
+	var entry struct {
+		Version     string  `json:"version"`
+		Description *string `json:"description"`
+		Methods     []struct {
+			Name        string  `json:"name"`
+			Description *string `json:"description"`
+			Annotations struct {
+				ReadOnly bool `json:"read_only"`
+			} `json:"annotations"`
+		} `json:"methods"`
+	}
+	raw := snapshot.Contracts[Service]
+	if raw == nil || json.Unmarshal(raw, &entry) != nil {
+		return fmt.Errorf("registration did not carry a contract entry")
+	}
+	if entry.Version != "1" || entry.Description == nil || *entry.Description == "" {
+		return fmt.Errorf("contract entry lacks version/description: %s", raw)
+	}
+	for _, m := range entry.Methods {
+		if m.Description == nil || *m.Description == "" {
+			return fmt.Errorf("method %s has no description in the registered contract", m.Name)
+		}
+		if m.Name == "echo" && !m.Annotations.ReadOnly {
+			return fmt.Errorf("echo should be registered read_only")
+		}
 	}
 	return nil
 }

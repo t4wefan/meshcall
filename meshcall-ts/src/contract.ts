@@ -7,6 +7,7 @@ import type { BalancePolicy } from "./protocol.js";
 import type {
   ClientStreamMethod, ServerStreamMethod, ServiceDefinition, UnaryMethod,
 } from "./service.js";
+export type { ServiceDefinition } from "./service.js";
 
 export type JsonSchema = Readonly<Record<string, unknown>>;
 
@@ -197,42 +198,60 @@ export function defineService<
   return recordWarnings(name === definition.name ? definition : { ...definition, name });
 }
 
+/** The portable contract entry for one service, as `renderContract` emits it. */
+export function contractEntry(service: ExportableServiceDefinition): Record<string, unknown> {
+  const serviceBalance = normalizeBalance(service.balance);
+  const normalized = normalizeServiceName(service.name);
+  return {
+    name: normalized.name,
+    version: normalized.version,
+    source_module: service.sourceModule,
+    source_qualname: service.sourceQualname,
+    balance: serviceBalance,
+    description: service.description ?? null,
+    methods: Object.entries(service.methods).map(([name, method]) => ({
+      name,
+      stream: method.stream,
+      request: renderTypeRef(method.request),
+      // Parameters are the request object's properties, in schema order.
+      parameters: Object.keys((method.request.schema.properties as Record<string, unknown> | undefined) ?? {}),
+      response: method.stream === "server_stream" ? null : renderTypeRef(method.response),
+      input_item: method.stream === "client_stream" ? renderTypeRef(method.inputItem) : null,
+      output_item: method.stream === "server_stream" ? renderTypeRef(method.outputItem) : null,
+      balance: normalizeBalance(method.balance ?? serviceBalance),
+      description: method.description ?? null,
+      annotations: {
+        idempotent: method.idempotent === true || method.readOnly === true,
+        read_only: method.readOnly === true,
+        destructive: method.destructive === true,
+      },
+      deprecated: method.deprecated ?? null,
+    })),
+  };
+}
+
+/**
+ * The contract entry for a service definition if it is exportable (has
+ * `sourceModule`/`sourceQualname` and typed contracts on every method).
+ */
+export function tryContractEntry(service: ServiceDefinition): Record<string, unknown> | undefined {
+  const candidate = service as Partial<ExportableServiceDefinition>;
+  if (typeof candidate.sourceModule !== "string" || typeof candidate.sourceQualname !== "string") return undefined;
+  for (const method of Object.values(service.methods)) {
+    const typed = method as Partial<ContractUnaryMethod<unknown, unknown>>;
+    if (typed.request === undefined) return undefined;
+  }
+  try {
+    return contractEntry(service as ExportableServiceDefinition);
+  } catch {
+    return undefined;
+  }
+}
+
 export function renderContract(
   services: ReadonlyArray<ExportableServiceDefinition>,
 ): string {
-  const document = {
-    protocol: "meshcall/1",
-    services: services.map((service) => {
-      const serviceBalance = normalizeBalance(service.balance);
-      const normalized = normalizeServiceName(service.name);
-      return {
-        name: normalized.name,
-        version: normalized.version,
-        source_module: service.sourceModule,
-        source_qualname: service.sourceQualname,
-        balance: serviceBalance,
-        description: service.description ?? null,
-        methods: Object.entries(service.methods).map(([name, method]) => ({
-          name,
-          stream: method.stream,
-          request: renderTypeRef(method.request),
-          // Parameters are the request object's properties, in schema order.
-          parameters: Object.keys((method.request.schema.properties as Record<string, unknown> | undefined) ?? {}),
-          response: method.stream === "server_stream" ? null : renderTypeRef(method.response),
-          input_item: method.stream === "client_stream" ? renderTypeRef(method.inputItem) : null,
-          output_item: method.stream === "server_stream" ? renderTypeRef(method.outputItem) : null,
-          balance: normalizeBalance(method.balance ?? serviceBalance),
-          description: method.description ?? null,
-          annotations: {
-            idempotent: method.idempotent === true || method.readOnly === true,
-            read_only: method.readOnly === true,
-            destructive: method.destructive === true,
-          },
-          deprecated: method.deprecated ?? null,
-        })),
-      };
-    }),
-  };
+  const document = { protocol: "meshcall/1", services: services.map(contractEntry) };
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 

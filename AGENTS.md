@@ -57,6 +57,13 @@ intended (`description=""`). See docs/architecture.md → Contract warnings.
 3. Update the runner (`run.py` / `run.mjs` / `cli.ts`) to use the new method.
 4. `scripts/check.sh py demos drift`.
 
+## Exploring a running mesh
+
+`meshcall-router/bin/meshcall router inspect --router ws://…` lists services,
+instances, health and methods from the Router's Registry;
+`meshcall call svc.method '{json}'` performs a call with contract-aware
+error hints. Prefer these over writing throwaway scripts.
+
 ## Verify
 
 ```bash
@@ -90,6 +97,9 @@ for you. When running tools directly:
 | Router launcher, binary discovery | `router.py`, `router_install.py` | `router.ts` | `cmd/meshcall-router` |
 | Contract extraction, codegen | `contract.py`, `codegen_*.py`, `package_codegen.py` | `contract.ts` | — |
 | Routing, balancing, deadlines | — | — | `router.go`, `balance.go`, `deadline.go` |
+| Registry RPC, dedup, breaker | — | — | `management.go`, `dedup.go`, `breaker.go` |
+| `meshcall` CLI (inspect, call) | — | — | `internal/cli`, `cmd/meshcall`; raw client in `internal/wire` |
+| Conformance suite | `conformance/fixture.py` | `conformance/fixture.ts` | `conformance/` |
 | Auth, tokens | `router_auth.py` | `router-auth.ts` | `auth.go`, `management.go` |
 
 Tests: `meshcall-py/tests/test_*.py` (one topic per file; `test_timing.py`,

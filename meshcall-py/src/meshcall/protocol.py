@@ -62,6 +62,9 @@ class RegisteredMethod(FrameModel):
 class RegisteredService(FrameModel):
     name: str
     methods: tuple[RegisteredMethod, ...]
+    # The portable contract entry (schemas, descriptions, annotations) so the
+    # Router can serve it to tooling; opaque to routing.
+    contract: dict[str, Any] | None = None
 
 
 class ServerRegisterFrame(FrameModel):

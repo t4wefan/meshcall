@@ -181,6 +181,31 @@ not terminate TLS itself. The same checks apply to Unix sockets. Browser-native
 WebSocket credential transport, JWT, and an external login system are outside
 this version; the current launchers and clients run in Python or Node.
 
+## Registry and the `meshcall` CLI
+
+The Router keeps the contract each instance registers and serves it through
+`meshcall.router.v1.Registry`: `list` returns every service with its
+instances (in-flight, cap, breaker, draining) and methods (shape,
+description, annotations, parameters); `describe {service}` adds the full
+contract entry. Both work without an account in development mode; with
+accounts they need `meshcall.router.v1.Registry/*` in `call`.
+
+The `meshcall` command (built from `cmd/meshcall`, shipped next to
+`meshcall-router`) is the human and agent front end to it:
+
+```bash
+meshcall --router ws://127.0.0.1:8765 router inspect            # everything
+meshcall router inspect chat.v1.Chat --json                      # one service, with contract
+meshcall call chat.v1.Chat.send '{"session_id":"s1","text":"hi"}' --metadata trace=abc
+meshcall call demo.v1.Counter.count '{"n":5}'                    # server stream: one JSON line per item
+printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
+```
+
+Errors print the code, message, `details` and a hint: an unknown method
+lists the available ones, `invalid_argument` shows the request shape from the
+contract, `unavailable` points at `router inspect`. `--json` makes every
+output one JSON document per line.
+
 ## Built-in RPC service and temporary tokens
 
 `meshcall.router.v1.AuthService` is implemented in Go and uses the same unary

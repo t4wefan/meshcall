@@ -24,6 +24,23 @@ builds:
       - amd64
       - arm64
 
+  - id: meshcall
+    main: ./cmd/meshcall
+    binary: meshcall
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
 archives:
   - id: default
     formats: [tar.gz]

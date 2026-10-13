@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 
 import { closeSocket, createSocket, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
+import { tryContractEntry } from "./contract.js";
 import { contractWarnings, renderWarning } from "./diagnostics.js";
 import { MeshCallError } from "./errors.js";
 import {
@@ -120,8 +121,10 @@ export class MeshCallServer {
         methods.set(name, { definition, validators: compileMethod(definition) });
       }
       services.set(service.name, methods);
+      const contract = tryContractEntry(service);
       this.registration.push({
         name: service.name,
+        ...(contract === undefined ? {} : { contract }),
         methods: Object.entries(service.methods).map(([name, method]) => ({
           name, stream: method.stream,
           balance: {

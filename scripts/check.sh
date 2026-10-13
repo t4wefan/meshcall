@@ -13,7 +13,8 @@ step() { printf '\n==> %s\n' "$*"; }
 
 router() {
   step "build router"
-  (cd meshcall-router && CGO_ENABLED=0 go build -trimpath -ldflags="-X main.version=local" -o bin/meshcall-router ./cmd/meshcall-router)
+  (cd meshcall-router && CGO_ENABLED=0 go build -trimpath -ldflags="-X main.version=local" -o bin/meshcall-router ./cmd/meshcall-router \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-X main.version=local" -o bin/meshcall ./cmd/meshcall)
 }
 go_checks() {
   step "go vet + race tests"

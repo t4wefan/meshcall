@@ -74,7 +74,9 @@ SDK version into the per-user cache (verified against the release checksums):
 uv run meshcall router install
 ```
 
-or `npx meshcall-router-install` from a Node project. Set
+or `npx meshcall-router-install` from a Node project. The same release ships
+the `meshcall` command: `meshcall router inspect` shows what is registered,
+`meshcall call svc.method '{...}'` calls it — no generated code needed. Set
 `MESHCALL_ROUTER_BINARY` to use a binary you built or deployed yourself. All
 three packages are released together from one `vX.Y.Z` tag; see
 [CHANGELOG.md](CHANGELOG.md).

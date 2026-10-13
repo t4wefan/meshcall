@@ -165,6 +165,7 @@ class ServerRuntime:
                     )
                     for method in service.methods
                 ),
+                contract=service.model_dump(mode="json", by_alias=True),
             )
             for service in self._contracts
         )

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -234,8 +235,11 @@ type Snapshot struct {
 	Instances map[string][]string
 	// Methods maps a service name to its registered methods and stream kinds.
 	Methods map[string]map[string]string
-	Routes  int
-	Peers   int
+	// Contracts holds the portable contract entry registered for each
+	// service, when the instances provided one.
+	Contracts map[string]json.RawMessage
+	Routes    int
+	Peers     int
 	// Health describes every registered instance.
 	Health map[string]InstanceHealth
 }
@@ -254,6 +258,7 @@ func (r *Router) Snapshot() Snapshot {
 	snapshot := Snapshot{
 		Instances: make(map[string][]string, len(r.services)),
 		Methods:   make(map[string]map[string]string, len(r.services)),
+		Contracts: make(map[string]json.RawMessage, len(r.services)),
 		Routes:    len(r.routes),
 		Peers:     len(r.peers),
 		Health:    make(map[string]InstanceHealth, len(r.instances)),
@@ -276,6 +281,9 @@ func (r *Router) Snapshot() Snapshot {
 			methods[m.Name] = m.Stream
 		}
 		snapshot.Methods[name] = methods
+		if pool.contract != nil {
+			snapshot.Contracts[name] = pool.contract
+		}
 	}
 	return snapshot
 }
@@ -490,7 +498,10 @@ func (r *Router) register(p *peer, f frame) error {
 		return errors.New("duplicate instance_id")
 	}
 	for _, s := range f.Services {
-		if pool := r.services[s.Name]; pool != nil && !reflect.DeepEqual(pool.signature, s) {
+		if s.Contract != nil && !json.Valid(s.Contract) {
+			return errors.New("invalid service contract")
+		}
+		if pool := r.services[s.Name]; pool != nil && !reflect.DeepEqual(pool.signature, s.signature()) {
 			return errors.New("incompatible service registration")
 		}
 	}
@@ -500,9 +511,12 @@ func (r *Router) register(p *peer, f frame) error {
 	p.send(frame{Kind: "server.register.ack", InstanceID: p.instanceID})
 	for _, s := range f.Services {
 		if r.services[s.Name] == nil {
-			r.services[s.Name] = &pool{signature: s, cursors: make(map[string]int)}
+			r.services[s.Name] = &pool{signature: s.signature(), contract: s.Contract, cursors: make(map[string]int)}
 		}
 		pool := r.services[s.Name]
+		if pool.contract == nil && s.Contract != nil {
+			pool.contract = s.Contract
+		}
 		pool.instances = append(pool.instances, p)
 		slices.SortFunc(pool.instances, func(a, b *peer) int { return strings.Compare(a.instanceID, b.instanceID) })
 	}
