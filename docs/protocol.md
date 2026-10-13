@@ -28,10 +28,12 @@ unique string chosen by the client. All time values are integer milliseconds.
 
 | Kind | Fields | Notes |
 | --- | --- | --- |
-| `hello` | `protocol`, `role`, `peer_id`, `instance_id?` | first frame from the connecting peer |
+| `hello` | `protocol`, `role`, `peer_id`, `instance_id?`, `capabilities?` | first frame from the connecting peer |
 | `hello.ack` | `protocol`, `connection_id` | reply from the accepting peer |
 | `server.register` | `instance_id`, `services[]` | Router mode only; one per connection |
 | `server.register.ack` | `instance_id` | |
+| `server.drain` | — | instance → Router: leave every pool, keep serving routed calls |
+| `server.drain.ack` | `instance_id?` | Router → instance |
 | `call.open` | `call_id`, `service`, `method`, `payload`, `timeout_ms?`, `idle_timeout_ms?`, `metadata?` | |
 | `call.result` | `call_id`, `payload?`, `metadata?` | terminal |
 | `call.error` | `call_id`, `error{code,message,retryable?,details?}`, `metadata?` | terminal |
@@ -71,6 +73,23 @@ dots). A name written without a version is the same service as the one with
 Routing matches the full normalised name exactly; `chat.v1` and `chat.v1.2.0`
 are different services. `meshcall.router.` is reserved for the Router's own
 services.
+
+`capabilities` is reserved for negotiating optional features (binary
+encodings, compression, byte credit) in later minor revisions; peers ignore
+entries they do not know.
+
+## Draining
+
+A service instance that is about to stop sends `server.drain`. The Router
+removes it from every pool at once, so no new `call.open` is routed to it,
+replies `server.drain.ack`, and keeps forwarding frames for calls already
+routed to it in both directions until they end. The instance then waits for
+its in-flight calls, bounded by its own drain timeout, and closes the
+connection. Its `instance_id` stays reserved until then. Sending
+`server.drain` twice is harmless; a client sending it is a protocol violation.
+
+A direct server drains by closing its listener while keeping existing
+connections open, then waiting the same way.
 
 ## Calls
 

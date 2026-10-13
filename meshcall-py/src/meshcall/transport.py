@@ -15,6 +15,7 @@ from meshcall.protocol import (
     Frame,
     PingFrame,
     PongFrame,
+    ServerDrainAckFrame,
     StreamWindowFrame,
     decode_frame,
     encode_frame,
@@ -61,6 +62,7 @@ class FrameConnection:
         self._keepalive_task: asyncio.Task[None] | None = None
         self._pending_pong: asyncio.Future[None] | None = None
         self._pending_nonce: str | None = None
+        self._drain_ack: asyncio.Future[None] | None = None
         self._closed: BaseException | None = None
 
     async def send(self, frame: Frame) -> None:
@@ -117,6 +119,10 @@ class FrameConnection:
                 with contextlib.suppress(ConnectionError):
                     await self.send(PongFrame(nonce=frame.nonce))
                 continue
+            if isinstance(frame, ServerDrainAckFrame):
+                if self._drain_ack is not None and not self._drain_ack.done():
+                    self._drain_ack.set_result(None)
+                continue
             if isinstance(frame, PongFrame):
                 if (
                     self._pending_pong is not None
@@ -126,6 +132,12 @@ class FrameConnection:
                     self._pending_pong.set_result(None)
                 continue
             return frame
+
+    def drain_ack(self) -> asyncio.Future[None]:
+        """Future resolved when the Router acknowledges ``server.drain``."""
+        if self._drain_ack is None:
+            self._drain_ack = asyncio.get_running_loop().create_future()
+        return self._drain_ack
 
     def start_keepalive(self) -> None:
         """Begin pinging the peer. Called automatically by ``receive``."""
@@ -150,11 +162,15 @@ class FrameConnection:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
         self._fail_pending(self._closed)
+        if self._drain_ack is not None and not self._drain_ack.done():
+            self._drain_ack.set_exception(self._closed)
 
     def _mark_closed(self, message: str) -> BaseException:
         if self._closed is None:
             self._closed = ConnectionError(message)
             self._fail_pending(self._closed)
+            if self._drain_ack is not None and not self._drain_ack.done():
+                self._drain_ack.set_exception(self._closed)
         return self._closed
 
     async def _keepalive_loop(self) -> None:

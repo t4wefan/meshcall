@@ -23,6 +23,11 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Graceful drain: `server.drain` / `server.drain.ack` frames; Python
+  `RpcServer.stop(drain=True, drain_timeout=30)` and TypeScript
+  `server.close({ drain: true })` leave the Router pool (or stop accepting)
+  and wait for in-flight calls before disconnecting. `hello` gains an
+  optional `capabilities` list for future negotiation.
 - Contract semantics: service and method `description` (from docstrings /
   JSDoc or explicit options), method `annotations` (`idempotent`,
   `read_only`, `destructive`) and `deprecated`; generated clients carry

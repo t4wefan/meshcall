@@ -60,6 +60,7 @@ type peer struct {
 	instanceID string
 	services   []service
 	inflight   int
+	draining   bool
 }
 
 func (p *peer) send(f frame) {
@@ -316,6 +317,16 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		if f.Kind == "pong" {
 			continue
 		}
+		if f.Kind == "server.drain" {
+			// Graceful exit: leave every pool now, keep serving routed calls.
+			if p.role != "server" {
+				_ = conn.Close(websocket.StatusPolicyViolation, "frame not allowed for role")
+				return
+			}
+			r.drain(p)
+			p.send(frame{Kind: "server.drain.ack", InstanceID: p.instanceID})
+			continue
+		}
 		if !allowedFrame(p.role, f) {
 			_ = conn.Close(websocket.StatusPolicyViolation, "frame not allowed for role")
 			return
@@ -481,19 +492,39 @@ func (r *Router) forward(p *peer, f frame) {
 	}
 }
 
+// drain removes an instance from every pool so no new call is routed to it
+// while its in-flight calls finish. The instance id stays reserved until the
+// connection closes. Idempotent.
+func (r *Router) drain(p *peer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.draining || r.instances[p.instanceID] != p {
+		return
+	}
+	p.draining = true
+	r.leavePools(p)
+}
+
+func (r *Router) leavePools(p *peer) {
+	for _, s := range p.services {
+		pool := r.services[s.Name]
+		if pool == nil {
+			continue
+		}
+		pool.instances = slices.DeleteFunc(pool.instances, func(candidate *peer) bool { return candidate == p })
+		if len(pool.instances) == 0 {
+			delete(r.services, s.Name)
+		}
+	}
+}
+
 func (r *Router) remove(p *peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.peers, p)
 	if r.instances[p.instanceID] == p {
 		delete(r.instances, p.instanceID)
-		for _, s := range p.services {
-			pool := r.services[s.Name]
-			pool.instances = slices.DeleteFunc(pool.instances, func(candidate *peer) bool { return candidate == p })
-			if len(pool.instances) == 0 {
-				delete(r.services, s.Name)
-			}
-		}
+		r.leavePools(p)
 	}
 	for id, rt := range r.routes {
 		switch {

@@ -242,3 +242,41 @@ async def test_router_server_reregisters_after_router_restart() -> None:
     finally:
         await client.stop()
         await server.stop()
+
+
+async def test_drain_leaves_the_pool_and_finishes_in_flight_calls() -> None:
+    router = WebSocketRouter(host="127.0.0.1", port=0)
+    await router.start()
+    uri = f"ws://127.0.0.1:{router.bound_port}"
+    server_a = RpcServer(
+        services=[RouteServiceA],
+        driver=WebSocketRouterServerDriver(uri, instance_id="a"),
+    )
+    server_b = RpcServer(
+        services=[RouteServiceB],
+        driver=WebSocketRouterServerDriver(uri, instance_id="b"),
+    )
+    await server_a.start()
+    await server_b.start()
+    client = RouteServiceClient(WebSocketClientDriver(uri))
+    try:
+        assert (await client.round_robin(RouteRequest())).instance == "a"
+        # least_inflight with both idle picks the lowest instance id: a.
+        pending = asyncio.create_task(client.least_inflight(RouteRequest(delay=0.4)))
+        await asyncio.sleep(0.05)
+        stopping = asyncio.create_task(server_a.stop(drain=True, drain_timeout=5))
+        await asyncio.sleep(0.05)
+        assert server_a.state.value == "draining"
+        # New calls skip the draining instance...
+        assert [
+            (await client.round_robin(RouteRequest())).instance for _ in range(3)
+        ] == ["b", "b", "b"]
+        # ...while the call already on it completes without error.
+        assert (await pending).instance == "a"
+        await asyncio.wait_for(stopping, timeout=5)
+        assert server_a.state.value == "idle"
+        assert (await client.round_robin(RouteRequest())).instance == "b"
+    finally:
+        await client.stop()
+        await server_b.stop()
+        await router.stop()

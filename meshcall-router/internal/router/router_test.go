@@ -448,6 +448,64 @@ func TestDecodeCompatibilityRules(t *testing.T) {
 	}
 }
 
+func TestDrainLeavesPoolsButFinishesRoutedCalls(t *testing.T) {
+	r := runningRouter(t, nil)
+	a, b := dial(t, r, ""), dial(t, r, "")
+	registerPeer(t, a, "a")
+	registerPeer(t, b, "b")
+	client := dial(t, r, "")
+	hello(t, client, "client", "client")
+	open := frame{Kind: "call.open", CallID: "on-a", Service: testService, Method: "download", Payload: json.RawMessage(`{}`)}
+	send(t, client, open)
+	if got := receive(t, a); got.CallID != "on-a" {
+		t.Fatal("round robin should start at a")
+	}
+	send(t, a, frame{Kind: "server.drain"})
+	if got := receive(t, a); got.Kind != "server.drain.ack" || got.InstanceID != "a" {
+		t.Fatalf("drain ack: %+v", got)
+	}
+	// New calls avoid a; the routed call keeps flowing both ways.
+	for _, id := range []string{"n1", "n2"} {
+		open.CallID = id
+		send(t, client, open)
+		if got := receive(t, b); got.CallID != id {
+			t.Fatal("drained instance still selected")
+		}
+		send(t, b, frame{Kind: "call.result", CallID: id, Payload: json.RawMessage(`{}`)})
+		receive(t, client)
+	}
+	credit := int64(1)
+	send(t, client, frame{Kind: "stream.window", CallID: "on-a", Direction: "server", Credit: &credit})
+	if got := receive(t, a); got.Kind != "stream.window" {
+		t.Fatal("client frames stopped reaching the draining instance")
+	}
+	send(t, a, frame{Kind: "call.result", CallID: "on-a", Payload: json.RawMessage(`"done"`)})
+	if got := receive(t, client); got.CallID != "on-a" || string(got.Payload) != `"done"` {
+		t.Fatal("draining instance's result did not reach the client")
+	}
+	send(t, a, frame{Kind: "server.drain"}) // idempotent
+	receive(t, a)
+	_ = a.CloseNow()
+	open.CallID = "after"
+	send(t, client, open)
+	if got := receive(t, b); got.CallID != "after" {
+		t.Fatal("pool broken after drained instance left")
+	}
+	eventually(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		_, present := r.instances["a"]
+		return !present && len(r.services[testService].instances) == 1
+	})
+	// A client may not drain.
+	send(t, client, frame{Kind: "server.drain"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, _, err := client.Read(ctx); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+		t.Fatal("client drain accepted")
+	}
+}
+
 func TestServiceNameValidation(t *testing.T) {
 	for _, name := range []string{"chat.v1", "demo.v1.Greeting", "chat.v1.2.0", "chat.v2.0.0-beta1", "a_b.v0", AuthService} {
 		if !validServiceName(name) {

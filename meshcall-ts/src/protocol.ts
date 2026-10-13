@@ -27,6 +27,18 @@ export interface HelloFrame {
   role: "client" | "server";
   peer_id: string;
   instance_id?: string | null;
+  /** Reserved for negotiating optional features without a protocol bump. */
+  capabilities?: string[] | null;
+}
+
+/** Instance → Router: leave every pool, keep serving routed calls. */
+export interface ServerDrainFrame {
+  kind: "server.drain";
+}
+
+export interface ServerDrainAckFrame {
+  kind: "server.drain.ack";
+  instance_id?: string | null;
 }
 
 export interface HelloAckFrame {
@@ -135,6 +147,8 @@ export type Frame =
   | HelloAckFrame
   | ServerRegisterFrame
   | ServerRegisterAckFrame
+  | ServerDrainFrame
+  | ServerDrainAckFrame
   | CallOpenFrame
   | CallResultFrame
   | CallErrorFrame
@@ -229,8 +243,10 @@ const frame = (kind: string, properties: Record<string, unknown>, required: stri
 const validators = new Map([
   ["hello", frame("hello", {
     protocol: string, role: { enum: ["client", "server"] }, peer_id: string,
-    instance_id: nullableString,
+    instance_id: nullableString, capabilities: { type: ["array", "null"], items: string },
   }, ["protocol", "role", "peer_id"])],
+  ["server.drain", frame("server.drain", {}, [])],
+  ["server.drain.ack", frame("server.drain.ack", { instance_id: nullableString }, [])],
   ["hello.ack", frame("hello.ack", { protocol: string, connection_id: string },
     ["protocol", "connection_id"])],
   ["server.register", frame("server.register", {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 from pathlib import Path
 from stat import S_ISSOCK
@@ -23,6 +24,7 @@ from meshcall.protocol import (
     PROTOCOL_VERSION,
     HelloAckFrame,
     HelloFrame,
+    ServerDrainFrame,
     ServerRegisterAckFrame,
     ServerRegisterFrame,
 )
@@ -170,16 +172,32 @@ class WebSocketDirectServerDriver(ServerDriver):
                 max_size=self.max_frame_size,
             )
 
-    async def stop(self, binding: DriverBinding) -> None:
+    async def drain(
+        self,
+        binding: DriverBinding,
+        runtime: ServerRuntime,
+        *,
+        timeout: float,
+    ) -> None:
         self.check_binding(binding)
         if self._server is not None:
-            server, self._server = self._server, None
-            server.close()
-            await server.wait_closed()
+            # Stop accepting; existing connections keep running their calls.
+            self._server.close(close_connections=False)
+        await runtime.wait_idle(timeout)
+
+    async def stop(self, binding: DriverBinding) -> None:
+        self.check_binding(binding)
+        server, self._server = self._server, None
+        if server is not None:
+            server.close(close_connections=False)
+        # Close our connections ourselves (a drain may have already closed the
+        # listener, in which case wait_closed would block on them forever).
         connections = tuple(self._connections)
         self._connections.clear()
         for connection in connections:
             await connection.close()
+        if server is not None:
+            await server.wait_closed()
         if (
             self.unix_path is not None
             and self.unix_path.exists()
@@ -214,6 +232,26 @@ class WebSocketRouterServerDriver(ServerDriver):
         self.reconnect = reconnect
         self._connection: FrameConnection | None = None
         self._runtime_task: asyncio.Task[None] | None = None
+        self._draining = False
+
+    async def drain(
+        self,
+        binding: DriverBinding,
+        runtime: ServerRuntime,
+        *,
+        timeout: float,
+    ) -> None:
+        self.check_binding(binding)
+        self._draining = True
+        connection = self._connection
+        started = time.monotonic()
+        if connection is not None:
+            ack = connection.drain_ack()
+            await connection.send(ServerDrainFrame())
+            async with asyncio.timeout(timeout):
+                await ack
+        remaining = max(0.0, timeout - (time.monotonic() - started))
+        await runtime.wait_idle(remaining)
 
     @property
     def connected(self) -> bool:
@@ -287,6 +325,8 @@ class WebSocketRouterServerDriver(ServerDriver):
             if self._connection is not connection:
                 return  # stop() took the connection away
             self._connection = None
+            if self._draining:
+                return
             if not self.reconnect.enabled:
                 runtime.logger.warning(  # noqa: PLE1205
                     "Router connection lost for instance {}; reconnect disabled",

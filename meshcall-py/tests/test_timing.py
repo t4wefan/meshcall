@@ -374,3 +374,33 @@ def test_unknown_frame_fields_are_ignored_but_unknown_kinds_rejected() -> None:
                 }
             )
         )
+
+
+async def test_direct_server_drain_finishes_streams_and_refuses_new_connections() -> (
+    None
+):
+    server, driver = await _running()
+    port = driver.bound_port
+    client = TimingClient(WebSocketClientDriver(f"ws://127.0.0.1:{port}"))
+    try:
+        stream = client.trickle(5, 40)
+        first = await anext(stream)
+        assert first.value == 0
+        stopping = asyncio.create_task(server.stop(drain=True, drain_timeout=5))
+        await asyncio.sleep(0.05)
+        assert server.state.value == "draining"
+        # The listener is closed: a new connection cannot be made...
+        late = TimingClient(
+            WebSocketClientDriver(f"ws://127.0.0.1:{port}"), reconnect=NO_RECONNECT
+        )
+        with pytest.raises(MeshCallError):
+            await late.echo_metadata(Request(), timeout=1)
+        await late.stop()
+        # ...but the stream already running completes in full.
+        assert [item.value async for item in stream] == [1, 2, 3, 4]
+        await asyncio.wait_for(stopping, timeout=5)
+        assert server.state.value == "idle"
+    finally:
+        await client.stop()
+        if server.state.value != "idle":
+            await server.stop()

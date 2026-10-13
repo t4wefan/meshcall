@@ -254,3 +254,61 @@ test("a malformed frame that names a call fails only that call", { timeout: 5000
   await delay(20);
   assert.equal((await app.client.unary<Value, Echo>(service.name, "echo", { value: 8 })).value, 8);
 });
+
+test("drain finishes in-flight streams, refuses new work, then stops", { timeout: 10000, skip: routerMissing }, async (t) => {
+  // Direct mode: the listener closes while existing calls run to completion.
+  const app = await running();
+  const port = app.server.boundPort;
+  const stream = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 5, gapMs: 40 });
+  assert.equal((await stream.next()).value?.value, 0);
+  const closing = app.server.close({ drain: true, drainTimeoutMs: 5000 });
+  await delay(50);
+  const late = new MeshCallClient("ws://127.0.0.1:" + port, undefined, { reconnect: { enabled: false } });
+  t.after(() => late.close());
+  await assert.rejects(late.unary(service.name, "echo", { value: 1 }, { timeoutMs: 1000 }));
+  const rest: number[] = [];
+  for await (const item of stream) rest.push(item.value);
+  assert.deepEqual(rest, [1, 2, 3, 4]);
+  await closing;
+  await app.client.close();
+
+  // Router mode: the draining instance leaves the pool; its routed call finishes.
+  const router = new WebSocketRouter();
+  t.after(() => router.stop());
+  await router.start();
+  const endpoint = "ws://127.0.0.1:" + router.boundPort;
+  const tagged = (tag: string) => defineService({
+    ...service,
+    methods: {
+      ...service.methods,
+      echo: unaryMethod({
+        request: valueType, response: echoType, description: "Say who answered.",
+        handler: async (request) => {
+          await delay(request.value);
+          return { value: request.value, metadata: { by: tag }, remainingKnown: false };
+        },
+      }),
+    },
+  });
+  const a = new MeshCallServer({ services: [tagged("a")], router: { endpoint, instanceId: "a" }, accessLog: false });
+  const b = new MeshCallServer({ services: [tagged("b")], router: { endpoint, instanceId: "b" }, accessLog: false });
+  t.after(async () => { await a.close(); await b.close(); });
+  await a.start();
+  await b.start();
+  const client = new MeshCallClient(endpoint);
+  t.after(() => client.close());
+  const who = async (ms = 0) => (await client.unary<Value, Echo>(service.name, "echo", { value: ms })).metadata.by;
+  assert.equal(await who(), "a"); // round robin starts at a
+  const slow = who(400);          // now routed to b... keep calling until one lands on a
+  await delay(50);
+  const pendingOnA = who(400);    // round robin: a
+  await delay(50);
+  const draining = a.close({ drain: true, drainTimeoutMs: 5000 });
+  await delay(50);
+  assert.deepEqual([await who(), await who()], ["b", "b"]);
+  assert.equal(await pendingOnA, "a");
+  await slow;
+  await draining;
+  assert.equal(a.isRunning, false);
+  assert.equal(await who(), "b");
+});

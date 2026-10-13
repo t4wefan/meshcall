@@ -200,15 +200,50 @@ export class MeshCallServer {
     return operation;
   }
 
-  public close(): Promise<void> {
-    const operation = this.lifecycle.then(() => this.stop());
+  /**
+   * Stop the server. With `drain: true` it first stops taking new calls
+   * (leaving the Router pool or closing the listener) and waits up to
+   * `drainTimeoutMs` for in-flight calls to finish, so a rolling restart fails
+   * no request; calls still running after that are cancelled as usual.
+   */
+  public close(options: { readonly drain?: boolean; readonly drainTimeoutMs?: number } = {}): Promise<void> {
+    const operation = this.lifecycle.then(() => this.stop(options));
     this.lifecycle = operation.catch(() => undefined);
     return operation;
   }
 
-  private async stop(): Promise<void> {
-    this.running = false;
+  private async drain(timeoutMs: number): Promise<void> {
+    const deadline = performance.now() + timeoutMs;
+    const routerSocket = this.routerSocket;
+    if (routerSocket !== undefined) {
+      const session = this.sessions.get(routerSocket);
+      if (session !== undefined) {
+        await session.writer.send({ kind: "server.drain" });
+        await withDeadline(session.awaitDrainAck(), deadline, "Router did not acknowledge drain");
+      }
+    } else {
+      // Stop accepting; existing clients keep running their calls.
+      this.listener?.close();
+    }
+    while ([...this.sessions.values()].some((session) => session.inFlight > 0)) {
+      if (performance.now() >= deadline) {
+        this.logger.warning("Drain timed out with calls still in flight");
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  private async stop(options: { readonly drain?: boolean; readonly drainTimeoutMs?: number } = {}): Promise<void> {
     this.stopping = true;
+    if (options.drain === true && this.running) {
+      try {
+        await this.drain(options.drainTimeoutMs ?? 30_000);
+      } catch (error) {
+        this.logger.warning("Drain did not complete cleanly: %s", error);
+      }
+    }
+    this.running = false;
     if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     const listener = this.listener;
@@ -374,5 +409,19 @@ export class MeshCallServer {
         }
       });
     });
+  }
+}
+
+async function withDeadline<T>(promise: Promise<T>, deadline: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), Math.max(0, deadline - performance.now()));
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }

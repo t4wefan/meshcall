@@ -64,6 +64,10 @@ per instance, across its registered services.
 
 ## Connections and failures
 
+- An instance that sends `server.drain` leaves every pool immediately and is
+  acknowledged; calls already routed to it finish normally. Python
+  `RpcServer.stop(drain=True)` and TypeScript `server.close({ drain: true })`
+  do this before disconnecting, so a rolling restart fails no request.
 - A disconnected client causes the Router to cancel its active service calls.
 - A disconnected service instance causes its active client calls to fail with
   retryable `unavailable`; the caller decides whether a new call is appropriate.

@@ -118,6 +118,9 @@ task can't operate through a newly acquired generation.
 - Connecting peers send protocol `ping` frames (15 s) and drop the connection
   when a `pong` is late (10 s); accepting peers drop connections silent for
   45 s. The transport layer handles this; runtimes never see ping or pong.
+- `stop(drain=True)` / `close({ drain: true })` first stops taking new calls
+  (`server.drain` to the Router, or closing the listener) and waits up to the
+  drain timeout for in-flight calls, then stops; nothing in flight fails.
 - Instance disconnect terminates its routed calls with retryable `unavailable`.
 - Connection loss terminates all local active calls. Clients then reconnect
   lazily on the next call with exponential backoff and jitter

@@ -36,27 +36,28 @@ type errorPayload struct {
 // Payload and metadata stay raw: the router never converts business numbers or
 // field names, and forwards fields it does not understand unchanged.
 type frame struct {
-	Kind        string          `json:"kind"`
-	CallID      string          `json:"call_id,omitempty"`
-	Protocol    string          `json:"protocol,omitempty"`
-	Role        string          `json:"role,omitempty"`
-	PeerID      string          `json:"peer_id,omitempty"`
-	Connection  string          `json:"connection_id,omitempty"`
-	InstanceID  string          `json:"instance_id,omitempty"`
-	Services    []service       `json:"services,omitempty"`
-	Service     string          `json:"service,omitempty"`
-	Method      string          `json:"method,omitempty"`
-	Payload     json.RawMessage `json:"payload,omitempty"`
-	TimeoutMS   *int64          `json:"timeout_ms,omitempty"`
-	IdleTimeout *int64          `json:"idle_timeout_ms,omitempty"`
-	Metadata    json.RawMessage `json:"metadata,omitempty"`
-	Error       *errorPayload   `json:"error,omitempty"`
-	Reason      string          `json:"reason,omitempty"`
-	Direction   string          `json:"direction,omitempty"`
-	Sequence    *int64          `json:"sequence,omitempty"`
-	Credit      *int64          `json:"credit,omitempty"`
-	Nonce       string          `json:"nonce,omitempty"`
-	raw         []byte
+	Kind         string          `json:"kind"`
+	CallID       string          `json:"call_id,omitempty"`
+	Protocol     string          `json:"protocol,omitempty"`
+	Role         string          `json:"role,omitempty"`
+	PeerID       string          `json:"peer_id,omitempty"`
+	Capabilities []string        `json:"capabilities,omitempty"`
+	Connection   string          `json:"connection_id,omitempty"`
+	InstanceID   string          `json:"instance_id,omitempty"`
+	Services     []service       `json:"services,omitempty"`
+	Service      string          `json:"service,omitempty"`
+	Method       string          `json:"method,omitempty"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	TimeoutMS    *int64          `json:"timeout_ms,omitempty"`
+	IdleTimeout  *int64          `json:"idle_timeout_ms,omitempty"`
+	Metadata     json.RawMessage `json:"metadata,omitempty"`
+	Error        *errorPayload   `json:"error,omitempty"`
+	Reason       string          `json:"reason,omitempty"`
+	Direction    string          `json:"direction,omitempty"`
+	Sequence     *int64          `json:"sequence,omitempty"`
+	Credit       *int64          `json:"credit,omitempty"`
+	Nonce        string          `json:"nonce,omitempty"`
+	raw          []byte
 }
 
 // decode accepts unknown fields (the meshcall/1 compatibility rule) but rejects
@@ -112,7 +113,7 @@ func decode(data []byte) (frame, error) {
 		if json.Unmarshal(data, &fields) != nil || len(fields["nonce"]) == 0 || fields["nonce"][0] != '"' {
 			return f, errors.New("missing or invalid nonce")
 		}
-	case "call.cancel":
+	case "call.cancel", "server.drain", "server.drain.ack":
 	default:
 		return f, fmt.Errorf("unexpected frame kind %q", f.Kind)
 	}

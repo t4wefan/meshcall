@@ -26,6 +26,8 @@ export interface SessionOptions {
 export class ServerSession {
   private readonly calls = new Map<string, ServerCall>();
   private closed = false;
+  private drainAcked: (() => void) | undefined;
+  private readonly drainAck = new Promise<void>((resolve) => { this.drainAcked = resolve; });
 
   public constructor(
     private readonly services: RuntimeServices,
@@ -42,6 +44,10 @@ export class ServerSession {
       return;
     }
     if (frame.kind === "pong") return;
+    if (frame.kind === "server.drain.ack") {
+      this.drainAcked?.();
+      return;
+    }
     if (frame.kind === "call.open") {
       const existing = this.calls.get(frame.call_id);
       if (existing !== undefined) {
@@ -82,6 +88,16 @@ export class ServerSession {
     } catch (error) {
       void call.fail(error);
     }
+  }
+
+  /** Calls currently executing on this connection. */
+  public get inFlight(): number {
+    return this.calls.size;
+  }
+
+  /** Resolves once the Router acknowledges `server.drain` on this connection. */
+  public awaitDrainAck(): Promise<void> {
+    return this.drainAck;
   }
 
   public remove(call: ServerCall): void {

@@ -43,6 +43,8 @@ class HelloFrame(FrameModel):
     role: Literal["client", "server"]
     peer_id: str
     instance_id: str | None = None
+    # Reserved for negotiating optional features without a protocol bump.
+    capabilities: list[str] | None = None
 
 
 class HelloAckFrame(FrameModel):
@@ -71,6 +73,17 @@ class ServerRegisterFrame(FrameModel):
 class ServerRegisterAckFrame(FrameModel):
     kind: Literal["server.register.ack"] = "server.register.ack"
     instance_id: str
+
+
+class ServerDrainFrame(FrameModel):
+    """Instance → Router: leave every pool, keep serving routed calls."""
+
+    kind: Literal["server.drain"] = "server.drain"
+
+
+class ServerDrainAckFrame(FrameModel):
+    kind: Literal["server.drain.ack"] = "server.drain.ack"
+    instance_id: str | None = None
 
 
 class CallOpenFrame(_MetadataFrame):
@@ -144,6 +157,8 @@ Frame: TypeAlias = Annotated[
     | HelloAckFrame
     | ServerRegisterFrame
     | ServerRegisterAckFrame
+    | ServerDrainFrame
+    | ServerDrainAckFrame
     | CallOpenFrame
     | CallResultFrame
     | CallErrorFrame

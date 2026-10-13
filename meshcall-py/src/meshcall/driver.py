@@ -55,6 +55,21 @@ class ServerDriver(ABC):
     @abstractmethod
     async def stop(self, binding: DriverBinding) -> None: ...
 
+    async def drain(
+        self,
+        binding: DriverBinding,
+        runtime: ServerRuntime,
+        *,
+        timeout: float,
+    ) -> None:
+        """Stop taking new calls and wait for in-flight ones, then return.
+
+        Drivers override this to leave a Router pool or stop accepting
+        connections; the default only waits for the runtime to go idle.
+        """
+        self.check_binding(binding)
+        await runtime.wait_idle(timeout)
+
 
 class ClientDriver(ABC):
     @abstractmethod

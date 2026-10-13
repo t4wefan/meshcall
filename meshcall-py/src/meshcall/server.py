@@ -65,6 +65,7 @@ class ServerState(StrEnum):
     IDLE = "idle"
     STARTING = "starting"
     RUNNING = "running"
+    DRAINING = "draining"
     STOPPING = "stopping"
 
 
@@ -98,6 +99,7 @@ class ServerRuntime:
         self.colorize = colorize
         self.logger: RpcLogger = logger if logger is not None else default_logger
         self.interceptors = tuple(interceptors)
+        self._sessions: set[_ServerSession] = set()
         self._contracts: list[ServiceContract] = []
         self._methods: dict[tuple[str, str], RuntimeMethod] = {}
         for service in services:
@@ -176,6 +178,7 @@ class ServerRuntime:
             logger=self.logger,
             interceptors=self.interceptors,
         )
+        self._sessions.add(session)
         try:
             while True:
                 try:
@@ -191,7 +194,21 @@ class ServerRuntime:
         except (ConnectionError, ProtocolError):
             pass
         finally:
+            self._sessions.discard(session)
             await session.close()
+
+    def active_calls(self) -> int:
+        """Calls currently executing across every connection."""
+        return sum(len(session.calls) for session in self._sessions)
+
+    async def wait_idle(self, timeout: float) -> bool:
+        """Wait until no call is in flight; False if ``timeout`` elapsed first."""
+        deadline = time.monotonic() + timeout
+        while self.active_calls() > 0:
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.02)
+        return True
 
 
 class _ServerSession:
@@ -753,15 +770,31 @@ class RpcServer:
             self.state = ServerState.RUNNING
             _log_contract_warnings(self.logger, self._services)
 
-    async def stop(self) -> None:
+    async def stop(self, *, drain: bool = False, drain_timeout: float = 30.0) -> None:
+        """Stop the server.
+
+        With ``drain=True`` the server first stops taking new calls (leaving the
+        Router pool or closing the listener) and waits up to ``drain_timeout``
+        seconds for in-flight calls to finish, so a rolling restart fails no
+        request. Calls still running after the timeout are cancelled as usual.
+        """
         async with self._state_lock:
             if self.state is ServerState.IDLE:
                 return
             if self.state is not ServerState.RUNNING or self._binding is None:
                 raise DriverStateError(f"Cannot stop server in state {self.state}")
-            self.state = ServerState.STOPPING
             binding = self._binding
             worker = self._worker
+            runtime = self._runtime
+            if drain and runtime is not None:
+                self.state = ServerState.DRAINING
+                try:
+                    await self.driver.drain(binding, runtime, timeout=drain_timeout)
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning(  # noqa: PLE1205
+                        "Drain did not complete cleanly: {}", exc
+                    )
+            self.state = ServerState.STOPPING
             try:
                 await self.driver.stop(binding)
             finally:
