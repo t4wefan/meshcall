@@ -172,6 +172,13 @@ contract's `description`; `@method(read_only=True)`, `idempotent=True`,
 `destructive=True` and `deprecated="replacement"` record method semantics that
 tooling, retry policies and LLM tool exposure rely on.
 
+Every service instance has an id (`instance_id=` on the server driver, or
+generated). Any call can address one instance with `instance="worker-3"`;
+`@service("gpu.v1.Worker", targeted=True)` declares that callers *must*
+(instances hold distinct state: a session, a loaded model, an actor), and
+generated clients then make `instance` a required keyword, so forgetting it
+is a type error rather than a runtime `instance_required`.
+
 ## Complete runnable showcase
 
 The complete showcase is an independent uv project in `demo/showcase/`. It

@@ -31,8 +31,10 @@ from meshcall.errors import (
     DriverStateError,
     ErrorCode,
     InternalError,
+    InvalidArgumentError,
     MeshCallError,
     ProtocolError,
+    UnavailableError,
     invalid_argument,
     invalid_response,
     violations_of,
@@ -78,6 +80,8 @@ class ServerState(StrEnum):
 @dataclass(frozen=True)
 class RuntimeMethod:
     service_name: str
+    #: The owning service requires callers to name this instance.
+    targeted: bool
     contract: MethodContract
     handler: Any
     method_binding: MethodBinding
@@ -99,8 +103,10 @@ class ServerRuntime:
         logger: RpcLogger | None = None,
         interceptors: Sequence[ServerInterceptor] = (),
         max_inflight: int | None = None,
+        instance_id: str = "",
     ) -> None:
         self.worker = worker
+        self.instance_id = instance_id
         self.access_log = access_log
         self.log_level = log_level
         self.colorize = colorize
@@ -146,6 +152,7 @@ class ServerRuntime:
                     )
                 self._methods[(contract.name, method.name)] = RuntimeMethod(
                     service_name=contract.name,
+                    targeted=contract.targeted,
                     contract=method,
                     handler=getattr(owner, method.name),
                     method_binding=method_binding,
@@ -172,6 +179,7 @@ class ServerRuntime:
                     for method in service.methods
                 ),
                 contract=service.model_dump(mode="json", by_alias=True),
+                targeted=service.targeted,
             )
             for service in self._contracts
         )
@@ -340,6 +348,52 @@ class _ServerSession:
                     colorize=self.colorize,
                 )
             return
+        # Targeting, applied the same way the Router does (protocol.md →
+        # Targeted calls), so direct and routed services behave alike.
+        rejection: MeshCallError | None = None
+        if (
+            frame.instance_id is not None
+            and frame.instance_id != self.runtime.instance_id
+        ):
+            rejection = UnavailableError(
+                f"Instance {frame.instance_id} is not this server ({self.runtime.instance_id})",
+                details={
+                    "source": "server",
+                    "reason": "instance_unknown",
+                    "instance_id": frame.instance_id,
+                },
+            )
+        elif method.targeted and frame.instance_id is None:
+            rejection = InvalidArgumentError(
+                f"{frame.service} is a targeted service: call.open needs instance_id",
+                details={"source": "server", "reason": "instance_required"},
+            )
+        if rejection is not None:
+            try:
+                await self.connection.send(
+                    CallErrorFrame(
+                        call_id=frame.call_id,
+                        error=ErrorPayload(
+                            code=rejection.code,
+                            message=rejection.message,
+                            retryable=rejection.retryable,
+                            details=rejection.details,
+                        ),
+                    )
+                )
+            finally:
+                _log_access(
+                    self.logger,
+                    enabled=self.access_log,
+                    call_id=frame.call_id,
+                    service=frame.service,
+                    method=frame.method,
+                    started_at=started_at,
+                    status=rejection.code,
+                    level=self.log_level,
+                    colorize=self.colorize,
+                )
+            return
         call = _ServerCall(self, frame, method)
         self.calls[frame.call_id] = call
         call.start()
@@ -414,6 +468,7 @@ class _ServerCall:
             metadata=MappingProxyType(dict(open_frame.metadata or {})),
             logger=self.logger,
             idempotency_key=open_frame.idempotency_key,
+            instance_id=session.runtime.instance_id,
             _deadline=(
                 time.monotonic() + self.timeout if self.timeout is not None else None
             ),
@@ -796,6 +851,11 @@ class RpcServer:
         self._closed = asyncio.Event()
         self._closed.set()
 
+    @property
+    def instance_id(self) -> str:
+        """This instance's id, as registered with Routers and seen by callers."""
+        return self.driver.instance_id
+
     def include(self, service: object) -> None:
         if self.state is not ServerState.IDLE:
             raise DriverStateError("Services are frozen after server start begins")
@@ -825,6 +885,7 @@ class RpcServer:
                     logger=self.logger,
                     interceptors=self.interceptors,
                     max_inflight=self.max_inflight,
+                    instance_id=self.driver.instance_id,
                 )
                 await self.driver.start(binding, runtime)
             except BaseException:

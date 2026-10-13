@@ -238,8 +238,10 @@ type Snapshot struct {
 	// Contracts holds the portable contract entry registered for each
 	// service, when the instances provided one.
 	Contracts map[string]json.RawMessage
-	Routes    int
-	Peers     int
+	// Targeted lists services whose calls must name an instance.
+	Targeted map[string]bool
+	Routes   int
+	Peers    int
 	// Health describes every registered instance.
 	Health map[string]InstanceHealth
 }
@@ -259,6 +261,7 @@ func (r *Router) Snapshot() Snapshot {
 		Instances: make(map[string][]string, len(r.services)),
 		Methods:   make(map[string]map[string]string, len(r.services)),
 		Contracts: make(map[string]json.RawMessage, len(r.services)),
+		Targeted:  make(map[string]bool, len(r.services)),
 		Routes:    len(r.routes),
 		Peers:     len(r.peers),
 		Health:    make(map[string]InstanceHealth, len(r.instances)),
@@ -281,6 +284,9 @@ func (r *Router) Snapshot() Snapshot {
 			methods[m.Name] = m.Stream
 		}
 		snapshot.Methods[name] = methods
+		if pool.signature.Targeted {
+			snapshot.Targeted[name] = true
+		}
 		if pool.contract != nil {
 			snapshot.Contracts[name] = pool.contract
 		}

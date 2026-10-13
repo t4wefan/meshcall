@@ -23,6 +23,15 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Targeted calls: every service instance has an id (`instance_id=` on
+  server drivers / `instanceId`, generated when omitted; `server.instance_id`,
+  `ctx.instance_id`). `call.open` may carry `instance_id`; the Router routes
+  to that instance (`instance_unknown` / `instance_draining` reasons) and
+  direct servers apply the same rules. `@service(targeted=True)` /
+  `defineService({ targeted: true })` requires it (`instance_required`);
+  generated clients then make `instance` a required keyword / option.
+  `meshcall call --instance ID`, `router inspect` shows `[targeted]`,
+  warning W006 for sticky balancing on a targeted service.
 - `meshcall init` (Go CLI, `uv run meshcall init`, `npx meshcall-init`):
   installs the first-party agent skill (`.claude/skills/meshcall/SKILL.md`)
   and a MeshCall section in `AGENTS.md`; idempotent, keeps local edits unless

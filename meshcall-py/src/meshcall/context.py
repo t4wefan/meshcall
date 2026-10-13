@@ -93,8 +93,12 @@ class CallOptions:
     metadata: Mapping[str, str] | None = None
     idempotency_key: str | None = None
     idempotent: bool = False
+    #: Address one service instance by id; required for targeted services.
+    instance: str | None = None
 
     def __post_init__(self) -> None:
+        if self.instance is not None and not self.instance:
+            raise ValueError("instance must not be empty")
         if self.timeout is not None and self.timeout <= 0:
             raise ValueError("timeout must be positive")
         if self.idle_timeout is not None and self.idle_timeout <= 0:
@@ -164,6 +168,8 @@ class RpcContext:
     metadata: Mapping[str, str]
     logger: RpcLogger
     idempotency_key: str | None = None
+    #: This server's instance id; what a targeted caller addressed.
+    instance_id: str = ""
     _deadline: float | None = field(default=None, repr=False)
     _trailers: dict[str, str] = field(default_factory=dict, repr=False)
 

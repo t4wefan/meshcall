@@ -34,8 +34,25 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		return nil, &err
 	}
 	p := r.services[f.Service]
-	if p == nil || len(p.instances) == 0 {
+	if p == nil || (len(p.instances) == 0 && f.InstanceID == "") {
 		return fail("unavailable", "No instances registered for "+f.Service)
+	}
+	var selected *method
+	for i := range p.signature.Methods {
+		if p.signature.Methods[i].Name == f.Method {
+			selected = &p.signature.Methods[i]
+			break
+		}
+	}
+	if selected == nil {
+		return fail("method_not_found", "Unknown method "+f.Service+"."+f.Method)
+	}
+	if f.InstanceID != "" {
+		return r.targetInstance(f)
+	}
+	if p.signature.Targeted {
+		err := routerError(f.CallID, "invalid_argument", f.Service+" is a targeted service: call.open needs instance_id", false, "instance_required", "")
+		return nil, &err
 	}
 	// Eligibility: not avoided, not at its cap, breaker admits it.
 	now := time.Now()
@@ -65,16 +82,6 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 	}
 	if len(eligible) != len(p.instances) {
 		p = &pool{signature: p.signature, cursors: p.cursors, instances: eligible}
-	}
-	var selected *method
-	for i := range p.signature.Methods {
-		if p.signature.Methods[i].Name == f.Method {
-			selected = &p.signature.Methods[i]
-			break
-		}
-	}
-	if selected == nil {
-		return fail("method_not_found", "Unknown method "+f.Service+"."+f.Method)
 	}
 	switch selected.Balance.Kind {
 	case "round_robin":
@@ -120,6 +127,26 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		}
 		return p.instances[0], nil
 	}
+}
+
+// targetInstance routes a call that names its instance. The caller chose the
+// instance, so the balance policy and the circuit breaker do not apply; only
+// existence, draining and the hard capacity cap do.
+func (r *Router) targetInstance(f frame) (*peer, *frame) {
+	target := r.instances[f.InstanceID]
+	if target == nil || !slices.ContainsFunc(target.services, func(s service) bool { return s.Name == f.Service }) {
+		err := routerError(f.CallID, "unavailable", "Instance "+f.InstanceID+" is not registered for "+f.Service, false, "instance_unknown", f.InstanceID)
+		return nil, &err
+	}
+	if target.draining {
+		err := routerError(f.CallID, "unavailable", "Instance "+f.InstanceID+" is draining", true, "instance_draining", f.InstanceID)
+		return nil, &err
+	}
+	if target.maxInflight > 0 && target.inflight >= target.maxInflight {
+		err := routerError(f.CallID, "resource_exhausted", "Instance "+f.InstanceID+" is at its max_inflight", true, "overloaded", f.InstanceID)
+		return nil, &err
+	}
+	return target, nil
 }
 
 // Preserve the original Python router's sorted compact JSON / ASCII escaping.

@@ -239,6 +239,7 @@ type registryService struct {
 	Name        string             `json:"name"`
 	Version     string             `json:"version,omitempty"`
 	Description *string            `json:"description,omitempty"`
+	Targeted    bool               `json:"targeted"`
 	Instances   []RegistryInstance `json:"instances"`
 	Methods     []registryMethod   `json:"methods"`
 }
@@ -313,7 +314,7 @@ func (r *Router) registry(p *peer, f frame) {
 
 func (r *Router) describeService(name string) registryService {
 	pool := r.services[name]
-	out := registryService{Name: name, Instances: []RegistryInstance{}, Methods: []registryMethod{}}
+	out := registryService{Name: name, Targeted: pool.signature.Targeted, Instances: []RegistryInstance{}, Methods: []registryMethod{}}
 	now := time.Now()
 	for _, inst := range pool.instances {
 		out.Instances = append(out.Instances, RegistryInstance{

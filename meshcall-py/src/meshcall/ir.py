@@ -86,6 +86,8 @@ class ServiceContract(BaseModel):
     source_qualname: str
     balance: BalancePolicy
     description: str | None = None
+    # Every call must name an instance: the instances hold distinct state.
+    targeted: bool = False
     methods: tuple[MethodContract, ...]
 
 

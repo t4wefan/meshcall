@@ -48,6 +48,20 @@ class Ok(BaseModel):
     ok: bool = True
 
 
+class Instance(BaseModel):
+    instance: str
+
+
+@service("conformance.v1.Targeted", targeted=True)
+class Targeted:
+    """A targeted service: every call must name the instance it is for."""
+
+    @method(read_only=True)
+    async def whoami(self, ctx: RpcContext) -> Instance:
+        """Return the id of the instance that served the call."""
+        return Instance(instance=ctx.instance_id)
+
+
 @service("conformance.v1.Fixture")
 class Fixture:
     """Deterministic behaviours the conformance suite drives through the Router."""
@@ -133,7 +147,7 @@ async def main() -> None:
     fixture = Fixture()
     ping = float(os.environ.get("MESHCALL_PING_INTERVAL_MS", "15000")) / 1000
     server = RpcServer(
-        services=[fixture],
+        services=[fixture, Targeted],
         driver=WebSocketRouterServerDriver(
             os.environ["MESHCALL_ROUTER_URL"],
             instance_id=os.environ.get("MESHCALL_CONFORMANCE_INSTANCE", "fixture-1"),

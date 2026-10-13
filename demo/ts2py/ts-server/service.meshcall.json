@@ -11,6 +11,7 @@
         "key": null
       },
       "description": "A TypeScript service consumed by the generated Python client.",
+      "targeted": false,
       "methods": [
         {
           "name": "count",

@@ -32,9 +32,11 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{"offset":1
 ```
 
 Flags: `--json` (machine-readable output and errors), `--timeout 10s`,
-`--metadata k=v`, `--idempotency-key K`, `--idle-timeout D`. The request is
-one JSON object whose keys are the method's parameters. Do not write
-throwaway scripts to probe a service; use these two commands.
+`--metadata k=v`, `--idempotency-key K`, `--idle-timeout D`, `--instance ID`
+(address one instance; required for services `inspect` marks `[targeted]`,
+and the error hint lists the live instance ids). The request is one JSON
+object whose keys are the method's parameters. Do not write throwaway
+scripts to probe a service; use these two commands.
 
 ## Read errors
 
@@ -43,9 +45,9 @@ Every error has `code`, `message`, `details.source` (`client` | `router` |
 
 | code | meaning | what to do |
 | --- | --- | --- |
-| `invalid_argument` | your request failed validation; `details.violations` lists `{path, code, message}` per field | fix the named fields; the hint prints the request shape |
+| `invalid_argument` | your request failed validation; `details.violations` lists `{path, code, message}` per field. `reason: instance_required` means the service is targeted | fix the named fields; pass `--instance` / `instance=` for targeted services |
 | `method_not_found` | wrong service or method | the hint lists available methods |
-| `unavailable` | no instance (`no_instances`), instance lost, or every breaker open (`circuit_open`) | `router inspect`; retry if `retryable` |
+| `unavailable` | no instance (`no_instances`), instance lost, every breaker open (`circuit_open`), or the named instance is unknown / draining | `router inspect`; retry if `retryable` |
 | `resource_exhausted` | Router or every instance at capacity (`overloaded`) | back off and retry |
 | `deadline_exceeded` | `timeout_ms` elapsed (source says who noticed) | raise the timeout or make the handler faster |
 | `permission_denied` | account lacks `service/method` | fix the auth file or token scopes |
@@ -119,6 +121,11 @@ Rules the runtime enforces or warns about (set `MESHCALL_STRICT=1` while
 you edit so warnings fail fast with a `hint` that says exactly what to add):
 
 - Every service and method has a description (docstring in Python).
+- A service whose instances hold distinct state (a session, a loaded model,
+  an actor) is `targeted=True` / `targeted: true`: callers must name the
+  instance (`instance="worker-3"`, generated clients require it, handlers
+  read `ctx.instance_id` / `ctx.instanceId`). Ordinary services may still be
+  called with `instance=` to pin one node, e.g. for diagnostics.
 - A method that mutates state is annotated `idempotent=True` or
   `destructive=True`; pure reads are `read_only=True`. Retry policies only
   retry idempotent calls.
@@ -231,7 +238,9 @@ my_app/
   `server.close({ drain: true })`: the instance leaves the pool first, so a
   rolling deploy fails nothing.
 - Give every instance a stable, meaningful `instance_id` (`chat-<host>-<n>`);
-  `router inspect` and error `details.instance_id` show it.
+  `router inspect`, error `details.instance_id` and `server.instance_id`
+  show it. Targeted calls skip balancing and the breaker, so a stuck node
+  stays reachable for diagnosis but also stays blamed by its callers.
 - Set `max_inflight` on instances with a real capacity limit (GPU, DB pool)
   so the Router routes around full instances instead of queueing on them.
 - Point services and clients at **all** Routers (`[uri1, uri2]`); no

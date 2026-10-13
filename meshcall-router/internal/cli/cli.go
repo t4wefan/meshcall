@@ -110,6 +110,9 @@ func FormatInspect(result map[string]any, w io.Writer) {
 		}
 		name, _ := svc["name"].(string)
 		fmt.Fprintf(w, "%s", name)
+		if targeted, _ := svc["targeted"].(bool); targeted {
+			fmt.Fprint(w, "  [targeted]")
+		}
 		if d, ok := svc["description"].(string); ok && d != "" {
 			fmt.Fprintf(w, "  — %s", firstLine(d))
 		}
@@ -178,6 +181,8 @@ type CallOptions struct {
 	IdleTimeout    time.Duration
 	Metadata       map[string]string
 	IdempotencyKey string
+	// Instance addresses one service instance; required for targeted services.
+	Instance string
 	// Items feeds a client stream; each element is one item payload.
 	Items []any
 	// JSON prints machine-readable lines instead of text.
@@ -217,7 +222,7 @@ func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
 			Hint: "methods: " + strings.Join(names, ", ")}
 	}
 	stream, _ := method["stream"].(string)
-	schemaHint := requestHint(described, c.Method)
+	hints := callHints{schema: requestHint(described, c.Method), instances: instanceHint(described)}
 	extra := wire.Frame{}
 	if c.Timeout > 0 {
 		extra["timeout_ms"] = c.Timeout.Milliseconds()
@@ -230,6 +235,14 @@ func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
 	}
 	if c.IdempotencyKey != "" {
 		extra["idempotency_key"] = c.IdempotencyKey
+	}
+	if c.Instance != "" {
+		extra["instance_id"] = c.Instance
+	}
+	if targeted, _ := described["targeted"].(bool); targeted && c.Instance == "" {
+		return &Failure{Code: "invalid_argument", Message: c.Service + " is a targeted service: name the instance",
+			Details: map[string]any{"source": "client", "reason": "instance_required"},
+			Hint:    instanceHint(described)}
 	}
 	payload := c.Payload
 	if payload == nil {
@@ -245,9 +258,9 @@ func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
 	}
 	switch stream {
 	case "server_stream":
-		return streamOut(conn, id, c, w, schemaHint)
+		return streamOut(conn, id, c, w, hints)
 	case "client_stream":
-		return streamIn(conn, id, c, w, schemaHint)
+		return streamIn(conn, id, c, w, hints)
 	case "duplex":
 		return &Failure{Code: "unimplemented", Message: "duplex calls are not supported by the CLI"}
 	default:
@@ -255,13 +268,20 @@ func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return emitTerminal(f, c, w, schemaHint)
+		return emitTerminal(f, c, w, hints)
 	}
+}
+
+// callHints is what the CLI learned from the Registry before calling, used to
+// explain failures in the caller's terms.
+type callHints struct {
+	schema    string
+	instances string
 }
 
 const windowCredit = 256
 
-func streamOut(conn *wire.Conn, id string, c CallOptions, w io.Writer, hint string) error {
+func streamOut(conn *wire.Conn, id string, c CallOptions, w io.Writer, hint callHints) error {
 	grant := func(n int) error {
 		return conn.Send(wire.Frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": n})
 	}
@@ -298,7 +318,7 @@ func streamOut(conn *wire.Conn, id string, c CallOptions, w io.Writer, hint stri
 	}
 }
 
-func streamIn(conn *wire.Conn, id string, c CallOptions, w io.Writer, hint string) error {
+func streamIn(conn *wire.Conn, id string, c CallOptions, w io.Writer, hint callHints) error {
 	credit := 0
 	sent := 0
 	for sent < len(c.Items) || credit < 0 {
@@ -365,7 +385,7 @@ func recvFor(conn *wire.Conn, id string, timeout time.Duration) (wire.Frame, err
 	}
 }
 
-func emitTerminal(f wire.Frame, c CallOptions, w io.Writer, schemaHint string) error {
+func emitTerminal(f wire.Frame, c CallOptions, w io.Writer, hints callHints) error {
 	trailers := map[string]string{}
 	for k, v := range asMap(f["metadata"]) {
 		trailers[k] = fmt.Sprint(v)
@@ -375,9 +395,15 @@ func emitTerminal(f wire.Frame, c CallOptions, w io.Writer, schemaHint string) e
 		hint := ""
 		switch code {
 		case "invalid_argument":
-			hint = violationHint(f, schemaHint)
+			hint = violationHint(f, hints.schema)
+			if _, _, _, details := wire.Error(f); details["reason"] == "instance_required" {
+				hint = "this is a targeted service; pass --instance ID. " + hints.instances
+			}
 		case "unavailable":
 			hint = "no healthy instance took the call; `meshcall router inspect` shows instances, breakers and draining"
+			if _, _, _, details := wire.Error(f); details["reason"] == "instance_unknown" || details["reason"] == "instance_draining" {
+				hint = hints.instances
+			}
 		case "permission_denied":
 			hint = "the account lacks a call permission for this method"
 		case "internal":
@@ -499,4 +525,22 @@ func violationHint(f wire.Frame, schemaHint string) string {
 		return schemaHint
 	}
 	return strings.Join(lines, "; ") + "\n  " + schemaHint
+}
+
+// instanceHint lists the instances the Registry currently knows for the service.
+func instanceHint(described map[string]any) string {
+	var ids []string
+	for _, in := range asList(described["instances"]) {
+		inst, _ := in.(map[string]any)
+		id := fmt.Sprint(inst["id"])
+		if d, _ := inst["draining"].(bool); d {
+			id += " (draining)"
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return "no instances are registered right now"
+	}
+	sort.Strings(ids)
+	return "instances: " + strings.Join(ids, ", ")
 }

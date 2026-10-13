@@ -62,6 +62,17 @@ Sticky selection is ordinary hashing modulo the current pool size, so changing
 the pool can change where future calls for the same key go. Inflight counts are
 per instance, across its registered services.
 
+A `call.open` that carries `instance_id` bypasses the policy and goes to that
+instance: `unavailable` / `instance_unknown` when it is not registered for
+the service, `unavailable` / `instance_draining` while it drains,
+`resource_exhausted` / `overloaded` at its cap; the circuit breaker is not
+consulted because the caller chose the instance by name. A service registered
+with `targeted: true` (Python `@service(..., targeted=True)`, TypeScript
+`defineService({ targeted: true })`) refuses untargeted calls with
+`invalid_argument` / `instance_required` before routing; all its instances
+must agree on the flag. `router inspect` marks such services `[targeted]`
+and `meshcall call … --instance ID` addresses one.
+
 ## Connections and failures
 
 - An instance that sends `server.drain` leaves every pool immediately and is

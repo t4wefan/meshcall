@@ -33,7 +33,8 @@ type dedupEntry struct {
 }
 
 func dedupKey(f frame) string {
-	return f.Service + "\x00" + f.Method + "\x00" + f.Idempotency
+	// A targeted duplicate is only a duplicate on the same instance.
+	return f.Service + "\x00" + f.Method + "\x00" + f.Idempotency + "\x00" + f.InstanceID
 }
 
 // dedupLookup returns the entry for a keyed call.open, evicting expired ones.

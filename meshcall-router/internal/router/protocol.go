@@ -24,6 +24,9 @@ type method struct {
 type service struct {
 	Name    string   `json:"name"`
 	Methods []method `json:"methods"`
+	// Targeted services must be called with an explicit instance_id; the
+	// instances hold distinct state (a session, a loaded model, an actor).
+	Targeted bool `json:"targeted,omitempty"`
 	// Contract is the service's portable contract document entry (schemas,
 	// descriptions, annotations). Opaque to routing; served by the Registry.
 	Contract json.RawMessage `json:"contract,omitempty"`

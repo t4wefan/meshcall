@@ -815,3 +815,78 @@ func TestUnixSocketOwnershipAndConfigValidation(t *testing.T) {
 		t.Fatal("invalid limit accepted")
 	}
 }
+
+func TestTargetedCallsAndTargetedServices(t *testing.T) {
+	r := runningRouter(t, nil)
+	register := func(conn *websocket.Conn, id string, targeted bool) {
+		hello(t, conn, "server", id)
+		send(t, conn, frame{Kind: "server.register", InstanceID: id, MaxInflight: 1, Services: []service{
+			{Name: testService, Targeted: targeted, Methods: []method{{Name: "echo", Stream: "unary", Balance: balance{Kind: "round_robin"}}}},
+		}})
+		if got := receive(t, conn); got.Kind != "server.register.ack" {
+			t.Fatalf("registration: %+v", got)
+		}
+	}
+	a, b := dial(t, r, ""), dial(t, r, "")
+	register(a, "a", true)
+	register(b, "b", true)
+	// All instances of one service must agree on targeted.
+	c := dial(t, r, "")
+	hello(t, c, "server", "c")
+	send(t, c, frame{Kind: "server.register", InstanceID: "c", Services: []service{
+		{Name: testService, Methods: []method{{Name: "echo", Stream: "unary", Balance: balance{Kind: "round_robin"}}}},
+	}})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, _, err := c.Read(ctx); err == nil {
+		t.Fatal("a non-targeted registration joined a targeted pool")
+	}
+	if !r.Snapshot().Targeted[testService] {
+		t.Fatal("snapshot does not report the service as targeted")
+	}
+
+	client := dial(t, r, "")
+	hello(t, client, "client", "client")
+	open := func(id, instance string) {
+		send(t, client, frame{Kind: "call.open", CallID: id, Service: testService, Method: "echo", InstanceID: instance, Payload: json.RawMessage(`{}`)})
+	}
+	expectError := func(code, reason string) {
+		t.Helper()
+		got := receive(t, client)
+		if got.Error == nil || got.Error.Code != code || !bytes.Contains(got.Error.Details, []byte(`"reason":"`+reason+`"`)) {
+			t.Fatalf("expected %s/%s, got %+v", code, reason, got)
+		}
+	}
+	// Untargeted call to a targeted service is refused before routing.
+	open("u1", "")
+	expectError("invalid_argument", "instance_required")
+	// Named instance gets the call; the Router keeps the instance_id on the frame.
+	open("t1", "b")
+	if got := receive(t, b); got.CallID != "t1" || got.InstanceID != "b" {
+		t.Fatalf("t1 not on b: %+v", got)
+	}
+	// Capacity still applies; unknown and draining instances are refused.
+	open("t2", "b")
+	expectError("resource_exhausted", "overloaded")
+	open("t3", "nope")
+	expectError("unavailable", "instance_unknown")
+	send(t, a, frame{Kind: "server.drain"})
+	receive(t, a) // drain.ack
+	open("t4", "a")
+	expectError("unavailable", "instance_draining")
+	// Dedup is per instance: the same key on b and on a new instance are distinct calls.
+	send(t, b, frame{Kind: "call.result", CallID: "t1", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+	send(t, client, frame{Kind: "call.open", CallID: "k1", Service: testService, Method: "echo", InstanceID: "b", Idempotency: "same", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, b); got.CallID != "k1" {
+		t.Fatalf("k1 not on b: %+v", got)
+	}
+	send(t, b, frame{Kind: "call.result", CallID: "k1", Payload: json.RawMessage(`{"from":"b"}`)})
+	receive(t, client)
+	d := dial(t, r, "")
+	register(d, "d", true)
+	send(t, client, frame{Kind: "call.open", CallID: "k2", Service: testService, Method: "echo", InstanceID: "d", Idempotency: "same", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, d); got.CallID != "k2" {
+		t.Fatalf("same key on another instance must not replay b's result: %+v", got)
+	}
+}

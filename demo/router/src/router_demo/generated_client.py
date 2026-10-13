@@ -27,6 +27,7 @@ class CounterServiceClient(ClientBase):
         self,
         stop: int,
         *,
+        instance: str | None = None,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
@@ -43,5 +44,6 @@ class CounterServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            instance=instance,
             idempotent=True,
         )

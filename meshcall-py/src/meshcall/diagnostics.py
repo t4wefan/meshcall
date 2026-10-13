@@ -107,6 +107,21 @@ def lint_contract(
             else None
         )
         findings.extend(_lint_method(method, subject, location))
+        if contract.targeted and str(method.balance.kind) == "sticky":
+            findings.append(
+                ContractWarning(
+                    code="W006",
+                    subject=subject,
+                    message="sticky balancing on a targeted service is never used",
+                    hint=(
+                        "Targeted services route by the instance id the caller "
+                        "passes; the Router ignores the sticky key. Drop "
+                        "Balance.sticky(...) or drop targeted=True."
+                    ),
+                    silence="remove the sticky policy",
+                    location=location,
+                )
+            )
     return findings
 
 

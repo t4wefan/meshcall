@@ -17,6 +17,8 @@ export interface RpcContext {
   readonly metadata: Readonly<Metadata>;
   /** Idempotency key the caller attached, if any. */
   readonly idempotencyKey: string | null;
+  /** This server's instance id; what a targeted caller addressed. */
+  readonly instanceId: string;
   /** Attach a trailer to the terminal `call.result` or `call.error` frame. */
   setTrailer(key: string, value: string): void;
   readonly trailers: Readonly<Metadata>;
@@ -60,6 +62,12 @@ export type ServiceMethod =
 export interface ServiceDefinition {
   readonly name: string;
   readonly balance?: BalancePolicy;
+  /**
+   * Every call must name the instance it is for (`instance` in the call
+   * options): instances hold distinct state such as a session, a loaded
+   * model or an actor.
+   */
+  readonly targeted?: boolean;
   readonly methods: Readonly<Record<string, ServiceMethod>>;
 }
 

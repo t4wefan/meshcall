@@ -209,6 +209,7 @@ export function contractEntry(service: ExportableServiceDefinition): Record<stri
     source_qualname: service.sourceQualname,
     balance: serviceBalance,
     description: service.description ?? null,
+    targeted: service.targeted === true,
     methods: Object.entries(service.methods).map(([name, method]) => ({
       name,
       stream: method.stream,

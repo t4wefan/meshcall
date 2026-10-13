@@ -143,12 +143,15 @@ class ClientBase:
         metadata: Mapping[str, str] | None = None,
         idempotency_key: str | None = None,
         idempotent: bool = False,
+        instance: str | None = None,
     ) -> Any:
         info = ClientCallInfo(
             service,
             method,
             "unary",
-            CallOptions(timeout, idle_timeout, metadata, idempotency_key, idempotent),
+            CallOptions(
+                timeout, idle_timeout, metadata, idempotency_key, idempotent, instance
+            ),
         )
 
         async def innermost(info: ClientCallInfo) -> Any:
@@ -182,12 +185,15 @@ class ClientBase:
         metadata: Mapping[str, str] | None = None,
         idempotency_key: str | None = None,
         idempotent: bool = False,
+        instance: str | None = None,
     ) -> RpcServerStream[Any]:
         info = ClientCallInfo(
             service,
             method,
             "server_stream",
-            CallOptions(timeout, idle_timeout, metadata, idempotency_key, idempotent),
+            CallOptions(
+                timeout, idle_timeout, metadata, idempotency_key, idempotent, instance
+            ),
         )
 
         async def innermost(info: ClientCallInfo) -> _ClientServerStream:
@@ -225,12 +231,15 @@ class ClientBase:
         metadata: Mapping[str, str] | None = None,
         idempotency_key: str | None = None,
         idempotent: bool = False,
+        instance: str | None = None,
     ) -> Any:
         info = ClientCallInfo(
             service,
             method,
             "client_stream",
-            CallOptions(timeout, idle_timeout, metadata, idempotency_key, idempotent),
+            CallOptions(
+                timeout, idle_timeout, metadata, idempotency_key, idempotent, instance
+            ),
         )
 
         async def innermost(info: ClientCallInfo) -> Any:
@@ -275,12 +284,15 @@ class ClientBase:
         metadata: Mapping[str, str] | None = None,
         idempotency_key: str | None = None,
         idempotent: bool = False,
+        instance: str | None = None,
     ) -> RpcDuplexClient[Any, Any, Any]:
         info = ClientCallInfo(
             service,
             method,
             "duplex",
-            CallOptions(timeout, idle_timeout, metadata, idempotency_key, idempotent),
+            CallOptions(
+                timeout, idle_timeout, metadata, idempotency_key, idempotent, instance
+            ),
         )
 
         async def innermost(info: ClientCallInfo) -> _ClientDuplex:
@@ -393,6 +405,7 @@ class ClientBase:
                     ),
                     metadata=dict(options.metadata) if options.metadata else None,
                     idempotency_key=options.idempotency_key,
+                    instance_id=options.instance,
                 )
             )
             if output_type is not None:

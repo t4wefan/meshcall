@@ -58,6 +58,8 @@ export interface RegisteredService {
   methods: Array<RegisteredMethod>;
   /** The portable contract entry, served by the Router's Registry; opaque to routing. */
   contract?: Record<string, unknown> | null;
+  /** Calls must carry `instance_id`; all instances of the service must agree. */
+  targeted?: boolean;
 }
 
 export interface ServerRegisterFrame {
@@ -88,6 +90,8 @@ export interface CallOpenFrame {
   metadata?: Metadata | null;
   /** Lets the Router join/replay duplicate unary calls; ≤ 128 bytes. */
   idempotency_key?: string | null;
+  /** Address one service instance; required for targeted services. */
+  instance_id?: string | null;
 }
 
 export interface CallResultFrame {
@@ -236,7 +240,10 @@ const method = {
 };
 const service = {
   type: "object",
-  properties: { name: string, methods: { type: "array", items: method }, contract: { type: ["object", "null"] } },
+  properties: {
+    name: string, methods: { type: "array", items: method }, contract: { type: ["object", "null"] },
+    targeted: { type: "boolean" },
+  },
   required: ["name", "methods"],
 };
 const ajv = new Ajv2020({ strict: false });
@@ -263,6 +270,7 @@ const validators = new Map([
     call_id: string, service: string, method: string, payload: {},
     timeout_ms: positiveMs, idle_timeout_ms: positiveMs, metadata,
     idempotency_key: { type: ["string", "null"], minLength: 1, maxLength: 128 },
+    instance_id: { type: ["string", "null"], minLength: 1 },
   }, ["call_id", "service", "method", "payload"])],
   ["call.result", frame("call.result", { call_id: string, payload: {}, metadata }, ["call_id"])],
   ["call.error", frame("call.error", {

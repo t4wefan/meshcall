@@ -206,6 +206,7 @@ def _render_client_class(
                     "        self,",
                     *[f"        {parameter}," for parameter in request_parameters],
                     "        *,",
+                    *_instance_parameter(contract),
                     "        timeout: float | None = None,",
                     "        idle_timeout: float | None = None,",
                     "        metadata: Mapping[str, str] | None = None,",
@@ -220,6 +221,7 @@ def _render_client_class(
                     "            timeout=timeout,",
                     "            idle_timeout=idle_timeout,",
                     "            metadata=metadata,",
+                    "            instance=instance,",
                     *_idempotent_line(method),
                     "        )",
                 ]
@@ -232,6 +234,7 @@ def _render_client_class(
                     "        self,",
                     *[f"        {parameter}," for parameter in request_parameters],
                     "        *,",
+                    *_instance_parameter(contract),
                     "        timeout: float | None = None,",
                     "        idle_timeout: float | None = None,",
                     "        metadata: Mapping[str, str] | None = None,",
@@ -246,6 +249,7 @@ def _render_client_class(
                     "            timeout=timeout,",
                     "            idle_timeout=idle_timeout,",
                     "            metadata=metadata,",
+                    "            instance=instance,",
                     *_idempotent_line(method),
                     "        )",
                 ]
@@ -262,6 +266,7 @@ def _render_client_class(
                     f"        items: AsyncIterable[{input_item}],",
                     *[f"        {parameter}," for parameter in request_parameters],
                     "        *,",
+                    *_instance_parameter(contract),
                     "        timeout: float | None = None,",
                     "        idle_timeout: float | None = None,",
                     "        metadata: Mapping[str, str] | None = None,",
@@ -278,6 +283,7 @@ def _render_client_class(
                     "            timeout=timeout,",
                     "            idle_timeout=idle_timeout,",
                     "            metadata=metadata,",
+                    "            instance=instance,",
                     *_idempotent_line(method),
                     "        )",
                 ]
@@ -296,6 +302,7 @@ def _render_client_class(
                     "        self,",
                     *[f"        {parameter}," for parameter in request_parameters],
                     "        *,",
+                    *_instance_parameter(contract),
                     "        timeout: float | None = None,",
                     "        idle_timeout: float | None = None,",
                     "        metadata: Mapping[str, str] | None = None,",
@@ -315,6 +322,7 @@ def _render_client_class(
                     "            timeout=timeout,",
                     "            idle_timeout=idle_timeout,",
                     "            metadata=metadata,",
+                    "            instance=instance,",
                     *_idempotent_line(method),
                     "        )",
                 ]
@@ -361,6 +369,14 @@ def _python_parameters(
         else:
             parameters.append(f"{field_name}: {field_type} | None = None")
     return parameters
+
+
+def _instance_parameter(contract: ServiceContract) -> list[str]:
+    """Targeted services make the instance a required keyword: forgetting it
+    is a type error in the caller, not a runtime ``instance_required``."""
+    if contract.targeted:
+        return ["        instance: str,"]
+    return ["        instance: str | None = None,"]
 
 
 def _idempotent_line(method: MethodContract) -> list[str]:

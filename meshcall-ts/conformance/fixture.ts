@@ -21,6 +21,7 @@ const sumType = defineType<{ offset?: number }>("Sum", object({ offset: { type: 
 const valueType = defineType<{ value: number }>("Value", object({ value: { type: "integer" } }, ["value"]));
 const totalType = defineType<{ total: number }>("Total", object({ total: { type: "integer" } }, ["total"]));
 const metadataType = defineType<{ metadata: Record<string, string> }>("Metadata", object({ metadata: { type: "object", additionalProperties: { type: "string" } } }, ["metadata"]));
+const instanceType = defineType<{ instance: string }>("Instance", object({ instance: { type: "string" } }, ["instance"]));
 const drainType = defineType<{ delay_ms?: number }>("Drain", object({ delay_ms: { type: "integer", default: 0 } }));
 
 const cancelled: string[] = [];
@@ -84,8 +85,20 @@ const fixture = defineService({
 });
 
 const ping = Number(process.env.MESHCALL_PING_INTERVAL_MS ?? "15000");
+const targeted = defineService({
+  name: "conformance.v1.Targeted", targeted: true,
+  description: "A targeted service: every call must name the instance it is for.",
+  sourceModule: "conformance", sourceQualname: "Targeted",
+  methods: {
+    whoami: unaryMethod({
+      description: "Return the id of the instance that served the call.", readOnly: true,
+      request: emptyType, response: instanceType, handler: (_, ctx) => ({ instance: ctx.instanceId }),
+    }),
+  },
+});
+
 server = new MeshCallServer({
-  services: [fixture],
+  services: [fixture, targeted],
   router: { endpoint: process.env.MESHCALL_ROUTER_URL as string, instanceId: process.env.MESHCALL_CONFORMANCE_INSTANCE ?? "fixture-1" },
   pingIntervalMs: ping, pingTimeoutMs: Math.max(1000, ping * 2),
   accessLog: false,

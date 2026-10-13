@@ -49,6 +49,13 @@ export function lintService(service: ExportableServiceDefinition): ContractWarni
   for (const [name, method] of Object.entries(service.methods)) {
     const subject = service.name + "." + name;
     const m = method as MethodSemantics;
+    if (service.targeted === true && (method.balance ?? service.balance)?.kind === "sticky") {
+      findings.push({
+        code: "W006", subject, message: "sticky balancing on a targeted service is never used",
+        hint: "Targeted services route by the instance id the caller passes; the Router ignores the sticky key. Drop the sticky balance or drop targeted.",
+        silence: "remove the sticky policy",
+      });
+    }
     const annotated = m.idempotent === true || m.readOnly === true || m.destructive === true;
     const mutating = MUTATING.test(name);
     const reading = READING.test(name);

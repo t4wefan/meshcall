@@ -25,6 +25,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         self,
         count: int,
         *,
+        instance: str | None = None,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
@@ -41,6 +42,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            instance=instance,
             idempotent=True,
         )
 
@@ -49,6 +51,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         items: AsyncIterable[NumberItem],
         offset: int = 0,
         *,
+        instance: str | None = None,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
@@ -67,6 +70,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            instance=instance,
             idempotent=True,
         )
 
@@ -75,6 +79,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         name: str,
         repeat: int,
         *,
+        instance: str | None = None,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
@@ -92,5 +97,6 @@ class TypeScriptGreetingServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            instance=instance,
             idempotent=True,
         )

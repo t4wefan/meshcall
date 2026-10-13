@@ -191,6 +191,7 @@ direct instruction, and an explicit way to silence it:
 | W002 | mutating-looking name (`create_*`, `delete_*`, …) with no annotation | any of `idempotent`, `read_only`, `destructive` |
 | W003 | `read_only` on a mutating name, or `destructive` on a reading name | fix the name or the annotation |
 | W005 | `deprecated` without a named replacement | `deprecated="…"` with text |
+| W006 | sticky balancing on a `targeted` service (never used) | remove the sticky policy |
 
 Where they surface, by language and moment:
 

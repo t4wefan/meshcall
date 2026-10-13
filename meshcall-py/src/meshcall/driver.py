@@ -20,7 +20,9 @@ class DriverBinding:
 
 
 class ServerDriver(ABC):
-    def __init__(self) -> None:
+    def __init__(self, *, instance_id: str | None = None) -> None:
+        #: This instance's id: operator-chosen or generated once at start-up.
+        self.instance_id = instance_id or uuid.uuid4().hex
         self._binding_lock = threading.Lock()
         self._binding: DriverBinding | None = None
 

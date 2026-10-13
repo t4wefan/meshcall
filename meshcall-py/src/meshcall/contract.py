@@ -374,6 +374,7 @@ def service(
     *,
     balance: BalancePolicy | None = None,
     description: str | None = None,
+    targeted: bool = False,
 ) -> Callable[[ServiceT], ServiceT]:
     """Declare an RPC service.
 
@@ -381,6 +382,9 @@ def service(
     ``demo.v1.Greeting``); without one it is normalised to ``.v0``. Omitting
     the name derives it from the class's module and qualified name. The class
     docstring becomes the service description unless ``description`` is given.
+    ``targeted=True`` declares that every call must name the instance it is
+    for (``instance=`` on generated clients): instances hold distinct state
+    such as a session, a loaded model or an actor.
     """
 
     def decorate(cls: ServiceT) -> ServiceT:
@@ -392,6 +396,7 @@ def service(
             version=version,
             balance=balance or Balance.round_robin(),
             description=description if description is not None else _docstring(cls),
+            targeted=targeted,
         )
         cls.__meshcall_contract__ = contract
         return cls
@@ -441,6 +446,7 @@ def extract_service_contract(
     version: str = "0",
     balance: BalancePolicy,
     description: str | None = None,
+    targeted: bool = False,
 ) -> ServiceContract:
     methods: list[MethodContract] = []
     bindings: dict[str, MethodBinding] = {}
@@ -496,6 +502,7 @@ def extract_service_contract(
         source_qualname=cls.__qualname__,
         balance=balance,
         description=description,
+        targeted=targeted,
         methods=tuple(methods),
     )
     # Advisory findings surface at import time (or raise in strict mode) and

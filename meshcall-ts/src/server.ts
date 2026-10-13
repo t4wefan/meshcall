@@ -51,6 +51,11 @@ export interface MeshCallServerOptions {
   readonly port?: number;
   readonly unixPath?: string;
   readonly router?: RouterConnectionOptions;
+  /**
+   * This instance's id, visible to the Router, `router inspect` and targeted
+   * callers. Generated when omitted; `router.instanceId` takes precedence.
+   */
+  readonly instanceId?: string;
   readonly maxFrameSize?: number;
   readonly handshakeTimeoutMs?: number;
   /** Direct mode: drop clients that send nothing for this long; `null` disables. */
@@ -107,7 +112,7 @@ export class MeshCallServer {
     if (options.maxInflight !== undefined && (!Number.isSafeInteger(options.maxInflight) || options.maxInflight < 1)) {
       throw new RangeError("maxInflight must be a positive integer");
     }
-    this.instanceId = options.router?.instanceId ?? randomUUID().replaceAll("-", "");
+    this.instanceId = options.router?.instanceId ?? options.instanceId ?? randomUUID().replaceAll("-", "");
     this.logger = options.logger ?? new ConsoleRpcLogger({}, options.colorize ?? false);
     const services = new Map<string, Map<string, RuntimeMethod>>();
     this.registration = [];
@@ -125,6 +130,7 @@ export class MeshCallServer {
       this.registration.push({
         name: service.name,
         ...(contract === undefined ? {} : { contract }),
+        ...(service.targeted === true ? { targeted: true } : {}),
         methods: Object.entries(service.methods).map(([name, method]) => ({
           name, stream: method.stream,
           balance: {
@@ -310,6 +316,8 @@ export class MeshCallServer {
       accessLog: this.options.accessLog ?? true,
       logLevel: this.options.logLevel ?? "info",
       interceptors: this.options.interceptors ?? [],
+      instanceId: this.instanceId,
+      targeted: new Set(this.options.services.filter((s) => s.targeted === true).map((s) => s.name)),
       inflight: () => [...this.sessions.values()].reduce((sum, s) => sum + s.inFlight, 0),
       ...(this.options.maxInflight === undefined ? {} : { maxInflight: this.options.maxInflight }),
     }, liveness);

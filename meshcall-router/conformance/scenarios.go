@@ -16,6 +16,7 @@ var scenarios = []scenario{
 	{"unary: invalid request fails only that call", invalidArgument},
 	{"unary: invalid response is the server's fault", invalidResponse},
 	{"unary: application errors pass through", applicationError},
+	{"targeted: instance_id routes, targeted services require it", targeted},
 	{"router: unknown method is method_not_found", unknownMethod},
 	{"server stream: item credit is respected", serverStreamCredit},
 	{"client stream: window, items, end, result", clientStream},
@@ -147,6 +148,62 @@ func invalidResponse(h *harness) error {
 	}
 	if strings.Contains(fmt.Sprint(details), "not-a-bool") {
 		return fmt.Errorf("internal error leaks the invalid response: %v", details)
+	}
+	return nil
+}
+
+func targeted(h *harness) error {
+	c, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	expect := func(f frame, code, reason string) error {
+		got, _, _, details := errorOf(f)
+		if got != code || details["source"] != "router" || details["reason"] != reason {
+			return fmt.Errorf("expected %s/%s from the router, got %v", code, reason, f)
+		}
+		return nil
+	}
+	const svc = "conformance.v1.Targeted"
+	// A targeted service refuses calls that do not name an instance.
+	result, err := c.unary("whoami", frame{}, frame{"service": svc})
+	if err != nil {
+		return err
+	}
+	if err := expect(result, "invalid_argument", "instance_required"); err != nil {
+		return err
+	}
+	// Naming the fixture's instance routes there, and the handler sees its own id.
+	result, err = c.unary("whoami", frame{}, frame{"service": svc, "instance_id": InstanceID})
+	if err != nil {
+		return err
+	}
+	payload, _ := result["payload"].(map[string]any)
+	if result["kind"] != "call.result" || payload["instance"] != InstanceID {
+		return fmt.Errorf("targeted whoami: %v", result)
+	}
+	// Unknown instances are refused without retry; ordinary services accept targeting too.
+	result, err = c.unary("whoami", frame{}, frame{"service": svc, "instance_id": "no-such-instance"})
+	if err != nil {
+		return err
+	}
+	if err := expect(result, "unavailable", "instance_unknown"); err != nil {
+		return err
+	}
+	if _, _, retryable, _ := errorOf(result); retryable {
+		return fmt.Errorf("instance_unknown must not be retryable: %v", result)
+	}
+	result, err = c.unary("echo", frame{"value": 1, "text": "pinned"}, frame{"instance_id": InstanceID})
+	if err != nil {
+		return err
+	}
+	if result["kind"] != "call.result" {
+		return fmt.Errorf("targeted echo: %v", result)
+	}
+	// Registration carries the flag.
+	if snapshot := h.router.Snapshot(); !snapshot.Targeted[svc] || snapshot.Targeted[Service] {
+		return fmt.Errorf("targeted flag not registered as expected: %v", snapshot.Targeted)
 	}
 	return nil
 }

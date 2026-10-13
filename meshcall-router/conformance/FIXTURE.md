@@ -21,6 +21,10 @@ annotation.
 | `metadata_echo` | unary | — | `{metadata: {str: str}}` | returns the call metadata; sets trailers `echoed="yes"` and `count=<number of metadata keys>` |
 | `drain_self` | unary | `delay_ms: int = 0` | `{ok: true}` | schedules `stop(drain=True)` after `delay_ms`, then exits the process |
 
+The program also registers `conformance.v1.Targeted` with `targeted: true`
+and one method, `whoami` (unary, read-only, no parameters), returning
+`{instance: <this instance's id>}`.
+
 The suite expects the Python-style snake_case method names above in the
 registration (`echo`, `cancelled_tags`, `metadata_echo`, `drain_self`).
 Reference fixtures: `meshcall-py/conformance/fixture.py`,

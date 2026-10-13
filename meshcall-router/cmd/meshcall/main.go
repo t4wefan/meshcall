@@ -58,7 +58,7 @@ func run(args []string) error {
 		fmt.Fprintln(os.Stderr, "usage: meshcall [--router URL] [--auth user:pass | --token T] [--json] [--timeout D] <command>")
 		fmt.Fprintln(os.Stderr, "  router inspect [service]       list services, instances, health and methods")
 		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; client streams read JSON lines from stdin")
-		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D")
+		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D   --instance ID")
 		fmt.Fprintln(os.Stderr, "  init [dir] [--force]           install the MeshCall skill for coding agents into a project")
 		fmt.Fprintln(os.Stderr, "  version")
 	}
@@ -143,6 +143,7 @@ func run(args []string) error {
 		call := cli.CallOptions{
 			Service: positional[1][:dot], Method: positional[1][dot+1:], Timeout: timeout, JSON: asJSON,
 			Metadata: callFlags.metadata, IdempotencyKey: callFlags.idempotencyKey, IdleTimeout: callFlags.idleTimeout,
+			Instance: callFlags.instance,
 		}
 		if len(positional) > 2 {
 			if err := json.Unmarshal([]byte(positional[2]), &call.Payload); err != nil {
@@ -169,6 +170,7 @@ type callFlagSet struct {
 	idleTimeout    time.Duration
 	stdinItems     bool
 	force          bool
+	instance       string
 }
 
 // extractCallFlags pulls call-specific flags out before the global parse.
@@ -194,6 +196,8 @@ func extractCallFlags(flags *[]string) callFlagSet {
 			out.metadata[k] = v
 		case "idempotency-key":
 			out.idempotencyKey = next()
+		case "instance":
+			out.instance = next()
 		case "idle-timeout":
 			out.idleTimeout, _ = time.ParseDuration(next())
 		case "items-from-stdin", "stdin":
@@ -210,7 +214,7 @@ func extractCallFlags(flags *[]string) callFlagSet {
 
 func needsValue(flag string) bool {
 	switch strings.TrimLeft(flag, "-") {
-	case "router", "auth", "token", "timeout", "metadata", "idempotency-key", "idle-timeout":
+	case "router", "auth", "token", "timeout", "metadata", "idempotency-key", "idle-timeout", "instance":
 		return true
 	}
 	return false

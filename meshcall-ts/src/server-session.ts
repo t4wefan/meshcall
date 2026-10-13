@@ -1,4 +1,6 @@
-import { CallCancelledError, DeadlineExceededError, ErrorCode, MeshCallError, ProtocolError } from "./errors.js";
+import {
+  CallCancelledError, DeadlineExceededError, ErrorCode, InvalidArgumentError, MeshCallError, ProtocolError, UnavailableError,
+} from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import { validateMetadata, type Liveness } from "./liveness.js";
 import { safelyLog, type LogLevel, type RpcLogger } from "./logging.js";
@@ -21,6 +23,9 @@ export interface SessionOptions {
   accessLog: boolean;
   logLevel: LogLevel;
   interceptors: ReadonlyArray<ServerInterceptor>;
+  /** This instance's id and the services whose calls must name it. */
+  instanceId: string;
+  targeted: ReadonlySet<string>;
   /** Server-wide in-flight count and cap, for local max_inflight enforcement. */
   inflight?: () => number;
   maxInflight?: number;
@@ -79,6 +84,17 @@ export class ServerSession {
         );
         return;
       }
+      // Targeting, applied the same way the Router does (protocol.md →
+      // Targeted calls), so direct and routed services behave alike.
+      const rejection = this.targetingError(frame);
+      if (rejection !== undefined) {
+        const started = performance.now();
+        void this.writer.send({
+          kind: "call.error", call_id: frame.call_id,
+          error: { code: rejection.code, message: rejection.message, retryable: rejection.retryable, details: rejection.details },
+        }).catch(() => undefined).finally(() => this.logAccess(frame, rejection.code, started, this.options.logger));
+        return;
+      }
       const call = new ServerCall(this, frame, method);
       this.calls.set(frame.call_id, call);
       call.start();
@@ -102,6 +118,21 @@ export class ServerSession {
     } catch (error) {
       void call.fail(error);
     }
+  }
+
+  private targetingError(frame: CallOpenFrame): MeshCallError | undefined {
+    const instance = frame.instance_id ?? undefined;
+    if (instance !== undefined && instance !== this.options.instanceId) {
+      return new UnavailableError("Instance " + instance + " is not this server (" + this.options.instanceId + ")", {
+        details: { source: "server", reason: "instance_unknown", instance_id: instance },
+      });
+    }
+    if (instance === undefined && this.options.targeted.has(frame.service)) {
+      return new InvalidArgumentError(frame.service + " is a targeted service: call.open needs instance_id", {
+        details: { source: "server", reason: "instance_required" },
+      });
+    }
+    return undefined;
   }
 
   /** Calls currently executing on this connection. */
@@ -184,6 +215,7 @@ class ServerCall {
       method: frame.method,
       metadata: Object.freeze({ ...(frame.metadata ?? {}) }),
       idempotencyKey: frame.idempotency_key ?? null,
+      instanceId: session.options.instanceId,
       setTrailer(key: string, value: string): void {
         validateMetadata({ [key]: value });
         trailers[key] = value;

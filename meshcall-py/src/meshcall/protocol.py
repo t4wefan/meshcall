@@ -65,6 +65,8 @@ class RegisteredService(FrameModel):
     # The portable contract entry (schemas, descriptions, annotations) so the
     # Router can serve it to tooling; opaque to routing.
     contract: dict[str, Any] | None = None
+    # Calls must carry instance_id; all instances of the service must agree.
+    targeted: bool = False
 
 
 class ServerRegisterFrame(FrameModel):
@@ -100,6 +102,8 @@ class CallOpenFrame(_MetadataFrame):
     timeout_ms: int | None = Field(default=None, gt=0)
     idle_timeout_ms: int | None = Field(default=None, gt=0)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    # Address one service instance; required for targeted services.
+    instance_id: str | None = Field(default=None, min_length=1)
 
 
 class CallResultFrame(_MetadataFrame):

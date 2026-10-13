@@ -51,6 +51,8 @@ export interface CallOptions {
   idempotencyKey?: string;
   /** The method's own semantics; generated clients set this from the contract. */
   idempotent?: boolean;
+  /** Address one service instance by id; required for targeted services. */
+  instance?: string;
   signal?: AbortSignal;
 }
 
@@ -559,6 +561,7 @@ export class MeshCallClient {
       payload: request === undefined ? null : request,
     };
     if (options.timeoutMs !== undefined) frame.timeout_ms = Math.max(1, Math.round(options.timeoutMs));
+    if (options.instance !== undefined) frame.instance_id = options.instance;
     if (options.idleTimeoutMs !== undefined) {
       frame.idle_timeout_ms = Math.max(1, Math.round(options.idleTimeoutMs));
     }
@@ -826,6 +829,7 @@ export class MeshCallClient {
       }
     }
     validateMetadata(options.metadata);
+    if (options.instance !== undefined && options.instance === "") throw new RangeError("instance must not be empty");
     if (options.idempotencyKey !== undefined) {
       const bytes = Buffer.byteLength(options.idempotencyKey);
       if (bytes < 1 || bytes > 128) throw new RangeError("idempotencyKey must be 1..128 bytes");

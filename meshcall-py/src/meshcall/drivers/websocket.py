@@ -144,8 +144,9 @@ class WebSocketDirectServerDriver(ServerDriver):
         unix_path: str | Path | None = None,
         max_frame_size: int = 1024 * 1024,
         idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT,
+        instance_id: str | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(instance_id=instance_id)
         if unix_path is not None and (host is not None or port is not None):
             raise ValueError("Unix socket cannot be combined with host or port")
         self.host = host or "127.0.0.1"
@@ -268,7 +269,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
         reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
     ) -> None:
-        super().__init__()
+        super().__init__(instance_id=instance_id)
         if (uri is None) == (unix_path is None):
             raise ValueError("Set exactly one of uri or unix_path")
         uris = () if uri is None else ((uri,) if isinstance(uri, str) else tuple(uri))
@@ -276,7 +277,6 @@ class WebSocketRouterServerDriver(ServerDriver):
             raise ValueError("uri list must not be empty")
         self.uri = uris[0] if uris else None
         self.unix_path = Path(unix_path) if unix_path is not None else None
-        self.instance_id = instance_id or uuid.uuid4().hex
         self.max_frame_size = max_frame_size
         self.auth = auth
         self.ping_interval = ping_interval

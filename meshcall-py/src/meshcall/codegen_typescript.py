@@ -229,7 +229,11 @@ def _render_client_class(
                 # parameters with defaults.
                 *[f"    {parameter}," for parameter in extra_parameters],
                 *[f"    {parameter}," for parameter in parameters],
-                "    options?: CallOptions,",
+                (
+                    "    options: CallOptions & { instance: string },"
+                    if contract.targeted
+                    else "    options?: CallOptions,"
+                ),
                 f"  ): {result_type} {{",
                 f"    return this.rpc.{rpc_call}(",
                 f"      {json.dumps(contract.name)},",
