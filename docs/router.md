@@ -201,6 +201,12 @@ meshcall call demo.v1.Counter.count '{"n":5}'                    # server stream
 printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 ```
 
+`meshcall init [dir] [--force]` (also `uv run meshcall init`,
+`npx meshcall-init`) installs the first-party skill at
+`.claude/skills/meshcall/SKILL.md` and a marked MeshCall section in
+`AGENTS.md`, so coding agents in that project use these commands. Re-running
+is idempotent; an edited skill file is kept unless `--force`.
+
 Errors print the code, message, `details` and a hint: an unknown method
 lists the available ones, `invalid_argument` shows the request shape from the
 contract, `unavailable` points at `router inspect`. `--json` makes every

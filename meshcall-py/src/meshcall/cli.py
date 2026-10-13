@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,8 @@ from meshcall.package_codegen import (
     write_typescript_client_package,
 )
 from meshcall.router_install import find_router_binary, install_router
+from meshcall.skill import SKILL_PATH, Outcome
+from meshcall.skill import install as install_skill
 
 
 def main() -> None:
@@ -45,6 +48,15 @@ def main() -> None:
     generate.add_argument("--runtime-import", default="meshcall")
     generate.add_argument("--runtime-version", default="^0.1.0")
     generate.add_argument("--meshcall-requirement", default="meshcall>=0.1.0")
+
+    init = subparsers.add_parser(
+        "init", help="install the MeshCall skill for coding agents into a project"
+    )
+    init.add_argument("directory", nargs="?", default=".", help="project root")
+    init.add_argument(
+        "--force", action="store_true", help="replace an edited or older skill file"
+    )
+    init.add_argument("--json", action="store_true", help="machine-readable report")
 
     router = subparsers.add_parser("router", help="manage the Go Router binary")
     router_commands = router.add_subparsers(dest="router_command", required=True)
@@ -131,6 +143,28 @@ def main() -> None:
                 runtime_import=args.runtime_import,
                 runtime_version=args.runtime_version,
             )
+    elif args.command == "init":
+        report = install_skill(Path(args.directory), force=args.force)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "skill": report.skill,
+                        "agents_md": report.agents,
+                        "next_steps": report.next_steps,
+                    }
+                )
+            )
+        else:
+            print(f"{report.skill:<9} {SKILL_PATH.as_posix()}")
+            print(f"{report.agents:<9} AGENTS.md")
+            if report.skill == Outcome.KEPT:
+                print(
+                    "the existing skill differs (edited, or from another version); "
+                    "rerun with --force to replace it"
+                )
+            for step in report.next_steps:
+                print(f"- {step}")
     elif args.command == "router":
         if args.router_command == "install":
             print(

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/t4wefan/meshcall/meshcall-router/internal/cli"
+	"github.com/t4wefan/meshcall/meshcall-router/internal/skill"
 )
 
 var version = "dev"
@@ -58,6 +59,7 @@ func run(args []string) error {
 		fmt.Fprintln(os.Stderr, "  router inspect [service]       list services, instances, health and methods")
 		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; client streams read JSON lines from stdin")
 		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D")
+		fmt.Fprintln(os.Stderr, "  init [dir] [--force]           install the MeshCall skill for coding agents into a project")
 		fmt.Fprintln(os.Stderr, "  version")
 	}
 	// Allow global flags before or after the subcommand.
@@ -89,6 +91,29 @@ func run(args []string) error {
 	switch positional[0] {
 	case "version":
 		fmt.Println("meshcall " + version)
+		return nil
+	case "init":
+		dir := "."
+		if len(positional) > 1 {
+			dir = positional[1]
+		}
+		report, err := skill.Install(dir, callFlags.force)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"skill": report.Skill, "agents_md": report.Agents, "next_steps": report.NextSteps,
+			})
+		}
+		fmt.Printf("%-9s %s\n", report.Skill, skill.SkillPath)
+		fmt.Printf("%-9s AGENTS.md\n", report.Agents)
+		if report.Skill == skill.Kept {
+			fmt.Println("the existing skill differs (edited, or from another version); rerun with --force to replace it")
+		}
+		for _, step := range report.NextSteps {
+			fmt.Println("- " + step)
+		}
 		return nil
 	case "router":
 		if len(positional) < 2 || positional[1] != "inspect" {
@@ -143,6 +168,7 @@ type callFlagSet struct {
 	idempotencyKey string
 	idleTimeout    time.Duration
 	stdinItems     bool
+	force          bool
 }
 
 // extractCallFlags pulls call-specific flags out before the global parse.
@@ -172,6 +198,8 @@ func extractCallFlags(flags *[]string) callFlagSet {
 			out.idleTimeout, _ = time.ParseDuration(next())
 		case "items-from-stdin", "stdin":
 			out.stdinItems = true
+		case "force":
+			out.force = true
 		default:
 			rest = append(rest, a)
 		}

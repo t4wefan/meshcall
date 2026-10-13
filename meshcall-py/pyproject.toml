@@ -55,6 +55,9 @@ filterwarnings = ["ignore::meshcall.diagnostics.MeshCallWarning"]
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+# The embedded agent skill is a verbatim copy of skills/meshcall/SKILL.md;
+# reformatting its code blocks would make it drift from the source.
+extend-exclude = ["src/meshcall/skills"]
 
 [tool.pyright]
 extraPaths = [

@@ -76,7 +76,13 @@ uv run meshcall router install
 
 or `npx meshcall-router-install` from a Node project. The same release ships
 the `meshcall` command: `meshcall router inspect` shows what is registered,
-`meshcall call svc.method '{...}'` calls it — no generated code needed. Set
+`meshcall call svc.method '{...}'` calls it — no generated code needed.
+
+If coding agents work on your project, run `meshcall init` once (also
+`uv run meshcall init` / `npx meshcall-init`): it installs the first-party
+skill at `.claude/skills/meshcall/SKILL.md` and adds a short MeshCall section
+to `AGENTS.md`, so agents explore with `inspect`, call with `call`, read
+`violations` and write services under strict mode instead of guessing. Set
 `MESHCALL_ROUTER_BINARY` to use a binary you built or deployed yourself. All
 three packages are released together from one `vX.Y.Z` tag; see
 [CHANGELOG.md](CHANGELOG.md).

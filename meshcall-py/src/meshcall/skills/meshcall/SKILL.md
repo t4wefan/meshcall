@@ -1,0 +1,164 @@
+---
+name: meshcall
+description: Explore, call and build MeshCall services (typed streaming RPC between Python, TypeScript and the Go Router). Use when a project depends on the meshcall package, when asked to call or inspect a mesh service, or when writing or changing an @service / defineService.
+---
+
+# MeshCall
+
+Typed RPC over WebSocket. Services register with a **Router**; clients call
+`service.method` through it. The Router balances, enforces deadlines and keeps
+every service's **contract** (schemas, descriptions, annotations), so you can
+learn and use any running service without reading its source.
+
+## Explore before you code
+
+```bash
+meshcall router inspect                      # services, instances, health, methods
+meshcall router inspect chat.v1.Chat --json  # one service with its full contract
+```
+
+Each method line shows shape (`unary` / `server_stream` / `client_stream`),
+parameters, annotations (`read_only`, `idempotent`, `destructive`,
+`deprecated`) and the description. `--router ws://host:port` or
+`MESHCALL_ROUTER_URL` selects the Router (default `ws://127.0.0.1:8765`);
+`--auth user:pass` / `--token T` when accounts are configured.
+
+## Call
+
+```bash
+meshcall call chat.v1.Chat.send '{"session_id":"s1","text":"hi"}'
+meshcall call demo.v1.Counter.count '{"n":5}'                 # server stream: one JSON line per item
+printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{"offset":10}' --stdin
+```
+
+Flags: `--json` (machine-readable output and errors), `--timeout 10s`,
+`--metadata k=v`, `--idempotency-key K`, `--idle-timeout D`. The request is
+one JSON object whose keys are the method's parameters. Do not write
+throwaway scripts to probe a service; use these two commands.
+
+## Read errors
+
+Every error has `code`, `message`, `details.source` (`client` | `router` |
+`server`) and often `details.reason`.
+
+| code | meaning | what to do |
+| --- | --- | --- |
+| `invalid_argument` | your request failed validation; `details.violations` lists `{path, code, message}` per field | fix the named fields; the hint prints the request shape |
+| `method_not_found` | wrong service or method | the hint lists available methods |
+| `unavailable` | no instance (`no_instances`), instance lost, or every breaker open (`circuit_open`) | `router inspect`; retry if `retryable` |
+| `resource_exhausted` | Router or every instance at capacity (`overloaded`) | back off and retry |
+| `deadline_exceeded` | `timeout_ms` elapsed (source says who noticed) | raise the timeout or make the handler faster |
+| `permission_denied` | account lacks `service/method` | fix the auth file or token scopes |
+| `internal` | the service failed; `reason: invalid_response` means its own handler broke its contract | read the service's log, fix the service |
+
+Never guess at parameters when `invalid_argument` tells you the path.
+
+## Write a service
+
+**Parameters are the request.** The handler's parameters become the request
+schema; the return type is the response. Service names carry a version and
+are normalised (`chat` → `chat.v0`; `chat.v1`, `demo.v1.Greeting` are fine).
+Docstrings/descriptions and annotations are part of the contract: tooling,
+retries and LLM tool exposure depend on them.
+
+Python:
+
+```python
+from collections.abc import AsyncIterator
+from pydantic import BaseModel
+from meshcall import RpcContext, RpcInputStream, method, service
+
+class Message(BaseModel):
+    text: str
+
+@service("chat.v1.Chat")
+class Chat:
+    """Chat sessions."""
+
+    @method(idempotent=True)
+    async def send(self, session_id: str, text: str, ctx: RpcContext) -> Message:
+        """Append a message and return the reply."""
+        return Message(text=f"echo {text}")
+
+    @method.server_stream(read_only=True)
+    async def history(self, session_id: str) -> AsyncIterator[Message]:
+        """Replay the session."""
+        yield Message(text="…")
+
+    @method.client_stream()
+    async def ingest(self, items: RpcInputStream[Message], session_id: str) -> Message:
+        """Store streamed messages."""
+        async for item in items: ...
+        return Message(text="ok")
+```
+
+TypeScript (schemas are explicit because types are erased):
+
+```typescript
+import { defineService, defineType, unaryMethod, serverStreamMethod } from "meshcall";
+
+const Message = defineType<{ text: string }>("Message", {
+  type: "object", properties: { text: { type: "string" } }, required: ["text"],
+});
+const Send = defineType<{ session_id: string; text: string }>("Send", {
+  type: "object", properties: { session_id: { type: "string" }, text: { type: "string" } },
+  required: ["session_id", "text"],
+});
+
+export const chat = defineService({
+  name: "chat.v1.Chat", description: "Chat sessions.",
+  sourceModule: "chat", sourceQualname: "Chat",
+  methods: {
+    send: unaryMethod({ description: "Append a message and return the reply.", idempotent: true,
+      request: Send, response: Message, handler: ({ text }) => ({ text: "echo " + text }) }),
+  },
+});
+```
+
+Rules the runtime enforces or warns about (set `MESHCALL_STRICT=1` while
+you edit so warnings fail fast with a `hint` that says exactly what to add):
+
+- Every service and method has a description (docstring in Python).
+- A method that mutates state is annotated `idempotent=True` or
+  `destructive=True`; pure reads are `read_only=True`. Retry policies only
+  retry idempotent calls.
+- Raise `MeshCallError(code, message, retryable=…, details=…)` for
+  application errors; anything else becomes a sanitised `internal`.
+- Use `ctx: RpcContext` for metadata, `ctx.remaining()` and
+  `ctx.set_trailer()`; `logger: RpcLogger` for logging. Both are injected,
+  never part of the request.
+
+Run it through the Router (Python):
+
+```python
+from meshcall import RpcServer
+from meshcall.drivers import WebSocketRouterServerDriver
+server = RpcServer(services=[Chat], driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="chat-1"))
+await server.start()
+```
+
+TypeScript: `new MeshCallServer({ services: [chat], router: { endpoint: "ws://127.0.0.1:8765", instanceId: "chat-1" } })`.
+
+## Call from code
+
+Generate a typed client instead of hand-writing frames:
+
+```bash
+uv run meshcall generate my_app.service:Chat --output generated/chat-client            # Python package
+uv run meshcall generate my_app.service:Chat --language typescript --output generated/chat-ts
+```
+
+Generated methods take the same parameters as the handler plus `timeout=`,
+`idle_timeout=`, `metadata=`, `idempotency_key=`. Clients raise one class per
+code (`InvalidArgumentError`, `DeadlineExceededError`, `UnavailableError`,
+…); catch those rather than comparing `code` strings. For a quick untyped call
+in TypeScript: `new MeshCallClient(uri).unary("chat.v1.Chat", "send", {...})`.
+
+## Operate
+
+- Router binary: `uv run meshcall router install` or `npx meshcall-router-install`
+  fetches the release matching the SDK; `meshcall-router --port 8765` runs it.
+- Rolling restart: `server.stop(drain=True)` / `server.close({ drain: true })`
+  leaves the pool first, so no request fails.
+- Several Routers: give services and clients the list of endpoints; no
+  coordination is needed because the Router keeps no state peers cannot rebuild.

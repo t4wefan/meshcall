@@ -23,6 +23,10 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- `meshcall init` (Go CLI, `uv run meshcall init`, `npx meshcall-init`):
+  installs the first-party agent skill (`.claude/skills/meshcall/SKILL.md`)
+  and a MeshCall section in `AGENTS.md`; idempotent, keeps local edits unless
+  `--force`. The skill source is `skills/meshcall/SKILL.md`.
 - Error model: typed error subclasses per protocol code in Python and
   TypeScript (`InvalidArgumentError`, `DeadlineExceededError`, …) with
   `source` / `reason` accessors; TypeScript exports `ErrorCode`.

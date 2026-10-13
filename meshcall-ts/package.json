@@ -10,7 +10,13 @@
   },
   "homepage": "https://github.com/t4wefan/meshcall#readme",
   "bugs": "https://github.com/t4wefan/meshcall/issues",
-  "keywords": ["rpc", "websocket", "typed", "streaming", "router"],
+  "keywords": [
+    "rpc",
+    "websocket",
+    "typed",
+    "streaming",
+    "router"
+  ],
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -22,10 +28,12 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "meshcall-router-install": "./dist/src/install-router.js"
+    "meshcall-router-install": "./dist/src/install-router.js",
+    "meshcall-init": "./dist/src/init.js"
   },
   "files": [
     "dist/src",
+    "skills",
     "README.md"
   ],
   "engines": {

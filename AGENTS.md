@@ -64,6 +64,12 @@ instances, health and methods from the Router's Registry;
 `meshcall call svc.method '{json}'` performs a call with contract-aware
 error hints. Prefer these over writing throwaway scripts.
 
+`skills/meshcall/SKILL.md` is the skill users install into *their* projects
+with `meshcall init`; it is the agent-facing summary of this repository's
+behaviour. When you change a CLI flag, an error shape or a service-definition
+rule, update the skill in the same commit and run `scripts/regenerate.sh
+skill` (the Go, Python and TypeScript CLIs each embed a copy; drift fails CI).
+
 ## Verify
 
 ```bash
@@ -99,6 +105,7 @@ for you. When running tools directly:
 | Routing, balancing, deadlines | — | — | `router.go`, `balance.go`, `deadline.go` |
 | Registry RPC, dedup, breaker | — | — | `management.go`, `dedup.go`, `breaker.go` |
 | `meshcall` CLI (inspect, call) | — | — | `internal/cli`, `cmd/meshcall`; raw client in `internal/wire` |
+| `init` (agent skill installer) | `skill.py`, `cli.py` | `skill.ts`, `init.ts` | `internal/skill`; source `skills/meshcall/SKILL.md` |
 | Conformance suite | `conformance/fixture.py` | `conformance/fixture.ts` | `conformance/` |
 | Auth, tokens | `router_auth.py` | `router-auth.ts` | `auth.go`, `management.go` |
 
