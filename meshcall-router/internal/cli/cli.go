@@ -154,6 +154,14 @@ func FormatInspect(result map[string]any, w io.Writer) {
 			if d, ok := m["description"].(string); ok && d != "" {
 				line += "  — " + firstLine(d)
 			}
+			// A method on a subset of instances is a rolling upgrade in progress.
+			if on := asList(m["instances"]); len(on) > 0 && len(on) < len(instances) {
+				ids := make([]string, 0, len(on))
+				for _, id := range on {
+					ids = append(ids, fmt.Sprint(id))
+				}
+				line += "  on: " + strings.Join(ids, ", ")
+			}
 			fmt.Fprintln(w, line)
 		}
 	}

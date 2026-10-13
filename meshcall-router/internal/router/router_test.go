@@ -518,8 +518,11 @@ func TestIdempotencyJoinsReplaysAndRedelivers(t *testing.T) {
 		send(t, conn, frame{Kind: "call.open", CallID: id, Service: testService, Method: "echo",
 			Payload: json.RawMessage(`{"n":1}`), Idempotency: key})
 	}
-	// Two callers, same key: one execution, both answered.
+	// Two callers, same key: one execution, both answered. The Router
+	// processes connections concurrently, so make sure x1 is routed first.
 	open(c1, "x1", "k1")
+	send(t, c1, frame{Kind: "ping", Nonce: "ordered"})
+	receive(t, c1)
 	open(c2, "x2", "k1")
 	first := receive(t, a)
 	if first.CallID != "x1" || first.Idempotency != "k1" {
@@ -552,6 +555,8 @@ func TestIdempotencyJoinsReplaysAndRedelivers(t *testing.T) {
 	// Instance lost mid-call: both callers fail with the reason, and the retry
 	// with the same key is routed to the other instance.
 	open(c1, "y1", "k2")
+	send(t, c1, frame{Kind: "ping", Nonce: "ordered"})
+	receive(t, c1)
 	open(c2, "y2", "k2")
 	target := receive(t, b) // round robin moved on to b
 	if target.CallID != "y1" {
@@ -888,5 +893,83 @@ func TestTargetedCallsAndTargetedServices(t *testing.T) {
 	send(t, client, frame{Kind: "call.open", CallID: "k2", Service: testService, Method: "echo", InstanceID: "d", Idempotency: "same", Payload: json.RawMessage(`{}`)})
 	if got := receive(t, d); got.CallID != "k2" {
 		t.Fatalf("same key on another instance must not replay b's result: %+v", got)
+	}
+}
+
+func TestSupersetRegistrationsRoutePerMethod(t *testing.T) {
+	r := runningRouter(t, nil)
+	register := func(conn *websocket.Conn, id string, methods ...method) error {
+		hello(t, conn, "server", id)
+		send(t, conn, frame{Kind: "server.register", InstanceID: id, Services: []service{{Name: testService, Methods: methods}}})
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return err
+		}
+		var f frame
+		_ = json.Unmarshal(data, &f)
+		if f.Kind != "server.register.ack" {
+			return fmt.Errorf("expected ack, got %s", f.Kind)
+		}
+		return nil
+	}
+	greet := method{Name: "greet", Stream: "unary", Balance: balance{Kind: "round_robin"}}
+	wave := method{Name: "wave", Stream: "unary", Balance: balance{Kind: "round_robin"}}
+	a, b := dial(t, r, ""), dial(t, r, "")
+	if err := register(a, "a", greet); err != nil {
+		t.Fatal(err)
+	}
+	// B serves a superset: the rolling-upgrade case.
+	if err := register(b, "b", greet, wave); err != nil {
+		t.Fatal(err)
+	}
+	// The same method with a different shape is still a conflict.
+	c := dial(t, r, "")
+	if err := register(c, "c", method{Name: "greet", Stream: "server_stream", Balance: balance{Kind: "round_robin"}}); err == nil {
+		t.Fatal("conflicting greet definition was accepted")
+	}
+	snapshot := r.Snapshot()
+	if snapshot.Methods[testService]["wave"] != "unary" || len(snapshot.Instances[testService]) != 2 {
+		t.Fatalf("snapshot: %+v", snapshot)
+	}
+
+	client := dial(t, r, "")
+	hello(t, client, "client", "client")
+	open := func(id, name string) {
+		send(t, client, frame{Kind: "call.open", CallID: id, Service: testService, Method: name, Payload: json.RawMessage(`{}`)})
+	}
+	// wave only ever reaches b; greet alternates over both.
+	for _, id := range []string{"w1", "w2"} {
+		open(id, "wave")
+		if got := receive(t, b); got.CallID != id {
+			t.Fatalf("%s not on b: %+v", id, got)
+		}
+		send(t, b, frame{Kind: "call.result", CallID: id, Payload: json.RawMessage(`{}`)})
+		receive(t, client)
+	}
+	open("g1", "greet")
+	if got := receive(t, a); got.CallID != "g1" {
+		t.Fatalf("g1 not on a: %+v", got)
+	}
+	open("g2", "greet")
+	if got := receive(t, b); got.CallID != "g2" {
+		t.Fatalf("g2 not on b: %+v", got)
+	}
+	send(t, a, frame{Kind: "call.result", CallID: "g1", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+	send(t, b, frame{Kind: "call.result", CallID: "g2", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+	// Targeting an instance that does not serve the method is method_not_found.
+	send(t, client, frame{Kind: "call.open", CallID: "t1", Service: testService, Method: "wave", InstanceID: "a", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, client); got.Error == nil || got.Error.Code != "method_not_found" {
+		t.Fatalf("expected method_not_found for a targeted wave on a, got %+v", got)
+	}
+	// Once b leaves, wave is no longer served at all.
+	_ = b.CloseNow()
+	eventually(t, func() bool { return len(r.Snapshot().Instances[testService]) == 1 })
+	open("w3", "wave")
+	if got := receive(t, client); got.Error == nil || got.Error.Code != "method_not_found" {
+		t.Fatalf("expected method_not_found after b left, got %+v", got)
 	}
 }

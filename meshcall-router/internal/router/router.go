@@ -279,12 +279,12 @@ func (r *Router) Snapshot() Snapshot {
 			ids = append(ids, p.instanceID)
 		}
 		snapshot.Instances[name] = ids
-		methods := make(map[string]string, len(pool.signature.Methods))
-		for _, m := range pool.signature.Methods {
+		methods := make(map[string]string, len(pool.methods))
+		for _, m := range pool.methods {
 			methods[m.Name] = m.Stream
 		}
 		snapshot.Methods[name] = methods
-		if pool.signature.Targeted {
+		if pool.targeted {
 			snapshot.Targeted[name] = true
 		}
 		if pool.contract != nil {
@@ -507,8 +507,17 @@ func (r *Router) register(p *peer, f frame) error {
 		if s.Contract != nil && !json.Valid(s.Contract) {
 			return errors.New("invalid service contract")
 		}
-		if pool := r.services[s.Name]; pool != nil && !reflect.DeepEqual(pool.signature, s.signature()) {
-			return errors.New("incompatible service registration")
+		// Supersets are fine (rolling upgrades); the same method must mean
+		// the same thing, and targeted is a property of the whole service.
+		if pool := r.services[s.Name]; pool != nil {
+			if pool.targeted != s.Targeted {
+				return errors.New("incompatible service registration: targeted differs")
+			}
+			for _, m := range s.Methods {
+				if existing, ok := pool.methods[m.Name]; ok && (existing.Stream != m.Stream || !reflect.DeepEqual(existing.Balance, m.Balance)) {
+					return errors.New("incompatible service registration: method " + m.Name + " differs")
+				}
+			}
 		}
 	}
 	p.instanceID, p.services, p.maxInflight = f.InstanceID, f.Services, f.MaxInflight
@@ -517,11 +526,15 @@ func (r *Router) register(p *peer, f frame) error {
 	p.send(frame{Kind: "server.register.ack", InstanceID: p.instanceID})
 	for _, s := range f.Services {
 		if r.services[s.Name] == nil {
-			r.services[s.Name] = &pool{signature: s.signature(), contract: s.Contract, cursors: make(map[string]int)}
+			r.services[s.Name] = &pool{targeted: s.Targeted, methods: make(map[string]method), cursors: make(map[string]int)}
 		}
 		pool := r.services[s.Name]
-		if pool.contract == nil && s.Contract != nil {
-			pool.contract = s.Contract
+		for _, m := range s.Methods {
+			pool.methods[m.Name] = m
+		}
+		// The Registry serves the widest contract it has seen.
+		if s.Contract != nil && (pool.contract == nil || len(s.Methods) > pool.contractMethods) {
+			pool.contract, pool.contractMethods = s.Contract, len(s.Methods)
 		}
 		pool.instances = append(pool.instances, p)
 		slices.SortFunc(pool.instances, func(a, b *peer) int { return strings.Compare(a.instanceID, b.instanceID) })
@@ -617,12 +630,7 @@ func (r *Router) methodStream(service, method string) string {
 	if pool == nil {
 		return ""
 	}
-	for _, m := range pool.signature.Methods {
-		if m.Name == method {
-			return m.Stream
-		}
-	}
-	return ""
+	return pool.methods[method].Stream
 }
 
 // drain removes an instance from every pool so no new call is routed to it
@@ -647,7 +655,9 @@ func (r *Router) leavePools(p *peer) {
 		pool.instances = slices.DeleteFunc(pool.instances, func(candidate *peer) bool { return candidate == p })
 		if len(pool.instances) == 0 {
 			delete(r.services, s.Name)
+			continue
 		}
+		pool.rebuildMethods()
 	}
 }
 

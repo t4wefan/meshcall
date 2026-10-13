@@ -32,12 +32,6 @@ type service struct {
 	Contract json.RawMessage `json:"contract,omitempty"`
 }
 
-// signature is what must match across instances of one service.
-func (s service) signature() service {
-	s.Contract = nil
-	return s
-}
-
 type errorPayload struct {
 	Code      string          `json:"code"`
 	Message   string          `json:"message"`

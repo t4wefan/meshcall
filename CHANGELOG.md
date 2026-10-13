@@ -23,6 +23,11 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Router routes per method: instances of one service may register supersets
+  of each other's methods (rolling upgrades); only a method re-registered
+  with a different shape/balance, or a differing `targeted` flag, conflicts.
+  Registry lists the instances serving each method; `router inspect` shows
+  `on: …` for methods on a subset. Closes #9.
 - Targeted calls: every service instance has an id (`instance_id=` on
   server drivers / `instanceId`, generated when omitted; `server.instance_id`,
   `ctx.instance_id`). `call.open` may carry `instance_id`; the Router routes

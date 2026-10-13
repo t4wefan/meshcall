@@ -27,8 +27,13 @@ frames. See [building and deploying the executable](../meshcall-router/README.md
    or `server` role; the authenticated identity must permit that role.
 2. A service sends `server.register` with its instance ID, service names, method
    names, call shapes, and balancing policies. The Router rejects duplicate
-   instance IDs, unauthorized services, and incompatible registrations under the
-   same service name. `meshcall.router.` is reserved for built-in services.
+   instance IDs, unauthorized services, and conflicting registrations under
+   the same service name: a method already registered with a different
+   stream shape or balance policy, or a different `targeted` flag. Instances
+   may register *supersets* of each other's methods; a call is balanced over
+   the instances that registered its method, so a rolling upgrade adds a
+   method on new instances first and old ones keep serving the rest.
+   `meshcall.router.` is reserved for built-in services.
 3. A client sends `call.open` with a service, method, globally unique call ID,
    request payload, optional `timeout_ms` / `idle_timeout_ms`, and optional
    `metadata`. The Router forwards the frame byte-for-byte, so metadata and any
@@ -43,9 +48,13 @@ frames. See [building and deploying the executable](../meshcall-router/README.md
 
 The Router keeps four in-memory tables: clients, service instances, service
 pools, and active call routes. It does not persist state or consult an external
-service-discovery system. Registration compares method shapes and balancing
-policies; it does not compare payload JSON Schemas or prove schema compatibility.
-Payload validation happens at the service and applicable client runtimes.
+service-discovery system. A pool's method set is the union of its live
+instances' registrations and shrinks when instances leave; the Registry
+serves the widest contract it has seen and lists, per method, the instances
+serving it (`router inspect` prints `on: …` when that is a subset).
+Registration compares method shapes and balancing policies; it does not
+compare payload JSON Schemas or prove schema compatibility. Payload
+validation happens at the service and applicable client runtimes.
 
 ## Balancing
 

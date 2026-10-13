@@ -180,7 +180,9 @@ my_app/
   methods are verbs on it. Bump the version segment (`chat.v2.Chat`) for an
   incompatible change and run both until clients move; never edit a shipped
   method's parameters in place. Mark replaced methods
-  `deprecated="new_method"` so clients see it at compile time.
+  `deprecated="new_method"` so clients see it at compile time. *Adding* a
+  method is a rolling deploy: the Router routes each method over the
+  instances that have it, so new and old instances coexist.
 - Keep the request flat: parameters are the request. Reach for a model-typed
   parameter only for a reusable structure (`profile: Profile`); never wrap
   everything in one `request` object.

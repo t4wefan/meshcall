@@ -12,6 +12,11 @@ The first frame sent by a connection is `hello`. Its role is either `client` or
 The protocol version is `meshcall/1`. A peer must reject an unsupported version
 before accepting calls.
 
+Instances of one service need not register identical method sets: a Router
+routes each method over the instances that registered it, and rejects only a
+registration that gives an already-registered method a different stream
+shape or balance policy, or disagrees on `targeted`.
+
 ## Compatibility rule
 
 Within `meshcall/1`, a decoder must **ignore unknown fields** on every frame and

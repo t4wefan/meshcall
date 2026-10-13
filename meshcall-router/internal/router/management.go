@@ -233,6 +233,9 @@ type registryMethod struct {
 	Annotations json.RawMessage `json:"annotations,omitempty"`
 	Deprecated  *string         `json:"deprecated,omitempty"`
 	Parameters  []string        `json:"parameters,omitempty"`
+	// Instances lists the ids serving this method; during a rolling upgrade
+	// a new method is served by a subset of the service's instances.
+	Instances []string `json:"instances"`
 }
 
 type registryService struct {
@@ -314,7 +317,7 @@ func (r *Router) registry(p *peer, f frame) {
 
 func (r *Router) describeService(name string) registryService {
 	pool := r.services[name]
-	out := registryService{Name: name, Targeted: pool.signature.Targeted, Instances: []RegistryInstance{}, Methods: []registryMethod{}}
+	out := registryService{Name: name, Targeted: pool.targeted, Instances: []RegistryInstance{}, Methods: []registryMethod{}}
 	now := time.Now()
 	for _, inst := range pool.instances {
 		out.Instances = append(out.Instances, RegistryInstance{
@@ -333,8 +336,13 @@ func (r *Router) describeService(name string) registryService {
 	if pool.contract != nil && json.Unmarshal(pool.contract, &entry) == nil {
 		out.Version, out.Description = entry.Version, entry.Description
 	}
-	for _, m := range pool.signature.Methods {
-		rm := registryMethod{Name: m.Name, Stream: m.Stream, Balance: m.Balance}
+	for _, m := range sortedMethods(pool.methods) {
+		rm := registryMethod{Name: m.Name, Stream: m.Stream, Balance: m.Balance, Instances: []string{}}
+		for _, inst := range pool.instances {
+			if inst.serves(name, m.Name) {
+				rm.Instances = append(rm.Instances, inst.instanceID)
+			}
+		}
 		for _, cm := range entry.Methods {
 			if cm.Name == m.Name {
 				rm.Description, rm.Annotations, rm.Deprecated, rm.Parameters = cm.Description, cm.Annotations, cm.Deprecated, cm.Parameters
@@ -342,5 +350,14 @@ func (r *Router) describeService(name string) registryService {
 		}
 		out.Methods = append(out.Methods, rm)
 	}
+	return out
+}
+
+func sortedMethods(methods map[string]method) []method {
+	out := make([]method, 0, len(methods))
+	for _, m := range methods {
+		out = append(out, m)
+	}
+	slices.SortFunc(out, func(a, b method) int { return strings.Compare(a.Name, b.Name) })
 	return out
 }

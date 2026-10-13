@@ -15,11 +15,41 @@ import (
 	"unicode/utf16"
 )
 
+// pool is every live instance of one service. Methods are the union of what
+// those instances registered, so instances may serve supersets of each other
+// (a rolling upgrade adds a method on new instances first); a call is
+// balanced over the instances that registered its method.
 type pool struct {
-	signature service
-	contract  json.RawMessage
-	instances []*peer
-	cursors   map[string]int
+	targeted bool
+	methods  map[string]method
+	contract json.RawMessage
+	// contractMethods is how many methods the registration that supplied
+	// contract had; a later, larger registration replaces it.
+	contractMethods int
+	instances       []*peer
+	cursors         map[string]int
+}
+
+// serves reports whether p registered method on service.
+func (p *peer) serves(service, name string) bool {
+	for _, s := range p.services {
+		if s.Name == service {
+			return slices.ContainsFunc(s.Methods, func(m method) bool { return m.Name == name })
+		}
+	}
+	return false
+}
+
+// rebuildMethods recomputes the union after an instance left.
+func (p *pool) rebuildMethods() {
+	p.methods = make(map[string]method)
+	for _, inst := range p.instances {
+		for _, s := range inst.services {
+			for _, m := range s.Methods {
+				p.methods[m.Name] = m
+			}
+		}
+	}
 }
 
 // selectInstance picks an instance for f. A non-nil avoid is skipped when any
@@ -37,30 +67,31 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 	if p == nil || (len(p.instances) == 0 && f.InstanceID == "") {
 		return fail("unavailable", "No instances registered for "+f.Service)
 	}
-	var selected *method
-	for i := range p.signature.Methods {
-		if p.signature.Methods[i].Name == f.Method {
-			selected = &p.signature.Methods[i]
-			break
-		}
-	}
-	if selected == nil {
+	selected, known := p.methods[f.Method]
+	if !known {
 		return fail("method_not_found", "Unknown method "+f.Service+"."+f.Method)
 	}
 	if f.InstanceID != "" {
 		return r.targetInstance(f)
 	}
-	if p.signature.Targeted {
+	if p.targeted {
 		err := routerError(f.CallID, "invalid_argument", f.Service+" is a targeted service: call.open needs instance_id", false, "instance_required", "")
 		return nil, &err
 	}
-	// Eligibility: not avoided, not at its cap, breaker admits it.
+	// Eligibility: registered this method, not avoided, not at its cap,
+	// breaker admits it.
 	now := time.Now()
-	eligible := make([]*peer, 0, len(p.instances))
-	full, tripped := 0, 0
+	serving := make([]*peer, 0, len(p.instances))
 	for _, c := range p.instances {
+		if c.serves(f.Service, f.Method) {
+			serving = append(serving, c)
+		}
+	}
+	eligible := make([]*peer, 0, len(serving))
+	full, tripped := 0, 0
+	for _, c := range serving {
 		switch {
-		case c == avoid && len(p.instances) > 1:
+		case c == avoid && len(serving) > 1:
 		case c.maxInflight > 0 && c.inflight >= c.maxInflight:
 			full++
 		case !c.health.admit(now):
@@ -81,7 +112,7 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		return fail("unavailable", "No instances registered for "+f.Service)
 	}
 	if len(eligible) != len(p.instances) {
-		p = &pool{signature: p.signature, cursors: p.cursors, instances: eligible}
+		p = &pool{targeted: p.targeted, methods: p.methods, cursors: p.cursors, instances: eligible}
 	}
 	switch selected.Balance.Kind {
 	case "round_robin":
@@ -136,6 +167,10 @@ func (r *Router) targetInstance(f frame) (*peer, *frame) {
 	target := r.instances[f.InstanceID]
 	if target == nil || !slices.ContainsFunc(target.services, func(s service) bool { return s.Name == f.Service }) {
 		err := routerError(f.CallID, "unavailable", "Instance "+f.InstanceID+" is not registered for "+f.Service, false, "instance_unknown", f.InstanceID)
+		return nil, &err
+	}
+	if !target.serves(f.Service, f.Method) {
+		err := routerError(f.CallID, "method_not_found", "Instance "+f.InstanceID+" does not serve "+f.Service+"."+f.Method, false, "", f.InstanceID)
 		return nil, &err
 	}
 	if target.draining {
