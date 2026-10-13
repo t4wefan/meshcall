@@ -154,6 +154,101 @@ code (`InvalidArgumentError`, `DeadlineExceededError`, `UnavailableError`,
 …); catch those rather than comparing `code` strings. For a quick untyped call
 in TypeScript: `new MeshCallClient(uri).unary("chat.v1.Chat", "send", {...})`.
 
+## Best practices
+
+The shape of a good MeshCall project (`best-practice/` in the MeshCall repo
+is a complete example):
+
+```text
+my_app/
+├── src/my_app/service.py      # @service classes and their Pydantic models; no transport code
+├── src/my_app/server.py       # RpcServer + driver + signal handling, config from env
+├── generated/<svc>-client/    # generated client package, checked in, regenerated on contract change
+└── tests/test_service.py      # in-process server on port 0, generated client against it
+```
+
+**Designing a service**
+
+- One service per bounded capability (`chat.v1.Chat`, `billing.v1.Invoices`);
+  methods are verbs on it. Bump the version segment (`chat.v2.Chat`) for an
+  incompatible change and run both until clients move; never edit a shipped
+  method's parameters in place. Mark replaced methods
+  `deprecated="new_method"` so clients see it at compile time.
+- Keep the request flat: parameters are the request. Reach for a model-typed
+  parameter only for a reusable structure (`profile: Profile`); never wrap
+  everything in one `request` object.
+- Return a model, never a bare scalar or dict: `-> Message`, not `-> str`.
+  Response models are the contract other languages generate from.
+- Service instances hold process-local state and dependencies: construct
+  them yourself (`RpcServer(services=[Chat(store, llm)])`) and guard shared
+  state with a lock; the server reuses one instance across concurrent calls.
+- Annotate honestly. `read_only` implies `idempotent`; generated clients
+  mark idempotent calls so `RetryPolicy` retries them on retryable
+  `unavailable` / `resource_exhausted`. `destructive` methods are never
+  retried without an idempotency key, and tooling asks before invoking them.
+  A method that creates a record is *not* idempotent unless it dedupes on
+  `ctx.idempotency_key`.
+- Errors: raise `MeshCallError("my_app.v1.quota_exceeded", "…", retryable=False,
+  details={"limit": 100})` for domain failures with a namespaced code;
+  use the standard codes (`invalid_argument` for semantic validation the
+  schema cannot express, `permission_denied`, `resource_exhausted`) when they
+  fit. Let unexpected exceptions propagate: they become a sanitised
+  `internal` and are logged with the traceback. Do not catch-and-wrap.
+- Streams: a server stream per *long or incremental* result (LLM tokens,
+  export rows); a client stream when the caller produces data over time
+  (uploads, telemetry). Yield as you go, do not buffer the whole result.
+  Credit-based flow control is automatic, so a slow consumer slows the
+  producer rather than exhausting memory. Streams are never retried: make
+  the caller able to restart from a known point.
+- Respect cancellation and deadlines: check `ctx.remaining()` before an
+  expensive step; in Python an `asyncio.CancelledError` means the caller
+  left, clean up and re-raise. TypeScript handlers get `ctx.signal`.
+- Log with the injected `logger` (it already carries service, method,
+  `call_id`); never `print`. Put request-scoped facts in trailers
+  (`ctx.set_trailer("cache", "hit")`) when callers should see them.
+
+**Calling a service**
+
+- Use the generated client, check it in, regenerate when the contract
+  changes (`uv run meshcall generate … --output generated/<svc>-client`); a
+  CI step that regenerates and diffs catches a drifted client at compile
+  time of the consumer.
+- Always pass a `timeout=`; streams also get `idle_timeout=`. The service,
+  the Router and the client enforce it independently, so a stuck instance
+  cannot hold a call forever.
+- Send an `idempotency_key=` (a UUID per logical operation) on every
+  mutating unary call you might retry; the Router dedupes concurrent and
+  recent duplicates, and `RetryPolicy` is then allowed to retry it.
+- Propagate tracing/auth through `metadata=` using a client interceptor
+  (set once, applies to every call) rather than adding parameters.
+- Catch typed errors: `except UnavailableError` / `instanceof
+  DeadlineExceededError`; check `error.retryable` before retrying anything
+  the built-in `RetryPolicy` did not cover.
+
+**Running it**
+
+- Handle SIGTERM with `server.stop(drain=True, drain_timeout=…)` /
+  `server.close({ drain: true })`: the instance leaves the pool first, so a
+  rolling deploy fails nothing.
+- Give every instance a stable, meaningful `instance_id` (`chat-<host>-<n>`);
+  `router inspect` and error `details.instance_id` show it.
+- Set `max_inflight` on instances with a real capacity limit (GPU, DB pool)
+  so the Router routes around full instances instead of queueing on them.
+- Point services and clients at **all** Routers (`[uri1, uri2]`); no
+  Router-side coordination is needed.
+- Keep `MESHCALL_STRICT=1` in CI so missing descriptions and unannotated
+  mutating methods fail the build, not a review.
+
+**Testing**
+
+- Start a real `RpcServer` with `WebSocketDirectServerDriver(host="127.0.0.1",
+  port=0)` (TypeScript: `new MeshCallServer({ services, port: 0 })`) in a
+  fixture and call it through the generated client: this exercises
+  validation, streaming and error mapping, not just the handler.
+- Assert on error *classes* and `details`, not message text.
+- A Router is only needed in tests that cover balancing or failover;
+  `WebSocketRouter(...)` launches the real binary for that.
+
 ## Operate
 
 - Router binary: `uv run meshcall router install` or `npx meshcall-router-install`
