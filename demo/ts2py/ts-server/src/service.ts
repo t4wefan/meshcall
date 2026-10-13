@@ -4,7 +4,7 @@ import {
   defineType,
   serverStreamMethod,
   unaryMethod,
-} from "@meshcall/runtime";
+} from "meshcall";
 
 export interface GreetingRequest {
   name: string;

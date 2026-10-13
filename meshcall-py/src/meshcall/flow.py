@@ -31,4 +31,3 @@ class CreditWindow:
             if self._closed is None:
                 self._closed = error
                 self._condition.notify_all()
-

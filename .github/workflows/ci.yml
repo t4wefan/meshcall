@@ -21,7 +21,7 @@ jobs:
           cache-dependency-path: meshcall-router/go.sum
       - run: go vet ./...
       - run: go test -race ./...
-      - run: go build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
+      - run: go build -trimpath -ldflags="-X main.version=ci-${GITHUB_SHA::8}" -o bin/meshcall-router ./cmd/meshcall-router
         env:
           CGO_ENABLED: "0"
       - uses: actions/upload-artifact@v4
@@ -86,7 +86,7 @@ jobs:
         working-directory: demo/ts2py/ts-server
         run: |
           env -u MESHCALL_ROUTER_BINARY node --input-type=module <<'JS'
-          import { WebSocketRouter } from "@meshcall/runtime";
+          import { WebSocketRouter } from "meshcall";
           const router = new WebSocketRouter();
           try { await router.start(); } finally { await router.stop(); }
           JS
@@ -140,3 +140,30 @@ jobs:
         working-directory: meshcall-py
         env:
           MESHCALL_RUN_INTEROP: "1"
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Python wheel and sdist
+        working-directory: meshcall-py
+        run: |
+          uv build
+          uv run --isolated --no-project --with dist/*.whl python -c "import meshcall, importlib.resources as r; assert r.files('meshcall').joinpath('py.typed').is_file(); print(meshcall.__name__, 'ok')"
+      - name: npm tarball
+        working-directory: meshcall-ts
+        run: |
+          yarn install --frozen-lockfile
+          npm pack --dry-run 2>&1 | tee pack.log
+          grep -q "dist/src/index.js" pack.log && grep -q "dist/src/install-router.js" pack.log
+      - name: GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          workdir: meshcall-router
+          args: check

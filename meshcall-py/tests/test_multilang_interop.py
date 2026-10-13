@@ -72,7 +72,8 @@ def build_typescript_runtime() -> None:
 
 @pytest.mark.parametrize("routed", [False, True])
 async def test_python_service_with_generated_typescript_package(
-    tmp_path: Path, routed: bool,
+    tmp_path: Path,
+    routed: bool,
 ) -> None:
     package_root = write_typescript_client_package(
         get_service_contract(PythonInteropService),
@@ -88,7 +89,8 @@ async def test_python_service_with_generated_typescript_package(
     uri = f"ws://127.0.0.1:{router.bound_port}" if routed else ""
     driver = (
         WebSocketRouterServerDriver(uri)
-        if routed else WebSocketDirectServerDriver(host="127.0.0.1", port=0)
+        if routed
+        else WebSocketDirectServerDriver(host="127.0.0.1", port=0)
     )
     server = RpcServer(services=[PythonInteropService], driver=driver)
     await server.start()
@@ -99,8 +101,7 @@ async def test_python_service_with_generated_typescript_package(
         installed_runtime = (
             package_root
             / "node_modules"
-            / "@meshcall"
-            / "runtime"
+            / "meshcall"
             / "dist"
             / "src"
             / "index.js"
@@ -184,9 +185,13 @@ async def test_typescript_service_with_generated_python_package(
 async def running_typescript(root: Path, options: dict):
     contract_path = root / f"{uuid.uuid4().hex}.json"
     process = await asyncio.create_subprocess_exec(
-        "node", str(INTEROP_ROOT / "typescript_server.mjs"),
-        str(RUNTIME_INDEX), str(contract_path), json.dumps(options),
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        "node",
+        str(INTEROP_ROOT / "typescript_server.mjs"),
+        str(RUNTIME_INDEX),
+        str(contract_path),
+        json.dumps(options),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     assert process.stdout is not None
@@ -217,14 +222,18 @@ def generated_typescript_client(contract_path: Path, root: Path):
 @pytest.mark.parametrize("routed", [False, True])
 @pytest.mark.parametrize("unix", [False, True])
 async def test_generated_python_streams_to_typescript_over_direct_and_router(
-    tmp_path: Path, routed: bool, unix: bool,
+    tmp_path: Path,
+    routed: bool,
+    unix: bool,
 ) -> None:
     socket = Path("/tmp") / f"meshcall-interop-{uuid.uuid4().hex}.sock"
     router = WebSocketRouter(unix_path=socket) if unix else WebSocketRouter(port=0)
     options: dict = {}
     if routed:
         await router.start()
-        endpoint = {"unixPath": str(socket)} if unix else f"ws://127.0.0.1:{router.bound_port}"
+        endpoint = (
+            {"unixPath": str(socket)} if unix else f"ws://127.0.0.1:{router.bound_port}"
+        )
         options = {"router": {"endpoint": endpoint}}
     elif unix:
         options = {"unixPath": str(socket)}
@@ -235,7 +244,8 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
         ):
             driver = (
                 WebSocketClientDriver(unix_path=socket)
-                if unix else WebSocketClientDriver(
+                if unix
+                else WebSocketClientDriver(
                     f"ws://127.0.0.1:{router.bound_port if routed else ready['port']}"
                 )
             )
@@ -248,7 +258,9 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
 
                     async def input_items():
                         for value in range(64):
-                            yield generated.TypeScriptItem(value=value, handled_by="python")
+                            yield generated.TypeScriptItem(
+                                value=value, handled_by="python"
+                            )
 
                     assert (await client.upload(request, input_items())).product == 4096
     finally:
@@ -267,10 +279,12 @@ async def test_typescript_instances_balance_pin_streams_and_clean_disconnects(
         async with (
             asyncio.timeout(15),
             running_typescript(
-                tmp_path, {"router": {"endpoint": uri, "instanceId": "ts-a"}},
+                tmp_path,
+                {"router": {"endpoint": uri, "instanceId": "ts-a"}},
             ) as (process_a, contract, _),
             running_typescript(
-                tmp_path, {"router": {"endpoint": uri, "instanceId": "ts-b"}},
+                tmp_path,
+                {"router": {"endpoint": uri, "instanceId": "ts-b"}},
             ) as (process_b, _, _),
         ):
             with generated_typescript_client(contract, tmp_path) as generated:
@@ -278,7 +292,9 @@ async def test_typescript_instances_balance_pin_streams_and_clean_disconnects(
                     WebSocketClientDriver(uri)
                 ) as client:
                     request = generated.TypeScriptRequest(value=64, factor=1)
-                    instances = [(await client.multiply(request)).handled_by for _ in range(4)]
+                    instances = [
+                        (await client.multiply(request)).handled_by for _ in range(4)
+                    ]
                     assert instances == ["ts-a", "ts-b", "ts-a", "ts-b"]
                     for expected in ("ts-a", "ts-b"):
                         items = [item async for item in client.download(request)]
@@ -351,13 +367,17 @@ async def _process_failure(process: asyncio.subprocess.Process) -> str:
 
 async def _auth_peer(options: dict[str, object]) -> dict[str, object]:
     process = await asyncio.create_subprocess_exec(
-        "node", str(INTEROP_ROOT / "router_auth_peer.mjs"), str(RUNTIME_INDEX),
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        "node",
+        str(INTEROP_ROOT / "router_auth_peer.mjs"),
+        str(RUNTIME_INDEX),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
         stdout, stderr = await asyncio.wait_for(
-            process.communicate((json.dumps(options) + "\n").encode()), 10,
+            process.communicate((json.dumps(options) + "\n").encode()),
+            10,
         )
         assert process.returncode == 0, stderr.decode()
         return json.loads(stdout)
@@ -369,7 +389,8 @@ async def _auth_peer(options: dict[str, object]) -> dict[str, object]:
 
 @pytest.mark.parametrize("launcher", ["python", "typescript"])
 async def test_go_router_launchers_and_service_scoped_tokens_interoperate(
-    tmp_path: Path, launcher: str,
+    tmp_path: Path,
+    launcher: str,
 ) -> None:
     name = get_service_contract(NumberService).name
     auth_file = write_auth_file(tmp_path / "auth.json", name)
@@ -381,33 +402,68 @@ async def test_go_router_launchers_and_service_scoped_tokens_interoperate(
             port = router.bound_port
         else:
             node = await asyncio.create_subprocess_exec(
-                "node", str(INTEROP_ROOT / "router_auth_peer.mjs"), str(RUNTIME_INDEX),
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                "node",
+                str(INTEROP_ROOT / "router_auth_peer.mjs"),
+                str(RUNTIME_INDEX),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             assert node.stdin is not None and node.stdout is not None
-            node.stdin.write((json.dumps({"action": "router", "authFile": str(auth_file)}) + "\n").encode())
+            node.stdin.write(
+                (
+                    json.dumps({"action": "router", "authFile": str(auth_file)}) + "\n"
+                ).encode()
+            )
             await node.stdin.drain()
             ready = json.loads(await asyncio.wait_for(node.stdout.readline(), 10))
             assert ready["pid"] != node.pid
             port = ready["port"]
         uri = f"ws://127.0.0.1:{port}"
         credentials = RouterCredentials(username="issuer", password=PASSWORD)
-        server = RpcServer(services=[NumberService], access_log=False,
-                           driver=WebSocketRouterServerDriver(uri, auth=credentials))
+        server = RpcServer(
+            services=[NumberService],
+            access_log=False,
+            driver=WebSocketRouterServerDriver(uri, auth=credentials),
+        )
         await server.start()
         try:
-            async with RouterAuthClient(WebSocketClientDriver(uri, auth=credentials)) as management:
-                token = await management.issue_token(scopes=[RouterScope(service=name, methods=["*"])])
-                result = await _auth_peer({"action": "call", "endpoint": uri,
-                                           "auth": {"token": token.token}, "service": name})
-                assert result == {"unary": {"total": 7}, "count": 64, "upload": {"total": 2023}}
-                node_token = await _auth_peer({"action": "issue", "endpoint": uri,
-                                              "auth": {"username": "issuer", "password": PASSWORD}, "service": name})
-                async with NumberServiceClient(WebSocketClientDriver(
-                    uri, auth=RouterCredentials(token=str(node_token["token"])),
-                )) as client:
-                    assert await client.unary(NumberRequest(value=12)) == NumberResult(total=12)
+            async with RouterAuthClient(
+                WebSocketClientDriver(uri, auth=credentials)
+            ) as management:
+                token = await management.issue_token(
+                    scopes=[RouterScope(service=name, methods=["*"])]
+                )
+                result = await _auth_peer(
+                    {
+                        "action": "call",
+                        "endpoint": uri,
+                        "auth": {"token": token.token},
+                        "service": name,
+                    }
+                )
+                assert result == {
+                    "unary": {"total": 7},
+                    "count": 64,
+                    "upload": {"total": 2023},
+                }
+                node_token = await _auth_peer(
+                    {
+                        "action": "issue",
+                        "endpoint": uri,
+                        "auth": {"username": "issuer", "password": PASSWORD},
+                        "service": name,
+                    }
+                )
+                async with NumberServiceClient(
+                    WebSocketClientDriver(
+                        uri,
+                        auth=RouterCredentials(token=str(node_token["token"])),
+                    )
+                ) as client:
+                    assert await client.unary(NumberRequest(value=12)) == NumberResult(
+                        total=12
+                    )
                 assert await management.revoke_token(str(node_token["token_id"]))
         finally:
             await server.stop()

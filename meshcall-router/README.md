@@ -12,12 +12,23 @@ go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-rout
 ./meshcall-router/bin/meshcall-router --host 127.0.0.1 --port 8765
 ```
 
-Only building requires Go. Deploy the executable for your OS/architecture and
-set `MESHCALL_ROUTER_BINARY`, pass `binary_path` / `binaryPath`, or place
-`meshcall-router` on `PATH`. SDK launchers also find `meshcall-router/bin` in a
-source checkout and a package-local `bin` directory. Current Python/npm packages
-do not bundle binaries; launchers never download, build, or fall back to a
-language-specific Router.
+Only building requires Go. Each tagged release publishes prebuilt binaries for
+Linux, macOS and Windows (amd64 and arm64) with a `checksums.txt`. The SDKs
+can fetch the release that matches their own version into the per-user cache
+(`~/.cache/meshcall/router/<version>/`, honouring `XDG_CACHE_HOME`), verifying
+the SHA-256 before installing:
+
+```bash
+uv run meshcall router install      # Python
+npx meshcall-router-install         # Node
+```
+
+Launchers resolve the binary in this order: `MESHCALL_ROUTER_BINARY` or an
+explicit `binary_path` / `binaryPath`; a package-local `bin/`; the per-user
+cache; `meshcall-router/bin` of the source checkout that contains the SDK;
+`meshcall-router` on `PATH`. The working directory is never searched.
+`meshcall router path` prints the resolved binary. Launchers never build or
+fall back to a language-specific Router.
 
 The CLI defaults to `127.0.0.1` and an automatically selected port. It prints one
 `router.ready` JSON line on stdout after binding. Diagnostics go to stderr.

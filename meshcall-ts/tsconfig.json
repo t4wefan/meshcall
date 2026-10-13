@@ -18,7 +18,6 @@
   },
   "include": [
     "src/**/*.ts",
-    "tests/**/*.ts",
-    "interop/**/*.ts"
+    "tests/**/*.ts"
   ]
 }

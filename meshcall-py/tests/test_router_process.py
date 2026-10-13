@@ -11,7 +11,7 @@ import pytest
 
 from meshcall import WebSocketRouter
 from meshcall.errors import DriverStateError
-from meshcall.router import _router_binary
+from meshcall.router_install import find_router_binary
 
 
 async def test_go_router_process_lifecycle_and_failed_bind_retry() -> None:
@@ -75,7 +75,7 @@ async def test_startup_timeout_reaps_child(tmp_path: Path) -> None:
 
 
 async def test_go_router_exits_when_owning_parent_is_killed() -> None:
-    binary = _router_binary(None)
+    binary = find_router_binary(None)
     code = (
         "import asyncio\n"
         "from meshcall import WebSocketRouter\n"

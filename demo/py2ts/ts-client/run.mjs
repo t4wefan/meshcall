@@ -1,4 +1,4 @@
-import { MeshCallClient } from "@meshcall/runtime";
+import { MeshCallClient } from "meshcall";
 
 import { PythonGreetingServiceClient } from "./dist/index.js";
 

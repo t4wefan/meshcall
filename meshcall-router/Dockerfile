@@ -1,10 +1,11 @@
 FROM golang:1.26-alpine AS build
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /meshcall-router ./cmd/meshcall-router
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /meshcall-router ./cmd/meshcall-router
 
 FROM scratch
 COPY --from=build /meshcall-router /meshcall-router

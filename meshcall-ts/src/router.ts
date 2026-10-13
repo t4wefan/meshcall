@@ -1,7 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 import { unixSocketPath } from "./endpoint.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
@@ -24,33 +29,112 @@ function executable(path: string): boolean {
   } catch { return false; }
 }
 
-function routerBinary(configured?: string): string {
+const RELEASE_BASE_URL = "https://github.com/t4wefan/meshcall/releases/download";
+const EXECUTABLE = process.platform === "win32" ? "meshcall-router.exe" : "meshcall-router";
+const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+/** The Router release that matches this package. */
+export function routerVersion(): string {
+  const override = process.env.MESHCALL_ROUTER_VERSION;
+  if (override !== undefined && override !== "") return override.replace(/^v/u, "");
+  const manifest = JSON.parse(readFileSync(resolve(PACKAGE_DIR, "package.json"), "utf8")) as { version: string };
+  return manifest.version;
+}
+
+export function routerCacheDir(version = routerVersion()): string {
+  const base = process.env.XDG_CACHE_HOME ?? resolve(homedir(), ".cache");
+  return resolve(base, "meshcall", "router", version);
+}
+
+function platformAsset(version: string): string {
+  const os = ({ linux: "linux", darwin: "darwin", win32: "windows" } as Record<string, string>)[process.platform];
+  const arch = ({ x64: "amd64", arm64: "arm64" } as Record<string, string>)[process.arch];
+  if (os === undefined || arch === undefined) {
+    throw new Error("No Router build for " + process.platform + "/" + process.arch);
+  }
+  return "meshcall-router_" + version + "_" + os + "_" + arch + ".tar.gz";
+}
+
+/**
+ * Locate the Router binary: explicit path or MESHCALL_ROUTER_BINARY, then the
+ * package-local bin, the per-user cache, the enclosing source checkout of this
+ * package, then PATH. The working directory is deliberately not searched.
+ */
+export function findRouterBinary(configured?: string): string {
   const selected = configured ?? process.env.MESHCALL_ROUTER_BINARY;
   if (selected !== undefined) {
     const path = resolve(selected);
     if (!executable(path)) throw new Error("Router binary is not executable: " + path);
     return path;
   }
-  const filename = process.platform === "win32" ? "meshcall-router.exe" : "meshcall-router";
-  const directory = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    resolve(directory, "../../bin", filename),
-  ];
-  for (const start of [directory, process.cwd()]) {
-    let root = start;
-    while (true) {
-      if (existsSync(resolve(root, "meshcall-router/go.mod"))) {
-        candidates.push(resolve(root, "meshcall-router/bin", filename));
-      }
-      const parent = dirname(root);
-      if (parent === root) break;
-      root = parent;
+  const candidates = [resolve(PACKAGE_DIR, "bin", EXECUTABLE), resolve(routerCacheDir(), EXECUTABLE)];
+  let root = PACKAGE_DIR;
+  while (true) {
+    if (existsSync(resolve(root, "meshcall-router/go.mod"))) {
+      candidates.push(resolve(root, "meshcall-router/bin", EXECUTABLE));
     }
+    const parent = dirname(root);
+    if (parent === root) break;
+    root = parent;
   }
-  candidates.push(...(process.env.PATH ?? "").split(delimiter).filter(Boolean).map((path) => resolve(path, filename)));
+  candidates.push(...(process.env.PATH ?? "").split(delimiter).filter(Boolean).map((path) => resolve(path, EXECUTABLE)));
   const found = candidates.find(executable);
   if (found !== undefined) return found;
-  throw new Error("Go Router binary not found. Build meshcall-router or set MESHCALL_ROUTER_BINARY / binaryPath.");
+  throw new Error("Go Router binary not found. Run `npx meshcall-router-install`, build meshcall-router from source, or set MESHCALL_ROUTER_BINARY / binaryPath.");
+}
+
+export interface InstallRouterOptions {
+  readonly version?: string;
+  readonly destination?: string;
+  readonly force?: boolean;
+}
+
+/** Download and verify the Router for this platform; resolves with its path. */
+export async function installRouter(options: InstallRouterOptions = {}): Promise<string> {
+  const version = (options.version ?? routerVersion()).replace(/^v/u, "");
+  const directory = options.destination === undefined ? routerCacheDir(version) : resolve(options.destination);
+  const target = resolve(directory, EXECUTABLE);
+  if (!options.force && executable(target)) return target;
+  const asset = platformAsset(version);
+  const base = RELEASE_BASE_URL + "/v" + version;
+  const checksums = Buffer.from(await fetchBytes(base + "/checksums.txt")).toString("utf8");
+  const expected = checksums.split("\n").map((line) => line.trim().split(/\s+/u))
+    .find((parts) => parts[1] === asset)?.[0];
+  if (expected === undefined) throw new Error("Release v" + version + " has no checksum for " + asset);
+  const archive = Buffer.from(await fetchBytes(base + "/" + asset));
+  const actual = createHash("sha256").update(archive).digest("hex");
+  if (actual !== expected) throw new Error("Checksum mismatch for " + asset + ": expected " + expected + ", got " + actual);
+  const binary = extractTarMember(gunzipSync(archive), EXECUTABLE);
+  if (binary === undefined) throw new Error(asset + " does not contain " + EXECUTABLE);
+  mkdirSync(directory, { recursive: true });
+  const staged = target + "." + process.pid + ".tmp";
+  writeFileSync(staged, binary, { mode: 0o755 });
+  renameSync(staged, target);
+  return target;
+}
+
+async function fetchBytes(url: string): Promise<ArrayBuffer> {
+  const response = await fetch(url, { headers: { "user-agent": "meshcall-installer" }, redirect: "follow" });
+  if (!response.ok) throw new Error("Could not download " + url + ": HTTP " + response.status);
+  return response.arrayBuffer();
+}
+
+/** Minimal ustar reader: enough for GoReleaser archives. */
+function extractTarMember(tar: Buffer, filename: string): Buffer | undefined {
+  let offset = 0;
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/su, "");
+    const size = parseInt(header.subarray(124, 136).toString("utf8").replace(/\0.*$/su, "").trim() || "0", 8);
+    const type = String.fromCharCode(header[156] ?? 48);
+    offset += 512;
+    if ((type === "0" || type === "\0") && name.split("/").pop() === filename) {
+      return Buffer.from(tar.subarray(offset, offset + size));
+    }
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return undefined;
 }
 
 async function beforeTimeout(promise: Promise<unknown>, ms: number): Promise<boolean> {
@@ -113,7 +197,7 @@ export class WebSocketRouter {
       if (this.unixPath === undefined) args.push("--host", this.options.host ?? "127.0.0.1", "--port", String(this.options.port ?? 0));
       else args.push("--unix-socket", this.unixPath);
       if (this.options.authFile !== undefined) args.push("--auth-file", resolve(this.options.authFile));
-      const child = spawn(routerBinary(this.options.binaryPath), args, { stdio: "pipe", windowsHide: true });
+      const child = spawn(findRouterBinary(this.options.binaryPath), args, { stdio: "pipe", windowsHide: true });
       this.child = child;
       child.stdin.on("error", () => undefined);
       this.exited = new Promise((resolve) => {

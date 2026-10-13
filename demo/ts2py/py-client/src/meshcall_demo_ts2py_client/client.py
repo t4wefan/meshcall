@@ -25,7 +25,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         *,
         timeout: float | None = None,
     ) -> RpcServerStream[NumberItem]:
-        return self._server_stream(
+        return self.call_server_stream(
             self.service_name,
             'count',
             request,
@@ -40,7 +40,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         *,
         timeout: float | None = None,
     ) -> SumResult:
-        return await self._client_stream(
+        return await self.call_client_stream(
             self.service_name,
             'sum',
             request,
@@ -56,7 +56,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         *,
         timeout: float | None = None,
     ) -> GreetingResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             'greet',
             request,

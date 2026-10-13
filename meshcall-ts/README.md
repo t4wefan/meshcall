@@ -1,7 +1,7 @@
 # meshcall-ts
 
 The TypeScript runtime package for the MeshCall monorepo. Its package name is
-`@meshcall/runtime`.
+`meshcall`.
 
 ```bash
 go -C ../meshcall-router build -o bin/meshcall-router ./cmd/meshcall-router
@@ -52,7 +52,7 @@ timeouts and `next(info)` may be called again to retry. See
 ```typescript
 import {
   defineService, defineType, MeshCallServer, serverStreamMethod,
-} from "@meshcall/runtime";
+} from "meshcall";
 
 const request = defineType<{ count: number }>("CountRequest", {
   type: "object",

@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  router:
+    name: Router binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: meshcall-router
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: meshcall-router/go.mod
+          cache-dependency-path: meshcall-router/go.sum
+      - run: go test -race ./...
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          workdir: meshcall-router
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  python:
+    name: PyPI
+    needs: router
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    defaults:
+      run:
+        working-directory: meshcall-py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+      - name: Check the tag matches the package version
+        run: |
+          version=$(uv version --short)
+          [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$version"; exit 1; }
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: meshcall-py/dist
+
+  npm:
+    name: npm
+    needs: router
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write
+    defaults:
+      run:
+        working-directory: meshcall-ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: yarn
+          cache-dependency-path: meshcall-ts/yarn.lock
+      - name: Check the tag matches the package version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$version"; exit 1; }
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+      - run: npm publish --provenance --access public

@@ -64,7 +64,7 @@ def write_typescript_client_package(
     package_name: str | None = None,
     package_version: str = "0.1.0",
     class_name: str | None = None,
-    runtime_import: str = "@meshcall/runtime",
+    runtime_import: str = "meshcall",
     runtime_version: str = "^0.1.0",
 ) -> Path:
     generated_name = package_name or _default_package_name(contract)
@@ -131,7 +131,7 @@ def _python_pyproject(
     version: str,
     meshcall_requirement: str,
 ) -> str:
-    return f'''[project]
+    return f"""[project]
 name = {json.dumps(distribution_name)}
 version = {json.dumps(version)}
 description = "Generated MeshCall Python client"
@@ -151,7 +151,7 @@ packages = [{json.dumps(f"src/{module_name}")}]
 
 [tool.uv]
 package = true
-'''
+"""
 
 
 def _python_readme(

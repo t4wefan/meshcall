@@ -83,7 +83,9 @@ def test_generated_enums_preserve_validation(generated) -> None:
         )
 
 
-async def test_generated_aliases_round_trip_in_all_recommended_shapes(generated) -> None:
+async def test_generated_aliases_round_trip_in_all_recommended_shapes(
+    generated,
+) -> None:
     driver = WebSocketDirectServerDriver(port=0)
     server = RpcServer(services=[ContractRoundTrip], driver=driver, access_log=False)
     await server.start()

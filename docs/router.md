@@ -222,7 +222,7 @@ async with RouterAuthClient(WebSocketClientDriver(uri, auth=credentials)) as aut
 TypeScript:
 
 ```typescript
-import { MeshCallClient, RouterAuthClient } from "@meshcall/runtime";
+import { MeshCallClient, RouterAuthClient } from "meshcall";
 
 const issuer = new MeshCallClient(uri, undefined, {
   auth: { username: "app", password: process.env.ROUTER_PASSWORD! },

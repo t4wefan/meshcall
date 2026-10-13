@@ -1,4 +1,4 @@
-import { MeshCallServer } from "@meshcall/runtime";
+import { MeshCallServer } from "meshcall";
 
 import { service } from "./service.js";
 

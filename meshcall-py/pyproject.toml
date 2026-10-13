@@ -1,14 +1,35 @@
 [project]
 name = "meshcall"
 version = "0.1.0"
-description = "Async typed RPC for Python services"
+description = "Async typed RPC for Python services: WebSocket direct or through the MeshCall Router"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "t4wefan" }]
 requires-python = ">=3.11"
+keywords = ["rpc", "websocket", "asyncio", "pydantic", "streaming", "router"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Framework :: Pydantic :: 2",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking",
+    "Typing :: Typed",
+]
 dependencies = [
     "loguru>=0.7.3",
     "pydantic>=2.11",
     "websockets>=16.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/t4wefan/meshcall"
+Changelog = "https://github.com/t4wefan/meshcall/blob/main/CHANGELOG.md"
+Issues = "https://github.com/t4wefan/meshcall/issues"
 
 [project.scripts]
 meshcall = "meshcall.cli:main"

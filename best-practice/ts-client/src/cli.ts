@@ -2,7 +2,7 @@
 
 import { createInterface } from "node:readline/promises";
 
-import { MeshCallClient } from "@meshcall/runtime";
+import { MeshCallClient } from "meshcall";
 
 import { LlmServiceClient } from "./index.js";
 

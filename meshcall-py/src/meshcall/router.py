@@ -3,48 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
-import shutil
 from pathlib import Path
 from typing import Self
 
 from meshcall.errors import DriverStateError
 from meshcall.protocol import PROTOCOL_VERSION
-
-
-def _router_binary(binary_path: str | Path | None) -> str:
-    executable = "meshcall-router.exe" if os.name == "nt" else "meshcall-router"
-    configured = binary_path or os.environ.get("MESHCALL_ROUTER_BINARY")
-    if configured:
-        candidate = Path(configured).expanduser().absolute()
-        if not candidate.is_file() or not os.access(candidate, os.X_OK):
-            raise DriverStateError(f"Router binary is not executable: {candidate}")
-        return str(candidate)
-    candidates = [Path(__file__).parent / "bin" / executable]
-    # A demo can install a wheel into its own venv rather than an editable copy.
-    # Find the enclosing source checkout from either the package or the caller.
-    roots = dict.fromkeys(
-        [
-            *Path(__file__).resolve().parents,
-            Path.cwd(),
-            *Path.cwd().parents,
-        ]
-    )
-    candidates.extend(
-        root / "meshcall-router" / "bin" / executable
-        for root in roots
-        if (root / "meshcall-router" / "go.mod").is_file()
-    )
-    for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    installed = shutil.which(executable)
-    if installed:
-        return installed
-    raise DriverStateError(
-        "Go Router binary not found. Build meshcall-router or set "
-        "MESHCALL_ROUTER_BINARY / binary_path to a prebuilt executable."
-    )
+from meshcall.router_install import find_router_binary
 
 
 class WebSocketRouter:
@@ -123,7 +87,7 @@ class WebSocketRouter:
                 return
             await self._stop()
             command = [
-                _router_binary(self.binary_path),
+                find_router_binary(self.binary_path),
                 "--shutdown-on-stdin-close",
                 "--max-frame-size",
                 str(self.max_frame_size),

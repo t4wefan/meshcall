@@ -25,7 +25,7 @@
     "cli": "node dist/cli.js"
   },
   "dependencies": {
-    "@meshcall/runtime": "file:../../meshcall-ts"
+    "meshcall": "file:../../meshcall-ts"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

@@ -65,7 +65,7 @@ class ShowcaseServiceClient(ClientBase):
             name=name,
             repeat=repeat,
         )
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             'greet',
             request,
@@ -79,7 +79,7 @@ class ShowcaseServiceClient(ClientBase):
         *,
         timeout: float | None = None,
     ) -> WelcomeResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             'welcome',
             request,
@@ -98,7 +98,7 @@ class ShowcaseServiceClient(ClientBase):
             start=start,
             stop=stop,
         )
-        return self._server_stream(
+        return self.call_server_stream(
             self.service_name,
             'count',
             request,
@@ -116,7 +116,7 @@ class ShowcaseServiceClient(ClientBase):
         request = ShowcaseServiceSumValuesRequest(
             offset=offset,
         )
-        return await self._client_stream(
+        return await self.call_client_stream(
             self.service_name,
             'sum_values',
             request,

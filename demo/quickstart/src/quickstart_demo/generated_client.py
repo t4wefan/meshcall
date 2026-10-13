@@ -28,7 +28,7 @@ class CounterServiceClient(ClientBase):
         request = CounterServiceCountRequest(
             stop=stop,
         )
-        return self._server_stream(
+        return self.call_server_stream(
             self.service_name,
             'count',
             request,

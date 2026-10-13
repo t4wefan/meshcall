@@ -60,6 +60,25 @@ The `best-practice/` application exercises Python-to-TypeScript unary,
 client-streaming, and server-streaming calls. Typed notifications and the Tags
 DSL remain future milestones.
 
+## Install
+
+```bash
+uv add meshcall            # Python runtime and the `meshcall` CLI
+npm install meshcall       # TypeScript runtime
+```
+
+Router mode also needs the Go Router binary. Fetch the release matching your
+SDK version into the per-user cache (verified against the release checksums):
+
+```bash
+uv run meshcall router install
+```
+
+or `npx meshcall-router-install` from a Node project. Set
+`MESHCALL_ROUTER_BINARY` to use a binary you built or deployed yourself. All
+three packages are released together from one `vX.Y.Z` tag; see
+[CHANGELOG.md](CHANGELOG.md).
+
 ## Development
 
 ```bash
@@ -280,7 +299,7 @@ uv run --project demo/quickstart meshcall generate \
 The Python file contains its Pydantic model classes at module scope as well as
 the generated client. TypeScript single files similarly contain all generated
 interfaces and the client. Their header comments list the external packages to
-install (`meshcall` plus `pydantic` for Python, or `@meshcall/runtime` for
+install (`meshcall` plus `pydantic` for Python, or `meshcall` for
 TypeScript).
 
 ## Portable contracts and cross-language generation
@@ -307,7 +326,7 @@ import {
   defineType,
   unaryMethod,
   writeContract,
-} from "@meshcall/runtime";
+} from "meshcall";
 
 interface AddRequest { left: number; right: number }
 interface AddResult { total: number }

@@ -58,7 +58,10 @@ export {
   type UnaryMethod,
 } from "./server.js";
 
-export { WebSocketRouter, type WebSocketRouterOptions } from "./router.js";
+export {
+  findRouterBinary, installRouter, routerCacheDir, routerVersion, WebSocketRouter,
+  type InstallRouterOptions, type WebSocketRouterOptions,
+} from "./router.js";
 export {
   RouterAuthClient, ROUTER_AUTH_SERVICE, type RouterCredentials, type RouterScope,
   type RouterIdentity, type IssuedToken,

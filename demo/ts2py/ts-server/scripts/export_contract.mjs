@@ -1,4 +1,4 @@
-import { writeContract } from "@meshcall/runtime";
+import { writeContract } from "meshcall";
 
 import { service } from "../dist/service.js";
 

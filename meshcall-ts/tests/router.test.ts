@@ -7,8 +7,12 @@ import test from "node:test";
 
 import {
   MeshCallClient, MeshCallError, MeshCallServer, RouterAuthClient, WebSocketRouter,
-  defineService, defineType, unaryMethod, serverStreamMethod, clientStreamMethod,
+  defineService, defineType, findRouterBinary, unaryMethod, serverStreamMethod, clientStreamMethod,
 } from "../src/index.js";
+
+// These tests spawn the Go Router; skip with a clear reason when no binary is
+// available instead of failing every router test.
+const routerMissing = (() => { try { findRouterBinary(); return false; } catch { return "Go Router binary not built"; } })();
 
 const password = "test-only-password";
 const salt = Buffer.from("meshcall-test-01");
@@ -38,7 +42,7 @@ const service = defineService({
 });
 const isError = (code: string) => (error: unknown) => error instanceof MeshCallError && error.code === code;
 
-test("TypeScript owns a Go process, retries a failed bind and handles Unix cleanup", { timeout: 10000 }, async (t) => {
+test("TypeScript owns a Go process, retries a failed bind and handles Unix cleanup", { timeout: 10000, skip: routerMissing }, async (t) => {
   const router = new WebSocketRouter();
   t.after(() => router.close());
   await Promise.all([router.start(), router.start()]);
@@ -70,7 +74,7 @@ test("TypeScript owns a Go process, retries a failed bind and handles Unix clean
   assert.equal(router.isRunning, false);
 });
 
-test("typed AuthService issues scopes, routes all call shapes and revokes an active stream", { timeout: 10000 }, async (t) => {
+test("typed AuthService issues scopes, routes all call shapes and revokes an active stream", { timeout: 10000, skip: routerMissing }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "meshcall-ts-auth-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, "auth.json");

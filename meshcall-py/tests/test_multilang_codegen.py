@@ -77,7 +77,7 @@ class OneWayStreamService:
 def test_renders_typescript_client_from_python_contract() -> None:
     source = render_typescript_client(get_service_contract(GreetingService))
 
-    assert "// External dependency: yarn add @meshcall/runtime@^0.1.0" in source
+    assert "// External dependency: yarn add meshcall@^0.1.0" in source
     assert "export interface GreetingRequest" in source
     assert "name: string;" in source
     assert "tags?: Array<string>;" in source
@@ -118,9 +118,15 @@ def test_typescript_generator_preserves_one_way_streaming_shapes() -> None:
     assert "type MeshCallServerStream" in source
     assert "public download(" in source
     assert "MeshCallServerStream<StreamItem>" in source
-    assert "this.rpc.serverStream<OneWayStreamServiceDownloadRequest, StreamItem>" in source
+    assert (
+        "this.rpc.serverStream<OneWayStreamServiceDownloadRequest, StreamItem>"
+        in source
+    )
     assert "items: AsyncIterable<StreamItem>," in source
-    assert "this.rpc.clientStream<OneWayStreamServiceUploadRequest, StreamItem, StreamResult>" in source
+    assert (
+        "this.rpc.clientStream<OneWayStreamServiceUploadRequest, StreamItem, StreamResult>"
+        in source
+    )
 
 
 def test_portable_contract_round_trip_and_python_generation(tmp_path) -> None:
@@ -148,17 +154,13 @@ def test_default_generators_write_complete_packages(tmp_path) -> None:
         tmp_path / "typescript-client",
     )
 
-    python_module = (
-        python_root / "src" / "meshcall_test_v1_greetingservice_client"
-    )
+    python_module = python_root / "src" / "meshcall_test_v1_greetingservice_client"
     assert (python_root / "pyproject.toml").is_file()
     assert (python_module / "__init__.py").is_file()
     assert (python_module / "models.py").is_file()
     assert (python_module / "client.py").is_file()
     assert (python_module / "py.typed").is_file()
-    assert "[tool.uv]" in (python_root / "pyproject.toml").read_text(
-        encoding="utf-8"
-    )
+    assert "[tool.uv]" in (python_root / "pyproject.toml").read_text(encoding="utf-8")
 
     assert (typescript_root / "package.json").is_file()
     assert (typescript_root / "tsconfig.json").is_file()

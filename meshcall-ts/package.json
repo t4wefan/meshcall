@@ -1,16 +1,42 @@
 {
-  "name": "@meshcall/runtime",
+  "name": "meshcall",
   "version": "0.1.0",
-  "private": true,
+  "description": "Async typed RPC for TypeScript services: WebSocket direct or through the MeshCall Router",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/t4wefan/meshcall.git",
+    "directory": "meshcall-ts"
+  },
+  "homepage": "https://github.com/t4wefan/meshcall#readme",
+  "bugs": "https://github.com/t4wefan/meshcall/issues",
+  "keywords": ["rpc", "websocket", "typed", "streaming", "router"],
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "meshcall-router-install": "./dist/src/install-router.js"
+  },
   "files": [
-    "dist/src"
+    "dist/src",
+    "README.md"
   ],
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "packageManager": "yarn@1.22.22",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
+    "prepack": "yarn build",
     "test": "yarn build && node --test dist/tests/*.test.js"
   },
   "dependencies": {

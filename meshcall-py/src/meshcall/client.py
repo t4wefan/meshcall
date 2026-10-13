@@ -124,7 +124,7 @@ class ClientBase:
     async def __aexit__(self, *args: object) -> None:
         await self.stop()
 
-    async def _unary(
+    async def call_unary(
         self,
         service: str,
         method: str,
@@ -158,7 +158,7 @@ class ClientBase:
 
         return await self._run_chain(info, innermost)
 
-    def _server_stream(
+    def call_server_stream(
         self,
         service: str,
         method: str,
@@ -197,7 +197,7 @@ class ClientBase:
 
         return _ClientServerStream(_observed(asyncio.create_task(open())))
 
-    async def _client_stream(
+    async def call_client_stream(
         self,
         service: str,
         method: str,
@@ -245,7 +245,7 @@ class ClientBase:
 
         return await self._run_chain(info, innermost)
 
-    def _duplex(
+    def call_duplex(
         self,
         service: str,
         method: str,
@@ -284,6 +284,14 @@ class ClientBase:
             return await _stream_open_task(stream)
 
         return _ClientDuplex(_observed(asyncio.create_task(open())))
+
+    # Generated clients subclass ClientBase and name their methods after RPC
+    # methods, so the runtime entry points carry a call_ prefix. Older generated
+    # code uses the underscore names.
+    _unary = call_unary
+    _server_stream = call_server_stream
+    _client_stream = call_client_stream
+    _duplex = call_duplex
 
     def _run_chain(self, info: ClientCallInfo, innermost: ClientCallNext) -> Any:
         """Invoke the interceptor chain; the first interceptor is outermost."""

@@ -9,6 +9,9 @@ import {
   serverStreamMethod, unaryMethod, WebSocketRouter, type MeshCallServerOptions,
 } from "../src/index.js";
 import { decodeFrame, encodeFrame, PROTOCOL_VERSION, type CallOpenFrame } from "../src/protocol.js";
+import { findRouterBinary } from "../src/router.js";
+
+const routerMissing = (() => { try { findRouterBinary(); return false; } catch { return "Go Router binary not built"; } })();
 
 interface Value { value: number }
 interface Echo { value: number; metadata: Record<string, string>; remainingKnown: boolean }
@@ -204,7 +207,7 @@ test("the client reconnects after a direct server restart, bounded by the call t
   assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 3 }, { timeoutMs: 5000 })).value, 3);
 });
 
-test("a Router-mode server re-registers after the Router restarts", { timeout: 15000 }, async (t) => {
+test("a Router-mode server re-registers after the Router restarts", { timeout: 15000, skip: routerMissing }, async (t) => {
   const router = new WebSocketRouter();
   await router.start();
   const port = router.boundPort;

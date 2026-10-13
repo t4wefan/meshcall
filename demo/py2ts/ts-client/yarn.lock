@@ -2,7 +2,7 @@
 # yarn lockfile v1
 
 
-"@meshcall/runtime@file:../../../meshcall-ts":
+"meshcall@file:../../../meshcall-ts":
   version "0.1.0"
   dependencies:
     ajv "^8"

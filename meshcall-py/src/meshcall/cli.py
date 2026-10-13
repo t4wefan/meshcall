@@ -15,6 +15,7 @@ from meshcall.package_codegen import (
     write_python_client_package,
     write_typescript_client_package,
 )
+from meshcall.router_install import find_router_binary, install_router
 
 
 def main() -> None:
@@ -41,9 +42,23 @@ def main() -> None:
         choices=("python", "typescript"),
         default="python",
     )
-    generate.add_argument("--runtime-import", default="@meshcall/runtime")
+    generate.add_argument("--runtime-import", default="meshcall")
     generate.add_argument("--runtime-version", default="^0.1.0")
     generate.add_argument("--meshcall-requirement", default="meshcall>=0.1.0")
+
+    router = subparsers.add_parser("router", help="manage the Go Router binary")
+    router_commands = router.add_subparsers(dest="router_command", required=True)
+    install = router_commands.add_parser(
+        "install", help="download the Router release matching this package"
+    )
+    install.add_argument("--version", help="release version, default: this package's")
+    install.add_argument("--destination", help="directory, default: the user cache")
+    install.add_argument(
+        "--force", action="store_true", help="replace an existing binary"
+    )
+    router_commands.add_parser(
+        "path", help="print the Router binary that would be used"
+    )
 
     export = subparsers.add_parser("export", help="export a portable contract")
     export.add_argument("service", help="import path in module:Class form")
@@ -74,7 +89,7 @@ def main() -> None:
         choices=("python", "typescript"),
         required=True,
     )
-    portable.add_argument("--runtime-import", default="@meshcall/runtime")
+    portable.add_argument("--runtime-import", default="meshcall")
     portable.add_argument("--runtime-version", default="^0.1.0")
     portable.add_argument("--meshcall-requirement", default="meshcall>=0.1.0")
     args = parser.parse_args()
@@ -116,6 +131,15 @@ def main() -> None:
                 runtime_import=args.runtime_import,
                 runtime_version=args.runtime_version,
             )
+    elif args.command == "router":
+        if args.router_command == "install":
+            print(
+                install_router(
+                    args.version, destination=args.destination, force=args.force
+                )
+            )
+        else:
+            print(find_router_binary())
     elif args.command == "export":
         service_type = _import_object(args.service)
         write_contract((get_service_contract(service_type),), args.output)
