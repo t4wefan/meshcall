@@ -128,3 +128,28 @@ task can't operate through a newly acquired generation.
 - Call metadata (`call.open`) and trailers (`call.result` / `call.error`) are
   string maps that reach handlers through `RpcContext` and are otherwise opaque
   to the runtime.
+
+## Interceptors
+
+Both runtimes expose one interception point per side, shaped the same way in
+Python and TypeScript.
+
+- **Server**: `RpcServer(interceptors=[...])` / `MeshCallServer({ interceptors })`.
+  Each interceptor is `(ctx, request, call_next) -> result`. It runs after
+  request validation, on the same loop as the handler, and `call_next()`
+  resolves only once the whole call has run, including every streamed item.
+  Raising a `MeshCallError` short-circuits the call; `ctx.set_trailer()` adds
+  trailers; `ctx.metadata` carries what the caller sent. The built-in access
+  log stays outside the chain because the authoritative status is only known
+  when the terminal frame is sent.
+- **Client**: `ClientBase(interceptors=[...])` / `MeshCallClient(url, peerId,
+  { interceptors })`. Each interceptor is `(info, call_next) -> result` where
+  `info` names the service, method and shape and holds mutable `options`
+  (timeouts, metadata). `call_next(info)` returns the response for unary and
+  client-stream calls, or the lazy stream object for server streams, and may be
+  invoked again to retry. `info.trailers` is populated for unary and
+  client-stream calls after `call_next` returns; streams expose `.trailers`
+  once iteration completes.
+
+The first interceptor in either list is outermost. Interceptors do not see
+individual stream items; that remains a future extension.

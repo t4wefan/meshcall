@@ -40,6 +40,13 @@ treat a missing `pong` after `pingTimeoutMs` (10 s) as a lost connection. Direct
 servers close clients silent for `idleTimeoutMs` (45 s); Router-mode servers
 ping the Router instead.
 
+Interceptors wrap every call on either side. A server interceptor is
+`(ctx, request, next) => result` passed as `interceptors` to `MeshCallServer`;
+a client interceptor is `(info, next) => result` passed in `MeshCallClient`
+options, where `info.options` can be replaced to add metadata or change
+timeouts and `next(info)` may be called again to retry. See
+[architecture](../docs/architecture.md#interceptors).
+
 ## Streaming service
 
 ```typescript

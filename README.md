@@ -49,7 +49,12 @@ The current implementation includes:
 - TypeScript JSON Schema payload validation, call-bound loggers, and terminal access logs;
 - Python and TypeScript launchers for one standalone Go Router;
 - Router account authentication and built-in RPC for issuing/revoking temporary
-  tokens restricted by service, method and registration scope.
+  tokens restricted by service, method and registration scope;
+- relative call timeouts enforced by server, Router and client, stream idle
+  timeouts, call metadata and response trailers, protocol keepalive, and
+  automatic reconnection with backoff (clients and Router-mode servers);
+- client and server interceptor chains for cross-cutting concerns such as
+  tracing, auth and retries.
 
 The `best-practice/` application exercises Python-to-TypeScript unary,
 client-streaming, and server-streaming calls. Typed notifications and the Tags

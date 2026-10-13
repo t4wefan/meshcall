@@ -15,15 +15,15 @@ import {
   decodeFrame, FrameDecodeError, PROTOCOL_VERSION, type Frame, type RegisteredService,
 } from "./protocol.js";
 import { ServerSession, type RuntimeMethod, type RuntimeServices } from "./server-session.js";
-import type { ServiceDefinition } from "./service.js";
+import type { ServiceDefinition, ServerInterceptor } from "./service.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import { compileMethod } from "./validation.js";
 
 import type { RouterCredentials } from "./router-auth.js";
 
 export type {
-  ClientStreamMethod, RpcContext, ServerStreamMethod, ServiceDefinition,
-  ServiceMethod, UnaryContext, UnaryMethod,
+  ClientStreamMethod, RpcContext, ServerCallNext, ServerInterceptor, ServerStreamMethod,
+  ServiceDefinition, ServiceMethod, UnaryContext, UnaryMethod,
 } from "./service.js";
 
 export interface RouterConnectionOptions {
@@ -47,6 +47,8 @@ export interface MeshCallServerOptions {
   readonly pingTimeoutMs?: number;
   /** Router mode: how to re-register after the Router connection drops. */
   readonly reconnect?: ReconnectPolicy;
+  /** Wrap every call; the first interceptor is outermost. */
+  readonly interceptors?: ReadonlyArray<ServerInterceptor>;
   readonly accessLog?: boolean;
   readonly logLevel?: LogLevel;
   readonly colorize?: boolean;
@@ -222,6 +224,7 @@ export class MeshCallServer {
       logger: this.logger,
       accessLog: this.options.accessLog ?? true,
       logLevel: this.options.logLevel ?? "info",
+      interceptors: this.options.interceptors ?? [],
     }, liveness);
     this.sessions.set(socket, session);
     socket.on("close", () => {

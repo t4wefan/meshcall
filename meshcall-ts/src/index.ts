@@ -3,6 +3,9 @@ export {
   MeshCallClient,
   MeshCallServerStream,
   type CallOptions,
+  type ClientCallInfo,
+  type ClientCallNext,
+  type ClientInterceptor,
   type MeshCallClientOptions,
 } from "./client.js";
 export {
@@ -45,6 +48,8 @@ export {
   type MeshCallServerOptions,
   type RouterConnectionOptions,
   type RpcContext,
+  type ServerCallNext,
+  type ServerInterceptor,
   type ServerStreamMethod,
   type ClientStreamMethod,
   type ServiceMethod,

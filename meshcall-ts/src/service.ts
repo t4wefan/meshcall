@@ -60,3 +60,23 @@ export interface ServiceDefinition {
   readonly balance?: BalancePolicy;
   readonly methods: Readonly<Record<string, ServiceMethod>>;
 }
+
+/**
+ * Runs the rest of the server chain: later interceptors, then the handler.
+ * Resolves after the whole call, including every streamed item, with the
+ * handler's final result (`null` for server streams). Handler and runtime
+ * errors reject through it.
+ */
+export type ServerCallNext = () => Promise<unknown>;
+
+/**
+ * `(ctx, request, next) => result`. Runs in the order given to
+ * `MeshCallServer({ interceptors })`; the first one is outermost. `request` is
+ * the validated request. Throwing a `MeshCallError` short-circuits the call;
+ * a returned value is validated like a handler's.
+ */
+export type ServerInterceptor = (
+  context: RpcContext,
+  request: unknown,
+  next: ServerCallNext,
+) => Promise<unknown>;

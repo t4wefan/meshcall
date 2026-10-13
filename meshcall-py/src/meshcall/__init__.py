@@ -12,7 +12,16 @@ from meshcall.codegen_typescript import (
     render_typescript_models,
     write_typescript_client,
 )
-from meshcall.context import CallOptions, ReconnectPolicy, RpcContext
+from meshcall.context import (
+    CallOptions,
+    ClientCallInfo,
+    ClientCallNext,
+    ClientInterceptor,
+    ReconnectPolicy,
+    RpcContext,
+    ServerCallNext,
+    ServerInterceptor,
+)
 from meshcall.contract import (
     Balance,
     get_service_contract,
@@ -52,6 +61,9 @@ __all__ = [
     "BindingKind",
     "CallOptions",
     "ClientBase",
+    "ClientCallInfo",
+    "ClientCallNext",
+    "ClientInterceptor",
     "ContractError",
     "IssuedToken",
     "MeshCallError",
@@ -69,6 +81,8 @@ __all__ = [
     "RpcLogger",
     "RpcServer",
     "RpcServerStream",
+    "ServerCallNext",
+    "ServerInterceptor",
     "StreamKind",
     "WebSocketRouter",
     "get_service_contract",

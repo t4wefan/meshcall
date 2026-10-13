@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import random
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import Any
 
 from meshcall.logging import RpcLogger
 
@@ -124,3 +125,50 @@ class RpcContext:
     @property
     def trailers(self) -> Mapping[str, str]:
         return MappingProxyType(self._trailers)
+
+
+# -- interceptors -----------------------------------------------------------
+
+ServerCallNext = Callable[[], Awaitable[Any]]
+"""Runs the rest of the server chain: later interceptors, then the handler.
+
+Awaiting it covers the whole call, including every streamed item, and returns
+the handler's final result (``None`` for server streams). Exceptions raised by
+the handler or by the runtime (validation, cancellation) propagate through it.
+"""
+
+ServerInterceptor = Callable[[RpcContext, Any, ServerCallNext], Awaitable[Any]]
+"""``async def intercept(ctx, request, call_next) -> result``.
+
+Server interceptors run on the service worker loop in the order given to
+``RpcServer(interceptors=[...])``; the first one is outermost. ``request`` is
+the validated request model. Raising ``MeshCallError`` short-circuits the call
+with that error; the result an interceptor returns is validated like a
+handler's.
+"""
+
+
+@dataclass
+class ClientCallInfo:
+    """What a client interceptor sees for one outgoing call.
+
+    ``options`` may be replaced to add metadata or adjust timeouts before the
+    call is sent. ``trailers`` is filled for unary and client-stream calls once
+    ``call_next`` returns; streams expose trailers on the returned object.
+    """
+
+    service: str
+    method: str
+    stream: str
+    options: CallOptions
+    trailers: Mapping[str, str] = field(default_factory=dict)
+
+
+ClientCallNext = Callable[[ClientCallInfo], Awaitable[Any]]
+"""Runs the rest of the client chain and returns what the call returns: the
+response for unary and client-stream calls, or the lazy stream object for
+server-stream and duplex calls. It may be awaited more than once to retry."""
+
+ClientInterceptor = Callable[[ClientCallInfo, ClientCallNext], Awaitable[Any]]
+"""``async def intercept(info, call_next) -> result``; first interceptor is
+outermost."""

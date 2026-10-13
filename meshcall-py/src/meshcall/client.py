@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import time
 import uuid
-from collections.abc import AsyncIterable, Mapping
+from collections.abc import AsyncIterable, Mapping, Sequence
 from typing import Any, Self
 
 from pydantic import BaseModel, ValidationError
@@ -12,6 +12,9 @@ from pydantic import BaseModel, ValidationError
 from meshcall.context import (
     DEFAULT_RECONNECT,
     CallOptions,
+    ClientCallInfo,
+    ClientCallNext,
+    ClientInterceptor,
     ReconnectPolicy,
     client_deadline_grace,
 )
@@ -54,10 +57,12 @@ class ClientBase:
         *,
         deadline_grace: float | None = None,
         reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
+        interceptors: Sequence[ClientInterceptor] = (),
     ) -> None:
         self.driver = driver
         self.deadline_grace = deadline_grace
         self.reconnect = reconnect
+        self.interceptors = tuple(interceptors)
         self._connection: FrameConnection | None = None
         self._calls: dict[str, _ClientCall] = {}
         self._state_lock = asyncio.Lock()
@@ -130,18 +135,28 @@ class ClientBase:
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> Any:
-        call = await self._open_call(
-            service,
-            method,
-            request,
-            response_type=response_type,
-            options=CallOptions(timeout, idle_timeout, metadata),
+        info = ClientCallInfo(
+            service, method, "unary", CallOptions(timeout, idle_timeout, metadata)
         )
-        try:
-            return await call.result()
-        except asyncio.CancelledError:
-            await asyncio.shield(call.cancel("caller_cancelled"))
-            raise
+
+        async def innermost(info: ClientCallInfo) -> Any:
+            call = await self._open_call(
+                info.service,
+                info.method,
+                request,
+                response_type=response_type,
+                options=info.options,
+            )
+            try:
+                result = await call.result()
+            except asyncio.CancelledError:
+                await asyncio.shield(call.cancel("caller_cancelled"))
+                raise
+            finally:
+                info.trailers = call.trailers
+            return result
+
+        return await self._run_chain(info, innermost)
 
     def _server_stream(
         self,
@@ -154,20 +169,33 @@ class ClientBase:
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[Any]:
-        options = CallOptions(timeout, idle_timeout, metadata)
-        return _ClientServerStream(
-            _observed(
-                asyncio.create_task(
-                    self._open_call(
-                        service,
-                        method,
-                        request,
-                        output_type=item_type,
-                        options=options,
+        info = ClientCallInfo(
+            service,
+            method,
+            "server_stream",
+            CallOptions(timeout, idle_timeout, metadata),
+        )
+
+        async def innermost(info: ClientCallInfo) -> _ClientServerStream:
+            return _ClientServerStream(
+                _observed(
+                    asyncio.create_task(
+                        self._open_call(
+                            info.service,
+                            info.method,
+                            request,
+                            output_type=item_type,
+                            options=info.options,
+                        )
                     )
                 )
             )
-        )
+
+        async def open() -> _ClientCall:
+            stream = await self._run_chain(info, innermost)
+            return await _stream_open_task(stream)
+
+        return _ClientServerStream(_observed(asyncio.create_task(open())))
 
     async def _client_stream(
         self,
@@ -182,28 +210,40 @@ class ClientBase:
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> Any:
-        call = await self._open_call(
+        info = ClientCallInfo(
             service,
             method,
-            request,
-            response_type=response_type,
-            input_type=input_type,
-            options=CallOptions(timeout, idle_timeout, metadata),
+            "client_stream",
+            CallOptions(timeout, idle_timeout, metadata),
         )
-        pump = asyncio.create_task(
-            self._pump_input(call, items),
-            name=f"meshcall-input-{call.call_id}",
-        )
-        try:
-            return await call.result()
-        except asyncio.CancelledError:
-            await asyncio.shield(call.cancel("caller_cancelled"))
-            raise
-        finally:
-            if not pump.done():
-                pump.cancel()
-            with contextlib.suppress(asyncio.CancelledError, MeshCallError):
-                await pump
+
+        async def innermost(info: ClientCallInfo) -> Any:
+            call = await self._open_call(
+                info.service,
+                info.method,
+                request,
+                response_type=response_type,
+                input_type=input_type,
+                options=info.options,
+            )
+            pump = asyncio.create_task(
+                self._pump_input(call, items),
+                name=f"meshcall-input-{call.call_id}",
+            )
+            try:
+                result = await call.result()
+            except asyncio.CancelledError:
+                await asyncio.shield(call.cancel("caller_cancelled"))
+                raise
+            finally:
+                info.trailers = call.trailers
+                if not pump.done():
+                    pump.cancel()
+                with contextlib.suppress(asyncio.CancelledError, MeshCallError):
+                    await pump
+            return result
+
+        return await self._run_chain(info, innermost)
 
     def _duplex(
         self,
@@ -218,22 +258,39 @@ class ClientBase:
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> RpcDuplexClient[Any, Any, Any]:
-        options = CallOptions(timeout, idle_timeout, metadata)
-        return _ClientDuplex(
-            _observed(
-                asyncio.create_task(
-                    self._open_call(
-                        service,
-                        method,
-                        request,
-                        response_type=result_type,
-                        input_type=input_type,
-                        output_type=output_type,
-                        options=options,
+        info = ClientCallInfo(
+            service, method, "duplex", CallOptions(timeout, idle_timeout, metadata)
+        )
+
+        async def innermost(info: ClientCallInfo) -> _ClientDuplex:
+            return _ClientDuplex(
+                _observed(
+                    asyncio.create_task(
+                        self._open_call(
+                            info.service,
+                            info.method,
+                            request,
+                            response_type=result_type,
+                            input_type=input_type,
+                            output_type=output_type,
+                            options=info.options,
+                        )
                     )
                 )
             )
-        )
+
+        async def open() -> _ClientCall:
+            stream = await self._run_chain(info, innermost)
+            return await _stream_open_task(stream)
+
+        return _ClientDuplex(_observed(asyncio.create_task(open())))
+
+    def _run_chain(self, info: ClientCallInfo, innermost: ClientCallNext) -> Any:
+        """Invoke the interceptor chain; the first interceptor is outermost."""
+        call_next = innermost
+        for interceptor in reversed(self.interceptors):
+            call_next = _bind_client_interceptor(interceptor, call_next)
+        return call_next(info)
 
     async def _open_call(
         self,
@@ -399,6 +456,24 @@ class ClientBase:
         elif isinstance(frame, CallErrorFrame):
             await call.receive_error(frame)
             self._calls.pop(call.call_id, None)
+
+
+def _bind_client_interceptor(
+    interceptor: ClientInterceptor, call_next: ClientCallNext
+) -> ClientCallNext:
+    async def bound(info: ClientCallInfo) -> Any:
+        return await interceptor(info, call_next)
+
+    return bound
+
+
+async def _stream_open_task(stream: Any) -> _ClientCall:
+    """Resolve the ``_ClientCall`` behind whatever an interceptor returned."""
+    if not isinstance(stream, (_ClientServerStream, _ClientDuplex)):
+        raise TypeError(
+            "Client interceptors must return the stream produced by call_next"
+        )
+    return await stream._open_task
 
 
 def _observed(task: asyncio.Task[_ClientCall]) -> asyncio.Task[_ClientCall]:
@@ -607,7 +682,11 @@ class _ClientCall:
             if self._idle_handle is not None:
                 self._idle_handle.cancel()
                 self._idle_handle = None
-            self.output_queue.put_nowait(_STREAM_END)
+            # A pure server stream ends for its consumer when the terminal
+            # frame (with trailers) arrives; duplex consumers see the end now
+            # and read the result separately.
+            if self.input_type is not None:
+                self.output_queue.put_nowait(_STREAM_END)
 
     async def receive_result(self, frame: CallResultFrame) -> None:
         if self.terminal:
@@ -626,6 +705,8 @@ class _ClientCall:
             return
         if not self.result_future.done():
             self.result_future.set_result(result)
+        if self.output_type is not None and self.input_type is None:
+            self.output_queue.put_nowait(_STREAM_END)
         await self.send_credit.close(
             MeshCallError(ErrorCode.CANCELLED, "Call is complete")
         )

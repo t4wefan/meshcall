@@ -15,7 +15,7 @@ from typing import Any
 from loguru import logger as default_logger
 from pydantic import BaseModel, ValidationError
 
-from meshcall.context import RpcContext
+from meshcall.context import RpcContext, ServerCallNext, ServerInterceptor
 from meshcall.contract import (
     MethodBinding,
     get_service_contract,
@@ -88,12 +88,14 @@ class ServerRuntime:
         log_level: str | int = "INFO",
         colorize: bool = False,
         logger: RpcLogger | None = None,
+        interceptors: Sequence[ServerInterceptor] = (),
     ) -> None:
         self.worker = worker
         self.access_log = access_log
         self.log_level = log_level
         self.colorize = colorize
         self.logger: RpcLogger = logger if logger is not None else default_logger
+        self.interceptors = tuple(interceptors)
         self._contracts: list[ServiceContract] = []
         self._methods: dict[tuple[str, str], RuntimeMethod] = {}
         for service in services:
@@ -170,6 +172,7 @@ class ServerRuntime:
             log_level=self.log_level,
             colorize=self.colorize,
             logger=self.logger,
+            interceptors=self.interceptors,
         )
         try:
             while True:
@@ -200,6 +203,7 @@ class _ServerSession:
         log_level: str | int,
         colorize: bool,
         logger: RpcLogger,
+        interceptors: tuple[ServerInterceptor, ...] = (),
     ) -> None:
         self.connection = connection
         self.methods = methods
@@ -208,6 +212,7 @@ class _ServerSession:
         self.log_level = log_level
         self.colorize = colorize
         self.logger = logger
+        self.interceptors = interceptors
         self.calls: dict[str, _ServerCall] = {}
 
     async def handle(self, frame: Frame) -> None:
@@ -521,6 +526,21 @@ class _ServerCall:
 
     async def _execute_worker(self) -> Any:
         request = self.method.request_type.model_validate(self.open_frame.payload)
+
+        async def invoke() -> Any:
+            return await self._invoke_handler(request)
+
+        call_next: ServerCallNext = invoke
+        for interceptor in reversed(self.session.interceptors):
+            call_next = _bind_interceptor(interceptor, self.context, request, call_next)
+        result = await call_next()
+        if self.method.response_type is None:
+            return None
+        validated = self.method.response_type.model_validate(result)
+        return validated.model_dump(mode="json", by_alias=True)
+
+    async def _invoke_handler(self, request: BaseModel) -> Any:
+        """Run the handler to completion, streaming every output item."""
         kind = self.method.contract.stream
         if kind is StreamKind.UNARY:
             args, kwargs = self.method.method_binding.arguments(
@@ -528,8 +548,8 @@ class _ServerCall:
                 logger=self.logger,
                 context=self.context,
             )
-            result = await self.method.handler(*args, **kwargs)
-        elif kind is StreamKind.SERVER:
+            return await self.method.handler(*args, **kwargs)
+        if kind is StreamKind.SERVER:
             args, kwargs = self.method.method_binding.arguments(
                 request,
                 logger=self.logger,
@@ -538,31 +558,24 @@ class _ServerCall:
             iterator = self.method.handler(*args, **kwargs)
             async for item in iterator:
                 await self._send_worker_output(item)
-            result = None
-        else:
-            inbound = _ServerInputStream(self)
-            if kind is StreamKind.CLIENT:
-                args, kwargs = self.method.method_binding.arguments(
-                    request,
-                    inbound,
-                    logger=self.logger,
-                    context=self.context,
-                )
-                result = await self.method.handler(*args, **kwargs)
-            else:
-                channel = _ServerDuplex(self)
-                args, kwargs = self.method.method_binding.arguments(
-                    request,
-                    channel,
-                    logger=self.logger,
-                    context=self.context,
-                )
-                result = await self.method.handler(*args, **kwargs)
-
-        if self.method.response_type is None:
             return None
-        validated = self.method.response_type.model_validate(result)
-        return validated.model_dump(mode="json", by_alias=True)
+        inbound = _ServerInputStream(self)
+        if kind is StreamKind.CLIENT:
+            args, kwargs = self.method.method_binding.arguments(
+                request,
+                inbound,
+                logger=self.logger,
+                context=self.context,
+            )
+            return await self.method.handler(*args, **kwargs)
+        channel = _ServerDuplex(self)
+        args, kwargs = self.method.method_binding.arguments(
+            request,
+            channel,
+            logger=self.logger,
+            context=self.context,
+        )
+        return await self.method.handler(*args, **kwargs)
 
     async def _send_worker_output(self, item: BaseModel) -> None:
         output_type = self.method.output_type
@@ -676,6 +689,7 @@ class RpcServer:
         log_level: str | int = "INFO",
         colorize: bool = False,
         logger: RpcLogger | None = None,
+        interceptors: Sequence[ServerInterceptor] = (),
     ) -> None:
         self._services = list(services)
         self.driver = driver
@@ -683,6 +697,7 @@ class RpcServer:
         self.log_level = log_level
         self.colorize = colorize
         self.logger: RpcLogger = logger if logger is not None else default_logger
+        self.interceptors = tuple(interceptors)
         self.owner_id = uuid.uuid4().hex
         self.state = ServerState.IDLE
         self._state_lock = asyncio.Lock()
@@ -719,6 +734,7 @@ class RpcServer:
                     log_level=self.log_level,
                     colorize=self.colorize,
                     logger=self.logger,
+                    interceptors=self.interceptors,
                 )
                 await self.driver.start(binding, runtime)
             except BaseException:
@@ -793,6 +809,18 @@ def _log_access(
         (time.perf_counter() - started_at) * 1000,
         call_id,
     )
+
+
+def _bind_interceptor(
+    interceptor: ServerInterceptor,
+    context: RpcContext,
+    request: Any,
+    call_next: ServerCallNext,
+) -> ServerCallNext:
+    async def bound() -> Any:
+        return await interceptor(context, request, call_next)
+
+    return bound
 
 
 def _resolve_optional_type(ref: TypeRef | None) -> type[BaseModel] | None:

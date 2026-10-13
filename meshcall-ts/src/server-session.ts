@@ -5,7 +5,7 @@ import { safelyLog, type LogLevel, type RpcLogger } from "./logging.js";
 import type {
   CallOpenFrame, ErrorPayload, Frame, Metadata, StreamEndFrame, StreamItemFrame, StreamWindowFrame,
 } from "./protocol.js";
-import type { RpcContext, ServiceMethod } from "./service.js";
+import type { RpcContext, ServerCallNext, ServerInterceptor, ServiceMethod } from "./service.js";
 import type { FrameWriter } from "./transport.js";
 import { validatePayload, type MethodValidators } from "./validation.js";
 
@@ -20,6 +20,7 @@ export interface SessionOptions {
   logger: RpcLogger;
   accessLog: boolean;
   logLevel: LogLevel;
+  interceptors: ReadonlyArray<ServerInterceptor>;
 }
 
 export class ServerSession {
@@ -249,44 +250,12 @@ class ServerCall {
   private async run(): Promise<void> {
     try {
       const request = validatePayload(this.method.validators.request, this.frame.payload, "request");
-      const definition = this.method.definition;
-      let result: unknown;
-      if (definition.stream === "unary") {
-        result = await definition.handler(request, this.context);
-      } else if (definition.stream === "client_stream") {
-        this.inputAllowance = INITIAL_STREAM_CREDIT;
-        await this.session.writer.send({
-          kind: "stream.window", call_id: this.frame.call_id,
-          direction: "client", credit: INITIAL_STREAM_CREDIT,
-        });
-        if (this.terminal) return;
-        this.armIdle();
-        result = await definition.handler(request, this.inputItems(), this.context);
-      } else {
-        const iterable = await definition.handler(request, this.context);
-        this.output = iterable[Symbol.asyncIterator]();
-        if (this.terminal) {
-          this.closeIterator();
-          return;
-        }
-        while (!this.terminal) {
-          await this.credit.acquire();
-          const next = await this.output.next();
-          if (this.terminal) return;
-          if (next.done === true) break;
-          const payload = validatePayload(this.method.validators.output, next.value, "output stream item");
-          await this.session.writer.send({
-            kind: "stream.item", call_id: this.frame.call_id, direction: "server",
-            sequence: this.outputSequence, payload,
-          });
-          this.outputSequence += 1;
-        }
-        if (this.terminal) return;
-        await this.session.writer.send({
-          kind: "stream.end", call_id: this.frame.call_id, direction: "server",
-        });
-        result = null;
+      let next: ServerCallNext = () => this.invokeHandler(request);
+      for (const interceptor of [...this.session.options.interceptors].reverse()) {
+        const inner = next;
+        next = () => interceptor(this.context, request, inner);
       }
+      const result = await next();
       if (this.terminal) return;
       const payload = validatePayload(this.method.validators.response, result ?? null, "response");
       await this.finish({
@@ -295,6 +264,47 @@ class ServerCall {
     } catch (error) {
       await this.fail(error);
     }
+  }
+
+  /** Run the handler to completion, streaming every output item. */
+  private async invokeHandler(request: unknown): Promise<unknown> {
+    const definition = this.method.definition;
+    if (definition.stream === "unary") {
+      return definition.handler(request, this.context);
+    }
+    if (definition.stream === "client_stream") {
+      this.inputAllowance = INITIAL_STREAM_CREDIT;
+      await this.session.writer.send({
+        kind: "stream.window", call_id: this.frame.call_id,
+        direction: "client", credit: INITIAL_STREAM_CREDIT,
+      });
+      if (this.terminal) return null;
+      this.armIdle();
+      return definition.handler(request, this.inputItems(), this.context);
+    }
+    const iterable = await definition.handler(request, this.context);
+    this.output = iterable[Symbol.asyncIterator]();
+    if (this.terminal) {
+      this.closeIterator();
+      return null;
+    }
+    while (!this.terminal) {
+      await this.credit.acquire();
+      const next = await this.output.next();
+      if (this.terminal) return null;
+      if (next.done === true) break;
+      const payload = validatePayload(this.method.validators.output, next.value, "output stream item");
+      await this.session.writer.send({
+        kind: "stream.item", call_id: this.frame.call_id, direction: "server",
+        sequence: this.outputSequence, payload,
+      });
+      this.outputSequence += 1;
+    }
+    if (this.terminal) return null;
+    await this.session.writer.send({
+      kind: "stream.end", call_id: this.frame.call_id, direction: "server",
+    });
+    return null;
   }
 
   private trailerField(): { metadata?: Metadata } {

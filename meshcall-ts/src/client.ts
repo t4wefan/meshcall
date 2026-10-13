@@ -62,7 +62,32 @@ export interface MeshCallClientOptions {
    * waiting at most its own `timeoutMs`.
    */
   readonly reconnect?: ReconnectPolicy;
+  /** Wrap every outgoing call; the first interceptor is outermost. */
+  readonly interceptors?: ReadonlyArray<ClientInterceptor>;
 }
+
+/**
+ * What a client interceptor sees for one outgoing call. `options` may be
+ * replaced to add metadata or adjust timeouts before the call is sent.
+ * `trailers` is filled for unary and client-stream calls once `next`
+ * resolves; streams expose trailers on the returned object.
+ */
+export interface ClientCallInfo {
+  readonly service: string;
+  readonly method: string;
+  readonly stream: "unary" | "server_stream" | "client_stream";
+  options: CallOptions;
+  trailers: Readonly<Metadata>;
+}
+
+/**
+ * Runs the rest of the client chain and resolves with what the call returns:
+ * the response for unary and client-stream calls, or the `MeshCallServerStream`
+ * for server streams. It may be called more than once to retry.
+ */
+export type ClientCallNext = (info: ClientCallInfo) => Promise<unknown>;
+
+export type ClientInterceptor = (info: ClientCallInfo, next: ClientCallNext) => Promise<unknown>;
 
 interface InputState {
   readonly credit: CreditWindow;
@@ -88,6 +113,11 @@ export class MeshCallServerStream<Item>
 
   public constructor(private readonly open: Promise<ServerStreamState<Item>>) {
     open.then((state) => { this.state = state; }, () => undefined);
+  }
+
+  /** @internal */
+  public get opened(): Promise<ServerStreamState<Item>> {
+    return this.open;
   }
 
   public [Symbol.asyncIterator](): AsyncIterableIterator<Item> {
@@ -123,6 +153,8 @@ export class MeshCallClient {
   private closed = false;
   private readonly calls = new Map<string, PendingCall>();
   private readonly streams = new Map<string, ServerStreamState<unknown>>();
+  /** Trailers of settled non-stream calls, consumed once by the call entry point. */
+  private readonly trailers = new Map<string, Readonly<Metadata>>();
 
   public constructor(
     private readonly url: WebSocketEndpoint,
@@ -207,19 +239,26 @@ export class MeshCallClient {
     options: CallOptions = {},
   ): Promise<Response> {
     this.validateOptions(options);
-    this.ensureNotAborted(options);
-    const startedAt = performance.now();
-    await this.connectWithin(options, startedAt);
-    this.ensureNotAborted(options);
+    const info: ClientCallInfo = { service, method, stream: "unary", options, trailers: {} };
+    return this.runChain(info, async (info) => {
+      this.ensureNotAborted(info.options);
+      const startedAt = performance.now();
+      await this.connectWithin(info.options, startedAt);
+      this.ensureNotAborted(info.options);
 
-    const callId = newCallId();
-    const { result } = this.registerCall<Response>(callId, options, startedAt);
-    try {
-      await this.send(this.openFrame(callId, service, method, request, options));
-    } catch (error) {
-      this.rejectPending(callId, error);
-    }
-    return result;
+      const callId = newCallId();
+      const { result } = this.registerCall<Response>(callId, info.options, startedAt);
+      try {
+        await this.send(this.openFrame(callId, info.service, info.method, request, info.options));
+      } catch (error) {
+        this.rejectPending(callId, error);
+      }
+      try {
+        return await result;
+      } finally {
+        info.trailers = this.trailerOf(callId);
+      }
+    }) as Promise<Response>;
   }
 
   /**
@@ -234,47 +273,51 @@ export class MeshCallClient {
     options: CallOptions = {},
   ): Promise<Response> {
     this.validateOptions(options);
-    this.ensureNotAborted(options);
-    const startedAt = performance.now();
-    await this.connectWithin(options, startedAt);
-    this.ensureNotAborted(options);
+    const info: ClientCallInfo = { service, method, stream: "client_stream", options, trailers: {} };
+    return this.runChain(info, async (info) => {
+      this.ensureNotAborted(info.options);
+      const startedAt = performance.now();
+      await this.connectWithin(info.options, startedAt);
+      this.ensureNotAborted(info.options);
 
-    const callId = newCallId();
-    const input: InputState = {
-      credit: new CreditWindow(),
-      sequence: 0,
-      closed: false,
-    };
-    const { pending, result } = this.registerCall<Response>(
-      callId,
-      options,
-      startedAt,
-      input,
-    );
-    try {
-      await this.send(this.openFrame(callId, service, method, request, options));
-    } catch (error) {
-      this.rejectPending(callId, error);
-      return result;
-    }
-
-    const stop = new AbortController();
-    let pumpSettled = false;
-    const pump = this.pumpInput(callId, pending, items, stop.signal).finally(
-      () => {
-        pumpSettled = true;
-      },
-    );
-    // The server normally sends call.result after stream.end. If it fails
-    // early, stop the producer without making its late rejection unhandled.
-    pump.catch(() => undefined);
-    try {
-      return await result;
-    } finally {
-      if (!pumpSettled) {
-        stop.abort();
+      const callId = newCallId();
+      const input: InputState = {
+        credit: new CreditWindow(),
+        sequence: 0,
+        closed: false,
+      };
+      const { pending, result } = this.registerCall<Response>(
+        callId,
+        info.options,
+        startedAt,
+        input,
+      );
+      try {
+        await this.send(this.openFrame(callId, info.service, info.method, request, info.options));
+      } catch (error) {
+        this.rejectPending(callId, error);
+        return result;
       }
-    }
+
+      const stop = new AbortController();
+      let pumpSettled = false;
+      const pump = this.pumpInput(callId, pending, items, stop.signal).finally(
+        () => {
+          pumpSettled = true;
+        },
+      );
+      // The server normally sends call.result after stream.end. If it fails
+      // early, stop the producer without making its late rejection unhandled.
+      pump.catch(() => undefined);
+      try {
+        return await result;
+      } finally {
+        info.trailers = this.trailerOf(callId);
+        if (!pumpSettled) {
+          stop.abort();
+        }
+      }
+    }) as Promise<Response>;
   }
 
   /** Returns a lazy async iterator for server-produced items. */
@@ -285,9 +328,36 @@ export class MeshCallClient {
     options: CallOptions = {},
   ): MeshCallServerStream<Item> {
     this.validateOptions(options);
-    return new MeshCallServerStream(
-      this.openServerStream(service, method, request, options),
-    );
+    const info: ClientCallInfo = { service, method, stream: "server_stream", options, trailers: {} };
+    const innermost = async (info: ClientCallInfo): Promise<MeshCallServerStream<Item>> =>
+      new MeshCallServerStream<Item>(
+        this.openServerStream(info.service, info.method, request, info.options),
+      );
+    if (this.options.interceptors === undefined || this.options.interceptors.length === 0) {
+      return new MeshCallServerStream(this.openServerStream(service, method, request, options));
+    }
+    return new MeshCallServerStream(this.runChain(info, innermost).then((stream) => {
+      if (!(stream instanceof MeshCallServerStream)) {
+        throw new TypeError("Client interceptors must return the stream produced by next");
+      }
+      return (stream as MeshCallServerStream<Item>).opened;
+    }));
+  }
+
+  /** Invoke the interceptor chain; the first interceptor is outermost. */
+  private runChain(info: ClientCallInfo, innermost: ClientCallNext): Promise<unknown> {
+    let next = innermost;
+    for (const interceptor of [...(this.options.interceptors ?? [])].reverse()) {
+      const inner = next;
+      next = (info) => interceptor(info, inner);
+    }
+    return next(info);
+  }
+
+  private trailerOf(callId: string): Readonly<Metadata> {
+    const trailers = this.trailers.get(callId) ?? {};
+    this.trailers.delete(callId);
+    return trailers;
   }
 
   public async close(): Promise<void> {
@@ -625,7 +695,10 @@ export class MeshCallClient {
       frame.call_id,
       new MeshCallError("cancelled", "Call is complete"),
     );
-    pending?.resolve(frame.payload);
+    if (pending !== undefined) {
+      this.trailers.set(frame.call_id, frame.metadata ?? {});
+      pending.resolve(frame.payload);
+    }
   }
 
   private rejectCall(frame: CallErrorFrame): void {
@@ -638,6 +711,7 @@ export class MeshCallClient {
       stream.fail(error, frame.metadata ?? {});
       return;
     }
+    if (this.calls.has(frame.call_id)) this.trailers.set(frame.call_id, frame.metadata ?? {});
     this.rejectPending(frame.call_id, error);
   }
 
@@ -834,7 +908,7 @@ class ServerStreamState<Item> {
     }
     this.ended = true;
     this.armIdle();
-    this.queue.close();
+    // The consumer sees the end once the terminal frame (with trailers) arrives.
   }
 
   public receiveResult(trailers: Readonly<Metadata>): void {
