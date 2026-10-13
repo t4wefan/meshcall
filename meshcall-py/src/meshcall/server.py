@@ -8,11 +8,13 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 from loguru import logger as default_logger
 from pydantic import BaseModel, ValidationError
 
+from meshcall.context import RpcContext
 from meshcall.contract import (
     MethodBinding,
     get_service_contract,
@@ -42,8 +44,6 @@ from meshcall.protocol import (
     CallResultFrame,
     ErrorPayload,
     Frame,
-    PingFrame,
-    PongFrame,
     RegisteredMethod,
     RegisteredService,
     StreamEndFrame,
@@ -202,9 +202,6 @@ class _ServerSession:
         self.calls: dict[str, _ServerCall] = {}
 
     async def handle(self, frame: Frame) -> None:
-        if isinstance(frame, PingFrame):
-            await self.connection.send(PongFrame(nonce=frame.nonce))
-            return
         if isinstance(frame, CallOpenFrame):
             await self._open(frame)
             return
@@ -318,6 +315,25 @@ class _ServerCall:
             meshcall_call_id=self.call_id,
         )
         self.started_at = time.perf_counter()
+        self.timeout = (
+            open_frame.timeout_ms / 1000 if open_frame.timeout_ms is not None else None
+        )
+        self.idle_timeout = (
+            open_frame.idle_timeout_ms / 1000
+            if open_frame.idle_timeout_ms is not None
+            else None
+        )
+        self.context = RpcContext(
+            call_id=self.call_id,
+            service=method.service_name,
+            method=method.contract.name,
+            metadata=MappingProxyType(dict(open_frame.metadata or {})),
+            logger=self.logger,
+            _deadline=(
+                time.monotonic() + self.timeout if self.timeout is not None else None
+            ),
+        )
+        self._idle_handle: asyncio.TimerHandle | None = None
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -352,6 +368,7 @@ class _ServerCall:
             return
         self.input_allowance -= 1
         self.input_sequence += 1
+        self._arm_idle()
         await self.input_queue.put(frame.payload)
 
     async def receive_end(self, frame: StreamEndFrame) -> None:
@@ -360,7 +377,31 @@ class _ServerCall:
             return
         if not self.input_closed:
             self.input_closed = True
+            self._disarm_idle()
             await self.input_queue.put(_STREAM_END)
+
+    def _arm_idle(self) -> None:
+        """(Re)start the gap timer for the client's input stream."""
+        self._disarm_idle()
+        if self.idle_timeout is None or self.input_closed or self.terminal:
+            return
+        self._idle_handle = self.rpc_loop.call_later(
+            self.idle_timeout, self._on_idle_timeout
+        )
+
+    def _disarm_idle(self) -> None:
+        if self._idle_handle is not None:
+            self._idle_handle.cancel()
+            self._idle_handle = None
+
+    def _on_idle_timeout(self) -> None:
+        self._idle_handle = None
+        error = MeshCallError(
+            ErrorCode.DEADLINE_EXCEEDED,
+            "Input stream idle timeout",
+            details={"source": "server", "reason": "idle"},
+        )
+        self.rpc_loop.create_task(self._application_failure(error))
 
     async def receive_window(self, frame: StreamWindowFrame) -> None:
         if frame.direction != "server" or self.method.output_type is None:
@@ -421,20 +462,20 @@ class _ServerCall:
                         credit=INITIAL_STREAM_CREDIT,
                     )
                 )
-            deadline = self.open_frame.deadline_unix_ms
-            if deadline is None:
+                self._arm_idle()
+            # The budget is relative and measured on the monotonic clock from
+            # the moment this peer processed call.open.
+            async with asyncio.timeout(self.timeout):
                 payload = await self.session.worker.run(self._execute_worker())
-            else:
-                remaining = deadline / 1000 - time.time()
-                if remaining <= 0:
-                    raise TimeoutError
-                async with asyncio.timeout(remaining):
-                    payload = await self.session.worker.run(self._execute_worker())
             await self.close_output()
             await self._send_result(payload)
         except TimeoutError:
             await self._send_error(
-                MeshCallError(ErrorCode.DEADLINE_EXCEEDED, "Call deadline exceeded")
+                MeshCallError(
+                    ErrorCode.DEADLINE_EXCEEDED,
+                    "Call deadline exceeded",
+                    details={"source": "server"},
+                )
             )
         except asyncio.CancelledError:
             await self._send_error(
@@ -454,6 +495,7 @@ class _ServerCall:
                 MeshCallError(ErrorCode.INTERNAL, "Internal service error")
             )
         finally:
+            self._disarm_idle()
             error = MeshCallError(ErrorCode.CANCELLED, "Call is closed")
             await self.send_credit.close(error)
 
@@ -464,12 +506,14 @@ class _ServerCall:
             args, kwargs = self.method.method_binding.arguments(
                 request,
                 logger=self.logger,
+                context=self.context,
             )
             result = await self.method.handler(*args, **kwargs)
         elif kind is StreamKind.SERVER:
             args, kwargs = self.method.method_binding.arguments(
                 request,
                 logger=self.logger,
+                context=self.context,
             )
             iterator = self.method.handler(*args, **kwargs)
             async for item in iterator:
@@ -482,6 +526,7 @@ class _ServerCall:
                     request,
                     inbound,
                     logger=self.logger,
+                    context=self.context,
                 )
                 result = await self.method.handler(*args, **kwargs)
             else:
@@ -490,6 +535,7 @@ class _ServerCall:
                     request,
                     channel,
                     logger=self.logger,
+                    context=self.context,
                 )
                 result = await self.method.handler(*args, **kwargs)
 
@@ -511,7 +557,11 @@ class _ServerCall:
 
     async def _send_result(self, payload: Any) -> None:
         await self._send_terminal(
-            CallResultFrame(call_id=self.call_id, payload=payload)
+            CallResultFrame(
+                call_id=self.call_id,
+                payload=payload,
+                metadata=self._trailers(),
+            )
         )
 
     async def _send_error(self, error: MeshCallError) -> None:
@@ -524,8 +574,13 @@ class _ServerCall:
                     retryable=error.retryable,
                     details=error.details,
                 ),
+                metadata=self._trailers(),
             )
         )
+
+    def _trailers(self) -> dict[str, str] | None:
+        trailers = dict(self.context.trailers)
+        return trailers or None
 
     async def _send_terminal(self, frame: CallResultFrame | CallErrorFrame) -> None:
         async with self._terminal_lock:

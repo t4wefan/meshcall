@@ -10,6 +10,11 @@ from typing import TYPE_CHECKING
 from websockets.asyncio.client import ClientConnection, connect, unix_connect
 from websockets.asyncio.server import Server, ServerConnection, serve, unix_serve
 
+from meshcall.context import (
+    DEFAULT_IDLE_TIMEOUT,
+    DEFAULT_PING_INTERVAL,
+    DEFAULT_PING_TIMEOUT,
+)
 from meshcall.driver import ClientDriver, DriverBinding, ServerDriver
 from meshcall.errors import DriverStateError, ProtocolError
 from meshcall.protocol import (
@@ -37,6 +42,8 @@ class WebSocketClientDriver(ClientDriver):
         peer_id: str | None = None,
         max_frame_size: int = 1024 * 1024,
         auth: RouterCredentials | None = None,
+        ping_interval: float | None = DEFAULT_PING_INTERVAL,
+        ping_timeout: float = DEFAULT_PING_TIMEOUT,
     ) -> None:
         if (uri is None) == (unix_path is None):
             raise ValueError("Set exactly one of uri or unix_path")
@@ -45,6 +52,8 @@ class WebSocketClientDriver(ClientDriver):
         self.peer_id = peer_id or uuid.uuid4().hex
         self.max_frame_size = max_frame_size
         self.auth = auth
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
         self._connection: FrameConnection | None = None
 
     async def connect(self) -> FrameConnection:
@@ -56,7 +65,12 @@ class WebSocketClientDriver(ClientDriver):
             max_frame_size=self.max_frame_size,
             auth=self.auth,
         )
-        connection = FrameConnection(websocket, max_frame_size=self.max_frame_size)
+        connection = FrameConnection(
+            websocket,
+            max_frame_size=self.max_frame_size,
+            ping_interval=self.ping_interval,
+            ping_timeout=self.ping_timeout,
+        )
         try:
             await connection.send(HelloFrame(role="client", peer_id=self.peer_id))
             response = await connection.receive()
@@ -84,6 +98,7 @@ class WebSocketDirectServerDriver(ServerDriver):
         *,
         unix_path: str | Path | None = None,
         max_frame_size: int = 1024 * 1024,
+        idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT,
     ) -> None:
         super().__init__()
         if unix_path is not None and (host is not None or port is not None):
@@ -92,6 +107,7 @@ class WebSocketDirectServerDriver(ServerDriver):
         self.port = 0 if port is None else port
         self.unix_path = Path(unix_path) if unix_path is not None else None
         self.max_frame_size = max_frame_size
+        self.idle_timeout = idle_timeout
         self._server: Server | None = None
         self._connections: set[FrameConnection] = set()
 
@@ -114,6 +130,7 @@ class WebSocketDirectServerDriver(ServerDriver):
             connection = FrameConnection(
                 websocket,
                 max_frame_size=self.max_frame_size,
+                idle_timeout=self.idle_timeout,
             )
             self._connections.add(connection)
             try:
@@ -122,9 +139,7 @@ class WebSocketDirectServerDriver(ServerDriver):
                     raise ProtocolError("Direct server expects a client hello")
                 if hello.protocol != PROTOCOL_VERSION:
                     raise ProtocolError(f"Unsupported protocol: {hello.protocol}")
-                await connection.send(
-                    HelloAckFrame(connection_id=uuid.uuid4().hex)
-                )
+                await connection.send(HelloAckFrame(connection_id=uuid.uuid4().hex))
                 await runtime.serve_connection(connection)
             finally:
                 self._connections.discard(connection)
@@ -180,6 +195,8 @@ class WebSocketRouterServerDriver(ServerDriver):
         instance_id: str | None = None,
         max_frame_size: int = 1024 * 1024,
         auth: RouterCredentials | None = None,
+        ping_interval: float | None = DEFAULT_PING_INTERVAL,
+        ping_timeout: float = DEFAULT_PING_TIMEOUT,
     ) -> None:
         super().__init__()
         if (uri is None) == (unix_path is None):
@@ -189,6 +206,8 @@ class WebSocketRouterServerDriver(ServerDriver):
         self.instance_id = instance_id or uuid.uuid4().hex
         self.max_frame_size = max_frame_size
         self.auth = auth
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
         self._connection: FrameConnection | None = None
         self._runtime_task: asyncio.Task[None] | None = None
 
@@ -204,7 +223,12 @@ class WebSocketRouterServerDriver(ServerDriver):
             max_frame_size=self.max_frame_size,
             auth=self.auth,
         )
-        connection = FrameConnection(websocket, max_frame_size=self.max_frame_size)
+        connection = FrameConnection(
+            websocket,
+            max_frame_size=self.max_frame_size,
+            ping_interval=self.ping_interval,
+            ping_timeout=self.ping_timeout,
+        )
         try:
             await connection.send(
                 HelloFrame(
@@ -255,7 +279,9 @@ async def _connect_endpoint(
     max_frame_size: int,
     auth: RouterCredentials | None = None,
 ) -> ClientConnection:
-    headers = {"Authorization": auth.authorization_header()} if auth is not None else None
+    headers = (
+        {"Authorization": auth.authorization_header()} if auth is not None else None
+    )
     if unix_path is not None:
         return await unix_connect(
             str(unix_path),

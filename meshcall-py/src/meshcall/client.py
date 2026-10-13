@@ -4,11 +4,12 @@ import asyncio
 import contextlib
 import time
 import uuid
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Mapping
 from typing import Any, Self
 
 from pydantic import BaseModel, ValidationError
 
+from meshcall.context import CallOptions, client_deadline_grace
 from meshcall.driver import ClientDriver
 from meshcall.errors import ErrorCode, MeshCallError, ProtocolError
 from meshcall.flow import CreditWindow
@@ -18,8 +19,6 @@ from meshcall.protocol import (
     CallOpenFrame,
     CallResultFrame,
     Frame,
-    PingFrame,
-    PongFrame,
     StreamEndFrame,
     StreamItemFrame,
     StreamWindowFrame,
@@ -32,10 +31,21 @@ _STREAM_END = object()
 
 
 class ClientBase:
-    """Runtime base class inherited by generated service clients."""
+    """Runtime base class inherited by generated service clients.
 
-    def __init__(self, driver: ClientDriver) -> None:
+    ``deadline_grace`` is how long past a call's ``timeout`` the client keeps
+    waiting for the peer's own ``deadline_exceeded`` before failing the call
+    locally; ``None`` uses ``max(1s, 10% of timeout)``.
+    """
+
+    def __init__(
+        self,
+        driver: ClientDriver,
+        *,
+        deadline_grace: float | None = None,
+    ) -> None:
         self.driver = driver
+        self.deadline_grace = deadline_grace
         self._connection: FrameConnection | None = None
         self._calls: dict[str, _ClientCall] = {}
         self._state_lock = asyncio.Lock()
@@ -82,13 +92,15 @@ class ClientBase:
         response_type: type[BaseModel],
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> Any:
         call = await self._open_call(
             service,
             method,
             request,
             response_type=response_type,
-            timeout=timeout,
+            options=CallOptions(timeout, idle_timeout, metadata),
         )
         try:
             return await call.result()
@@ -104,7 +116,10 @@ class ClientBase:
         item_type: type[BaseModel],
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[Any]:
+        options = CallOptions(timeout, idle_timeout, metadata)
         return _ClientServerStream(
             asyncio.create_task(
                 self._open_call(
@@ -112,7 +127,7 @@ class ClientBase:
                     method,
                     request,
                     output_type=item_type,
-                    timeout=timeout,
+                    options=options,
                 )
             )
         )
@@ -127,6 +142,8 @@ class ClientBase:
         response_type: type[BaseModel],
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> Any:
         call = await self._open_call(
             service,
@@ -134,7 +151,7 @@ class ClientBase:
             request,
             response_type=response_type,
             input_type=input_type,
-            timeout=timeout,
+            options=CallOptions(timeout, idle_timeout, metadata),
         )
         pump = asyncio.create_task(
             self._pump_input(call, items),
@@ -161,7 +178,10 @@ class ClientBase:
         result_type: type[BaseModel] | None,
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> RpcDuplexClient[Any, Any, Any]:
+        options = CallOptions(timeout, idle_timeout, metadata)
         return _ClientDuplex(
             asyncio.create_task(
                 self._open_call(
@@ -171,7 +191,7 @@ class ClientBase:
                     response_type=result_type,
                     input_type=input_type,
                     output_type=output_type,
-                    timeout=timeout,
+                    options=options,
                 )
             )
         )
@@ -185,11 +205,25 @@ class ClientBase:
         response_type: type[BaseModel] | None = None,
         input_type: type[BaseModel] | None = None,
         output_type: type[BaseModel] | None = None,
-        timeout: float | None = None,
+        options: CallOptions,
     ) -> _ClientCall:
-        if timeout is not None and timeout <= 0:
-            raise ValueError("timeout must be positive")
-        await self.start()
+        # The local budget covers connecting and the handshake as well as the
+        # call, and runs slightly longer than timeout so the peer's own
+        # deadline_exceeded normally wins.
+        budget: float | None = None
+        if options.timeout is not None:
+            grace = (
+                self.deadline_grace
+                if self.deadline_grace is not None
+                else client_deadline_grace(options.timeout)
+            )
+            budget = options.timeout + grace
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(budget):
+                await self.start()
+        except TimeoutError as exc:
+            raise _local_deadline_error() from exc
         connection = self._connection
         if connection is None:
             raise MeshCallError(ErrorCode.UNAVAILABLE, "Client is not connected")
@@ -201,8 +235,11 @@ class ClientBase:
             response_type=response_type,
             input_type=input_type,
             output_type=output_type,
+            idle_timeout=options.idle_timeout,
         )
         self._calls[call_id] = call
+        if budget is not None:
+            call.arm_deadline(max(0.0, budget - (time.monotonic() - started)))
         try:
             await connection.send(
                 CallOpenFrame(
@@ -212,11 +249,17 @@ class ClientBase:
                     payload=request.model_dump(
                         mode="json", by_alias=True, exclude_unset=True
                     ),
-                    deadline_unix_ms=(
-                        int((time.time() + timeout) * 1000)
-                        if timeout is not None
+                    timeout_ms=(
+                        max(1, round(options.timeout * 1000))
+                        if options.timeout is not None
                         else None
                     ),
+                    idle_timeout_ms=(
+                        max(1, round(options.idle_timeout * 1000))
+                        if options.idle_timeout is not None
+                        else None
+                    ),
+                    metadata=dict(options.metadata) if options.metadata else None,
                 )
             )
             if output_type is not None:
@@ -228,7 +271,15 @@ class ClientBase:
                         credit=INITIAL_STREAM_CREDIT,
                     )
                 )
+                call.arm_idle()
+        except ConnectionError as exc:
+            call.disarm_timers()
+            self._calls.pop(call_id, None)
+            raise MeshCallError(
+                ErrorCode.UNAVAILABLE, "Connection was lost", retryable=True
+            ) from exc
         except BaseException:
+            call.disarm_timers()
             self._calls.pop(call_id, None)
             raise
         return call
@@ -256,9 +307,6 @@ class ClientBase:
         try:
             while True:
                 frame = await connection.receive()
-                if isinstance(frame, PingFrame):
-                    await connection.send(PongFrame(nonce=frame.nonce))
-                    continue
                 await self._dispatch(frame)
         except asyncio.CancelledError:
             raise
@@ -298,6 +346,17 @@ class ClientBase:
             self._calls.pop(call.call_id, None)
 
 
+def _local_deadline_error(reason: str | None = None) -> MeshCallError:
+    details: dict[str, Any] = {"source": "client"}
+    if reason is not None:
+        details["reason"] = reason
+    return MeshCallError(
+        ErrorCode.DEADLINE_EXCEEDED,
+        "Call deadline exceeded" if reason is None else "Output stream idle timeout",
+        details=details,
+    )
+
+
 class _ClientCall:
     def __init__(
         self,
@@ -308,6 +367,7 @@ class _ClientCall:
         response_type: type[BaseModel] | None,
         input_type: type[BaseModel] | None,
         output_type: type[BaseModel] | None,
+        idle_timeout: float | None = None,
     ) -> None:
         self.client = client
         self.connection = connection
@@ -315,10 +375,10 @@ class _ClientCall:
         self.response_type = response_type
         self.input_type = input_type
         self.output_type = output_type
+        self.idle_timeout = idle_timeout
         self.send_credit = CreditWindow()
-        self.result_future: asyncio.Future[Any] = (
-            asyncio.get_running_loop().create_future()
-        )
+        self.loop = asyncio.get_running_loop()
+        self.result_future: asyncio.Future[Any] = self.loop.create_future()
         self.output_queue: asyncio.Queue[Any] = asyncio.Queue()
         self.input_sequence = 0
         self.output_sequence = 0
@@ -326,6 +386,51 @@ class _ClientCall:
         self.input_closed = False
         self.output_closed = False
         self.terminal = False
+        self.trailers: Mapping[str, str] = {}
+        self._deadline_handle: asyncio.TimerHandle | None = None
+        self._idle_handle: asyncio.TimerHandle | None = None
+
+    # -- local timers -------------------------------------------------------
+
+    def arm_deadline(self, delay: float) -> None:
+        self._deadline_handle = self.loop.call_later(delay, self._on_deadline)
+
+    def arm_idle(self) -> None:
+        """(Re)start the gap timer for the server's output stream."""
+        if self._idle_handle is not None:
+            self._idle_handle.cancel()
+            self._idle_handle = None
+        if self.idle_timeout is None or self.output_closed or self.terminal:
+            return
+        self._idle_handle = self.loop.call_later(self.idle_timeout, self._on_idle)
+
+    def disarm_timers(self) -> None:
+        for attribute in ("_deadline_handle", "_idle_handle"):
+            handle: asyncio.TimerHandle | None = getattr(self, attribute)
+            if handle is not None:
+                handle.cancel()
+                setattr(self, attribute, None)
+
+    def _on_deadline(self) -> None:
+        self._deadline_handle = None
+        self.loop.create_task(self._fail_locally(_local_deadline_error()))
+
+    def _on_idle(self) -> None:
+        self._idle_handle = None
+        self.loop.create_task(self._fail_locally(_local_deadline_error("idle")))
+
+    async def _fail_locally(self, error: MeshCallError) -> None:
+        if self.terminal:
+            return
+        # Late frames for this call are dropped once it leaves the registry.
+        self.client._calls.pop(self.call_id, None)
+        await self.fail(error)
+        with contextlib.suppress(Exception):
+            await self.connection.send(
+                CallCancelFrame(call_id=self.call_id, reason=str(error.code))
+            )
+
+    # -- call surface --------------------------------------------------------
 
     async def send(self, item: BaseModel) -> None:
         if self.input_closed:
@@ -415,6 +520,7 @@ class _ClientCall:
             return
         self.output_allowance -= 1
         self.output_sequence += 1
+        self.arm_idle()
         try:
             item = self.output_type.model_validate(frame.payload)
         except ValidationError as exc:
@@ -428,12 +534,17 @@ class _ClientCall:
             return
         if not self.output_closed:
             self.output_closed = True
+            if self._idle_handle is not None:
+                self._idle_handle.cancel()
+                self._idle_handle = None
             self.output_queue.put_nowait(_STREAM_END)
 
     async def receive_result(self, frame: CallResultFrame) -> None:
         if self.terminal:
             return
         self.terminal = True
+        self.disarm_timers()
+        self.trailers = dict(frame.metadata or {})
         try:
             result = (
                 self.response_type.model_validate(frame.payload)
@@ -450,6 +561,7 @@ class _ClientCall:
         )
 
     async def receive_error(self, frame: CallErrorFrame) -> None:
+        self.trailers = dict(frame.metadata or {})
         await self.fail(
             MeshCallError(
                 frame.error.code,
@@ -463,6 +575,7 @@ class _ClientCall:
         if self.terminal and self.result_future.done():
             return
         self.terminal = True
+        self.disarm_timers()
         if not self.result_future.done():
             self.result_future.set_exception(error)
             if self.output_type is not None:
@@ -483,6 +596,15 @@ class _ClientServerStream(RpcServerStream[BaseModel]):
     async def __anext__(self) -> BaseModel:
         call = await self._open_task
         return await call.next_output()
+
+    @property
+    def trailers(self) -> Mapping[str, str]:
+        """Server trailers; populated once the stream has terminated."""
+        if not self._open_task.done() or self._open_task.cancelled():
+            return {}
+        if self._open_task.exception() is not None:
+            return {}
+        return self._open_task.result().trailers
 
     async def cancel(self, reason: str = "client_closed") -> None:
         call = await self._open_task
@@ -505,6 +627,14 @@ class _ClientDuplex(RpcDuplexClient[BaseModel, BaseModel, Any]):
     async def __anext__(self) -> BaseModel:
         call = await self._open_task
         return await call.next_output()
+
+    @property
+    def trailers(self) -> Mapping[str, str]:
+        if not self._open_task.done() or self._open_task.cancelled():
+            return {}
+        if self._open_task.exception() is not None:
+            return {}
+        return self._open_task.result().trailers
 
     async def send(self, item: BaseModel) -> None:
         call = await self._open_task

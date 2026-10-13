@@ -30,6 +30,13 @@ Use `--unix-socket /tmp/meshcall.sock` instead of `--host` / `--port` for Unix
 WebSocket transport. Existing paths are never replaced. Shutdown removes the
 socket only when it is still the file owned by this Router.
 
+`--deadline-grace` (default `500ms`) is added to every call's `timeout_ms`
+before the Router enforces it, so the service's own `deadline_exceeded`
+normally wins and the Router only steps in for an instance that has stopped
+answering. `--idle-timeout` (default `45s`) closes any connection that sends
+nothing for that long; clients and services keep healthy connections alive
+with protocol pings every 15 s. See [the protocol](../docs/protocol.md#timeouts).
+
 ## Authentication
 
 Use `--auth-file /path/to/router-auth.json` to enable account authentication.

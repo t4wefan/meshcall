@@ -105,5 +105,18 @@ task can't operate through a newly acquired generation.
 - Pydantic validation failures become `invalid_argument`.
 - Task cancellation is propagated as `call.cancel` and `cancelled`.
 - Deadline expiry cancels the service task and returns `deadline_exceeded`.
+  Timeouts travel as relative `timeout_ms`; the server, the Router, and the
+  client each enforce them independently on their own monotonic clocks, in that
+  order, with the client waiting a configurable grace past the requested
+  timeout before failing locally with `details.source = "client"`.
+- `idle_timeout_ms` bounds the gap between stream items and is enforced by the
+  consuming side only: the client for server-direction items, the server for
+  client-direction items.
+- Connecting peers send protocol `ping` frames (15 s) and drop the connection
+  when a `pong` is late (10 s); accepting peers drop connections silent for
+  45 s. The transport layer handles this; runtimes never see ping or pong.
 - Instance disconnect terminates its routed calls with retryable `unavailable`.
 - Connection loss terminates all local active calls; no recovery is attempted.
+- Call metadata (`call.open`) and trailers (`call.result` / `call.error`) are
+  string maps that reach handlers through `RpcContext` and are otherwise opaque
+  to the runtime.

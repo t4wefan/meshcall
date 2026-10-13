@@ -44,6 +44,8 @@ func run() error {
 	flag.StringVar(&config.UnixPath, "unix-socket", "", "Unix socket path, exclusive with host/port")
 	flag.IntVar(&config.MaxFrameSize, "max-frame-size", 1024*1024, "maximum frame bytes")
 	flag.StringVar(&authPath, "auth-file", "", "JSON account and permission configuration")
+	flag.DurationVar(&config.DeadlineGrace, "deadline-grace", router.DefaultDeadlineGrace, "added to each call's timeout before the router enforces it")
+	flag.DurationVar(&config.IdleTimeout, "idle-timeout", router.DefaultIdleTimeout, "close connections that send nothing for this long")
 	flag.BoolVar(&parentStdin, "shutdown-on-stdin-close", false, "exit when the owning process closes stdin")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()

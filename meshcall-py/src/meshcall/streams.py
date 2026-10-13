@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import Generic, TypeVar
 
 InputT = TypeVar("InputT")
@@ -39,6 +39,11 @@ class RpcServerStream(AsyncIterator[OutputT], ABC, Generic[OutputT]):
     @abstractmethod
     async def cancel(self, reason: str = "client_closed") -> None: ...
 
+    @property
+    @abstractmethod
+    def trailers(self) -> Mapping[str, str]:
+        """Server trailers, available once the stream has terminated."""
+
 
 class RpcDuplexClient(
     RpcInputStream[OutputT],
@@ -56,3 +61,8 @@ class RpcDuplexClient(
 
     @abstractmethod
     async def cancel(self, reason: str = "client_closed") -> None: ...
+
+    @property
+    @abstractmethod
+    def trailers(self) -> Mapping[str, str]:
+        """Server trailers, available once the call has terminated."""

@@ -244,7 +244,10 @@ generated/counter-client/
 ```
 
 It supports the recommended unary and streaming RPC shapes and can be checked
-with `uv build`. Every generated method accepts an optional `timeout=` keyword.
+with `uv build`. Every generated method accepts optional `timeout=`,
+`idle_timeout=` (seconds) and `metadata=` keywords. Service methods can declare
+a `ctx: RpcContext` parameter to read the caller's metadata, check
+`ctx.remaining()`, and attach trailers with `ctx.set_trailer()`.
 
 For a Python service using the recommended call shapes, generate a TypeScript Yarn package with:
 

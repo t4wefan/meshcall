@@ -18,6 +18,7 @@ from typing import (
 
 from pydantic import BaseModel, TypeAdapter, create_model
 
+from meshcall.context import RpcContext
 from meshcall.errors import ContractError
 from meshcall.ir import (
     BalanceKind,
@@ -71,6 +72,7 @@ class MethodOptions:
 
 _NO_STREAM = object()
 _NO_LOGGER = object()
+_NO_CONTEXT = object()
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ class MethodBinding:
     positional_only_parameters: frozenset[str]
     stream_parameter: str | None
     logger_parameter: str | None
+    context_parameter: str | None = None
 
     def arguments(
         self,
@@ -90,6 +93,7 @@ class MethodBinding:
         stream: Any = _NO_STREAM,
         *,
         logger: Any = _NO_LOGGER,
+        context: Any = _NO_CONTEXT,
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         if self.request_style is RequestStyle.MODEL:
             if self.request_parameter is None:
@@ -112,6 +116,11 @@ class MethodBinding:
             if logger is _NO_LOGGER:
                 raise ContractError("RPC method is missing its logger parameter")
             values[self.logger_parameter] = logger
+
+        if self.context_parameter is not None:
+            if context is _NO_CONTEXT:
+                raise ContractError("RPC method is missing its context parameter")
+            values[self.context_parameter] = context
 
         args: list[Any] = []
         kwargs: dict[str, Any] = {}
@@ -405,6 +414,7 @@ def _extract_method(
     stream_annotation: Any | None = None
     stream_parameter: inspect.Parameter | None = None
     logger_parameter: inspect.Parameter | None = None
+    context_parameter: inspect.Parameter | None = None
     for parameter in parameters:
         if parameter.kind not in (
             inspect.Parameter.POSITIONAL_ONLY,
@@ -426,6 +436,13 @@ def _extract_method(
                     f"RPC method {func.__qualname__} has more than one logger"
                 )
             logger_parameter = parameter
+            continue
+        if parameter.name in ("ctx", "context") or annotation is RpcContext:
+            if context_parameter is not None:
+                raise ContractError(
+                    f"RPC method {func.__qualname__} has more than one context"
+                )
+            context_parameter = parameter
             continue
         if parameter.name not in hints:
             raise ContractError(
@@ -481,6 +498,9 @@ def _extract_method(
         ),
         logger_parameter=(
             logger_parameter.name if logger_parameter is not None else None
+        ),
+        context_parameter=(
+            context_parameter.name if context_parameter is not None else None
         ),
     )
 

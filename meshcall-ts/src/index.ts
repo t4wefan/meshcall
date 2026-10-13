@@ -22,12 +22,19 @@ export {
   writeContract,
 } from "./contract.js";
 export { MeshCallError } from "./errors.js";
+export {
+  DEFAULT_IDLE_TIMEOUT_MS,
+  DEFAULT_PING_INTERVAL_MS,
+  DEFAULT_PING_TIMEOUT_MS,
+  clientDeadlineGraceMs,
+} from "./liveness.js";
 export { ConsoleRpcLogger, type RpcLogger, type LogContext, type LogLevel } from "./logging.js";
 export type { WebSocketEndpoint } from "./endpoint.js";
 export {
   type BalanceKind,
   type BalancePolicy,
   type Frame,
+  type Metadata,
   PROTOCOL_VERSION,
   type StreamKind,
 } from "./protocol.js";

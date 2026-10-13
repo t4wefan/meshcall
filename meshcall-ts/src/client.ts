@@ -5,6 +5,13 @@ import WebSocket, { type RawData } from "ws";
 import { closeSocket, createSocket, type WebSocketEndpoint } from "./endpoint.js";
 import { MeshCallError } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
+import {
+  clientDeadlineGraceMs,
+  DEFAULT_PING_INTERVAL_MS,
+  DEFAULT_PING_TIMEOUT_MS,
+  Liveness,
+  validateMetadata,
+} from "./liveness.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import {
   type CallCancelFrame,
@@ -13,6 +20,7 @@ import {
   type CallResultFrame,
   decodeFrame,
   type Frame,
+  type Metadata,
   type StreamEndFrame,
   type StreamItemFrame,
   type StreamWindowFrame,
@@ -24,7 +32,12 @@ import type { RouterCredentials } from "./router-auth.js";
 export { INITIAL_STREAM_CREDIT } from "./flow.js";
 
 export interface CallOptions {
+  /** Total budget for the call, including connecting. */
   timeoutMs?: number;
+  /** Longest allowed gap between consecutive stream items. */
+  idleTimeoutMs?: number;
+  /** Request metadata delivered to the service handler. */
+  metadata?: Metadata;
   signal?: AbortSignal;
 }
 
@@ -32,6 +45,14 @@ export interface MeshCallClientOptions {
   readonly auth?: RouterCredentials;
   readonly maxFrameSize?: number;
   readonly handshakeTimeoutMs?: number;
+  /**
+   * How long past `timeoutMs` to wait for the peer's own deadline error
+   * before failing locally. Defaults to `max(1s, 10%)`.
+   */
+  readonly deadlineGraceMs?: number;
+  /** Keepalive ping cadence; `null` disables pinging. */
+  readonly pingIntervalMs?: number | null;
+  readonly pingTimeoutMs?: number;
 }
 
 interface InputState {
@@ -54,7 +75,11 @@ interface PendingCall {
 export class MeshCallServerStream<Item>
   implements AsyncIterableIterator<Item>
 {
-  public constructor(private readonly open: Promise<ServerStreamState<Item>>) {}
+  private state: ServerStreamState<Item> | undefined;
+
+  public constructor(private readonly open: Promise<ServerStreamState<Item>>) {
+    open.then((state) => { this.state = state; }, () => undefined);
+  }
 
   public [Symbol.asyncIterator](): AsyncIterableIterator<Item> {
     return this;
@@ -62,6 +87,11 @@ export class MeshCallServerStream<Item>
 
   public async next(): Promise<IteratorResult<Item>> {
     return (await this.open).next();
+  }
+
+  /** Server trailers; populated once the stream has terminated. */
+  public get trailers(): Readonly<Metadata> {
+    return this.state?.trailers ?? {};
   }
 
   public async cancel(reason = "client_closed"): Promise<void> {
@@ -78,6 +108,7 @@ export class MeshCallClient {
   private socket: WebSocket | undefined;
   private connectingSocket: WebSocket | undefined;
   private writer: FrameWriter | undefined;
+  private liveness: Liveness | undefined;
   private connectPromise: Promise<void> | undefined;
   private readonly calls = new Map<string, PendingCall>();
   private readonly streams = new Map<string, ServerStreamState<unknown>>();
@@ -87,9 +118,14 @@ export class MeshCallClient {
     private readonly peerId: string = randomUUID().replaceAll("-", ""),
     private readonly options: MeshCallClientOptions = {},
   ) {
-    for (const value of [options.maxFrameSize, options.handshakeTimeoutMs]) {
+    for (const value of [options.maxFrameSize, options.handshakeTimeoutMs, options.pingTimeoutMs]) {
       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
         throw new RangeError("Limits must be positive integers");
+      }
+    }
+    for (const value of [options.deadlineGraceMs, options.pingIntervalMs]) {
+      if (value !== undefined && value !== null && (!Number.isFinite(value) || value < 0)) {
+        throw new RangeError("Durations must be non-negative");
       }
     }
   }
@@ -117,11 +153,12 @@ export class MeshCallClient {
   ): Promise<Response> {
     this.validateOptions(options);
     this.ensureNotAborted(options);
+    const startedAt = performance.now();
     await this.connect();
     this.ensureNotAborted(options);
 
     const callId = newCallId();
-    const { result } = this.registerCall<Response>(callId, options);
+    const { result } = this.registerCall<Response>(callId, options, startedAt);
     try {
       await this.send(this.openFrame(callId, service, method, request, options));
     } catch (error) {
@@ -143,6 +180,7 @@ export class MeshCallClient {
   ): Promise<Response> {
     this.validateOptions(options);
     this.ensureNotAborted(options);
+    const startedAt = performance.now();
     await this.connect();
     this.ensureNotAborted(options);
 
@@ -155,6 +193,7 @@ export class MeshCallClient {
     const { pending, result } = this.registerCall<Response>(
       callId,
       options,
+      startedAt,
       input,
     );
     try {
@@ -200,6 +239,8 @@ export class MeshCallClient {
     const sockets = new Set([this.socket, this.connectingSocket]);
     this.socket = undefined;
     this.connectingSocket = undefined;
+    this.liveness?.stop();
+    this.liveness = undefined;
     this.writer?.close();
     this.writer = undefined;
     this.rejectAll(new MeshCallError("unavailable", "Client is closed"));
@@ -213,6 +254,7 @@ export class MeshCallClient {
     options: CallOptions,
   ): Promise<ServerStreamState<Item>> {
     this.ensureNotAborted(options);
+    const startedAt = performance.now();
     await this.connect();
     this.ensureNotAborted(options);
 
@@ -232,7 +274,7 @@ export class MeshCallClient {
         direction: "server",
         credit: INITIAL_STREAM_CREDIT,
       });
-      stream.arm(options);
+      stream.arm(options, this.localBudgetMs(options, startedAt));
       return stream;
     } catch (error) {
       stream.fail(error);
@@ -240,9 +282,17 @@ export class MeshCallClient {
     }
   }
 
+  /** Milliseconds left in the client-side budget, which started before connecting. */
+  private localBudgetMs(options: CallOptions, startedAt: number): number | undefined {
+    if (options.timeoutMs === undefined) return undefined;
+    const grace = this.options.deadlineGraceMs ?? clientDeadlineGraceMs(options.timeoutMs);
+    return Math.max(0, options.timeoutMs + grace - (performance.now() - startedAt));
+  }
+
   private registerCall<Response>(
     callId: string,
     options: CallOptions,
+    startedAt: number,
     input?: InputState,
   ): { pending: PendingCall; result: Promise<Response> } {
     let resolveResult: (value: Response) => void = () => undefined;
@@ -257,14 +307,11 @@ export class MeshCallClient {
       closed: false,
       ...(input === undefined ? {} : { input }),
     };
-    if (options.timeoutMs !== undefined) {
+    const budget = this.localBudgetMs(options, startedAt);
+    if (budget !== undefined) {
       pending.timer = setTimeout(() => {
-        this.cancelPending(
-          callId,
-          new MeshCallError("deadline_exceeded", "Call deadline exceeded"),
-          "deadline_exceeded",
-        );
-      }, options.timeoutMs);
+        this.cancelPending(callId, localDeadlineError(), "deadline_exceeded");
+      }, budget);
     }
     if (options.signal !== undefined) {
       pending.signal = options.signal;
@@ -338,15 +385,21 @@ export class MeshCallClient {
     request: unknown,
     options: CallOptions,
   ): CallOpenFrame {
-    return {
+    const frame: CallOpenFrame = {
       kind: "call.open",
       call_id: callId,
       service,
       method,
-      payload: request,
-      deadline_unix_ms:
-        options.timeoutMs === undefined ? null : Date.now() + options.timeoutMs,
+      // JSON.stringify drops undefined; the wire requires payload to exist.
+      payload: request === undefined ? null : request,
     };
+    if (options.timeoutMs !== undefined) frame.timeout_ms = Math.max(1, Math.round(options.timeoutMs));
+    if (options.idleTimeoutMs !== undefined) {
+      frame.idle_timeout_ms = Math.max(1, Math.round(options.idleTimeoutMs));
+    }
+    const metadata = validateMetadata(options.metadata);
+    if (metadata !== null) frame.metadata = metadata;
+    return frame;
   }
 
   private async open(): Promise<void> {
@@ -354,6 +407,11 @@ export class MeshCallClient {
     const timeout = this.options.handshakeTimeoutMs ?? 10_000;
     const socket = createSocket(this.url, maxSize, timeout, this.options.auth);
     const writer = new FrameWriter(socket, maxSize);
+    const liveness = new Liveness(socket, writer, {
+      pingIntervalMs: this.options.pingIntervalMs === undefined
+        ? DEFAULT_PING_INTERVAL_MS : this.options.pingIntervalMs,
+      pingTimeoutMs: this.options.pingTimeoutMs ?? DEFAULT_PING_TIMEOUT_MS,
+    });
     this.connectingSocket = socket;
     try {
       await new Promise<void>((resolve, reject) => {
@@ -384,6 +442,8 @@ export class MeshCallClient {
             ready = true;
             this.socket = socket;
             this.writer = writer;
+            this.liveness = liveness;
+            liveness.start();
             clearTimeout(timer);
             resolve();
           } catch (error) {
@@ -392,11 +452,13 @@ export class MeshCallClient {
         });
         socket.on("close", () => {
           clearTimeout(timer);
+          liveness.stop();
           writer.close();
-          const error = new MeshCallError("unavailable", "Connection was lost");
+          const error = new MeshCallError("unavailable", "Connection was lost", { retryable: true });
           if (this.socket === socket) {
             this.socket = undefined;
             this.writer = undefined;
+            this.liveness = undefined;
             this.rejectAll(error);
           }
           reject(error);
@@ -423,8 +485,7 @@ export class MeshCallClient {
       this.socket?.close();
       return;
     }
-    if (frame.kind === "ping") {
-      void this.send({ kind: "pong", nonce: frame.nonce }).catch(() => undefined);
+    if (this.liveness?.observe(frame) === true) {
       return;
     }
     if (frame.kind === "stream.window") {
@@ -493,7 +554,7 @@ export class MeshCallClient {
   private resolvePending(frame: CallResultFrame): void {
     const stream = this.streams.get(frame.call_id);
     if (stream !== undefined) {
-      stream.receiveResult();
+      stream.receiveResult(frame.metadata ?? {});
       return;
     }
     const pending = this.takePending(
@@ -510,7 +571,7 @@ export class MeshCallClient {
     });
     const stream = this.streams.get(frame.call_id);
     if (stream !== undefined) {
-      stream.fail(error);
+      stream.fail(error, frame.metadata ?? {});
       return;
     }
     this.rejectPending(frame.call_id, error);
@@ -562,9 +623,12 @@ export class MeshCallClient {
   }
 
   private validateOptions(options: CallOptions): void {
-    if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
-      throw new RangeError("timeoutMs must be positive");
+    for (const [name, value] of [["timeoutMs", options.timeoutMs], ["idleTimeoutMs", options.idleTimeoutMs]] as const) {
+      if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+        throw new RangeError(name + " must be positive");
+      }
     }
+    validateMetadata(options.metadata);
   }
 
   private ensureNotAborted(options: CallOptions): void {
@@ -582,6 +646,14 @@ export class MeshCallClient {
   }
 }
 
+function localDeadlineError(reason?: "idle"): MeshCallError {
+  return new MeshCallError(
+    "deadline_exceeded",
+    reason === "idle" ? "Output stream idle timeout" : "Call deadline exceeded",
+    { details: reason === undefined ? { source: "client" } : { source: "client", reason } },
+  );
+}
+
 class ServerStreamState<Item> {
   private readonly queue = new AsyncQueue<Item>();
   private allowance = 0;
@@ -589,8 +661,11 @@ class ServerStreamState<Item> {
   private ended = false;
   private terminal = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  private idleTimeoutMs: number | undefined;
   private signal: AbortSignal | undefined;
   private abortListener: (() => void) | undefined;
+  public trailers: Readonly<Metadata> = {};
 
   public constructor(
     private readonly callId: string,
@@ -602,7 +677,7 @@ class ServerStreamState<Item> {
     this.allowance += credit;
   }
 
-  public arm(options: CallOptions): void {
+  public arm(options: CallOptions, budgetMs: number | undefined): void {
     if (this.terminal) {
       return;
     }
@@ -610,14 +685,13 @@ class ServerStreamState<Item> {
       this.abort(new MeshCallError("cancelled", "Call was cancelled"), "caller_cancelled");
       return;
     }
-    if (options.timeoutMs !== undefined) {
+    if (budgetMs !== undefined) {
       this.timer = setTimeout(() => {
-        this.abort(
-          new MeshCallError("deadline_exceeded", "Call deadline exceeded"),
-          "deadline_exceeded",
-        );
-      }, options.timeoutMs);
+        this.abort(localDeadlineError(), "deadline_exceeded");
+      }, budgetMs);
     }
+    this.idleTimeoutMs = options.idleTimeoutMs;
+    this.armIdle();
     if (options.signal !== undefined) {
       this.signal = options.signal;
       this.abortListener = () => {
@@ -630,6 +704,18 @@ class ServerStreamState<Item> {
         once: true,
       });
     }
+  }
+
+  /** (Re)start the gap timer; measured between arrivals, not between reads. */
+  private armIdle(): void {
+    if (this.idleTimer !== undefined) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+    if (this.idleTimeoutMs === undefined || this.ended || this.terminal) return;
+    this.idleTimer = setTimeout(() => {
+      this.abort(localDeadlineError("idle"), "deadline_exceeded");
+    }, this.idleTimeoutMs);
   }
 
   public async next(): Promise<IteratorResult<Item>> {
@@ -673,6 +759,7 @@ class ServerStreamState<Item> {
     }
     this.allowance -= 1;
     this.expectedSequence += 1;
+    this.armIdle();
     this.queue.push(frame.payload as Item);
   }
 
@@ -682,10 +769,11 @@ class ServerStreamState<Item> {
       return;
     }
     this.ended = true;
+    this.armIdle();
     this.queue.close();
   }
 
-  public receiveResult(): void {
+  public receiveResult(trailers: Readonly<Metadata>): void {
     if (this.terminal) {
       return;
     }
@@ -699,16 +787,18 @@ class ServerStreamState<Item> {
       return;
     }
     this.terminal = true;
+    this.trailers = trailers;
     this.cleanup();
     this.remove();
     this.queue.close();
   }
 
-  public fail(error: unknown): void {
+  public fail(error: unknown, trailers: Readonly<Metadata> = {}): void {
     if (this.terminal) {
       return;
     }
     this.terminal = true;
+    this.trailers = trailers;
     this.cleanup();
     this.remove();
     this.queue.fail(error);
@@ -745,10 +835,11 @@ class ServerStreamState<Item> {
   }
 
   private cleanup(): void {
-    if (this.timer !== undefined) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
+    for (const timer of [this.timer, this.idleTimer]) {
+      if (timer !== undefined) clearTimeout(timer);
     }
+    this.timer = undefined;
+    this.idleTimer = undefined;
     if (this.signal !== undefined && this.abortListener !== undefined) {
       this.signal.removeEventListener("abort", this.abortListener);
       this.signal = undefined;

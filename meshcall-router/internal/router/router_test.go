@@ -323,6 +323,106 @@ func TestQueuePreservesOpenBarrierAndBoundsMemory(t *testing.T) {
 	}
 }
 
+func TestDeadlineCancelAndIdleLifecycle(t *testing.T) {
+	r, err := Start(Config{DeadlineGrace: 50 * time.Millisecond, IdleTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	worker := dial(t, r, "")
+	registerPeer(t, worker, "worker")
+	client := dial(t, r, "")
+	hello(t, client, "client", "client")
+	timeout := int64(100)
+	open := frame{Kind: "call.open", CallID: "slow", Service: testService, Method: "echo",
+		Payload: json.RawMessage(`{}`), TimeoutMS: &timeout, Metadata: json.RawMessage(`{"traceparent":"00-abc"}`)}
+	send(t, client, open)
+	if got := receive(t, worker); !bytes.Equal(got.raw, open.bytes()) {
+		t.Fatal("metadata or timeout was not forwarded verbatim")
+	}
+	// The worker never answers: the router fires at timeout + grace.
+	started := time.Now()
+	if got := receive(t, client); got.Error == nil || got.Error.Code != "deadline_exceeded" ||
+		string(got.Error.Details) != `{"source":"router"}` || got.Error.Retryable {
+		t.Fatalf("router deadline: %+v", got)
+	}
+	if elapsed := time.Since(started); elapsed < 100*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("deadline fired after %v", elapsed)
+	}
+	if got := receive(t, worker); got.Kind != "call.cancel" || got.Reason != "deadline_exceeded" {
+		t.Fatalf("worker was not cancelled: %+v", got)
+	}
+	r.mu.Lock()
+	if len(r.routes) != 0 || len(r.deadlines) != 0 || r.instances["worker"].inflight != 0 {
+		t.Fatal("expired route leaked")
+	}
+	r.mu.Unlock()
+	// A late result from the worker is dropped, not delivered to the client.
+	send(t, worker, frame{Kind: "call.result", CallID: "slow", Payload: json.RawMessage(`{}`)})
+
+	// Client cancel frees the route immediately even though the worker never answers.
+	open.CallID = "cancelled"
+	open.TimeoutMS = nil
+	send(t, client, open)
+	receive(t, worker)
+	send(t, client, frame{Kind: "call.cancel", CallID: "cancelled"})
+	if got := receive(t, worker); got.Kind != "call.cancel" {
+		t.Fatal("cancel not forwarded")
+	}
+	eventually(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return len(r.routes) == 0 && r.instances["worker"].inflight == 0
+	})
+	send(t, worker, frame{Kind: "call.result", CallID: "cancelled", Payload: json.RawMessage(`{}`)})
+
+	// A normally completed call leaves the deadline heap.
+	timeout = 60_000
+	open.CallID = "fast"
+	open.TimeoutMS = &timeout
+	send(t, client, open)
+	receive(t, worker)
+	send(t, worker, frame{Kind: "call.result", CallID: "fast", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, client); got.Kind != "call.result" || got.CallID != "fast" {
+		t.Fatalf("late frames leaked to client: %+v", got)
+	}
+	r.mu.Lock()
+	if len(r.deadlines) != 0 {
+		t.Fatal("completed route stayed in deadline heap")
+	}
+	r.mu.Unlock()
+
+	// An idle peer that never pings is closed.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, _, err := client.Read(ctx); err == nil {
+		t.Fatal("idle connection survived")
+	}
+}
+
+func TestDecodeCompatibilityRules(t *testing.T) {
+	if _, err := decode([]byte(`{"kind":"call.cancel","call_id":"x","future_field":1}`)); err != nil {
+		t.Fatal("unknown field rejected:", err)
+	}
+	if _, err := decode([]byte(`{"kind":"call.future","call_id":"x"}`)); err == nil {
+		t.Fatal("unknown frame kind accepted")
+	}
+	for _, bad := range []string{
+		`{"kind":"call.open","call_id":"x","service":"s","method":"m","payload":{},"timeout_ms":0}`,
+		`{"kind":"call.open","call_id":"x","service":"s","method":"m","payload":{},"idle_timeout_ms":-1}`,
+		`{"kind":"call.open","call_id":"x","service":"s","method":"m","payload":{},"metadata":{"k":1}}`,
+		`{"kind":"call.open","call_id":"x","service":"s","method":"m","payload":{},"metadata":[]}`,
+		`{"kind":"call.result","call_id":"x","metadata":{"":"v"}}`,
+	} {
+		if _, err := decode([]byte(bad)); err == nil {
+			t.Fatal("accepted:", bad)
+		}
+	}
+	if _, err := decode([]byte(`{"kind":"call.error","call_id":"x","error":{"code":"internal","message":"m"},"metadata":{"k":"v"}}`)); err != nil {
+		t.Fatal("trailers rejected:", err)
+	}
+}
+
 func TestEmptyPingNonceRemainsARequiredField(t *testing.T) {
 	r := runningRouter(t, nil)
 	conn := dial(t, r, "")

@@ -6,6 +6,9 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 
 import { closeSocket, createSocket, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
 import { MeshCallError } from "./errors.js";
+import {
+  DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS, Liveness,
+} from "./liveness.js";
 import { ConsoleRpcLogger, type LogLevel, type RpcLogger } from "./logging.js";
 import { decodeFrame, PROTOCOL_VERSION, type Frame, type RegisteredService } from "./protocol.js";
 import { ServerSession, type RuntimeMethod, type RuntimeServices } from "./server-session.js";
@@ -34,6 +37,11 @@ export interface MeshCallServerOptions {
   readonly router?: RouterConnectionOptions;
   readonly maxFrameSize?: number;
   readonly handshakeTimeoutMs?: number;
+  /** Direct mode: drop clients that send nothing for this long; `null` disables. */
+  readonly idleTimeoutMs?: number | null;
+  /** Router mode: keepalive ping cadence toward the Router; `null` disables. */
+  readonly pingIntervalMs?: number | null;
+  readonly pingTimeoutMs?: number;
   readonly accessLog?: boolean;
   readonly logLevel?: LogLevel;
   readonly colorize?: boolean;
@@ -148,12 +156,21 @@ export class MeshCallServer {
     }
   }
 
-  private session(socket: WebSocket): ServerSession {
-    const session = new ServerSession(this.services, new FrameWriter(socket, this.maxFrameSize), {
+  private session(socket: WebSocket, role: "direct" | "router"): { session: ServerSession; liveness: Liveness } {
+    const writer = new FrameWriter(socket, this.maxFrameSize);
+    const liveness = new Liveness(socket, writer, role === "direct"
+      ? { idleTimeoutMs: this.options.idleTimeoutMs === undefined
+          ? DEFAULT_IDLE_TIMEOUT_MS : this.options.idleTimeoutMs }
+      : {
+          pingIntervalMs: this.options.pingIntervalMs === undefined
+            ? DEFAULT_PING_INTERVAL_MS : this.options.pingIntervalMs,
+          pingTimeoutMs: this.options.pingTimeoutMs ?? DEFAULT_PING_TIMEOUT_MS,
+        });
+    const session = new ServerSession(this.services, writer, {
       logger: this.logger,
       accessLog: this.options.accessLog ?? true,
       logLevel: this.options.logLevel ?? "info",
-    });
+    }, liveness);
     this.sessions.set(socket, session);
     socket.on("close", () => {
       session.close();
@@ -167,7 +184,7 @@ export class MeshCallServer {
       session.close();
       socket.close();
     });
-    return session;
+    return { session, liveness };
   }
 
   private async startDirect(): Promise<void> {
@@ -199,7 +216,7 @@ export class MeshCallServer {
   }
 
   private acceptDirect(socket: WebSocket): void {
-    const session = this.session(socket);
+    const { session, liveness } = this.session(socket, "direct");
     let ready = false;
     const timer = setTimeout(() => socket.close(1002, "MeshCall handshake timed out"), this.handshakeTimeout);
     socket.once("close", () => clearTimeout(timer));
@@ -212,6 +229,7 @@ export class MeshCallServer {
           }
           ready = true;
           clearTimeout(timer);
+          liveness.start();
           void session.writer.send({
             kind: "hello.ack", protocol: PROTOCOL_VERSION,
             connection_id: randomUUID().replaceAll("-", ""),
@@ -228,7 +246,7 @@ export class MeshCallServer {
   private async startRouter(router: RouterConnectionOptions): Promise<void> {
     const socket = createSocket(router.endpoint, this.maxFrameSize, this.handshakeTimeout, router.auth);
     this.routerSocket = socket;
-    const session = this.session(socket);
+    const { session, liveness } = this.session(socket, "router");
     await new Promise<void>((resolve, reject) => {
       let state: "hello" | "register" | "ready" = "hello";
       const fail = (error: unknown) => { clearTimeout(timer); reject(error); socket.close(); };
@@ -265,6 +283,7 @@ export class MeshCallServer {
             state = "ready";
             clearTimeout(timer);
             socket.off("error", fail);
+            liveness.start();
             resolve();
           } else {
             session.handle(frame);

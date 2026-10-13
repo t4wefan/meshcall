@@ -57,19 +57,26 @@ export interface ServerRegisterAckFrame {
   instance_id: string;
 }
 
+export type Metadata = Record<string, string>;
+
 export interface CallOpenFrame {
   kind: "call.open";
   call_id: string;
   service: string;
   method: string;
   payload: unknown;
-  deadline_unix_ms?: number | null;
+  /** Relative budget, measured by each peer from when it processes this frame. */
+  timeout_ms?: number | null;
+  /** Longest allowed gap between stream items in either direction. */
+  idle_timeout_ms?: number | null;
+  metadata?: Metadata | null;
 }
 
 export interface CallResultFrame {
   kind: "call.result";
   call_id: string;
   payload?: unknown;
+  metadata?: Metadata | null;
 }
 
 export interface ErrorPayload {
@@ -83,6 +90,7 @@ export interface CallErrorFrame {
   kind: "call.error";
   call_id: string;
   error: ErrorPayload;
+  metadata?: Metadata | null;
 }
 
 export interface CallCancelFrame {
@@ -164,6 +172,12 @@ const string = { type: "string" };
 const nullableString = { type: ["string", "null"] };
 const direction = { enum: ["client", "server"] };
 const integer = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
+const positiveMs = { type: ["integer", "null"], minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
+const metadata = {
+  type: ["object", "null"],
+  additionalProperties: { type: "string" },
+  propertyNames: { minLength: 1 },
+};
 const balance = {
   type: "object",
   properties: {
@@ -171,7 +185,6 @@ const balance = {
     key: nullableString,
   },
   required: ["kind"],
-  additionalProperties: false,
 };
 const method = {
   type: "object",
@@ -180,19 +193,18 @@ const method = {
     balance,
   },
   required: ["name", "stream", "balance"],
-  additionalProperties: false,
 };
 const service = {
   type: "object",
   properties: { name: string, methods: { type: "array", items: method } },
   required: ["name", "methods"],
-  additionalProperties: false,
 };
 const ajv = new Ajv2020({ strict: false });
+// meshcall/1 compatibility rule: unknown fields are ignored, unknown kinds rejected.
 const frame = (kind: string, properties: Record<string, unknown>, required: string[]) =>
   ajv.compile({
     type: "object", properties: { kind: { const: kind }, ...properties },
-    required: ["kind", ...required], additionalProperties: false,
+    required: ["kind", ...required],
   });
 const validators = new Map([
   ["hello", frame("hello", {
@@ -207,9 +219,9 @@ const validators = new Map([
   ["server.register.ack", frame("server.register.ack", { instance_id: string }, ["instance_id"])],
   ["call.open", frame("call.open", {
     call_id: string, service: string, method: string, payload: {},
-    deadline_unix_ms: { type: ["integer", "null"] },
+    timeout_ms: positiveMs, idle_timeout_ms: positiveMs, metadata,
   }, ["call_id", "service", "method", "payload"])],
-  ["call.result", frame("call.result", { call_id: string, payload: {} }, ["call_id"])],
+  ["call.result", frame("call.result", { call_id: string, payload: {}, metadata }, ["call_id"])],
   ["call.error", frame("call.error", {
     call_id: string,
     error: {
@@ -218,8 +230,9 @@ const validators = new Map([
         code: string, message: string, retryable: { type: "boolean" },
         details: { type: ["object", "null"] },
       },
-      required: ["code", "message"], additionalProperties: false,
+      required: ["code", "message"],
     },
+    metadata,
   }, ["call_id", "error"])],
   ["call.cancel", frame("call.cancel", { call_id: string, reason: string }, ["call_id"])],
   ["stream.item", frame("stream.item", {

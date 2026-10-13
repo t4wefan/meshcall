@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Protocol
@@ -28,14 +29,37 @@ class WebSocketLike(Protocol):
 
 
 class FrameConnection:
-    def __init__(self, websocket: WebSocketLike, *, max_frame_size: int) -> None:
+    """Frame ordering, fairness, and liveness over one WebSocket.
+
+    Protocol ``ping``/``pong`` frames are handled here so that neither the
+    client nor the server runtime sees them. A connecting peer passes
+    ``ping_interval``/``ping_timeout`` and this connection keeps itself alive;
+    an accepting peer passes ``idle_timeout`` and this connection drops a peer
+    that stays silent for that long.
+    """
+
+    def __init__(
+        self,
+        websocket: WebSocketLike,
+        *,
+        max_frame_size: int,
+        ping_interval: float | None = None,
+        ping_timeout: float | None = None,
+        idle_timeout: float | None = None,
+    ) -> None:
         self._websocket = websocket
         self._max_frame_size = max_frame_size
+        self._ping_interval = ping_interval
+        self._ping_timeout = ping_timeout
+        self._idle_timeout = idle_timeout
         self._control_queue: deque[_PendingFrame] = deque()
         self._call_queues: dict[str, deque[_PendingFrame]] = {}
         self._call_order: deque[str] = deque()
         self._send_ready = asyncio.Event()
         self._sender_task: asyncio.Task[None] | None = None
+        self._keepalive_task: asyncio.Task[None] | None = None
+        self._pending_pong: asyncio.Future[None] | None = None
+        self._pending_nonce: str | None = None
         self._closed: BaseException | None = None
 
     async def send(self, frame: Frame) -> None:
@@ -43,9 +67,7 @@ class FrameConnection:
             raise self._closed
         encoded = encode_frame(frame)
         if len(encoded.encode()) > self._max_frame_size:
-            raise ValueError(
-                f"Encoded frame exceeds {self._max_frame_size} byte limit"
-            )
+            raise ValueError(f"Encoded frame exceeds {self._max_frame_size} byte limit")
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         pending = _PendingFrame(encoded=encoded, future=future)
         call_id = getattr(frame, "call_id", None)
@@ -67,22 +89,94 @@ class FrameConnection:
         await future
 
     async def receive(self) -> Frame:
-        try:
-            data = await self._websocket.recv()
-        except ConnectionClosed as exc:
-            raise ConnectionError("WebSocket connection is closed") from exc
-        return decode_frame(data)
+        """Return the next non-keepalive frame.
+
+        Raises ``ConnectionError`` when the socket closes, when the peer stays
+        silent past ``idle_timeout``, or when a keepalive ping goes unanswered.
+        """
+        self.start_keepalive()
+        while True:
+            try:
+                if self._idle_timeout is None:
+                    data = await self._websocket.recv()
+                else:
+                    async with asyncio.timeout(self._idle_timeout):
+                        data = await self._websocket.recv()
+            except ConnectionClosed as exc:
+                raise self._mark_closed("WebSocket connection is closed") from exc
+            except TimeoutError as exc:
+                error = self._mark_closed("Peer was idle for too long")
+                await self._websocket.close(1001, "idle timeout")
+                raise error from exc
+            frame = decode_frame(data)
+            if isinstance(frame, PingFrame):
+                with contextlib.suppress(ConnectionError):
+                    await self.send(PongFrame(nonce=frame.nonce))
+                continue
+            if isinstance(frame, PongFrame):
+                if (
+                    self._pending_pong is not None
+                    and frame.nonce == self._pending_nonce
+                    and not self._pending_pong.done()
+                ):
+                    self._pending_pong.set_result(None)
+                continue
+            return frame
+
+    def start_keepalive(self) -> None:
+        """Begin pinging the peer. Called automatically by ``receive``."""
+        if self._ping_interval is None or self._keepalive_task is not None:
+            return
+        if self._closed is not None:
+            return
+        self._keepalive_task = asyncio.create_task(
+            self._keepalive_loop(),
+            name="meshcall-keepalive",
+        )
 
     async def close(self) -> None:
         if self._closed is None:
             self._closed = ConnectionError("WebSocket connection is closed")
         await self._websocket.close()
-        if self._sender_task is not None:
-            sender_task, self._sender_task = self._sender_task, None
-            sender_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await sender_task
+        for attribute in ("_sender_task", "_keepalive_task"):
+            task: asyncio.Task[None] | None = getattr(self, attribute)
+            if task is not None:
+                setattr(self, attribute, None)
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         self._fail_pending(self._closed)
+
+    def _mark_closed(self, message: str) -> BaseException:
+        if self._closed is None:
+            self._closed = ConnectionError(message)
+            self._fail_pending(self._closed)
+        return self._closed
+
+    async def _keepalive_loop(self) -> None:
+        assert self._ping_interval is not None
+        timeout = self._ping_timeout if self._ping_timeout is not None else 10.0
+        loop = asyncio.get_running_loop()
+        while self._closed is None:
+            await asyncio.sleep(self._ping_interval)
+            if self._closed is not None:
+                return
+            nonce = uuid.uuid4().hex
+            self._pending_nonce = nonce
+            self._pending_pong = loop.create_future()
+            try:
+                await self.send(PingFrame(nonce=nonce))
+                async with asyncio.timeout(timeout):
+                    await self._pending_pong
+            except (TimeoutError, ConnectionError):
+                self._mark_closed("Peer did not answer keepalive ping")
+                # Closing the socket wakes the receive loop with ConnectionClosed.
+                with contextlib.suppress(Exception):
+                    await self._websocket.close(1001, "keepalive timeout")
+                return
+            finally:
+                self._pending_pong = None
+                self._pending_nonce = None
 
     async def _send_loop(self) -> None:
         while True:

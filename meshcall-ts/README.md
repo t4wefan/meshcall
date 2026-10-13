@@ -23,11 +23,22 @@ validate requests, responses, and stream items through Ajv. Defaults are applied
 but values are not coerced between JSON types. Legacy method definitions without
 type contracts remain supported without payload validation.
 
-Handlers receive an `RpcContext` containing `signal`, `deadlineUnixMs`, `callId`,
-`service`, `method`, and a bound `logger`. Client-streaming handlers take
-`(request, items, context)`; the other handlers take `(request, context)`.
-Observe `context.signal` during asynchronous work to release resources on
-cancellation. Handlers still run on Node's event loop.
+Handlers receive an `RpcContext` containing `signal`, `deadlineMs` and
+`remainingMs()`, `callId`, `service`, `method`, the caller's `metadata`,
+`setTrailer(key, value)` for response trailers, and a bound `logger`.
+Client-streaming handlers take `(request, items, context)`; the other handlers
+take `(request, context)`. Observe `context.signal` during asynchronous work to
+release resources on cancellation. Handlers still run on Node's event loop.
+
+Callers pass `CallOptions`: `timeoutMs` (the whole call, including connecting),
+`idleTimeoutMs` (longest gap between stream items), `metadata`, and `signal`.
+The client fails a call locally at `timeoutMs` plus a grace
+(`deadlineGraceMs`, default `max(1s, 10%)`) so the server's or Router's own
+`deadline_exceeded` normally arrives first; a locally raised one carries
+`details.source === "client"`. Clients ping every `pingIntervalMs` (15 s) and
+treat a missing `pong` after `pingTimeoutMs` (10 s) as a lost connection. Direct
+servers close clients silent for `idleTimeoutMs` (45 s); Router-mode servers
+ping the Router instead.
 
 ## Streaming service
 

@@ -30,12 +30,16 @@ frames. See [building and deploying the executable](../meshcall-router/README.md
    instance IDs, unauthorized services, and incompatible registrations under the
    same service name. `meshcall.router.` is reserved for built-in services.
 3. A client sends `call.open` with a service, method, globally unique call ID,
-   request payload, and optional deadline.
+   request payload, optional `timeout_ms` / `idle_timeout_ms`, and optional
+   `metadata`. The Router forwards the frame byte-for-byte, so metadata and any
+   fields it does not understand reach the instance unchanged.
 4. The Router checks service/method permissions, then selects one instance and records the client connection and service
    instance under the call ID. Every subsequent stream item, window, half-close,
    cancellation, result, and error follows that route.
 5. A terminal result or error removes the route and decrements the instance's
-   inflight count exactly once.
+   inflight count exactly once. A `call.cancel` from the client also removes the
+   route immediately: the cancel is forwarded, but any later frame from the
+   instance for that call is dropped.
 
 The Router keeps four in-memory tables: clients, service instances, service
 pools, and active call routes. It does not persist state or consult an external
@@ -63,10 +67,20 @@ per instance, across its registered services.
 - A disconnected client causes the Router to cancel its active service calls.
 - A disconnected service instance causes its active client calls to fail with
   retryable `unavailable`; the caller decides whether a new call is appropriate.
-- The Router rejects already-expired calls and forwards live deadlines and
-  flow-control frames. Services enforce running-call deadlines and stream credit.
-  The Router executes only its own management methods and never buffers an
-  entire business stream.
+- Deadlines are enforced in three layers (see [the protocol](protocol.md#timeouts)).
+  The Router keeps one timer heap over all routed calls that carry `timeout_ms`
+  and fires at `timeout_ms + --deadline-grace` (default 500 ms). When it fires,
+  the client receives `deadline_exceeded` with `details.source = "router"`, the
+  instance receives `call.cancel` with reason `deadline_exceeded`, and the route
+  is freed. This protects clients from an instance that stopped responding
+  without closing its connection. The service's own, earlier deadline is still
+  the normal path. The Router does not enforce `idle_timeout_ms`.
+- The Router never sends `ping`; it answers pings and closes any connection that
+  has sent nothing for `--idle-timeout` (default 45 s). Clients and service
+  instances ping every 15 s by default, so a healthy peer is never idle that
+  long. Services enforce running-call deadlines and stream credit; the Router
+  executes only its own management methods and never buffers an entire
+  business stream.
 - Restarting the Router loses its registrations and active routes. Version 1
   provides no automatic call replay, stream resumption, route migration, or
   replicated Router state.

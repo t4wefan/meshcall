@@ -1,3 +1,4 @@
+from meshcall.client import ClientBase
 from meshcall.codegen import render_client, write_client
 from meshcall.codegen_portable import (
     render_portable_python_client,
@@ -11,6 +12,7 @@ from meshcall.codegen_typescript import (
     render_typescript_models,
     write_typescript_client,
 )
+from meshcall.context import CallOptions, RpcContext
 from meshcall.contract import (
     Balance,
     get_service_contract,
@@ -41,13 +43,15 @@ from meshcall.router_auth import (
     RouterScope,
 )
 from meshcall.server import RpcServer
-from meshcall.streams import RpcDuplex, RpcInputStream
+from meshcall.streams import RpcDuplex, RpcDuplexClient, RpcInputStream, RpcServerStream
 
 __all__ = [
     "Balance",
     "BalanceKind",
     "BalancePolicy",
     "BindingKind",
+    "CallOptions",
+    "ClientBase",
     "ContractError",
     "IssuedToken",
     "MeshCallError",
@@ -57,10 +61,13 @@ __all__ = [
     "RouterCredentials",
     "RouterIdentity",
     "RouterScope",
+    "RpcContext",
     "RpcDuplex",
+    "RpcDuplexClient",
     "RpcInputStream",
     "RpcLogger",
     "RpcServer",
+    "RpcServerStream",
     "StreamKind",
     "WebSocketRouter",
     "get_service_contract",

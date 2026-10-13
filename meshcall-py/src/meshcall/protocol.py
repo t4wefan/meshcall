@@ -2,17 +2,38 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
 
 from meshcall.errors import ProtocolError
 from meshcall.ir import BalancePolicy, StreamKind
 
 PROTOCOL_VERSION = "meshcall/1"
 Direction: TypeAlias = Literal["client", "server"]
+Metadata: TypeAlias = dict[str, str]
 
 
 class FrameModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # meshcall/1 compatibility rule: unknown fields are ignored so that later
+    # minor revisions can add optional fields without breaking older peers.
+    model_config = ConfigDict(extra="ignore")
+
+
+class _MetadataFrame(FrameModel):
+    metadata: Metadata | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def _non_empty_keys(cls, value: Metadata | None) -> Metadata | None:
+        if value is not None and any(key == "" for key in value):
+            raise ValueError("metadata keys must not be empty")
+        return value
 
 
 class HelloFrame(FrameModel):
@@ -51,16 +72,17 @@ class ServerRegisterAckFrame(FrameModel):
     instance_id: str
 
 
-class CallOpenFrame(FrameModel):
+class CallOpenFrame(_MetadataFrame):
     kind: Literal["call.open"] = "call.open"
     call_id: str
     service: str
     method: str
     payload: Any
-    deadline_unix_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, gt=0)
+    idle_timeout_ms: int | None = Field(default=None, gt=0)
 
 
-class CallResultFrame(FrameModel):
+class CallResultFrame(_MetadataFrame):
     kind: Literal["call.result"] = "call.result"
     call_id: str
     payload: Any = None
@@ -73,7 +95,7 @@ class ErrorPayload(FrameModel):
     details: dict[str, Any] | None = None
 
 
-class CallErrorFrame(FrameModel):
+class CallErrorFrame(_MetadataFrame):
     kind: Literal["call.error"] = "call.error"
     call_id: str
     error: ErrorPayload
@@ -145,4 +167,3 @@ def decode_frame(data: str | bytes) -> Frame:
         return _FRAME_ADAPTER.validate_json(data)
     except ValidationError as exc:
         raise ProtocolError(f"Invalid frame: {exc}") from exc
-

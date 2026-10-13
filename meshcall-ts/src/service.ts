@@ -1,12 +1,23 @@
 import type { RpcLogger } from "./logging.js";
-import type { BalancePolicy } from "./protocol.js";
+import type { BalancePolicy, Metadata } from "./protocol.js";
 
 export interface RpcContext {
   readonly signal: AbortSignal;
-  readonly deadlineUnixMs: number | null;
+  /**
+   * Absolute `performance.now()` value by which the call must finish, or
+   * `null` when the caller set no timeout.
+   */
+  readonly deadlineMs: number | null;
+  /** Milliseconds left in the call's budget, or `null` when unlimited. */
+  remainingMs(): number | null;
   readonly callId: string;
   readonly service: string;
   readonly method: string;
+  /** Request metadata the caller attached to `call.open`. */
+  readonly metadata: Readonly<Metadata>;
+  /** Attach a trailer to the terminal `call.result` or `call.error` frame. */
+  setTrailer(key: string, value: string): void;
+  readonly trailers: Readonly<Metadata>;
   readonly logger: RpcLogger;
 }
 

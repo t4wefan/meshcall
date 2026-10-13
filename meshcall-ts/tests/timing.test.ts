@@ -1,0 +1,184 @@
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import test from "node:test";
+import { WebSocketServer } from "ws";
+
+import {
+  clientStreamMethod, defineService, defineType, MeshCallClient, MeshCallError, MeshCallServer,
+  serverStreamMethod, unaryMethod, type MeshCallServerOptions,
+} from "../src/index.js";
+import { decodeFrame, encodeFrame, PROTOCOL_VERSION, type CallOpenFrame } from "../src/protocol.js";
+
+interface Value { value: number }
+interface Echo { value: number; metadata: Record<string, string>; remainingKnown: boolean }
+interface Trickle { count: number; gapMs: number }
+
+const valueType = defineType<Value>("Value", {
+  type: "object", properties: { value: { type: "integer" } }, required: ["value"],
+});
+const echoType = defineType<Echo>("Echo", {
+  type: "object",
+  properties: {
+    value: { type: "integer" },
+    metadata: { type: "object", additionalProperties: { type: "string" } },
+    remainingKnown: { type: "boolean" },
+  },
+  required: ["value", "metadata", "remainingKnown"],
+});
+const trickleType = defineType<Trickle>("Trickle", {
+  type: "object", properties: { count: { type: "integer" }, gapMs: { type: "integer" } },
+  required: ["count", "gapMs"],
+});
+
+const service = defineService({
+  name: "test.v1.TimingService",
+  sourceModule: "timing.test", sourceQualname: "TimingService",
+  methods: {
+    echo: unaryMethod({
+      request: valueType, response: echoType,
+      handler: (request, ctx) => {
+        ctx.setTrailer("handled-by", "typescript");
+        return { value: request.value, metadata: { ...ctx.metadata }, remainingKnown: ctx.remainingMs() !== null };
+      },
+    }),
+    trickle: serverStreamMethod({
+      request: trickleType, outputItem: valueType,
+      handler: async function* ({ count, gapMs }, { signal }) {
+        for (let value = 0; value < count; value += 1) {
+          await delay(gapMs, undefined, { signal });
+          yield { value };
+        }
+      },
+    }),
+    collect: clientStreamMethod({
+      request: valueType, inputItem: valueType, response: valueType,
+      handler: async (_, items, ctx) => {
+        let total = 0;
+        for await (const item of items) total += item.value;
+        ctx.setTrailer("items-seen", String(total));
+        return { value: total };
+      },
+    }),
+  },
+});
+
+const isError = (code: string, details?: Record<string, unknown>) => (error: unknown) =>
+  error instanceof MeshCallError && error.code === code
+  && (details === undefined || JSON.stringify(error.details) === JSON.stringify(details));
+
+async function running(options: Partial<MeshCallServerOptions> = {}, clientOptions = {}) {
+  const server = new MeshCallServer({ services: [service], accessLog: false, ...options });
+  await server.start();
+  const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, clientOptions);
+  return { server, client, close: async () => { await client.close(); await server.close(); } };
+}
+
+test("metadata reaches the handler and trailers come back on streams", { timeout: 5000 }, async (t) => {
+  const app = await running();
+  t.after(app.close);
+  const echoed = await app.client.unary<Value, Echo>(service.name, "echo", { value: 4 }, {
+    timeoutMs: 5000, metadata: { traceparent: "00-abc", tenant: "t1" },
+  });
+  assert.deepEqual(echoed, { value: 4, metadata: { traceparent: "00-abc", tenant: "t1" }, remainingKnown: true });
+  await assert.rejects(
+    app.client.unary(service.name, "echo", { value: 1 }, { metadata: { "meshcall-x": "1" } }),
+    RangeError,
+  );
+  const stream = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 2, gapMs: 1 });
+  const seen: number[] = [];
+  for await (const item of stream) seen.push(item.value);
+  assert.deepEqual(seen, [0, 1]);
+  assert.deepEqual(stream.trailers, {});
+});
+
+test("idle timeouts are enforced by the consuming side in each direction", { timeout: 5000 }, async (t) => {
+  const app = await running();
+  t.after(app.close);
+  // Server stream: client watches arrival gaps.
+  const slow = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 3, gapMs: 300 }, { idleTimeoutMs: 50 });
+  await assert.rejects(slow.next(), isError("deadline_exceeded", { source: "client", reason: "idle" }));
+  const fast = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 3, gapMs: 1 }, { idleTimeoutMs: 1000 });
+  const seen: number[] = [];
+  for await (const item of fast) seen.push(item.value);
+  assert.deepEqual(seen, [0, 1, 2]);
+  // Client stream: server watches arrival gaps.
+  await assert.rejects(app.client.clientStream(
+    service.name, "collect", { value: 0 },
+    (async function* () { yield { value: 1 }; await delay(2000); yield { value: 2 }; })(),
+    { idleTimeoutMs: 50 },
+  ), isError("deadline_exceeded", { source: "server", reason: "idle" }));
+});
+
+test("the client deadline fires locally when the peer never answers", { timeout: 5000 }, async (t) => {
+  const opened: CallOpenFrame[] = [];
+  const fake = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(fake, "listening");
+  t.after(() => new Promise<void>((resolve) => {
+    for (const socket of fake.clients) socket.terminate();
+    fake.close(() => resolve());
+  }));
+  fake.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      const frame = decodeFrame(data);
+      if (frame.kind === "hello") {
+        socket.send(encodeFrame({ kind: "hello.ack", protocol: PROTOCOL_VERSION, connection_id: "fake" }));
+      } else if (frame.kind === "call.open") {
+        opened.push(frame);
+      }
+    });
+  });
+  const address = fake.address();
+  assert.ok(typeof address === "object" && address !== null);
+  const client = new MeshCallClient("ws://127.0.0.1:" + address.port, undefined, { deadlineGraceMs: 50 });
+  t.after(() => client.close());
+  const started = performance.now();
+  await assert.rejects(
+    client.unary(service.name, "echo", { value: 1 }, { timeoutMs: 100 }),
+    isError("deadline_exceeded", { source: "client" }),
+  );
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed >= 100 && elapsed < 1000, "fired after " + elapsed + "ms");
+  assert.equal(opened[0]?.timeout_ms, 100);
+  // Streams use the same local budget and report the same source.
+  const stream = client.serverStream(service.name, "trickle", { count: 1, gapMs: 1 }, { timeoutMs: 50 });
+  await assert.rejects(stream.next(), isError("deadline_exceeded", { source: "client" }));
+});
+
+test("a direct server drops silent clients while pinging clients stay connected", { timeout: 8000 }, async (t) => {
+  const app = await running({ idleTimeoutMs: 1000 }, { pingIntervalMs: null });
+  t.after(app.close);
+  const chatty = new MeshCallClient("ws://127.0.0.1:" + app.server.boundPort, undefined, {
+    pingIntervalMs: 200, pingTimeoutMs: 500,
+  });
+  t.after(() => chatty.close());
+  await app.client.connect();
+  await chatty.connect();
+  await delay(1600);
+  // The silent client's socket was closed by the server; a new call reconnects.
+  assert.deepEqual(
+    (await chatty.unary<Value, Echo>(service.name, "echo", { value: 2 })).value, 2,
+  );
+  // The in-flight call of a silent client fails as a retryable connection loss.
+  const silent = new MeshCallClient("ws://127.0.0.1:" + app.server.boundPort, undefined, { pingIntervalMs: null });
+  t.after(() => silent.close());
+  const pending = silent.serverStream<Trickle, Value>(service.name, "trickle", { count: 1, gapMs: 3000 });
+  await assert.rejects(pending.next(), (error: unknown) =>
+    error instanceof MeshCallError && error.code === "unavailable" && error.retryable);
+});
+
+test("unknown frame fields are ignored and undefined payloads are sent as null", () => {
+  const frame = decodeFrame(JSON.stringify({
+    kind: "call.open", call_id: "x", service: "s", method: "m", payload: {},
+    timeout_ms: 5, metadata: { k: "v" }, future_field: [1, 2, 3],
+  }));
+  assert.equal(frame.kind, "call.open");
+  assert.equal((frame as CallOpenFrame).timeout_ms, 5);
+  assert.throws(() => decodeFrame(JSON.stringify({ kind: "call.future", call_id: "x" })));
+  assert.throws(() => decodeFrame(JSON.stringify({
+    kind: "call.open", call_id: "x", service: "s", method: "m", payload: {}, metadata: { k: 1 },
+  })));
+  assert.throws(() => decodeFrame(JSON.stringify({
+    kind: "call.open", call_id: "x", service: "s", method: "m", payload: {}, timeout_ms: 0,
+  })));
+});

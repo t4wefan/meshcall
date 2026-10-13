@@ -26,7 +26,18 @@ type Config struct {
 	UnixPath     string
 	MaxFrameSize int
 	Auth         *Auth
+	// DeadlineGrace is added to every call's timeout_ms before the router
+	// enforces it, so the service's own deadline_exceeded normally arrives first.
+	DeadlineGrace time.Duration
+	// IdleTimeout closes a connection that has sent no frame for this long.
+	// Connecting peers must ping more often than this.
+	IdleTimeout time.Duration
 }
+
+const (
+	DefaultDeadlineGrace = 500 * time.Millisecond
+	DefaultIdleTimeout   = 45 * time.Second
+)
 
 type Ready struct {
 	Kind     string `json:"kind"`
@@ -82,27 +93,32 @@ func (p *peer) writeLoop(maxFrameSize int) {
 }
 
 type route struct {
+	id       string
 	client   *peer
 	instance *peer
+	deadline time.Time
+	index    int // position in Router.deadlines, or -1
 }
 
 type Router struct {
-	config     Config
-	listener   net.Listener
-	socketInfo os.FileInfo
-	http       *http.Server
-	ctx        context.Context
-	cancel     context.CancelFunc
-	mu         sync.Mutex
-	closed     bool
-	peers      map[*peer]struct{}
-	instances  map[string]*peer
-	services   map[string]*pool
-	routes     map[string]*route
-	wg         sync.WaitGroup
-	closeOnce  sync.Once
-	done       chan struct{}
-	ready      Ready
+	config       Config
+	listener     net.Listener
+	socketInfo   os.FileInfo
+	http         *http.Server
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	closed       bool
+	peers        map[*peer]struct{}
+	instances    map[string]*peer
+	services     map[string]*pool
+	routes       map[string]*route
+	deadlines    deadlineHeap
+	deadlineWake chan struct{}
+	wg           sync.WaitGroup
+	closeOnce    sync.Once
+	done         chan struct{}
+	ready        Ready
 }
 
 func Start(config Config) (*Router, error) {
@@ -111,6 +127,15 @@ func Start(config Config) (*Router, error) {
 	}
 	if config.MaxFrameSize < 1 || config.MaxFrameSize > 64*1024*1024 {
 		return nil, errors.New("max-frame-size must be between 1 and 67108864")
+	}
+	if config.DeadlineGrace == 0 {
+		config.DeadlineGrace = DefaultDeadlineGrace
+	}
+	if config.IdleTimeout == 0 {
+		config.IdleTimeout = DefaultIdleTimeout
+	}
+	if config.DeadlineGrace < 0 || config.IdleTimeout < time.Second {
+		return nil, errors.New("deadline-grace must be non-negative and idle-timeout at least 1s")
 	}
 	if config.Port < 0 || config.Port > 65535 {
 		return nil, errors.New("port must be between 0 and 65535")
@@ -158,7 +183,10 @@ func Start(config Config) (*Router, error) {
 		config: config, listener: listener, socketInfo: socketInfo, ctx: ctx, cancel: cancel,
 		peers: make(map[*peer]struct{}), instances: make(map[string]*peer),
 		services: make(map[string]*pool), routes: make(map[string]*route), done: make(chan struct{}),
+		deadlineWake: make(chan struct{}, 1),
 	}
+	r.wg.Add(1)
+	go r.expireLoop()
 	r.ready = Ready{Kind: "router.ready", Protocol: Protocol, PID: os.Getpid(), UnixPath: config.UnixPath}
 	if tcp, ok := listener.Addr().(*net.TCPAddr); ok {
 		r.ready.Host, r.ready.Port = config.Host, tcp.Port
@@ -266,7 +294,11 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	}
 	stop()
 	for {
-		f, err := readFrame(ctx, conn)
+		// A peer that sends nothing for IdleTimeout is treated as gone; connecting
+		// peers keep the connection alive with protocol pings.
+		read, idle := context.WithTimeout(ctx, r.config.IdleTimeout)
+		f, err := readFrame(read, conn)
+		idle()
 		if err != nil {
 			return
 		}
@@ -364,10 +396,6 @@ func (r *Router) forward(p *peer, f frame) {
 			p.send(callError(f.CallID, "protocol_error", "Duplicate call_id", false))
 			return
 		}
-		if f.Deadline != nil && time.Now().UnixMilli() >= *f.Deadline {
-			p.send(callError(f.CallID, "deadline_exceeded", "Call deadline exceeded", false))
-			return
-		}
 		if strings.HasPrefix(f.Service, reservedPrefix) {
 			r.management(p, f)
 			return
@@ -381,22 +409,30 @@ func (r *Router) forward(p *peer, f frame) {
 			p.send(*errorFrame)
 			return
 		}
-		r.routes[f.CallID] = &route{client: p, instance: instance}
+		rt := &route{id: f.CallID, client: p, instance: instance, index: -1}
+		r.routes[f.CallID] = rt
 		instance.inflight++
+		if f.TimeoutMS != nil {
+			r.track(rt, time.Duration(*f.TimeoutMS)*time.Millisecond)
+		}
 		instance.send(f)
 		return
 	}
-	route := r.routes[f.CallID]
-	if route == nil {
+	rt := r.routes[f.CallID]
+	if rt == nil {
 		return
 	}
-	if p.role == "client" && route.client == p {
-		route.instance.send(f)
-	} else if p.role == "server" && route.instance == p {
-		route.client.send(f)
+	if p.role == "client" && rt.client == p {
+		rt.instance.send(f)
+		if f.Kind == "call.cancel" {
+			// The client has given up; forget the route now so a service that
+			// ignores cancellation cannot pin router capacity.
+			r.endRoute(f.CallID, rt)
+		}
+	} else if p.role == "server" && rt.instance == p {
+		rt.client.send(f)
 		if f.Kind == "call.result" || f.Kind == "call.error" {
-			delete(r.routes, f.CallID)
-			route.instance.inflight--
+			r.endRoute(f.CallID, rt)
 		}
 	}
 }
@@ -415,16 +451,14 @@ func (r *Router) remove(p *peer) {
 			}
 		}
 	}
-	for id, route := range r.routes {
+	for id, rt := range r.routes {
 		switch {
-		case route.client == p:
-			delete(r.routes, id)
-			route.instance.inflight--
-			route.instance.send(frame{Kind: "call.cancel", CallID: id, Reason: "client_disconnected"})
-		case route.instance == p:
-			delete(r.routes, id)
-			p.inflight--
-			route.client.send(callError(id, "unavailable", "Service instance disconnected", true))
+		case rt.client == p:
+			r.endRoute(id, rt)
+			rt.instance.send(frame{Kind: "call.cancel", CallID: id, Reason: "client_disconnected"})
+		case rt.instance == p:
+			r.endRoute(id, rt)
+			rt.client.send(callError(id, "unavailable", "Service instance disconnected", true))
 		}
 	}
 }

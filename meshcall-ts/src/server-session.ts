@@ -1,8 +1,9 @@
 import { MeshCallError } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
+import { validateMetadata, type Liveness } from "./liveness.js";
 import { safelyLog, type LogLevel, type RpcLogger } from "./logging.js";
 import type {
-  CallOpenFrame, ErrorPayload, Frame, StreamEndFrame, StreamItemFrame, StreamWindowFrame,
+  CallOpenFrame, ErrorPayload, Frame, Metadata, StreamEndFrame, StreamItemFrame, StreamWindowFrame,
 } from "./protocol.js";
 import type { RpcContext, ServiceMethod } from "./service.js";
 import type { FrameWriter } from "./transport.js";
@@ -29,14 +30,17 @@ export class ServerSession {
     private readonly services: RuntimeServices,
     public readonly writer: FrameWriter,
     public readonly options: SessionOptions,
+    private readonly liveness?: Liveness,
   ) {}
 
   public handle(frame: Frame): void {
     if (this.closed) return;
+    if (this.liveness?.observe(frame) === true) return;
     if (frame.kind === "ping") {
       void this.writer.send({ kind: "pong", nonce: frame.nonce }).catch(() => this.close());
       return;
     }
+    if (frame.kind === "pong") return;
     if (frame.kind === "call.open") {
       const existing = this.calls.get(frame.call_id);
       if (existing !== undefined) {
@@ -86,6 +90,7 @@ export class ServerSession {
   public close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.liveness?.stop();
     for (const call of [...this.calls.values()]) call.disconnect();
     this.writer.close();
   }
@@ -105,7 +110,10 @@ class ServerCall {
   private readonly credit = new CreditWindow();
   private readonly started = performance.now();
   private readonly context: RpcContext;
+  private readonly trailers: Metadata = {};
+  private readonly idleTimeoutMs: number | null;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private terminal = false;
   private inputClosed = false;
   private inputAllowance = 0;
@@ -118,12 +126,24 @@ class ServerCall {
     public readonly frame: CallOpenFrame,
     private readonly method: RuntimeMethod,
   ) {
+    // The budget is relative and measured from when this peer saw call.open.
+    const deadlineMs = frame.timeout_ms === undefined || frame.timeout_ms === null
+      ? null : this.started + frame.timeout_ms;
+    this.idleTimeoutMs = frame.idle_timeout_ms ?? null;
+    const trailers = this.trailers;
     this.context = {
       signal: this.controller.signal,
-      deadlineUnixMs: frame.deadline_unix_ms ?? null,
+      deadlineMs,
+      remainingMs: () => deadlineMs === null ? null : Math.max(0, deadlineMs - performance.now()),
       callId: frame.call_id,
       service: frame.service,
       method: frame.method,
+      metadata: Object.freeze({ ...(frame.metadata ?? {}) }),
+      setTrailer(key: string, value: string): void {
+        validateMetadata({ [key]: value });
+        trailers[key] = value;
+      },
+      get trailers(): Readonly<Metadata> { return { ...trailers }; },
       logger: session.options.logger.bind({
         service: frame.service, method: frame.method, call_id: frame.call_id,
       }),
@@ -136,14 +156,31 @@ class ServerCall {
   }
 
   private armDeadline(): void {
-    const deadline = this.context.deadlineUnixMs;
+    const deadline = this.context.deadlineMs;
     if (deadline === null || this.terminal) return;
-    const remaining = deadline - Date.now();
+    const remaining = deadline - performance.now();
     if (remaining <= 0) {
-      void this.fail(new MeshCallError("deadline_exceeded", "Call deadline exceeded"));
+      void this.fail(new MeshCallError("deadline_exceeded", "Call deadline exceeded", {
+        details: { source: "server" },
+      }));
     } else {
+      // setTimeout saturates above 2^31-1 ms; re-check instead of firing early.
       this.timer = setTimeout(() => this.armDeadline(), Math.min(remaining, 2 ** 31 - 1));
     }
+  }
+
+  /** (Re)start the gap timer for the client's input stream. */
+  private armIdle(): void {
+    if (this.idleTimer !== undefined) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+    if (this.idleTimeoutMs === null || this.inputClosed || this.terminal) return;
+    this.idleTimer = setTimeout(() => {
+      void this.fail(new MeshCallError("deadline_exceeded", "Input stream idle timeout", {
+        details: { source: "server", reason: "idle" },
+      }));
+    }, this.idleTimeoutMs);
   }
 
   public receiveWindow(frame: StreamWindowFrame): void {
@@ -161,6 +198,7 @@ class ServerCall {
     const value = validatePayload(this.method.validators.input, frame.payload, "input stream item");
     this.inputAllowance -= 1;
     this.inputSequence += 1;
+    this.armIdle();
     this.input.push(value);
   }
 
@@ -169,6 +207,7 @@ class ServerCall {
       throw new MeshCallError("protocol_error", "Invalid input stream end");
     }
     this.inputClosed = true;
+    this.armIdle();
     this.input.close();
   }
 
@@ -181,7 +220,9 @@ class ServerCall {
       safelyLog(() => this.context.logger.error("Unhandled service exception: %s", error));
     }
     this.controller.abort(payload.code);
-    await this.finish({ kind: "call.error", call_id: this.frame.call_id, error: payload }, payload.code);
+    await this.finish({
+      kind: "call.error", call_id: this.frame.call_id, error: payload, ...this.trailerField(),
+    }, payload.code);
     this.closeIterator();
   }
 
@@ -206,6 +247,7 @@ class ServerCall {
           direction: "client", credit: INITIAL_STREAM_CREDIT,
         });
         if (this.terminal) return;
+        this.armIdle();
         result = await definition.handler(request, this.inputItems(), this.context);
       } else {
         const iterable = await definition.handler(request, this.context);
@@ -234,10 +276,16 @@ class ServerCall {
       }
       if (this.terminal) return;
       const payload = validatePayload(this.method.validators.response, result ?? null, "response");
-      await this.finish({ kind: "call.result", call_id: this.frame.call_id, payload }, "ok");
+      await this.finish({
+        kind: "call.result", call_id: this.frame.call_id, payload, ...this.trailerField(),
+      }, "ok");
     } catch (error) {
       await this.fail(error);
     }
+  }
+
+  private trailerField(): { metadata?: Metadata } {
+    return Object.keys(this.trailers).length === 0 ? {} : { metadata: { ...this.trailers } };
   }
 
   private async *inputItems(): AsyncIterable<unknown> {
@@ -258,6 +306,7 @@ class ServerCall {
     if (this.terminal) return false;
     this.terminal = true;
     if (this.timer !== undefined) clearTimeout(this.timer);
+    if (this.idleTimer !== undefined) clearTimeout(this.idleTimer);
     const error = new MeshCallError("cancelled", "Call is closed");
     this.credit.close(error);
     this.input.fail(error);
