@@ -27,6 +27,7 @@ from meshcall.errors import (
     MeshCallError,
     ProtocolError,
     UnavailableError,
+    violations_of,
 )
 from meshcall.flow import CreditWindow
 from meshcall.protocol import (
@@ -748,7 +749,16 @@ class _ClientCall:
         try:
             item = self.output_type.model_validate(frame.payload)
         except ValidationError as exc:
-            await self.fail(ProtocolError(f"Invalid output item: {exc}"))
+            await self.fail(
+                ProtocolError(
+                    "Invalid output stream item",
+                    details={
+                        "source": "client",
+                        "reason": "invalid_output_item",
+                        "violations": [v.as_dict() for v in violations_of(exc)],
+                    },
+                )
+            )
             return
         self.output_queue.put_nowait(item)
 
@@ -780,7 +790,16 @@ class _ClientCall:
                 else None
             )
         except ValidationError as exc:
-            await self.fail(ProtocolError(f"Invalid call result: {exc}"))
+            await self.fail(
+                ProtocolError(
+                    "Invalid response",
+                    details={
+                        "source": "client",
+                        "reason": "invalid_response",
+                        "violations": [v.as_dict() for v in violations_of(exc)],
+                    },
+                )
+            )
             return
         if not self.result_future.done():
             self.result_future.set_result(result)

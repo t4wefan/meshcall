@@ -339,6 +339,14 @@ who is at fault:
   `details.reason = "invalid_response"` / `"invalid_output_item"`. This is a
   service bug; the violations are logged by the service, not sent.
 
+- A client that holds the contract validates what it receives too. A
+  response or output item that fails the *client's* schema is reported
+  locally as `protocol_error`, `details.source = "client"`, `details.reason
+  = "invalid_response"` / `"invalid_output_item"` with `violations`: the
+  server and the client disagree on the contract (version skew), which no
+  retry fixes. Generated clients always carry their response and item
+  schemas; Python clients validate through their Pydantic models.
+
 No field of a validation error may contain the rejected input value. Clients
 and tooling rely on `violations` to point at the offending parameter; the
 runtime exposes a typed subclass per code (`InvalidArgumentError`,

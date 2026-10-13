@@ -93,6 +93,23 @@ test("invalid response and output items are the server's fault", { timeout: 5000
   assert.deepEqual(logger.lines.filter(([, m]) => m.includes("RPC call")).map(([level]) => level), ["error", "error"]);
 });
 
+test("clients validate responses and items against their own contract", { timeout: 5000 }, async (t) => {
+  const { client } = await setup(t);
+  // The client expects a string where the service (correctly, by its own contract) sends a number.
+  const skewed = { type: "object", properties: { total: { type: "string" } }, required: ["total"] };
+  const error = await client.unary(service.name, "echo", { value: 4 }, { responseSchema: skewed }).then(() => undefined, (e: unknown) => e);
+  assert.ok(error instanceof ProtocolError);
+  assert.equal(error.source, "client");
+  assert.equal(error.reason, "invalid_response");
+  assert.deepEqual(error.details?.violations, [{ path: "total", code: "type", message: "must be string" }]);
+  // Matching schema passes; mismatching item schema fails the stream.
+  assert.deepEqual(await client.unary(service.name, "echo", { value: 4 }, { responseSchema: resultType.schema }), { total: 4 });
+  const items = client.serverStream<Record<string, never>, Result>(service.name, "bad_items", {}, { itemSchema: skewed });
+  const streamError = await items.next().then(() => undefined, (e: unknown) => e);
+  assert.ok(streamError instanceof ProtocolError);
+  assert.equal(streamError.reason, "invalid_output_item");
+});
+
 test("fromCode dispatches to subclasses and keeps custom codes plain", () => {
   const late = MeshCallError.fromCode("deadline_exceeded", "late", { details: { source: "router" } });
   assert.ok(late instanceof DeadlineExceededError);

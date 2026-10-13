@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import WebSocket, { type RawData } from "ws";
 
+import type { JsonSchema } from "./contract.js";
 import { closeSocket, createSocket, type WebSocketEndpoint } from "./endpoint.js";
 import { CallCancelledError, DeadlineExceededError, MeshCallError, ProtocolError, UnavailableError } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
@@ -18,6 +19,7 @@ import {
   validateMetadata,
 } from "./liveness.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
+import { checkReceived } from "./validation.js";
 import {
   type CallCancelFrame,
   type CallErrorFrame,
@@ -53,6 +55,13 @@ export interface CallOptions {
   idempotent?: boolean;
   /** Address one service instance by id; required for targeted services. */
   instance?: string;
+  /**
+   * Contract schemas the result / each output item must satisfy; generated
+   * clients set them so a server drifting from the client's contract fails
+   * as `protocol_error` here instead of surfacing as a bad value.
+   */
+  responseSchema?: JsonSchema;
+  itemSchema?: JsonSchema;
   signal?: AbortSignal;
 }
 
@@ -284,7 +293,9 @@ export class MeshCallClient {
         this.rejectPending(callId, error);
       }
       try {
-        return await result;
+        const payload = await result;
+        checkReceived(info.options.responseSchema, payload, "response");
+        return payload;
       } finally {
         info.trailers = this.trailerOf(callId);
       }
@@ -340,7 +351,9 @@ export class MeshCallClient {
       // early, stop the producer without making its late rejection unhandled.
       pump.catch(() => undefined);
       try {
-        return await result;
+        const payload = await result;
+        checkReceived(info.options.responseSchema, payload, "response");
+        return payload;
       } finally {
         info.trailers = this.trailerOf(callId);
         if (!pumpSettled) {
@@ -430,6 +443,7 @@ export class MeshCallClient {
       callId,
       (frame) => this.send(frame),
       () => this.streams.delete(callId),
+      options.itemSchema,
     );
     this.streams.set(callId, stream as ServerStreamState<unknown>);
     try {
@@ -906,6 +920,7 @@ class ServerStreamState<Item> {
     private readonly callId: string,
     private readonly send: (frame: Frame) => Promise<void>,
     private readonly remove: () => void,
+    private readonly itemSchema?: JsonSchema,
   ) {}
 
   public grant(credit: number): void {
@@ -995,6 +1010,12 @@ class ServerStreamState<Item> {
     this.allowance -= 1;
     this.expectedSequence += 1;
     this.armIdle();
+    try {
+      checkReceived(this.itemSchema, frame.payload, "output_item");
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
     this.queue.push(frame.payload as Item);
   }
 

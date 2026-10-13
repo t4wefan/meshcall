@@ -52,7 +52,7 @@ func TestGeneratorsMatchGolden(t *testing.T) {
 			}
 			if single, err := RenderTypeScriptClient(service, TypeScriptOptions{}); err == nil {
 				expect("single.ts", single)
-				models, _ := RenderTypeScriptModels(service)
+				models, _ := RenderTypeScriptModels(service, TypeScriptOptions{})
 				expect("models.ts", models)
 				client, _ := RenderTypeScriptClientModule(service, TypeScriptOptions{})
 				expect("client.ts", client)

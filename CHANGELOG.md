@@ -33,6 +33,13 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Generated clients validate what they receive: TypeScript clients carry
+  `responseSchema` / `itemSchema` (exported as `<Type>Schema` constants from
+  the generated models) and the runtime checks results and stream items
+  against them; mismatches are `protocol_error` with `source: client`,
+  `reason: invalid_response` / `invalid_output_item` and redacted
+  `violations`. Python clients already validate through Pydantic and now
+  report the same shape.
 - Router routes per method: instances of one service may register supersets
   of each other's methods (rolling upgrades); only a method re-registered
   with a different shape/balance, or a differing `targeted` flag, conflicts.

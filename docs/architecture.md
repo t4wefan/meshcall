@@ -110,6 +110,11 @@ task can't operate through a newly acquired generation.
   rejected value; a response or output item that fails the service's own
   contract is `internal` with `reason: invalid_response` /
   `invalid_output_item`, and the violations go to the server log only.
+- Clients validate responses and output items against their own contract
+  (generated TypeScript clients pass `responseSchema` / `itemSchema`; Python
+  clients validate through Pydantic) and raise `ProtocolError` with
+  `source: client`, `reason: invalid_response` / `invalid_output_item` and
+  redacted `violations` on a mismatch.
 - Clients raise one subclass per protocol code (`InvalidArgumentError`,
   `DeadlineExceededError`, `UnavailableError`, …; `CallCancelledError` for
   `cancelled`), built by `MeshCallError.from_code` / `fromCode`. Unknown

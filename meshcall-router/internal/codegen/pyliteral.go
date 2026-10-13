@@ -194,6 +194,51 @@ func jsonDumpInto(b *strings.Builder, value any) {
 	}
 }
 
+// jsonDumpsIndent renders like Python's json.dumps(value, indent=n).
+func jsonDumpsIndent(value any, indent int) string {
+	var b strings.Builder
+	jsonDumpIndented(&b, value, indent, 0)
+	return b.String()
+}
+
+func jsonDumpIndented(b *strings.Builder, value any, indent, depth int) {
+	pad := func(d int) string { return strings.Repeat(" ", indent*d) }
+	switch v := value.(type) {
+	case []any:
+		if len(v) == 0 {
+			b.WriteString("[]")
+			return
+		}
+		b.WriteString("[\n")
+		for i, item := range v {
+			if i > 0 {
+				b.WriteString(",\n")
+			}
+			b.WriteString(pad(depth + 1))
+			jsonDumpIndented(b, item, indent, depth+1)
+		}
+		b.WriteString("\n" + pad(depth) + "]")
+	case *contract.Object:
+		if len(v.Keys) == 0 {
+			b.WriteString("{}")
+			return
+		}
+		b.WriteString("{\n")
+		for i, k := range v.Keys {
+			if i > 0 {
+				b.WriteString(",\n")
+			}
+			b.WriteString(pad(depth + 1))
+			jsonString(b, k)
+			b.WriteString(": ")
+			jsonDumpIndented(b, v.Values[k], indent, depth+1)
+		}
+		b.WriteString("\n" + pad(depth) + "}")
+	default:
+		jsonDumpInto(b, value)
+	}
+}
+
 func jsonString(b *strings.Builder, s string) {
 	b.WriteByte('"')
 	for _, r := range s {

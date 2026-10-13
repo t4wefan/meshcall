@@ -72,7 +72,7 @@ func TypeScriptPackage(service *contract.Service, opts PackageOptions) (map[stri
 	if className == "" {
 		className = TypeScriptClientClassName(service)
 	}
-	models, err := RenderTypeScriptModels(service)
+	models, err := RenderTypeScriptModels(service, TypeScriptOptions{RuntimeImport: opts.RuntimeImport})
 	if err != nil {
 		return nil, err
 	}
