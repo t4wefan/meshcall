@@ -82,6 +82,8 @@ export interface CallOpenFrame {
   /** Longest allowed gap between stream items in either direction. */
   idle_timeout_ms?: number | null;
   metadata?: Metadata | null;
+  /** Lets the Router join/replay duplicate unary calls; ≤ 128 bytes. */
+  idempotency_key?: string | null;
 }
 
 export interface CallResultFrame {
@@ -256,6 +258,7 @@ const validators = new Map([
   ["call.open", frame("call.open", {
     call_id: string, service: string, method: string, payload: {},
     timeout_ms: positiveMs, idle_timeout_ms: positiveMs, metadata,
+    idempotency_key: { type: ["string", "null"], minLength: 1, maxLength: 128 },
   }, ["call_id", "service", "method", "payload"])],
   ["call.result", frame("call.result", { call_id: string, payload: {}, metadata }, ["call_id"])],
   ["call.error", frame("call.error", {

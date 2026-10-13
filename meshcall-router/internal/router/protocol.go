@@ -49,6 +49,7 @@ type frame struct {
 	Method       string          `json:"method,omitempty"`
 	Payload      json.RawMessage `json:"payload,omitempty"`
 	TimeoutMS    *int64          `json:"timeout_ms,omitempty"`
+	Idempotency  string          `json:"idempotency_key,omitempty"`
 	IdleTimeout  *int64          `json:"idle_timeout_ms,omitempty"`
 	Metadata     json.RawMessage `json:"metadata,omitempty"`
 	Error        *errorPayload   `json:"error,omitempty"`
@@ -86,6 +87,9 @@ func decode(data []byte) (frame, error) {
 		}
 		if (f.TimeoutMS != nil && *f.TimeoutMS <= 0) || (f.IdleTimeout != nil && *f.IdleTimeout <= 0) {
 			return f, errors.New("timeouts must be positive")
+		}
+		if len(f.Idempotency) > 128 {
+			return f, errors.New("idempotency_key exceeds 128 bytes")
 		}
 		if !validMetadata(f.Metadata) {
 			return f, errors.New("invalid metadata")
@@ -169,6 +173,18 @@ func (f frame) bytes() []byte {
 
 func callError(id, code, message string, retryable bool) frame {
 	return frame{Kind: "call.error", CallID: id, Error: &errorPayload{Code: code, Message: message, Retryable: retryable}}
+}
+
+// routerError is a Router-synthesised error carrying a machine-readable reason
+// so callers can tell "no instance registered" from "the instance died".
+func routerError(id, code, message string, retryable bool, reason string, instance string) frame {
+	f := callError(id, code, message, retryable)
+	details := map[string]string{"source": "router", "reason": reason}
+	if instance != "" {
+		details["instance_id"] = instance
+	}
+	f.Error.Details, _ = json.Marshal(details)
+	return f
 }
 
 // deadlineError is the router's own deadline_exceeded, marked so callers can

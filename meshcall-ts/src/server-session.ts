@@ -169,6 +169,7 @@ class ServerCall {
       service: frame.service,
       method: frame.method,
       metadata: Object.freeze({ ...(frame.metadata ?? {}) }),
+      idempotencyKey: frame.idempotency_key ?? null,
       setTrailer(key: string, value: string): void {
         validateMetadata({ [key]: value });
         trailers[key] = value;

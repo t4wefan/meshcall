@@ -43,4 +43,5 @@ class CounterServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            idempotent=True,
         )

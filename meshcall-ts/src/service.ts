@@ -15,6 +15,8 @@ export interface RpcContext {
   readonly method: string;
   /** Request metadata the caller attached to `call.open`. */
   readonly metadata: Readonly<Metadata>;
+  /** Idempotency key the caller attached, if any. */
+  readonly idempotencyKey: string | null;
   /** Attach a trailer to the terminal `call.result` or `call.error` frame. */
   setTrailer(key: string, value: string): void;
   readonly trailers: Readonly<Metadata>;

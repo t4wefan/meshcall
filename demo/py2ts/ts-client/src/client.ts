@@ -23,7 +23,7 @@ export class PythonGreetingServiceClient {
         name: name,
         repeat: repeat,
       },
-      options,
+      { idempotent: true, ...options },
     );
   }
 }

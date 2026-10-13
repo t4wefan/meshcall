@@ -80,6 +80,9 @@ func (r *Router) expireLoop() {
 			}
 			delete(r.routes, id)
 			rt.instance.inflight--
+			if rt.dedup != nil && rt.dedup.route == rt {
+				r.dedupFail(rt.dedup, deadlineError(id), nil)
+			}
 			rt.client.send(deadlineError(id))
 			rt.instance.send(frame{Kind: "call.cancel", CallID: id, Reason: "deadline_exceeded"})
 		}

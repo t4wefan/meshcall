@@ -373,6 +373,7 @@ class _ServerCall:
             method=method.contract.name,
             metadata=MappingProxyType(dict(open_frame.metadata or {})),
             logger=self.logger,
+            idempotency_key=open_frame.idempotency_key,
             _deadline=(
                 time.monotonic() + self.timeout if self.timeout is not None else None
             ),

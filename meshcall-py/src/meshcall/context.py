@@ -75,13 +75,24 @@ def validate_metadata(metadata: Mapping[str, str] | None) -> dict[str, str] | No
     return dict(metadata)
 
 
+MAX_IDEMPOTENCY_KEY_BYTES = 128
+
+
 @dataclass(frozen=True)
 class CallOptions:
-    """Caller-side options for one RPC. All durations are seconds."""
+    """Caller-side options for one RPC. All durations are seconds.
+
+    ``idempotency_key`` lets the Router join or replay duplicate unary calls
+    and lets the retry policy re-send a non-idempotent method safely.
+    ``idempotent`` states the method's own semantics; generated clients set it
+    from the contract so callers need not.
+    """
 
     timeout: float | None = None
     idle_timeout: float | None = None
     metadata: Mapping[str, str] | None = None
+    idempotency_key: str | None = None
+    idempotent: bool = False
 
     def __post_init__(self) -> None:
         if self.timeout is not None and self.timeout <= 0:
@@ -89,6 +100,54 @@ class CallOptions:
         if self.idle_timeout is not None and self.idle_timeout <= 0:
             raise ValueError("idle_timeout must be positive")
         validate_metadata(self.metadata)
+        if self.idempotency_key is not None and not (
+            0 < len(self.idempotency_key.encode()) <= MAX_IDEMPOTENCY_KEY_BYTES
+        ):
+            raise ValueError(
+                f"idempotency_key must be 1..{MAX_IDEMPOTENCY_KEY_BYTES} bytes"
+            )
+
+    def replace(self, **changes: Any) -> CallOptions:
+        from dataclasses import replace
+
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Client-side retry for failed unary calls.
+
+    Only errors marked ``retryable`` are retried, and a method that is not
+    declared ``idempotent`` is retried only when the call carries an
+    ``idempotency_key``. Attempts share the call's ``timeout``; backoff uses
+    exponential delays with jitter. Streams are never retried.
+    """
+
+    enabled: bool = True
+    max_attempts: int = 3
+    initial_delay: float = 0.1
+    max_delay: float = 2.0
+    multiplier: float = 2.0
+    jitter: float = 0.2
+    retry_codes: frozenset[str] = frozenset({"unavailable", "resource_exhausted"})
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if self.initial_delay <= 0 or self.max_delay < self.initial_delay:
+            raise ValueError("initial_delay must be positive and <= max_delay")
+
+    def delay(self, attempt: int) -> float:
+        """Sleep before retry number ``attempt`` (1-based)."""
+        base = min(
+            self.max_delay, self.initial_delay * (self.multiplier ** (attempt - 1))
+        )
+        spread = base * self.jitter
+        return max(0.0, base + random.uniform(-spread, spread))
+
+
+DEFAULT_RETRY = RetryPolicy()
+NO_RETRY = RetryPolicy(enabled=False)
 
 
 @dataclass
@@ -104,6 +163,7 @@ class RpcContext:
     method: str
     metadata: Mapping[str, str]
     logger: RpcLogger
+    idempotency_key: str | None = None
     _deadline: float | None = field(default=None, repr=False)
     _trailers: dict[str, str] = field(default_factory=dict, repr=False)
 

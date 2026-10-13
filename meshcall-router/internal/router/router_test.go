@@ -506,6 +506,88 @@ func TestDrainLeavesPoolsButFinishesRoutedCalls(t *testing.T) {
 	}
 }
 
+func TestIdempotencyJoinsReplaysAndRedelivers(t *testing.T) {
+	r := runningRouter(t, nil)
+	a, b := dial(t, r, ""), dial(t, r, "")
+	registerPeer(t, a, "a")
+	registerPeer(t, b, "b")
+	c1, c2 := dial(t, r, ""), dial(t, r, "")
+	hello(t, c1, "client", "c1")
+	hello(t, c2, "client", "c2")
+	open := func(conn *websocket.Conn, id, key string) {
+		send(t, conn, frame{Kind: "call.open", CallID: id, Service: testService, Method: "echo",
+			Payload: json.RawMessage(`{"n":1}`), Idempotency: key})
+	}
+	// Two callers, same key: one execution, both answered.
+	open(c1, "x1", "k1")
+	open(c2, "x2", "k1")
+	first := receive(t, a)
+	if first.CallID != "x1" || first.Idempotency != "k1" {
+		t.Fatalf("first open: %+v", first)
+	}
+	send(t, b, frame{Kind: "ping", Nonce: "barrier"})
+	receive(t, b)
+	r.mu.Lock()
+	joined := len(r.dedup) == 1 && len(r.routes) == 1
+	r.mu.Unlock()
+	if !joined {
+		t.Fatal("duplicate key was not joined")
+	}
+	send(t, a, frame{Kind: "call.result", CallID: "x1", Payload: json.RawMessage(`{"ok":true}`)})
+	if got := receive(t, c1); got.Kind != "call.result" || got.CallID != "x1" {
+		t.Fatalf("c1: %+v", got)
+	}
+	if got := receive(t, c2); got.Kind != "call.result" || got.CallID != "x2" || string(got.Payload) != `{"ok":true}` {
+		t.Fatalf("c2 did not get the joined result: %+v", got)
+	}
+	// Replay from cache: no instance sees a third execution.
+	open(c1, "x3", "k1")
+	if got := receive(t, c1); got.Kind != "call.result" || got.CallID != "x3" {
+		t.Fatalf("replay: %+v", got)
+	}
+	send(t, a, frame{Kind: "ping", Nonce: "barrier"})
+	receive(t, a)
+	send(t, b, frame{Kind: "ping", Nonce: "barrier"})
+	receive(t, b)
+	// Instance lost mid-call: both callers fail with the reason, and the retry
+	// with the same key is routed to the other instance.
+	open(c1, "y1", "k2")
+	open(c2, "y2", "k2")
+	target := receive(t, b) // round robin moved on to b
+	if target.CallID != "y1" {
+		t.Fatalf("expected y1 on b, got %+v", target)
+	}
+	_ = b.CloseNow()
+	for _, conn := range []*websocket.Conn{c1, c2} {
+		got := receive(t, conn)
+		if got.Error == nil || got.Error.Code != "unavailable" || !got.Error.Retryable ||
+			!bytes.Contains(got.Error.Details, []byte(`"reason":"instance_lost"`)) ||
+			!bytes.Contains(got.Error.Details, []byte(`"instance_id":"b"`)) {
+			t.Fatalf("instance_lost: %+v", got)
+		}
+	}
+	open(c1, "y3", "k2")
+	if got := receive(t, a); got.CallID != "y3" {
+		t.Fatalf("retry not delivered to the surviving instance: %+v", got)
+	}
+	send(t, a, frame{Kind: "call.result", CallID: "y3", Payload: json.RawMessage(`{}`)})
+	receive(t, c1)
+	// No instances at all: the reason says so.
+	_ = a.CloseNow()
+	eventually(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return len(r.instances) == 0
+	})
+	open(c1, "z1", "")
+	if got := receive(t, c1); got.Error == nil || !bytes.Contains(got.Error.Details, []byte(`"reason":"no_instances"`)) {
+		t.Fatalf("no_instances: %+v", got)
+	}
+	if _, err := decode([]byte(`{"kind":"call.open","call_id":"x","service":"s","method":"m","payload":{},"idempotency_key":"` + strings.Repeat("k", 129) + `"}`)); err == nil {
+		t.Fatal("oversize idempotency key accepted")
+	}
+}
+
 func TestServiceNameValidation(t *testing.T) {
 	for _, name := range []string{"chat.v1", "demo.v1.Greeting", "chat.v1.2.0", "chat.v2.0.0-beta1", "a_b.v0", AuthService} {
 		if !validServiceName(name) {

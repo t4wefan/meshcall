@@ -20,6 +20,7 @@ var scenarios = []scenario{
 	{"idle: server enforces idle_timeout_ms on input", serverIdle},
 	{"cancel: handler observes call.cancel", cancelObserved},
 	{"metadata: request metadata and trailers", metadataAndTrailers},
+	{"idempotency: duplicate keys join once and replay", idempotency},
 	{"keepalive: instance pings within the router idle window", keepalive},
 	{"reconnect: instance re-registers after router restart", routerRestart},
 	{"drain: leaves the pool, finishes streams, disconnects", drain},
@@ -29,7 +30,7 @@ func registration(h *harness) error {
 	snapshot := h.router.Snapshot()
 	methods := snapshot.Methods[Service]
 	want := map[string]string{
-		"echo": "unary", "fail": "unary", "slow": "unary", "cancelled_tags": "unary",
+		"echo": "unary", "fail": "unary", "slow": "unary", "cancelled_tags": "unary", "invoked_tags": "unary",
 		"count": "server_stream", "sum": "client_stream", "metadata_echo": "unary", "drain_self": "unary",
 	}
 	if !reflect.DeepEqual(methods, want) {
@@ -333,6 +334,67 @@ func metadataAndTrailers(h *harness) error {
 	if trailers["echoed"] != "yes" || trailers["count"] != "2" {
 		return fmt.Errorf("trailers missing or wrong: %v", result["metadata"])
 	}
+	return nil
+}
+
+func idempotency(h *harness) error {
+	c1, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer c1.close()
+	c2, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer c2.close()
+	key := frame{"idempotency_key": "conf-" + fmt.Sprint(time.Now().UnixNano())}
+	id1, err := c1.open("slow", frame{"ms": 300, "tag": "idem"}, key)
+	if err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	id2, err := c2.open("slow", frame{"ms": 300, "tag": "idem"}, key)
+	if err != nil {
+		return err
+	}
+	for _, pair := range []struct {
+		c  *client
+		id string
+	}{{c1, id1}, {c2, id2}} {
+		f, err := pair.c.receive()
+		if err != nil {
+			return err
+		}
+		if f["kind"] != "call.result" || f["call_id"] != pair.id {
+			return fmt.Errorf("joined caller got %v", f)
+		}
+	}
+	// A third call after completion is served from the Router's cache.
+	started := time.Now()
+	replay, err := c1.unary("slow", frame{"ms": 300, "tag": "idem"}, key)
+	if err != nil {
+		return err
+	}
+	if replay["kind"] != "call.result" || time.Since(started) > 150*time.Millisecond {
+		return fmt.Errorf("replay was not served from cache: %v after %v", replay, time.Since(started))
+	}
+	// The handler ran exactly once for the key; the Router (not the service)
+	// owns the guarantee, so the service's own view is the authority here.
+	tags, err := c1.unary("invoked_tags", frame{}, nil)
+	if err != nil {
+		return err
+	}
+	count := 0
+	for _, t := range tags["payload"].(map[string]any)["tags"].([]any) {
+		if t == "idem" {
+			count++
+		}
+	}
+	if count != 1 {
+		return fmt.Errorf("handler ran %d times for one idempotency key", count)
+	}
+	// Service handlers can read the key.
 	return nil
 }
 

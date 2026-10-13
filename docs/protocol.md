@@ -34,7 +34,7 @@ unique string chosen by the client. All time values are integer milliseconds.
 | `server.register.ack` | `instance_id` | |
 | `server.drain` | — | instance → Router: leave every pool, keep serving routed calls |
 | `server.drain.ack` | `instance_id?` | Router → instance |
-| `call.open` | `call_id`, `service`, `method`, `payload`, `timeout_ms?`, `idle_timeout_ms?`, `metadata?` | |
+| `call.open` | `call_id`, `service`, `method`, `payload`, `timeout_ms?`, `idle_timeout_ms?`, `metadata?`, `idempotency_key?` | |
 | `call.result` | `call_id`, `payload?`, `metadata?` | terminal |
 | `call.error` | `call_id`, `error{code,message,retryable?,details?}`, `metadata?` | terminal |
 | `call.cancel` | `call_id`, `reason?` | request to terminate; not terminal |
@@ -142,6 +142,25 @@ idle timeouts.
 A `deadline_exceeded` error is never `retryable`; whether a retry is safe
 depends on the method.
 
+## Idempotency keys
+
+`idempotency_key` (1–128 bytes, chosen by the caller) names the *intent* of a
+call so that retries are safe. The server exposes it to the handler. For
+**unary** calls a Router deduplicates on `(service, method, idempotency_key)`:
+a second `call.open` with the same key while the first is in flight joins it
+and receives the same terminal frame; after completion the terminal frame is
+replayed for a short window (60 s by default). If the serving instance is
+lost before answering, every joined caller receives the same retryable
+`unavailable` and the next call with that key prefers a different instance.
+Streams carry the key to the handler but are never deduplicated. The
+deduplication table is a cache: a Router restart loses it, and the worst
+case is one extra execution against a handler that honours the key.
+
+Client runtimes ship a retry policy that re-sends a failed unary call only
+when the error is `retryable`, the code is in its retry set, and either the
+method is declared idempotent in the contract or the call carries an
+`idempotency_key`; attempts share the call's `timeout_ms`.
+
 ## Stream directions
 
 `client` means data produced by the client and consumed by the server. `server`
@@ -221,5 +240,10 @@ codes, but must still use the common error envelope.
 | `internal` | an unexpected failure the server does not describe further | server |
 
 `details` is an optional object with implementation-defined keys. The runtime
-uses `source` (`"client"`, `"router"`, `"server"`) and `reason` (`"idle"`) as
-described above.
+uses `source` (`"client"`, `"router"`, `"server"`), `reason` and
+`instance_id`. Router-synthesised errors carry `source: "router"` and one of
+these reasons: `no_instances` (nothing registered for the service),
+`instance_lost` (the serving instance disconnected; `instance_id` names it),
+`overloaded` (a capacity limit), `balance_disabled`, `cancelled` (a joined
+idempotent call was cancelled by its first caller). Client retry policies add
+`attempts` to the final error when more than one attempt was made.

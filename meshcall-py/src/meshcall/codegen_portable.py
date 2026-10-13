@@ -220,6 +220,7 @@ def _render_client_class(
                     "            timeout=timeout,",
                     "            idle_timeout=idle_timeout,",
                     "            metadata=metadata,",
+                    *_idempotent_line(method),
                     "        )",
                 ]
             )
@@ -245,6 +246,7 @@ def _render_client_class(
                     "            timeout=timeout,",
                     "            idle_timeout=idle_timeout,",
                     "            metadata=metadata,",
+                    *_idempotent_line(method),
                     "        )",
                 ]
             )
@@ -276,6 +278,7 @@ def _render_client_class(
                     "            timeout=timeout,",
                     "            idle_timeout=idle_timeout,",
                     "            metadata=metadata,",
+                    *_idempotent_line(method),
                     "        )",
                 ]
             )
@@ -312,6 +315,7 @@ def _render_client_class(
                     "            timeout=timeout,",
                     "            idle_timeout=idle_timeout,",
                     "            metadata=metadata,",
+                    *_idempotent_line(method),
                     "        )",
                 ]
             )
@@ -357,6 +361,11 @@ def _python_parameters(
         else:
             parameters.append(f"{field_name}: {field_type} | None = None")
     return parameters
+
+
+def _idempotent_line(method: MethodContract) -> list[str]:
+    """Generated clients carry the contract's idempotency so retries are safe."""
+    return ["            idempotent=True,"] if method.annotations.idempotent else []
 
 
 def _request_lines(method: MethodContract, request_name: str) -> list[str]:

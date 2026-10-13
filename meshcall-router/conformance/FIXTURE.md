@@ -12,7 +12,8 @@ annotation.
 | --- | --- | --- | --- | --- |
 | `echo` | unary | `value: int`, `text: str` | `{value, text}` | returns its input |
 | `fail` | unary | `code: str`, `message: str`, `retryable: bool = false` | — | raises an application error with that code/message/retryable and `details = {"from": "fixture"}` |
-| `slow` | unary | `ms: int`, `tag: str = ""` | `{tag}` | sleeps `ms`; if cancelled, records `tag` |
+| `slow` | unary | `ms: int`, `tag: str = ""` | `{tag}` | records `tag` as invoked, sleeps `ms`; if cancelled, also records `tag` as cancelled |
+| `invoked_tags` | unary | — | `{tags: [str]}` | tags of every `slow` call that started, in order |
 | `cancelled_tags` | unary | — | `{tags: [str]}` | tags recorded by cancelled `slow` calls |
 | `count` | server stream | `n: int`, `gap_ms: int = 0` | items `{index}` | yields `0..n-1`, sleeping `gap_ms` between items |
 | `sum` | client stream | `offset: int = 0`, items `{value}` | `{total}` | `offset + Σ value` |

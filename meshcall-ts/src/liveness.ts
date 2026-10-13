@@ -29,6 +29,33 @@ export const DEFAULT_RECONNECT: Required<Omit<ReconnectPolicy, "maxAttempts">> =
   enabled: true, initialDelayMs: 100, maxDelayMs: 30_000, multiplier: 2, jitter: 0.2,
 };
 
+/**
+ * Client-side retry for failed unary calls. Only `retryable` errors with a
+ * code in `retryCodes` are retried, and a method not declared `idempotent`
+ * only when the call carries an `idempotencyKey`. Attempts share the call's
+ * `timeoutMs`. Streams are never retried.
+ */
+export interface RetryPolicy {
+  readonly enabled?: boolean;
+  readonly maxAttempts?: number;
+  readonly initialDelayMs?: number;
+  readonly maxDelayMs?: number;
+  readonly multiplier?: number;
+  readonly jitter?: number;
+  readonly retryCodes?: ReadonlyArray<string>;
+}
+
+export const DEFAULT_RETRY: Required<RetryPolicy> = {
+  enabled: true, maxAttempts: 3, initialDelayMs: 100, maxDelayMs: 2000, multiplier: 2, jitter: 0.2,
+  retryCodes: ["unavailable", "resource_exhausted"],
+};
+
+export function retryDelayMs(policy: Required<RetryPolicy>, attempt: number): number {
+  const base = Math.min(policy.maxDelayMs, policy.initialDelayMs * policy.multiplier ** (attempt - 1));
+  const spread = base * policy.jitter;
+  return Math.max(0, base + (Math.random() * 2 - 1) * spread);
+}
+
 export function* reconnectDelays(policy: ReconnectPolicy): Generator<number> {
   const p = { ...DEFAULT_RECONNECT, ...policy };
   if (p.initialDelayMs <= 0 || p.maxDelayMs < p.initialDelayMs || p.multiplier < 1

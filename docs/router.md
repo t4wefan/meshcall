@@ -68,6 +68,11 @@ per instance, across its registered services.
   acknowledged; calls already routed to it finish normally. Python
   `RpcServer.stop(drain=True)` and TypeScript `server.close({ drain: true })`
   do this before disconnecting, so a rolling restart fails no request.
+- Unary calls carrying an `idempotency_key` are deduplicated per
+  `(service, method, key)`: concurrent duplicates join the in-flight call,
+  later duplicates replay the cached terminal frame for 60 s (bounded to
+  4,096 entries; the cache is lost on restart, which is safe). After
+  `instance_lost`, the next call with the same key prefers another instance.
 - A disconnected client causes the Router to cancel its active service calls.
 - A disconnected service instance causes its active client calls to fail with
   retryable `unavailable`; the caller decides whether a new call is appropriate.

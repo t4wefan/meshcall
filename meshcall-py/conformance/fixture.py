@@ -53,6 +53,7 @@ class Fixture:
 
     def __init__(self) -> None:
         self.cancelled: list[str] = []
+        self.invoked: list[str] = []
         self.server: RpcServer | None = None
 
     @method(read_only=True)
@@ -68,6 +69,7 @@ class Fixture:
     @method(idempotent=True)
     async def slow(self, ms: int, tag: str = "") -> Tag:
         """Sleep ``ms`` milliseconds; record ``tag`` if cancelled meanwhile."""
+        self.invoked.append(tag)
         try:
             await asyncio.sleep(ms / 1000)
         except asyncio.CancelledError:
@@ -79,6 +81,11 @@ class Fixture:
     async def cancelled_tags(self) -> Tags:
         """Tags of slow calls that observed cancellation."""
         return Tags(tags=list(self.cancelled))
+
+    @method(read_only=True)
+    async def invoked_tags(self) -> Tags:
+        """Tags of every slow call that started, in order."""
+        return Tags(tags=list(self.invoked))
 
     @method.server_stream(read_only=True)
     async def count(self, n: int, gap_ms: int = 0) -> AsyncIterator[Index]:

@@ -236,7 +236,11 @@ def _render_client_class(
                 f"      {json.dumps(method.name)},",
                 *payload,
                 *extra_arguments,
-                "      options,",
+                (
+                    "      { idempotent: true, ...options },"
+                    if method.annotations.idempotent
+                    else "      options,"
+                ),
                 "    );",
                 "  }",
             ]

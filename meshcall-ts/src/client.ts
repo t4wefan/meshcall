@@ -9,9 +9,12 @@ import {
   clientDeadlineGraceMs,
   DEFAULT_PING_INTERVAL_MS,
   DEFAULT_PING_TIMEOUT_MS,
+  DEFAULT_RETRY,
   Liveness,
   reconnectDelays,
   type ReconnectPolicy,
+  retryDelayMs,
+  type RetryPolicy,
   validateMetadata,
 } from "./liveness.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
@@ -41,6 +44,13 @@ export interface CallOptions {
   idleTimeoutMs?: number;
   /** Request metadata delivered to the service handler. */
   metadata?: Metadata;
+  /**
+   * Lets the Router join or replay duplicate unary calls and lets the retry
+   * policy re-send a non-idempotent method safely. 1–128 bytes.
+   */
+  idempotencyKey?: string;
+  /** The method's own semantics; generated clients set this from the contract. */
+  idempotent?: boolean;
   signal?: AbortSignal;
 }
 
@@ -64,6 +74,8 @@ export interface MeshCallClientOptions {
   readonly reconnect?: ReconnectPolicy;
   /** Wrap every outgoing call; the first interceptor is outermost. */
   readonly interceptors?: ReadonlyArray<ClientInterceptor>;
+  /** Built-in retry for unary calls; `false` disables. */
+  readonly retry?: RetryPolicy | false;
 }
 
 /**
@@ -344,12 +356,23 @@ export class MeshCallClient {
     }));
   }
 
-  /** Invoke the interceptor chain; the first interceptor is outermost. */
+  /**
+   * Invoke the interceptor chain; the first interceptor is outermost. The
+   * built-in retry policy wraps everything so user interceptors see each
+   * attempt.
+   */
   private runChain(info: ClientCallInfo, innermost: ClientCallNext): Promise<unknown> {
     let next = innermost;
     for (const interceptor of [...(this.options.interceptors ?? [])].reverse()) {
       const inner = next;
       next = (info) => interceptor(info, inner);
+    }
+    if (this.options.retry !== false && info.stream === "unary") {
+      const policy = { ...DEFAULT_RETRY, ...(this.options.retry ?? {}) };
+      if (policy.enabled) {
+        const inner = next;
+        next = (info) => retryCall(policy, info, inner);
+      }
     }
     return next(info);
   }
@@ -525,6 +548,7 @@ export class MeshCallClient {
     }
     const metadata = validateMetadata(options.metadata);
     if (metadata !== null) frame.metadata = metadata;
+    if (options.idempotencyKey !== undefined) frame.idempotency_key = options.idempotencyKey;
     return frame;
   }
 
@@ -767,6 +791,10 @@ export class MeshCallClient {
       }
     }
     validateMetadata(options.metadata);
+    if (options.idempotencyKey !== undefined) {
+      const bytes = Buffer.byteLength(options.idempotencyKey);
+      if (bytes < 1 || bytes > 128) throw new RangeError("idempotencyKey must be 1..128 bytes");
+    }
   }
 
   private ensureNotAborted(options: CallOptions): void {
@@ -781,6 +809,36 @@ export class MeshCallClient {
       throw new MeshCallError("unavailable", "Client is not connected");
     }
     await writer.send(frame);
+  }
+}
+
+async function retryCall(policy: Required<RetryPolicy>, info: ClientCallInfo, next: ClientCallNext): Promise<unknown> {
+  const options = info.options;
+  const mayRetry = options.idempotent === true || options.idempotencyKey !== undefined;
+  const deadline = options.timeoutMs === undefined ? undefined : performance.now() + options.timeoutMs;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await next(info);
+    } catch (error) {
+      const give = (e: MeshCallError): never => {
+        if (attempt > 1) {
+          throw new MeshCallError(e.code, e.message, { retryable: e.retryable, details: { ...(e.details ?? {}), attempts: attempt } });
+        }
+        throw e;
+      };
+      if (!(error instanceof MeshCallError) || !mayRetry || !error.retryable
+        || !policy.retryCodes.includes(error.code) || attempt >= policy.maxAttempts) {
+        if (error instanceof MeshCallError) give(error);
+        throw error;
+      }
+      const delay = retryDelayMs(policy, attempt);
+      if (deadline !== undefined) {
+        const remaining = deadline - performance.now();
+        if (remaining <= delay) give(error);
+        info.options = { ...info.options, timeoutMs: remaining - delay };
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   }
 }
 

@@ -94,6 +94,7 @@ class CallOpenFrame(_MetadataFrame):
     payload: Any
     timeout_ms: int | None = Field(default=None, gt=0)
     idle_timeout_ms: int | None = Field(default=None, gt=0)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class CallResultFrame(_MetadataFrame):

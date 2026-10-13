@@ -20,14 +20,24 @@ type pool struct {
 	cursors   map[string]int
 }
 
-func (r *Router) selectInstance(f frame) (*peer, *frame) {
+// selectInstance picks an instance for f. A non-nil avoid is skipped when any
+// other instance exists (redelivery after that instance lost the call).
+func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 	fail := func(code, message string) (*peer, *frame) {
-		err := callError(f.CallID, code, message, code == "unavailable")
+		reason := ""
+		if code == "unavailable" {
+			reason = "no_instances"
+		}
+		err := routerError(f.CallID, code, message, code == "unavailable", reason, "")
 		return nil, &err
 	}
 	p := r.services[f.Service]
 	if p == nil || len(p.instances) == 0 {
 		return fail("unavailable", "No instances registered for "+f.Service)
+	}
+	if avoid != nil && len(p.instances) > 1 {
+		p = &pool{signature: p.signature, cursors: p.cursors,
+			instances: slices.DeleteFunc(slices.Clone(p.instances), func(c *peer) bool { return c == avoid })}
 	}
 	var selected *method
 	for i := range p.signature.Methods {

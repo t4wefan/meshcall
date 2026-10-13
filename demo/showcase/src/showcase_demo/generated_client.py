@@ -82,6 +82,7 @@ class ShowcaseServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            idempotent=True,
         )
 
     async def welcome(
@@ -104,6 +105,7 @@ class ShowcaseServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            idempotent=True,
         )
 
     def count(
@@ -128,6 +130,7 @@ class ShowcaseServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            idempotent=True,
         )
 
     async def sum_values(
@@ -153,4 +156,5 @@ class ShowcaseServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            idempotent=True,
         )

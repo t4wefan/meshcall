@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -404,3 +405,87 @@ async def test_direct_server_drain_finishes_streams_and_refuses_new_connections(
         await client.stop()
         if server.state.value != "idle":
             await server.stop()
+
+
+class FlakyRequest(BaseModel):
+    fail_times: int = 1
+
+
+class Attempts(BaseModel):
+    attempts: int
+
+
+@service("test.v1.FlakyService")
+class FlakyService:
+    """Fails with a retryable error a configurable number of times per tag."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, int] = {}
+
+    @method()
+    async def flaky(self, tag: str, fail_times: int, ctx: RpcContext) -> Attempts:
+        """Fail ``fail_times`` times for ``tag`` with retryable unavailable, then succeed."""
+        count = self.seen.get(tag, 0) + 1
+        self.seen[tag] = count
+        if count <= fail_times:
+            raise MeshCallError(
+                ErrorCode.UNAVAILABLE,
+                "try again",
+                retryable=True,
+                details={"key": ctx.idempotency_key},
+            )
+        return Attempts(attempts=count)
+
+
+class FlakyClient(ClientBase):
+    service_name = "test.v1.FlakyService"
+
+    async def flaky(self, tag: str, fail_times: int, **kwargs: Any) -> Attempts:
+        class Req(BaseModel):
+            tag: str
+            fail_times: int
+
+        return await self.call_unary(
+            self.service_name,
+            "flaky",
+            Req(tag=tag, fail_times=fail_times),
+            Attempts,
+            **kwargs,
+        )
+
+
+async def test_retry_policy_retries_only_when_safe() -> None:
+    from meshcall.context import RetryPolicy
+
+    driver = WebSocketDirectServerDriver(host="127.0.0.1", port=0)
+    server = RpcServer(services=[FlakyService()], driver=driver)
+    await server.start()
+    client = FlakyClient(
+        WebSocketClientDriver(f"ws://127.0.0.1:{driver.bound_port}"),
+        retry=RetryPolicy(max_attempts=3, initial_delay=0.01, max_delay=0.02),
+    )
+    try:
+        # Not idempotent and no key: the first failure is final.
+        with pytest.raises(MeshCallError) as error:
+            await client.flaky("plain", 1)
+        assert error.value.code == ErrorCode.UNAVAILABLE
+        assert "attempts" not in (error.value.details or {})
+
+        # Declared idempotent (what generated clients pass): retried.
+        assert (await client.flaky("idem", 2, idempotent=True)).attempts == 3
+
+        # A key makes a non-idempotent method retryable and reaches the handler.
+        assert (await client.flaky("keyed", 1, idempotency_key="k-1")).attempts == 2
+
+        # Exhausting attempts reports how many were made.
+        with pytest.raises(MeshCallError) as error:
+            await client.flaky("hopeless", 10, idempotent=True)
+        assert error.value.details == {"key": None, "attempts": 3}
+
+        # Attempts share the call's budget.
+        with pytest.raises(MeshCallError) as error:
+            await client.flaky("budget", 10, idempotent=True, timeout=0.015)
+        assert error.value.code == ErrorCode.UNAVAILABLE
+    finally:
+        await client.stop()
+        await server.stop()

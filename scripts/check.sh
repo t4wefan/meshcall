@@ -31,6 +31,8 @@ ts_checks() {
 demos() {
   step "demos end to end (MESHCALL_STRICT=1: contract warnings fail)"
   export MESHCALL_STRICT=1
+  # yarn keeps stale copies of file: dependencies whose version did not change.
+  rm -rf demo/py2ts/ts-client/node_modules/meshcall demo/ts2py/ts-server/node_modules/meshcall best-practice/ts-client/node_modules/meshcall
   local log
   log=$(mktemp)
   for d in quickstart py2ts showcase router ts2py; do

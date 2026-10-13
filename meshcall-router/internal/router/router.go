@@ -1,6 +1,7 @@
 package router
 
 import (
+	"container/list"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -99,7 +100,8 @@ type route struct {
 	client   *peer
 	instance *peer
 	deadline time.Time
-	index    int // position in Router.deadlines, or -1
+	index    int         // position in Router.deadlines, or -1
+	dedup    *dedupEntry // set when the call carries an idempotency key
 }
 
 type Router struct {
@@ -117,6 +119,8 @@ type Router struct {
 	routes       map[string]*route
 	deadlines    deadlineHeap
 	deadlineWake chan struct{}
+	dedup        map[string]*dedupEntry
+	dedupOrder   *list.List
 	wg           sync.WaitGroup
 	closeOnce    sync.Once
 	done         chan struct{}
@@ -186,6 +190,8 @@ func Start(config Config) (*Router, error) {
 		peers: make(map[*peer]struct{}), instances: make(map[string]*peer),
 		services: make(map[string]*pool), routes: make(map[string]*route), done: make(chan struct{}),
 		deadlineWake: make(chan struct{}, 1),
+		dedup:        make(map[string]*dedupEntry),
+		dedupOrder:   list.New(),
 	}
 	r.wg.Add(1)
 	go r.expireLoop()
@@ -491,10 +497,28 @@ func (r *Router) forward(p *peer, f frame) {
 			return
 		}
 		if len(r.routes) >= 65536 {
-			p.send(callError(f.CallID, "resource_exhausted", "Router call capacity reached", true))
+			p.send(routerError(f.CallID, "resource_exhausted", "Router call capacity reached", true, "overloaded", ""))
 			return
 		}
-		instance, errorFrame := r.selectInstance(f)
+		var entry *dedupEntry
+		var avoid *peer
+		if f.Idempotency != "" && r.methodStream(f.Service, f.Method) == "unary" {
+			key := dedupKey(f)
+			if entry = r.dedupLookup(key); entry != nil {
+				if entry.result != nil {
+					p.send(withCallID(*entry.result, f.CallID))
+					return
+				}
+				if entry.route != nil {
+					entry.waiters = append(entry.waiters, dedupWaiter{client: p, callID: f.CallID})
+					return
+				}
+				avoid = entry.lastInstance
+				r.dedupRemove(entry)
+				entry = nil
+			}
+		}
+		instance, errorFrame := r.selectInstance(f, avoid)
 		if errorFrame != nil {
 			p.send(*errorFrame)
 			return
@@ -504,6 +528,9 @@ func (r *Router) forward(p *peer, f frame) {
 		instance.inflight++
 		if f.TimeoutMS != nil {
 			r.track(rt, time.Duration(*f.TimeoutMS)*time.Millisecond)
+		}
+		if f.Idempotency != "" && r.methodStream(f.Service, f.Method) == "unary" {
+			r.dedupInsert(dedupKey(f), rt)
 		}
 		instance.send(f)
 		return
@@ -522,9 +549,26 @@ func (r *Router) forward(p *peer, f frame) {
 	} else if p.role == "server" && rt.instance == p {
 		rt.client.send(f)
 		if f.Kind == "call.result" || f.Kind == "call.error" {
+			if rt.dedup != nil {
+				r.dedupSettle(rt.dedup, f)
+			}
 			r.endRoute(f.CallID, rt)
 		}
 	}
+}
+
+// methodStream returns the registered stream kind of a method, or "".
+func (r *Router) methodStream(service, method string) string {
+	pool := r.services[service]
+	if pool == nil {
+		return ""
+	}
+	for _, m := range pool.signature.Methods {
+		if m.Name == method {
+			return m.Stream
+		}
+	}
+	return ""
 }
 
 // drain removes an instance from every pool so no new call is routed to it
@@ -567,8 +611,13 @@ func (r *Router) remove(p *peer) {
 			r.endRoute(id, rt)
 			rt.instance.send(frame{Kind: "call.cancel", CallID: id, Reason: "client_disconnected"})
 		case rt.instance == p:
+			lost := routerError(id, "unavailable", "Service instance disconnected", true, "instance_lost", p.instanceID)
+			if rt.dedup != nil && rt.dedup.route == rt {
+				r.dedupFail(rt.dedup, lost, p)
+				rt.dedup = nil
+			}
 			r.endRoute(id, rt)
-			rt.client.send(callError(id, "unavailable", "Service instance disconnected", true))
+			rt.client.send(lost)
 		}
 	}
 }

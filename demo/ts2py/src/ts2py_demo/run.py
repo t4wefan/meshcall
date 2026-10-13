@@ -31,6 +31,7 @@ async def run_demo() -> None:
         "yarn",
         "install",
         "--frozen-lockfile",
+        "--check-files",
         cwd=TYPESCRIPT_SERVER_ROOT,
     )
     await _run_process("yarn", "run", "build", cwd=TYPESCRIPT_SERVER_ROOT)

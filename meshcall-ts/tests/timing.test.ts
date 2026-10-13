@@ -312,3 +312,46 @@ test("drain finishes in-flight streams, refuses new work, then stops", { timeout
   assert.equal(a.isRunning, false);
   assert.equal(await who(), "b");
 });
+
+test("the retry policy re-sends unary calls only when it is safe", { timeout: 5000 }, async (t) => {
+  const seen = new Map<string, number>();
+  const flakyReq = defineType<{ tag: string; failTimes: number }>("Flaky", {
+    type: "object", properties: { tag: { type: "string" }, failTimes: { type: "integer" } }, required: ["tag", "failTimes"],
+  });
+  const attemptsType = defineType<{ attempts: number }>("Attempts", {
+    type: "object", properties: { attempts: { type: "integer" } }, required: ["attempts"],
+  });
+  const flaky = defineService({
+    name: "test.v1.FlakyService", description: "Fails a configurable number of times.",
+    sourceModule: "timing.test", sourceQualname: "Flaky",
+    methods: {
+      flaky: unaryMethod({
+        description: "Fail failTimes times with retryable unavailable, then succeed.",
+        request: flakyReq, response: attemptsType,
+        handler: ({ tag, failTimes }, ctx) => {
+          const count = (seen.get(tag) ?? 0) + 1;
+          seen.set(tag, count);
+          if (count <= failTimes) {
+            throw new MeshCallError("unavailable", "try again", { retryable: true, details: { key: ctx.idempotencyKey } });
+          }
+          return { attempts: count };
+        },
+      }),
+    },
+  });
+  const server = new MeshCallServer({ services: [flaky], accessLog: false });
+  await server.start();
+  const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, {
+    retry: { maxAttempts: 3, initialDelayMs: 10, maxDelayMs: 20 },
+  });
+  t.after(async () => { await client.close(); await server.close(); });
+  const call = (tag: string, failTimes: number, options = {}) =>
+    client.unary<{ tag: string; failTimes: number }, { attempts: number }>(flaky.name, "flaky", { tag, failTimes }, options);
+
+  await assert.rejects(call("plain", 1), (e: unknown) => e instanceof MeshCallError && e.code === "unavailable" && !("attempts" in (e.details ?? {})));
+  assert.equal((await call("idem", 2, { idempotent: true })).attempts, 3);
+  assert.equal((await call("keyed", 1, { idempotencyKey: "k-1" })).attempts, 2);
+  await assert.rejects(call("hopeless", 10, { idempotent: true }), (e: unknown) =>
+    e instanceof MeshCallError && JSON.stringify(e.details) === JSON.stringify({ key: null, attempts: 3 }));
+  await assert.rejects(call("budget", 10, { idempotent: true, timeoutMs: 15 }), isError("unavailable"));
+});

@@ -11,11 +11,13 @@ from pydantic import BaseModel, ValidationError
 
 from meshcall.context import (
     DEFAULT_RECONNECT,
+    DEFAULT_RETRY,
     CallOptions,
     ClientCallInfo,
     ClientCallNext,
     ClientInterceptor,
     ReconnectPolicy,
+    RetryPolicy,
     client_deadline_grace,
 )
 from meshcall.driver import ClientDriver
@@ -58,10 +60,12 @@ class ClientBase:
         deadline_grace: float | None = None,
         reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
         interceptors: Sequence[ClientInterceptor] = (),
+        retry: RetryPolicy = DEFAULT_RETRY,
     ) -> None:
         self.driver = driver
         self.deadline_grace = deadline_grace
         self.reconnect = reconnect
+        self.retry = retry
         self.interceptors = tuple(interceptors)
         self._connection: FrameConnection | None = None
         self._calls: dict[str, _ClientCall] = {}
@@ -134,9 +138,14 @@ class ClientBase:
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        idempotent: bool = False,
     ) -> Any:
         info = ClientCallInfo(
-            service, method, "unary", CallOptions(timeout, idle_timeout, metadata)
+            service,
+            method,
+            "unary",
+            CallOptions(timeout, idle_timeout, metadata, idempotency_key, idempotent),
         )
 
         async def innermost(info: ClientCallInfo) -> Any:
@@ -168,12 +177,14 @@ class ClientBase:
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        idempotent: bool = False,
     ) -> RpcServerStream[Any]:
         info = ClientCallInfo(
             service,
             method,
             "server_stream",
-            CallOptions(timeout, idle_timeout, metadata),
+            CallOptions(timeout, idle_timeout, metadata, idempotency_key, idempotent),
         )
 
         async def innermost(info: ClientCallInfo) -> _ClientServerStream:
@@ -209,12 +220,14 @@ class ClientBase:
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        idempotent: bool = False,
     ) -> Any:
         info = ClientCallInfo(
             service,
             method,
             "client_stream",
-            CallOptions(timeout, idle_timeout, metadata),
+            CallOptions(timeout, idle_timeout, metadata, idempotency_key, idempotent),
         )
 
         async def innermost(info: ClientCallInfo) -> Any:
@@ -257,9 +270,14 @@ class ClientBase:
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        idempotent: bool = False,
     ) -> RpcDuplexClient[Any, Any, Any]:
         info = ClientCallInfo(
-            service, method, "duplex", CallOptions(timeout, idle_timeout, metadata)
+            service,
+            method,
+            "duplex",
+            CallOptions(timeout, idle_timeout, metadata, idempotency_key, idempotent),
         )
 
         async def innermost(info: ClientCallInfo) -> _ClientDuplex:
@@ -294,10 +312,17 @@ class ClientBase:
     _duplex = call_duplex
 
     def _run_chain(self, info: ClientCallInfo, innermost: ClientCallNext) -> Any:
-        """Invoke the interceptor chain; the first interceptor is outermost."""
+        """Invoke the interceptor chain; the first interceptor is outermost.
+
+        The built-in retry policy wraps everything so user interceptors see
+        each attempt."""
         call_next = innermost
         for interceptor in reversed(self.interceptors):
             call_next = _bind_client_interceptor(interceptor, call_next)
+        if self.retry.enabled and info.stream == "unary":
+            call_next = _bind_client_interceptor(
+                _retry_interceptor(self.retry), call_next
+            )
         return call_next(info)
 
     async def _open_call(
@@ -364,6 +389,7 @@ class ClientBase:
                         else None
                     ),
                     metadata=dict(options.metadata) if options.metadata else None,
+                    idempotency_key=options.idempotency_key,
                 )
             )
             if output_type is not None:
@@ -464,6 +490,41 @@ class ClientBase:
         elif isinstance(frame, CallErrorFrame):
             await call.receive_error(frame)
             self._calls.pop(call.call_id, None)
+
+
+def _retry_interceptor(policy: RetryPolicy) -> ClientInterceptor:
+    async def retry(info: ClientCallInfo, call_next: ClientCallNext) -> Any:
+        options = info.options
+        may_retry = options.idempotent or options.idempotency_key is not None
+        deadline = (
+            time.monotonic() + options.timeout if options.timeout is not None else None
+        )
+        attempt = 1
+        while True:
+            try:
+                return await call_next(info)
+            except MeshCallError as exc:
+                if (
+                    not may_retry
+                    or not exc.retryable
+                    or exc.code not in policy.retry_codes
+                    or attempt >= policy.max_attempts
+                ):
+                    if attempt > 1:
+                        exc.details = {**(exc.details or {}), "attempts": attempt}
+                    raise
+                delay = policy.delay(attempt)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= delay:
+                        exc.details = {**(exc.details or {}), "attempts": attempt}
+                        raise
+                    # The next attempt gets whatever budget is left.
+                    info.options = options.replace(timeout=remaining - delay)
+                await asyncio.sleep(delay)
+                attempt += 1
+
+    return retry
 
 
 def _bind_client_interceptor(

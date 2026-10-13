@@ -33,8 +33,10 @@ export {
   DEFAULT_PING_INTERVAL_MS,
   DEFAULT_PING_TIMEOUT_MS,
   DEFAULT_RECONNECT,
+  DEFAULT_RETRY,
   clientDeadlineGraceMs,
   type ReconnectPolicy,
+  type RetryPolicy,
 } from "./liveness.js";
 export { ConsoleRpcLogger, type RpcLogger, type LogContext, type LogLevel } from "./logging.js";
 export type { WebSocketEndpoint } from "./endpoint.js";

@@ -41,6 +41,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            idempotent=True,
         )
 
     async def sum(
@@ -66,6 +67,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            idempotent=True,
         )
 
     async def greet(
@@ -90,4 +92,5 @@ class TypeScriptGreetingServiceClient(ClientBase):
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,
+            idempotent=True,
         )

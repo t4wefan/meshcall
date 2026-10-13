@@ -35,7 +35,7 @@ export class LlmServiceClient {
       "best_practice.v1.LlmService",
       "list_sessions",
       {},
-      options,
+      { idempotent: true, ...options },
     );
   }
 
@@ -52,7 +52,7 @@ export class LlmServiceClient {
       {
         text: text,
       },
-      options,
+      { idempotent: true, ...options },
     );
   }
 

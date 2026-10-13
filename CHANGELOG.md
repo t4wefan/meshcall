@@ -23,6 +23,12 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Idempotency keys on `call.open`; Router joins and replays duplicate unary
+  calls and prefers another instance after `instance_lost`; built-in client
+  `RetryPolicy` for unary calls; Router errors carry `details.reason`
+  (`no_instances`, `instance_lost`, `overloaded`, …) and `instance_id`;
+  generated clients pass the contract's `idempotent` annotation so retries
+  are safe without a key.
 - Protocol conformance suite (`meshcall-conformance`) with reference
   fixtures for Python and TypeScript; it found and fixed a TypeScript
   server-stream stall when the producer is exhausted exactly as credit runs

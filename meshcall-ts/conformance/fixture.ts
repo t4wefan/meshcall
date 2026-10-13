@@ -24,6 +24,7 @@ const metadataType = defineType<{ metadata: Record<string, string> }>("Metadata"
 const drainType = defineType<{ delay_ms?: number }>("Drain", object({ delay_ms: { type: "integer", default: 0 } }));
 
 const cancelled: string[] = [];
+const invoked: string[] = [];
 let server: MeshCallServer;
 
 const fixture = defineService({
@@ -39,6 +40,7 @@ const fixture = defineService({
     slow: unaryMethod({
       description: "Sleep ms milliseconds; record tag if cancelled meanwhile.", idempotent: true, request: slowType, response: tagType,
       handler: async ({ ms, tag }, { signal }) => {
+        invoked.push(tag ?? "");
         try {
           await delay(ms, undefined, { signal });
         } catch (error) {
@@ -48,6 +50,7 @@ const fixture = defineService({
         return { tag: tag ?? "" };
       },
     }),
+    invoked_tags: unaryMethod({ description: "Tags of every slow call that started, in order.", readOnly: true, request: emptyType, response: tagsType, handler: () => ({ tags: [...invoked] }) }),
     cancelled_tags: unaryMethod({ description: "Tags of slow calls that observed cancellation.", readOnly: true, request: emptyType, response: tagsType, handler: () => ({ tags: [...cancelled] }) }),
     count: serverStreamMethod({
       description: "Yield 0..n-1 with gap_ms between items.", readOnly: true, request: countType, outputItem: indexType,

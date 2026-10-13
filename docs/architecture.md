@@ -118,6 +118,11 @@ task can't operate through a newly acquired generation.
 - Connecting peers send protocol `ping` frames (15 s) and drop the connection
   when a `pong` is late (10 s); accepting peers drop connections silent for
   45 s. The transport layer handles this; runtimes never see ping or pong.
+- A built-in `RetryPolicy` (outermost in the client interceptor chain)
+  re-sends failed unary calls when the error is retryable, the code is in the
+  policy's set, and the method is idempotent per the contract or the call has
+  an `idempotency_key`; attempts share the call's timeout and the final error
+  reports `details.attempts`. Streams are never retried.
 - `stop(drain=True)` / `close({ drain: true })` first stops taking new calls
   (`server.drain` to the Router, or closing the listener) and waits up to the
   drain timeout for in-flight calls, then stops; nothing in flight fails.
