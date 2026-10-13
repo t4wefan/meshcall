@@ -2,7 +2,7 @@
 # External dependencies: uv add 'meshcall>=0.1.0' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Mapping
 
 from pydantic import BaseModel
 
@@ -52,7 +52,7 @@ class NumberItem(BaseModel):
 
 
 class ShowcaseServiceClient(ClientBase):
-    service_name = 'demo.v1.ShowcaseService'
+    service_name = "demo.v1.ShowcaseService"
 
     async def greet(
         self,
@@ -60,6 +60,8 @@ class ShowcaseServiceClient(ClientBase):
         repeat: int = 1,
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> GreetingResult:
         request = ShowcaseServiceGreetRequest(
             name=name,
@@ -67,10 +69,12 @@ class ShowcaseServiceClient(ClientBase):
         )
         return await self.call_unary(
             self.service_name,
-            'greet',
+            "greet",
             request,
             GreetingResult,
             timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
         )
 
     async def welcome(
@@ -78,13 +82,17 @@ class ShowcaseServiceClient(ClientBase):
         request: WelcomeRequest,
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> WelcomeResult:
         return await self.call_unary(
             self.service_name,
-            'welcome',
+            "welcome",
             request,
             WelcomeResult,
             timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
         )
 
     def count(
@@ -93,6 +101,8 @@ class ShowcaseServiceClient(ClientBase):
         stop: int,
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[CountItem]:
         request = ShowcaseServiceCountRequest(
             start=start,
@@ -100,10 +110,12 @@ class ShowcaseServiceClient(ClientBase):
         )
         return self.call_server_stream(
             self.service_name,
-            'count',
+            "count",
             request,
             CountItem,
             timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
         )
 
     async def sum_values(
@@ -112,16 +124,20 @@ class ShowcaseServiceClient(ClientBase):
         items: AsyncIterable[NumberItem],
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> TotalResult:
         request = ShowcaseServiceSumValuesRequest(
             offset=offset,
         )
         return await self.call_client_stream(
             self.service_name,
-            'sum_values',
+            "sum_values",
             request,
             items,
             NumberItem,
             TotalResult,
             timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
         )

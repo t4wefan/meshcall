@@ -16,23 +16,14 @@ it first, then the implementations, then the interop tests.
 ## Running everything locally
 
 ```bash
-# Router (needed by Python, TypeScript and demo tests)
-go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
-export MESHCALL_ROUTER_BINARY="$PWD/meshcall-router/bin/meshcall-router"
-
-# Go
-go -C meshcall-router vet ./... && go -C meshcall-router test -race ./...
-
-# Python
-(cd meshcall-py && uv sync && uv run ruff check src tests ../demo \
-  && uv run pyright src tests ../demo && MESHCALL_RUN_INTEROP=1 uv run pytest -q)
-
-# TypeScript
-(cd meshcall-ts && yarn install --frozen-lockfile && yarn check && yarn test)
-
-# Demos
-for d in quickstart py2ts showcase router ts2py; do (cd demo/$d && uv run --locked demo); done
+scripts/check.sh            # everything CI runs: Router build, Go, Python, TypeScript, demos, drift
+scripts/check.sh py         # one part: go | py | ts | demos | drift
+scripts/regenerate.sh       # rewrite every checked-in generated client
 ```
+
+`make check`, `make regenerate` and `make drift` are aliases. The script sets
+`MESHCALL_ROUTER_BINARY` and `MESHCALL_RUN_INTEROP=1`; see `AGENTS.md` for
+what to export when running a single tool by hand.
 
 CI runs the same steps on every push and pull request.
 

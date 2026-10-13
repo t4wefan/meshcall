@@ -2,6 +2,8 @@
 # External dependencies: uv add 'meshcall>=0.1.0' 'pydantic>=2.11'
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from pydantic import BaseModel
 
 from meshcall.client import ClientBase
@@ -17,21 +19,25 @@ class CountItem(BaseModel):
 
 
 class CounterServiceClient(ClientBase):
-    service_name = 'example.v1.CounterService'
+    service_name = "example.v1.CounterService"
 
     def count(
         self,
         stop: int,
         *,
         timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[CountItem]:
         request = CounterServiceCountRequest(
             stop=stop,
         )
         return self.call_server_stream(
             self.service_name,
-            'count',
+            "count",
             request,
             CountItem,
             timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
         )

@@ -11,7 +11,6 @@ import {
   defineService,
   defineType,
   renderContract,
-  type ServiceDefinition,
   unaryMethod,
 } from "../src/index.js";
 import {
@@ -28,25 +27,6 @@ interface AddResult {
   total: number;
 }
 
-const service = {
-  name: "test.v1.MathService",
-  methods: {
-    add: {
-      stream: "unary",
-      handler: (request: AddRequest): AddResult => ({
-        total: request.left + request.right,
-      }),
-    },
-    slow: {
-      stream: "unary",
-      handler: async (): Promise<AddResult> => {
-        await delay(100);
-        return { total: 0 };
-      },
-    },
-  },
-} satisfies ServiceDefinition;
-
 const addRequest = defineType<AddRequest>("AddRequest", {
   type: "object",
   properties: {
@@ -62,6 +42,27 @@ const addResult = defineType<AddResult>("AddResult", {
   properties: { total: { type: "number" } },
   required: ["total"],
   additionalProperties: false,
+});
+
+const service = defineService({
+  name: "test.v1.MathService",
+  sourceModule: "runtime.test",
+  sourceQualname: "MathService",
+  methods: {
+    add: unaryMethod({
+      request: addRequest,
+      response: addResult,
+      handler: (request) => ({ total: request.left + request.right }),
+    }),
+    slow: unaryMethod({
+      request: addRequest,
+      response: addResult,
+      handler: async () => {
+        await delay(100);
+        return { total: 0 };
+      },
+    }),
+  },
 });
 
 const exportableService = defineService({
@@ -121,7 +122,7 @@ test("unary deadline has a stable error code", async () => {
   const client = new MeshCallClient(`ws://127.0.0.1:${server.boundPort}`);
   try {
     await assert.rejects(
-      client.unary<Record<string, never>, AddResult>(service.name, "slow", {}, {
+      client.unary<AddRequest, AddResult>(service.name, "slow", { left: 0, right: 0 }, {
         timeoutMs: 10,
       }),
       (error: unknown) =>

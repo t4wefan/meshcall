@@ -141,6 +141,26 @@ jobs:
         env:
           MESHCALL_RUN_INTEROP: "1"
 
+  drift:
+    needs: router
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: ${{ github.workspace }}/meshcall-router/bin
+      - run: chmod +x "$MESHCALL_ROUTER_BINARY"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Generated clients match their generators
+        run: scripts/regenerate.sh --check
+
   packaging:
     runs-on: ubuntu-latest
     steps:

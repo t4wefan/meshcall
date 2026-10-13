@@ -81,6 +81,9 @@ three packages are released together from one `vX.Y.Z` tag; see
 
 ## Development
 
+`scripts/check.sh` runs everything CI runs (see `AGENTS.md` and
+`CONTRIBUTING.md`). The individual steps:
+
 ```bash
 go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
 go -C meshcall-router test -race ./...

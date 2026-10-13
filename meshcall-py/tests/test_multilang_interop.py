@@ -99,12 +99,7 @@ async def test_python_service_with_generated_typescript_package(
     try:
         generated_index = package_root / "dist" / "index.js"
         installed_runtime = (
-            package_root
-            / "node_modules"
-            / "meshcall"
-            / "dist"
-            / "src"
-            / "index.js"
+            package_root / "node_modules" / "meshcall" / "dist" / "src" / "index.js"
         )
         completed = await _run_process(
             "node",
