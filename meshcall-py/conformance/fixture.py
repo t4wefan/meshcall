@@ -6,6 +6,7 @@ import asyncio
 import os
 import sys
 from collections.abc import AsyncIterator
+from typing import cast
 
 from pydantic import BaseModel
 
@@ -65,6 +66,11 @@ class Fixture:
     async def fail(self, code: str, message: str, retryable: bool = False) -> Ok:
         """Raise an application error with the given code."""
         raise MeshCallError(code, message, retryable=retryable, details={"from": "fixture"})
+
+    @method(read_only=True)
+    async def bad_response(self) -> Ok:
+        """Return a response that breaks this method's own contract."""
+        return cast(Ok, {"ok": "not-a-bool"})
 
     @method(idempotent=True)
     async def slow(self, ms: int, tag: str = "") -> Tag:

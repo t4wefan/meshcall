@@ -1,4 +1,4 @@
-import { MeshCallError } from "./errors.js";
+import { ProtocolError } from "./errors.js";
 
 export const INITIAL_STREAM_CREDIT = 16;
 
@@ -26,7 +26,7 @@ export class CreditWindow {
 
   public grant(credit: number): void {
     if (!Number.isSafeInteger(credit) || credit <= 0) {
-      throw new MeshCallError("protocol_error", "Stream credit must be positive");
+      throw new ProtocolError("Stream credit must be positive");
     }
     if (this.closed) {
       return;

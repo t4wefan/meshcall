@@ -255,14 +255,14 @@ codes, but must still use the common error envelope.
 | --- | --- | --- |
 | `cancelled` | the caller or a peer cancelled the call | client, server |
 | `deadline_exceeded` | `timeout_ms` or `idle_timeout_ms` elapsed | server, Router, client |
-| `invalid_argument` | request payload or stream item failed validation | server |
+| `invalid_argument` | request payload or input stream item failed validation | server |
 | `method_not_found` | unknown service or method | server, Router |
 | `permission_denied` | authenticated but not authorised | Router |
 | `unauthenticated` | no or invalid credentials | Router |
 | `resource_exhausted` | a capacity limit was reached; usually retryable | Router, transport |
 | `unavailable` | no instance, or the connection was lost; usually retryable | Router, client |
 | `protocol_error` | a frame violated this document | any |
-| `internal` | an unexpected failure the server does not describe further | server |
+| `internal` | an unexpected failure the server does not describe further, including a response or output item that failed the service's own validation | server |
 
 `details` is an optional object with implementation-defined keys. The runtime
 uses `source` (`"client"`, `"router"`, `"server"`), `reason` and
@@ -275,3 +275,25 @@ circuit breaker), `balance_disabled`, `cancelled` (a joined idempotent call
 was cancelled by its first caller). A server enforcing its own `max_inflight`
 answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`. Client retry policies add
 `attempts` to the final error when more than one attempt was made.
+
+### Validation failures
+
+A server validates the request, every input stream item, the response and
+every output stream item against the contract. The error it sends depends on
+who is at fault:
+
+- Request or input item invalid → `invalid_argument`, `details.source =
+  "server"`, `details.reason = "request"` or `"input_item"`, and
+  `details.violations`: a list of `{path, code, message}` where `path` is the
+  dotted field path (`"profile.tags.0"`, `""` for the root), `code` a short
+  validator keyword (`type`, `missing`, `int_parsing`, …) and `message` a
+  human-readable explanation. The `message` field of the envelope is the fixed
+  text `Invalid request` / `Invalid input stream item`.
+- Response or output item invalid → `internal`, `details.source = "server"`,
+  `details.reason = "invalid_response"` / `"invalid_output_item"`. This is a
+  service bug; the violations are logged by the service, not sent.
+
+No field of a validation error may contain the rejected input value. Clients
+and tooling rely on `violations` to point at the offending parameter; the
+runtime exposes a typed subclass per code (`InvalidArgumentError`,
+`DeadlineExceededError`, …) so callers never compare code strings.

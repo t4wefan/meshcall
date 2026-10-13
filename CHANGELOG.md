@@ -23,6 +23,15 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Error model: typed error subclasses per protocol code in Python and
+  TypeScript (`InvalidArgumentError`, `DeadlineExceededError`, …) with
+  `source` / `reason` accessors; TypeScript exports `ErrorCode`.
+  Request validation failures carry `details.violations` (path, code,
+  message) and no longer echo the rejected input; a handler whose response
+  breaks its own contract now answers `internal` (`reason: invalid_response`)
+  instead of `invalid_argument`. Access logs use warning/error for failed
+  calls. `meshcall call` prints the violations in its hint.
+
 - Registration carries the service's portable contract; the Router serves
   it through `meshcall.router.v1.Registry` (`list`, `describe`). New
   `meshcall` CLI: `router inspect` and `call` with contract-aware hints.

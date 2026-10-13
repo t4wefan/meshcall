@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 
 import { closeSocket, createSocket, type WebSocketEndpoint } from "./endpoint.js";
-import { MeshCallError } from "./errors.js";
+import { CallCancelledError, DeadlineExceededError, MeshCallError, ProtocolError, UnavailableError } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import {
   clientDeadlineGraceMs,
@@ -235,7 +235,7 @@ export class MeshCallClient {
         const next = delays?.next();
         if (next === undefined || next.done === true || this.closed) {
           throw error instanceof MeshCallError ? error
-            : new MeshCallError("unavailable", "Could not connect: " + String(error), { retryable: true });
+            : new UnavailableError("Could not connect: " + String(error), { retryable: true });
         }
         await new Promise((resolve) => setTimeout(resolve, next.value));
       }
@@ -408,7 +408,7 @@ export class MeshCallClient {
     this.liveness = undefined;
     this.writer?.close();
     this.writer = undefined;
-    this.rejectAll(new MeshCallError("unavailable", "Client is closed"));
+    this.rejectAll(new UnavailableError("Client is closed"));
     await Promise.all([...sockets].map((socket) => socket === undefined ? undefined : closeSocket(socket)));
   }
 
@@ -483,7 +483,7 @@ export class MeshCallClient {
       pending.abortListener = () => {
         this.cancelPending(
           callId,
-          new MeshCallError("cancelled", "Call was cancelled"),
+          new CallCancelledError("Call was cancelled"),
           "caller_cancelled",
         );
       };
@@ -605,7 +605,7 @@ export class MeshCallClient {
           socket.close();
         };
         const timer = setTimeout(() =>
-          fail(new MeshCallError("deadline_exceeded", "MeshCall handshake timed out")), timeout);
+          fail(new DeadlineExceededError("MeshCall handshake timed out")), timeout);
         socket.once("open", () => {
           void writer.send({
             kind: "hello", protocol: PROTOCOL_VERSION, role: "client", peer_id: this.peerId,
@@ -619,7 +619,7 @@ export class MeshCallClient {
           try {
             const frame = decodeFrame(data);
             if (frame.kind !== "hello.ack" || frame.protocol !== PROTOCOL_VERSION) {
-              throw new MeshCallError("protocol_error", "Expected compatible hello.ack");
+              throw new ProtocolError("Expected compatible hello.ack");
             }
             ready = true;
             this.socket = socket;
@@ -636,7 +636,7 @@ export class MeshCallClient {
           clearTimeout(timer);
           liveness.stop();
           writer.close();
-          const error = new MeshCallError("unavailable", "Connection was lost", { retryable: true });
+          const error = new UnavailableError("Connection was lost", { retryable: true });
           if (this.socket === socket) {
             this.socket = undefined;
             this.writer = undefined;
@@ -669,7 +669,7 @@ export class MeshCallClient {
       // A malformed frame that still names a call fails only that call.
       const callId = error instanceof FrameDecodeError ? error.callId : undefined;
       if (callId !== undefined && (this.calls.has(callId) || this.streams.has(callId))) {
-        const failure = new MeshCallError("protocol_error", String((error as Error).message));
+        const failure = new ProtocolError(String((error as Error).message));
         this.rejectPending(callId, failure);
         this.streams.get(callId)?.fail(failure);
         return;
@@ -700,7 +700,7 @@ export class MeshCallClient {
       if (frame.direction !== "client" || pending.input === undefined) {
         this.rejectPending(
           frame.call_id,
-          new MeshCallError("protocol_error", "Invalid input stream window"),
+          new ProtocolError("Invalid input stream window"),
         );
         return;
       }
@@ -712,7 +712,7 @@ export class MeshCallClient {
       return;
     }
     this.streams.get(frame.call_id)?.fail(
-      new MeshCallError("protocol_error", "Unexpected output stream window"),
+      new ProtocolError("Unexpected output stream window"),
     );
   }
 
@@ -725,7 +725,7 @@ export class MeshCallClient {
     if (this.calls.has(frame.call_id)) {
       this.rejectPending(
         frame.call_id,
-        new MeshCallError("protocol_error", "Unexpected output stream item"),
+        new ProtocolError("Unexpected output stream item"),
       );
     }
   }
@@ -739,7 +739,7 @@ export class MeshCallClient {
     if (this.calls.has(frame.call_id)) {
       this.rejectPending(
         frame.call_id,
-        new MeshCallError("protocol_error", "Unexpected output stream end"),
+        new ProtocolError("Unexpected output stream end"),
       );
     }
   }
@@ -752,7 +752,7 @@ export class MeshCallClient {
     }
     const pending = this.takePending(
       frame.call_id,
-      new MeshCallError("cancelled", "Call is complete"),
+      new CallCancelledError("Call is complete"),
     );
     if (pending !== undefined) {
       this.trailers.set(frame.call_id, frame.metadata ?? {});
@@ -761,7 +761,7 @@ export class MeshCallClient {
   }
 
   private rejectCall(frame: CallErrorFrame): void {
-    const error = new MeshCallError(frame.error.code, frame.error.message, {
+    const error = MeshCallError.fromCode(frame.error.code, frame.error.message, {
       retryable: frame.error.retryable ?? false,
       details: frame.error.details ?? null,
     });
@@ -834,14 +834,14 @@ export class MeshCallClient {
 
   private ensureNotAborted(options: CallOptions): void {
     if (options.signal?.aborted === true) {
-      throw new MeshCallError("cancelled", "Call was cancelled");
+      throw new CallCancelledError("Call was cancelled");
     }
   }
 
   private async send(frame: Frame): Promise<void> {
     const writer = this.writer;
     if (writer === undefined) {
-      throw new MeshCallError("unavailable", "Client is not connected");
+      throw new UnavailableError("Client is not connected");
     }
     await writer.send(frame);
   }
@@ -857,7 +857,7 @@ async function retryCall(policy: Required<RetryPolicy>, info: ClientCallInfo, ne
     } catch (error) {
       const give = (e: MeshCallError): never => {
         if (attempt > 1) {
-          throw new MeshCallError(e.code, e.message, { retryable: e.retryable, details: { ...(e.details ?? {}), attempts: attempt } });
+          throw MeshCallError.fromCode(e.code, e.message, { retryable: e.retryable, details: { ...(e.details ?? {}), attempts: attempt } });
         }
         throw e;
       };
@@ -913,7 +913,7 @@ class ServerStreamState<Item> {
       return;
     }
     if (options.signal?.aborted === true) {
-      this.abort(new MeshCallError("cancelled", "Call was cancelled"), "caller_cancelled");
+      this.abort(new CallCancelledError("Call was cancelled"), "caller_cancelled");
       return;
     }
     if (budgetMs !== undefined) {
@@ -927,7 +927,7 @@ class ServerStreamState<Item> {
       this.signal = options.signal;
       this.abortListener = () => {
         this.abort(
-          new MeshCallError("cancelled", "Call was cancelled"),
+          new CallCancelledError("Call was cancelled"),
           "caller_cancelled",
         );
       };
@@ -970,12 +970,12 @@ class ServerStreamState<Item> {
 
   public receiveItem(frame: StreamItemFrame): void {
     if (this.terminal || frame.direction !== "server") {
-      this.fail(new MeshCallError("protocol_error", "Invalid output stream item"));
+      this.fail(new ProtocolError("Invalid output stream item"));
       return;
     }
     if (this.ended || this.allowance <= 0) {
       this.fail(
-        new MeshCallError("protocol_error", "Output stream exceeded granted credit"),
+        new ProtocolError("Output stream exceeded granted credit"),
       );
       return;
     }
@@ -996,7 +996,7 @@ class ServerStreamState<Item> {
 
   public receiveEnd(frame: StreamEndFrame): void {
     if (this.terminal || frame.direction !== "server" || this.ended) {
-      this.fail(new MeshCallError("protocol_error", "Invalid output stream end"));
+      this.fail(new ProtocolError("Invalid output stream end"));
       return;
     }
     this.ended = true;

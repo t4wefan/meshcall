@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 
-import { MeshCallError } from "./errors.js";
+import { CallCancelledError, ResourceExhaustedError, UnavailableError } from "./errors.js";
 import { encodeFrame, type Frame } from "./protocol.js";
 
 export const DEFAULT_MAX_FRAME_SIZE = 1024 * 1024;
@@ -29,14 +29,14 @@ export class FrameWriter {
   public async send(frame: Frame): Promise<void> {
     if (this.closed !== undefined) throw this.closed;
     if (this.socket.readyState !== WebSocket.OPEN) {
-      throw new MeshCallError("unavailable", "Connection is closed");
+      throw new UnavailableError("Connection is closed");
     }
     if (frame.kind === "call.cancel" && this.cancelQueuedCall(frame.call_id)) {
       return;
     }
     const encoded = encodeFrame(frame);
     if (Buffer.byteLength(encoded) > this.maxFrameSize) {
-      throw new MeshCallError("resource_exhausted", "Encoded frame exceeds the byte limit");
+      throw new ResourceExhaustedError("Encoded frame exceeds the byte limit");
     }
     const completion = new Promise<void>((resolve, reject) => {
       const pending = { kind: frame.kind, encoded, resolve, reject };
@@ -66,14 +66,14 @@ export class FrameWriter {
     this.calls.delete(callId);
     const index = this.order.indexOf(callId);
     if (index >= 0) this.order.splice(index, 1);
-    const error = new MeshCallError("cancelled", "Call was cancelled before sending");
+    const error = new CallCancelledError("Call was cancelled before sending");
     for (const pending of queue) pending.reject(error);
     // A priority cancellation cannot precede an unsent call.open: remove both.
     // Already transmitted calls still need the cancellation frame forwarded.
     return unopened;
   }
 
-  public close(error = new MeshCallError("unavailable", "Connection is closed")): void {
+  public close(error = new UnavailableError("Connection is closed")): void {
     if (this.closed !== undefined) return;
     this.closed = error;
     this.active?.reject(error);

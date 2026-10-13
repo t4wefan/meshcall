@@ -105,7 +105,18 @@ task can't operate through a newly acquired generation.
 ## Failure boundaries
 
 - Service exceptions become sanitized `internal` errors and are logged locally.
-- Pydantic validation failures become `invalid_argument`.
+- Request and input-item validation failures become `invalid_argument` with
+  `details.violations` (field path, validator code, message) and never the
+  rejected value; a response or output item that fails the service's own
+  contract is `internal` with `reason: invalid_response` /
+  `invalid_output_item`, and the violations go to the server log only.
+- Clients raise one subclass per protocol code (`InvalidArgumentError`,
+  `DeadlineExceededError`, `UnavailableError`, …; `CallCancelledError` for
+  `cancelled`), built by `MeshCallError.from_code` / `fromCode`. Unknown
+  (application) codes stay plain `MeshCallError`. `error.source` and
+  `error.reason` read the matching `details` keys.
+- Access logs record successful calls at the configured level, caller-side
+  failures at warning and `internal` / `protocol_error` at error.
 - Task cancellation is propagated as `call.cancel` and `cancelled`.
 - Deadline expiry cancels the service task and returns `deadline_exceeded`.
   Timeouts travel as relative `timeout_ms`; the server, the Router, and the

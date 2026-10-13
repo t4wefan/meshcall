@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type WebSocket from "ws";
 
-import { MeshCallError } from "./errors.js";
+import { UnavailableError } from "./errors.js";
 import type { Frame, Metadata } from "./protocol.js";
 import type { FrameWriter } from "./transport.js";
 
@@ -180,7 +180,7 @@ export class Liveness {
   private fail(reason: string): void {
     if (this.stopped) return;
     this.stop();
-    this.writer.close(new MeshCallError("unavailable", "Connection was lost: " + reason, { retryable: true }));
+    this.writer.close(new UnavailableError("Connection was lost: " + reason, { retryable: true }));
     this.socket.close(1001, reason);
     // A peer that is truly gone never completes the close handshake.
     const force = setTimeout(() => this.socket.terminate(), 1000);

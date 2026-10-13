@@ -11,6 +11,7 @@ annotation.
 | Method | Shape | Request | Response | Behaviour |
 | --- | --- | --- | --- | --- |
 | `echo` | unary | `value: int`, `text: str` | `{value, text}` | returns its input |
+| `bad_response` | unary | — | `{ok}` | returns `{ok: "not-a-bool"}`, which fails its own response contract |
 | `fail` | unary | `code: str`, `message: str`, `retryable: bool = false` | — | raises an application error with that code/message/retryable and `details = {"from": "fixture"}` |
 | `slow` | unary | `ms: int`, `tag: str = ""` | `{tag}` | records `tag` as invoked, sleeps `ms`; if cancelled, also records `tag` as cancelled |
 | `invoked_tags` | unary | — | `{tags: [str]}` | tags of every `slow` call that started, in order |

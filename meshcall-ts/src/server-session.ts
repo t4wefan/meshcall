@@ -1,4 +1,4 @@
-import { MeshCallError } from "./errors.js";
+import { CallCancelledError, DeadlineExceededError, ErrorCode, MeshCallError, ProtocolError } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import { validateMetadata, type Liveness } from "./liveness.js";
 import { safelyLog, type LogLevel, type RpcLogger } from "./logging.js";
@@ -7,7 +7,7 @@ import type {
 } from "./protocol.js";
 import type { RpcContext, ServerCallNext, ServerInterceptor, ServiceMethod } from "./service.js";
 import type { FrameWriter } from "./transport.js";
-import { validatePayload, type MethodValidators } from "./validation.js";
+import { InvalidOutputError, validatePayload, type MethodValidators } from "./validation.js";
 
 export interface RuntimeMethod {
   definition: ServiceMethod;
@@ -54,7 +54,7 @@ export class ServerSession {
     if (frame.kind === "call.open") {
       const existing = this.calls.get(frame.call_id);
       if (existing !== undefined) {
-        void existing.fail(new MeshCallError("protocol_error", "Duplicate call_id"));
+        void existing.fail(new ProtocolError("Duplicate call_id"));
         return;
       }
       if (this.options.maxInflight !== undefined && (this.options.inflight?.() ?? this.calls.size) >= this.options.maxInflight) {
@@ -89,7 +89,7 @@ export class ServerSession {
     if (call === undefined) return;
     try {
       if (frame.kind === "call.cancel") {
-        void call.fail(new MeshCallError("cancelled", "Call was cancelled"));
+        void call.fail(new CallCancelledError("Call was cancelled"));
       } else if (frame.kind === "stream.window") {
         call.receiveWindow(frame);
       } else if (frame.kind === "stream.item") {
@@ -97,7 +97,7 @@ export class ServerSession {
       } else if (frame.kind === "stream.end") {
         call.receiveEnd(frame);
       } else {
-        throw new MeshCallError("protocol_error", "Unexpected client call frame");
+        throw new ProtocolError("Unexpected client call frame");
       }
     } catch (error) {
       void call.fail(error);
@@ -120,7 +120,7 @@ export class ServerSession {
 
   /** Answer a malformed frame for `callId` without dropping the peer. */
   public rejectFrame(callId: string, message: string): void {
-    const error = new MeshCallError("protocol_error", message);
+    const error = new ProtocolError(message);
     const call = this.calls.get(callId);
     if (call !== undefined) {
       void call.fail(error);
@@ -141,7 +141,7 @@ export class ServerSession {
 
   public logAccess(frame: CallOpenFrame, status: string, started: number, logger: RpcLogger): void {
     if (!this.options.accessLog) return;
-    safelyLog(() => logger.log(this.options.logLevel,
+    safelyLog(() => logger.log(accessLevel(status, this.options.logLevel),
       "RPC call " + frame.service + "." + frame.method + " status=" + status
       + " duration_ms=" + (performance.now() - started).toFixed(2) + " call_id=" + frame.call_id,
     ));
@@ -205,7 +205,7 @@ class ServerCall {
     if (deadline === null || this.terminal) return;
     const remaining = deadline - performance.now();
     if (remaining <= 0) {
-      void this.fail(new MeshCallError("deadline_exceeded", "Call deadline exceeded", {
+      void this.fail(new DeadlineExceededError("Call deadline exceeded", {
         details: { source: "server" },
       }));
     } else {
@@ -222,7 +222,7 @@ class ServerCall {
     }
     if (this.idleTimeoutMs === null || this.inputClosed || this.terminal) return;
     this.idleTimer = setTimeout(() => {
-      void this.fail(new MeshCallError("deadline_exceeded", "Input stream idle timeout", {
+      void this.fail(new DeadlineExceededError("Input stream idle timeout", {
         details: { source: "server", reason: "idle" },
       }));
     }, this.idleTimeoutMs);
@@ -230,7 +230,7 @@ class ServerCall {
 
   public receiveWindow(frame: StreamWindowFrame): void {
     if (this.method.definition.stream !== "server_stream" || frame.direction !== "server") {
-      throw new MeshCallError("protocol_error", "Invalid output stream window");
+      throw new ProtocolError("Invalid output stream window");
     }
     this.credit.grant(frame.credit);
   }
@@ -238,9 +238,9 @@ class ServerCall {
   public receiveItem(frame: StreamItemFrame): void {
     if (this.method.definition.stream !== "client_stream" || frame.direction !== "client"
       || this.inputClosed || this.inputAllowance <= 0 || frame.sequence !== this.inputSequence) {
-      throw new MeshCallError("protocol_error", "Invalid input stream item, sequence, or credit");
+      throw new ProtocolError("Invalid input stream item, sequence, or credit");
     }
-    const value = validatePayload(this.method.validators.input, frame.payload, "input stream item");
+    const value = validatePayload(this.method.validators.input, frame.payload, "input_item");
     this.inputAllowance -= 1;
     this.inputSequence += 1;
     this.armIdle();
@@ -249,7 +249,7 @@ class ServerCall {
 
   public receiveEnd(frame: StreamEndFrame): void {
     if (this.method.definition.stream !== "client_stream" || frame.direction !== "client") {
-      throw new MeshCallError("protocol_error", "Invalid input stream end");
+      throw new ProtocolError("Invalid input stream end");
     }
     this.inputClosed = true;
     this.armIdle();
@@ -261,7 +261,13 @@ class ServerCall {
     const payload: ErrorPayload = error instanceof MeshCallError
       ? { code: error.code, message: error.message, retryable: error.retryable, details: error.details }
       : { code: "internal", message: "Internal service error" };
-    if (!(error instanceof MeshCallError)) {
+    if (error instanceof InvalidOutputError) {
+      // A service bug: the detail stays in the server log (protocol.md → Validation failures).
+      safelyLog(() => this.context.logger.error(
+        "Handler produced an invalid " + (error.subject === "response" ? "response" : "output item") + ": %s",
+        JSON.stringify(error.violations),
+      ));
+    } else if (!(error instanceof MeshCallError)) {
       safelyLog(() => this.context.logger.error("Unhandled service exception: %s", error));
     }
     this.controller.abort(payload.code);
@@ -326,7 +332,7 @@ class ServerCall {
       const next = await this.output.next();
       if (this.terminal) return null;
       if (next.done === true) break;
-      const payload = validatePayload(this.method.validators.output, next.value, "output stream item");
+      const payload = validatePayload(this.method.validators.output, next.value, "output_item");
       await this.credit.acquire();
       if (this.terminal) return null;
       await this.session.writer.send({
@@ -365,7 +371,7 @@ class ServerCall {
     this.terminal = true;
     if (this.timer !== undefined) clearTimeout(this.timer);
     if (this.idleTimer !== undefined) clearTimeout(this.idleTimer);
-    const error = new MeshCallError("cancelled", "Call is closed");
+    const error = new CallCancelledError("Call is closed");
     this.credit.close(error);
     this.input.fail(error);
     this.session.remove(this);
@@ -390,4 +396,10 @@ class ServerCall {
       // Iterator cleanup is best effort when a handler ignores cancellation.
     }
   }
+}
+
+/** Successful calls log at the configured level; failures stand out by severity. */
+function accessLevel(status: string, configured: LogLevel): LogLevel {
+  if (status === "ok") return configured;
+  return status === ErrorCode.INTERNAL || status === ErrorCode.PROTOCOL_ERROR ? "error" : "warning";
 }

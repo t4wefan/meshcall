@@ -28,7 +28,11 @@ export {
   writeContract,
 } from "./contract.js";
 export { contractWarnings, lintService, renderWarning, type ContractWarning } from "./diagnostics.js";
-export { MeshCallError } from "./errors.js";
+export {
+  CallCancelledError, DeadlineExceededError, ErrorCode, InternalError, InvalidArgumentError, MeshCallError,
+  type MeshCallErrorOptions, MethodNotFoundError, PermissionDeniedError, ProtocolError, ResourceExhaustedError,
+  UnauthenticatedError, UnavailableError, type Violation,
+} from "./errors.js";
 export {
   DEFAULT_IDLE_TIMEOUT_MS,
   DEFAULT_PING_INTERVAL_MS,

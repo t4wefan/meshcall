@@ -25,11 +25,17 @@ from meshcall.contract import (
 from meshcall.diagnostics import ContractWarning
 from meshcall.driver import DriverBinding, ServerDriver
 from meshcall.errors import (
+    CallCancelledError,
     ContractError,
+    DeadlineExceededError,
     DriverStateError,
     ErrorCode,
+    InternalError,
     MeshCallError,
     ProtocolError,
+    invalid_argument,
+    invalid_response,
+    violations_of,
 )
 from meshcall.flow import CreditWindow
 from meshcall.ir import (
@@ -475,8 +481,7 @@ class _ServerCall:
 
     def _on_idle_timeout(self) -> None:
         self._idle_handle = None
-        error = MeshCallError(
-            ErrorCode.DEADLINE_EXCEEDED,
+        error = DeadlineExceededError(
             "Input stream idle timeout",
             details={"source": "server", "reason": "idle"},
         )
@@ -509,10 +514,10 @@ class _ServerCall:
         if self.method.output_type is None or self.output_closed:
             raise ProtocolError("Call output stream is closed")
         if self.terminal:
-            raise MeshCallError(ErrorCode.CANCELLED, "Call is closed")
+            raise CallCancelledError("Call is closed")
         await self.send_credit.acquire()
         if self.terminal:
-            raise MeshCallError(ErrorCode.CANCELLED, "Call is closed")
+            raise CallCancelledError("Call is closed")
         await self.connection.send(
             StreamItemFrame(
                 call_id=self.call_id,
@@ -550,36 +555,42 @@ class _ServerCall:
             await self._send_result(payload)
         except TimeoutError:
             await self._send_error(
-                MeshCallError(
-                    ErrorCode.DEADLINE_EXCEEDED,
+                DeadlineExceededError(
                     "Call deadline exceeded",
                     details={"source": "server"},
                 )
             )
         except asyncio.CancelledError:
-            await self._send_error(
-                MeshCallError(ErrorCode.CANCELLED, "Call was cancelled")
-            )
+            await self._send_error(CallCancelledError("Call was cancelled"))
         except MeshCallError as exc:
             await self._send_error(exc)
         except ValidationError as exc:
-            await self._send_error(MeshCallError(ErrorCode.INVALID_ARGUMENT, str(exc)))
+            # The handler built an invalid model itself: a service bug, not
+            # the caller's. Keep the detail local; see protocol.md → Errors.
+            self.logger.error(  # noqa: PLE1205
+                "Handler {}.{} raised a validation error: {}",
+                self.method.service_name,
+                self.method.contract.name,
+                violations_of(exc),
+            )
+            await self._send_error(invalid_response("invalid_response"))
         except Exception:
             self.logger.exception(  # noqa: PLE1205
                 "Unhandled exception in {}.{}",
                 self.method.service_name,
                 self.method.contract.name,
             )
-            await self._send_error(
-                MeshCallError(ErrorCode.INTERNAL, "Internal service error")
-            )
+            await self._send_error(InternalError("Internal service error"))
         finally:
             self._disarm_idle()
-            error = MeshCallError(ErrorCode.CANCELLED, "Call is closed")
+            error = CallCancelledError("Call is closed")
             await self.send_credit.close(error)
 
     async def _execute_worker(self) -> Any:
-        request = self.method.request_type.model_validate(self.open_frame.payload)
+        try:
+            request = self.method.request_type.model_validate(self.open_frame.payload)
+        except ValidationError as exc:
+            raise invalid_argument(exc, "request") from None
 
         async def invoke() -> Any:
             return await self._invoke_handler(request)
@@ -590,8 +601,22 @@ class _ServerCall:
         result = await call_next()
         if self.method.response_type is None:
             return None
-        validated = self.method.response_type.model_validate(result)
+        try:
+            validated = self.method.response_type.model_validate(result)
+        except ValidationError as exc:
+            raise self._invalid_output(exc, "invalid_response") from None
         return validated.model_dump(mode="json", by_alias=True)
+
+    def _invalid_output(self, exc: ValidationError, reason: str) -> InternalError:
+        """A response or output item broke the contract: log here, hide there."""
+        self.logger.error(  # noqa: PLE1205
+            "{}.{} produced an invalid {}: {}",
+            self.method.service_name,
+            self.method.contract.name,
+            "response" if reason == "invalid_response" else "output item",
+            violations_of(exc),
+        )
+        return invalid_response(reason)
 
     async def _invoke_handler(self, request: BaseModel) -> Any:
         """Run the handler to completion, streaming every output item."""
@@ -635,7 +660,10 @@ class _ServerCall:
         output_type = self.method.output_type
         if output_type is None:
             raise ProtocolError("Call does not declare an output stream")
-        validated = output_type.model_validate(item)
+        try:
+            validated = output_type.model_validate(item)
+        except ValidationError as exc:
+            raise self._invalid_output(exc, "invalid_output_item") from None
         payload = validated.model_dump(mode="json", by_alias=True)
         await self._run_on_rpc(self.send_output_payload(payload))
 
@@ -722,7 +750,10 @@ class _ServerInputStream(RpcInputStream[BaseModel]):
         input_type = self.call.method.input_type
         if input_type is None:
             raise ProtocolError("Call does not declare an input stream")
-        return input_type.model_validate(value)
+        try:
+            return input_type.model_validate(value)
+        except ValidationError as exc:
+            raise invalid_argument(exc, "input_item") from None
 
 
 class _ServerDuplex(_ServerInputStream, RpcDuplex[BaseModel, BaseModel]):
@@ -891,6 +922,7 @@ def _log_access(
 ) -> None:
     if not enabled:
         return
+    level = _access_level(status, level)
     message = (
         "<level>RPC call {}.{} status={} duration_ms={:.2f} call_id={}</level>"
         if colorize
@@ -905,6 +937,18 @@ def _log_access(
         (time.perf_counter() - started_at) * 1000,
         call_id,
     )
+
+
+#: Codes that mean the service itself misbehaved; everything else non-ok is
+#: the caller's or the network's doing.
+_SERVER_FAULTS = frozenset({ErrorCode.INTERNAL.value, ErrorCode.PROTOCOL_ERROR.value})
+
+
+def _access_level(status: str, configured: str | int) -> str | int:
+    """Successful calls log at the configured level, failures stand out."""
+    if status == "ok":
+        return configured
+    return "ERROR" if status in _SERVER_FAULTS else "WARNING"
 
 
 def _bind_interceptor(

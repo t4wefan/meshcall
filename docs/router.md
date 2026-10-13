@@ -204,7 +204,8 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 Errors print the code, message, `details` and a hint: an unknown method
 lists the available ones, `invalid_argument` shows the request shape from the
 contract, `unavailable` points at `router inspect`. `--json` makes every
-output one JSON document per line.
+output one JSON document per line, failures included (on stderr, with the
+same `code` / `message` / `details` / `hint` fields).
 
 ## Built-in RPC service and temporary tokens
 

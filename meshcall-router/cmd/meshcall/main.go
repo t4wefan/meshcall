@@ -25,11 +25,18 @@ import (
 
 var version = "dev"
 
+// asJSON mirrors --json so failures are machine-readable too.
+var asJSON bool
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		var failure *cli.Failure
 		if errors.As(err, &failure) {
-			fmt.Fprintln(os.Stderr, "error", failure.Error())
+			if asJSON {
+				_ = json.NewEncoder(os.Stderr).Encode(failure)
+			} else {
+				fmt.Fprintln(os.Stderr, "error", failure.Error())
+			}
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "meshcall:", err)
@@ -40,7 +47,6 @@ func main() {
 func run(args []string) error {
 	global := flag.NewFlagSet("meshcall", flag.ContinueOnError)
 	var router, auth, token string
-	var asJSON bool
 	var timeout time.Duration
 	global.StringVar(&router, "router", envOr("MESHCALL_ROUTER_URL", "ws://127.0.0.1:8765"), "Router WebSocket URL")
 	global.StringVar(&auth, "auth", "", "user:password for Basic authentication")

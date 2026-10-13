@@ -375,11 +375,15 @@ func emitTerminal(f wire.Frame, c CallOptions, w io.Writer, schemaHint string) e
 		hint := ""
 		switch code {
 		case "invalid_argument":
-			hint = schemaHint
+			hint = violationHint(f, schemaHint)
 		case "unavailable":
 			hint = "no healthy instance took the call; `meshcall router inspect` shows instances, breakers and draining"
 		case "permission_denied":
 			hint = "the account lacks a call permission for this method"
+		case "internal":
+			if _, _, _, details := wire.Error(f); details["reason"] == "invalid_response" || details["reason"] == "invalid_output_item" {
+				hint = "the service answered with data that breaks its own contract; the violations are in the service's log"
+			}
 		}
 		return failureOf(f, hint)
 	}
@@ -475,4 +479,24 @@ func sortedKeys(m map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// violationHint turns details.violations into one line per offending field,
+// followed by the request shape from the contract.
+func violationHint(f wire.Frame, schemaHint string) string {
+	_, _, _, details := wire.Error(f)
+	raw, _ := details["violations"].([]any)
+	var lines []string
+	for _, item := range raw {
+		v, _ := item.(map[string]any)
+		path, _ := v["path"].(string)
+		if path == "" {
+			path = "(request)"
+		}
+		lines = append(lines, fmt.Sprintf("%s: %v (%v)", path, v["message"], v["code"]))
+	}
+	if len(lines) == 0 {
+		return schemaHint
+	}
+	return strings.Join(lines, "; ") + "\n  " + schemaHint
 }

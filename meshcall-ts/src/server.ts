@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { closeSocket, createSocket, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
 import { tryContractEntry } from "./contract.js";
 import { contractWarnings, renderWarning } from "./diagnostics.js";
-import { MeshCallError } from "./errors.js";
+import { DeadlineExceededError, ProtocolError, UnavailableError } from "./errors.js";
 import {
   DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS, Liveness,
   reconnectDelays, type ReconnectPolicy,
@@ -368,7 +368,7 @@ export class MeshCallServer {
         const frame = decodeFrame(data);
         if (!ready) {
           if (frame.kind !== "hello" || frame.role !== "client" || frame.protocol !== PROTOCOL_VERSION) {
-            throw new MeshCallError("protocol_error", "Expected compatible client hello");
+            throw new ProtocolError("Expected compatible client hello");
           }
           ready = true;
           clearTimeout(timer);
@@ -418,13 +418,13 @@ export class MeshCallServer {
       let state: "hello" | "register" | "ready" = "hello";
       const fail = (error: unknown) => { clearTimeout(timer); reject(error); socket.close(); };
       const timer = setTimeout(() =>
-        fail(new MeshCallError("deadline_exceeded", "Router handshake timed out")),
+        fail(new DeadlineExceededError("Router handshake timed out")),
         this.handshakeTimeout,
       );
       socket.once("error", fail);
       socket.once("close", () => {
         clearTimeout(timer);
-        reject(new MeshCallError("unavailable", "Router disconnected during registration"));
+        reject(new UnavailableError("Router disconnected during registration"));
       });
       socket.once("open", () => {
         void session.writer.send({
@@ -437,7 +437,7 @@ export class MeshCallServer {
           const frame: Frame = decodeFrame(data);
           if (state === "hello") {
             if (frame.kind !== "hello.ack" || frame.protocol !== PROTOCOL_VERSION) {
-              throw new MeshCallError("protocol_error", "Expected compatible Router hello.ack");
+              throw new ProtocolError("Expected compatible Router hello.ack");
             }
             state = "register";
             void session.writer.send({
@@ -446,7 +446,7 @@ export class MeshCallServer {
             }).catch(fail);
           } else if (state === "register") {
             if (frame.kind !== "server.register.ack" || frame.instance_id !== this.instanceId) {
-              throw new MeshCallError("protocol_error", "Expected matching server.register.ack");
+              throw new ProtocolError("Expected matching server.register.ack");
             }
             state = "ready";
             clearTimeout(timer);

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,7 @@ var scenarios = []scenario{
 	{"registration: service, methods and shapes", registration},
 	{"unary: echo round trip, unknown fields ignored", unaryEcho},
 	{"unary: invalid request fails only that call", invalidArgument},
+	{"unary: invalid response is the server's fault", invalidResponse},
 	{"unary: application errors pass through", applicationError},
 	{"router: unknown method is method_not_found", unknownMethod},
 	{"server stream: item credit is respected", serverStreamCredit},
@@ -31,7 +33,7 @@ func registration(h *harness) error {
 	snapshot := h.router.Snapshot()
 	methods := snapshot.Methods[Service]
 	want := map[string]string{
-		"echo": "unary", "fail": "unary", "slow": "unary", "cancelled_tags": "unary", "invoked_tags": "unary",
+		"echo": "unary", "bad_response": "unary", "fail": "unary", "slow": "unary", "cancelled_tags": "unary", "invoked_tags": "unary",
 		"count": "server_stream", "sum": "client_stream", "metadata_echo": "unary", "drain_self": "unary",
 	}
 	if !reflect.DeepEqual(methods, want) {
@@ -96,8 +98,24 @@ func invalidArgument(h *harness) error {
 	if err != nil {
 		return err
 	}
-	if code, _, _, _ := errorOf(result); code != "invalid_argument" {
+	code, message, _, details := errorOf(result)
+	if code != "invalid_argument" {
 		return fmt.Errorf("expected invalid_argument, got %v", result)
+	}
+	// Caller's fault, said structurally and without echoing the input.
+	if details["source"] != "server" || details["reason"] != "request" {
+		return fmt.Errorf("expected details.source=server reason=request, got %v", details)
+	}
+	violations, _ := details["violations"].([]any)
+	if len(violations) == 0 {
+		return fmt.Errorf("expected details.violations, got %v", details)
+	}
+	first, _ := violations[0].(map[string]any)
+	if first["path"] != "value" || first["code"] == "" || first["message"] == "" {
+		return fmt.Errorf("violation must name path=value with code and message, got %v", first)
+	}
+	if serialised := fmt.Sprint(message, details); strings.Contains(serialised, "not-an-int") {
+		return fmt.Errorf("validation error leaks the input value: %s", serialised)
 	}
 	// The connection and the service survive.
 	ok, err := c.unary("echo", frame{"value": 1, "text": "still here"}, nil)
@@ -106,6 +124,29 @@ func invalidArgument(h *harness) error {
 	}
 	if ok["kind"] != "call.result" {
 		return fmt.Errorf("connection poisoned: %v", ok)
+	}
+	return nil
+}
+
+func invalidResponse(h *harness) error {
+	c, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	result, err := c.unary("bad_response", frame{}, nil)
+	if err != nil {
+		return err
+	}
+	code, message, _, details := errorOf(result)
+	if code != "internal" || message != "Internal service error" {
+		return fmt.Errorf("a response that breaks the contract is the server's fault (internal), got %v", result)
+	}
+	if details["source"] != "server" || details["reason"] != "invalid_response" {
+		return fmt.Errorf("expected details.source=server reason=invalid_response, got %v", details)
+	}
+	if strings.Contains(fmt.Sprint(details), "not-a-bool") {
+		return fmt.Errorf("internal error leaks the invalid response: %v", details)
 	}
 	return nil
 }

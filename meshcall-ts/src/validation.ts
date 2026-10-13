@@ -1,8 +1,8 @@
-import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
 import type { TypeContract } from "./contract.js";
-import { MeshCallError } from "./errors.js";
+import { InternalError, InvalidArgumentError, type Violation } from "./errors.js";
 import type { ServiceMethod } from "./service.js";
 
 export interface MethodValidators {
@@ -31,19 +31,41 @@ export function compileMethod(method: ServiceMethod): MethodValidators {
   };
 }
 
-export function validatePayload(
-  validate: ValidateFunction | undefined,
-  value: unknown,
-  label: string,
-): unknown {
-  if (validate !== undefined && !validate(value)) {
-    throw new MeshCallError("invalid_argument", "Invalid " + label, {
-      details: {
-        errors: validate.errors?.map(({ instancePath, keyword, message }) => ({
-          path: instancePath, keyword, message,
-        })) ?? [],
-      },
+/** What was validated; decides who is at fault (docs/protocol.md → Validation failures). */
+export type ValidationSubject = "request" | "input_item" | "response" | "output_item";
+
+/**
+ * The service produced a response or output item that breaks its own contract.
+ * Carries the violations for the server-side log only; the wire sees `internal`.
+ */
+export class InvalidOutputError extends InternalError {
+  public constructor(public readonly subject: "response" | "output_item", public readonly violations: Violation[]) {
+    super("Internal service error", {
+      details: { source: "server", reason: subject === "response" ? "invalid_response" : "invalid_output_item" },
     });
+    this.name = "InvalidOutputError";
   }
-  return value;
+}
+
+export function validatePayload(validate: ValidateFunction | undefined, value: unknown, subject: ValidationSubject): unknown {
+  if (validate === undefined || validate(value)) return value;
+  const violations = (validate.errors ?? []).map(violationOf);
+  if (subject === "response" || subject === "output_item") {
+    throw new InvalidOutputError(subject, violations);
+  }
+  throw new InvalidArgumentError(subject === "request" ? "Invalid request" : "Invalid input stream item", {
+    details: { source: "server", reason: subject, violations },
+  });
+}
+
+/** Redact an Ajv error to the same `(path, code, message)` shape Python sends. */
+function violationOf(error: ErrorObject): Violation {
+  let path = error.instancePath.split("/").filter((part) => part !== "").join(".");
+  let code = error.keyword;
+  if (error.keyword === "required") {
+    const missing = String((error.params as { missingProperty?: unknown }).missingProperty ?? "");
+    path = path === "" ? missing : path + "." + missing;
+    code = "missing";
+  }
+  return { path, code, message: error.message ?? code };
 }

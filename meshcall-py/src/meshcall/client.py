@@ -21,7 +21,13 @@ from meshcall.context import (
     client_deadline_grace,
 )
 from meshcall.driver import ClientDriver
-from meshcall.errors import ErrorCode, MeshCallError, ProtocolError
+from meshcall.errors import (
+    CallCancelledError,
+    DeadlineExceededError,
+    MeshCallError,
+    ProtocolError,
+    UnavailableError,
+)
 from meshcall.flow import CreditWindow
 from meshcall.protocol import (
     CallCancelFrame,
@@ -92,8 +98,7 @@ class ClientBase:
                     if delay is None:
                         if isinstance(exc, MeshCallError):
                             raise
-                        raise MeshCallError(
-                            ErrorCode.UNAVAILABLE,
+                        raise UnavailableError(
                             f"Could not connect: {exc}",
                             retryable=True,
                         ) from exc
@@ -117,9 +122,7 @@ class ClientBase:
             calls = tuple(self._calls.values())
             self._calls.clear()
             for call in calls:
-                await call.fail(
-                    MeshCallError(ErrorCode.UNAVAILABLE, "Client is stopped")
-                )
+                await call.fail(UnavailableError("Client is stopped"))
 
     async def __aenter__(self) -> Self:
         await self.start()
@@ -355,7 +358,7 @@ class ClientBase:
             raise _local_deadline_error() from exc
         connection = self._connection
         if connection is None:
-            raise MeshCallError(ErrorCode.UNAVAILABLE, "Client is not connected")
+            raise UnavailableError("Client is not connected")
         call_id = uuid.uuid4().hex
         call = _ClientCall(
             client=self,
@@ -405,9 +408,7 @@ class ClientBase:
         except ConnectionError as exc:
             call.disarm_timers()
             self._calls.pop(call_id, None)
-            raise MeshCallError(
-                ErrorCode.UNAVAILABLE, "Connection was lost", retryable=True
-            ) from exc
+            raise UnavailableError("Connection was lost", retryable=True) from exc
         except BaseException:
             call.disarm_timers()
             self._calls.pop(call_id, None)
@@ -451,8 +452,7 @@ class ClientBase:
         except asyncio.CancelledError:
             raise
         except ConnectionError:
-            failure = MeshCallError(
-                ErrorCode.UNAVAILABLE,
+            failure = UnavailableError(
                 "Connection was lost",
                 retryable=True,
             )
@@ -564,8 +564,7 @@ def _local_deadline_error(reason: str | None = None) -> MeshCallError:
     details: dict[str, Any] = {"source": "client"}
     if reason is not None:
         details["reason"] = reason
-    return MeshCallError(
-        ErrorCode.DEADLINE_EXCEEDED,
+    return DeadlineExceededError(
         "Call deadline exceeded" if reason is None else "Output stream idle timeout",
         details=details,
     )
@@ -651,7 +650,7 @@ class _ClientCall:
             raise ProtocolError("Input stream is closed")
         await self.send_credit.acquire()
         if self.terminal:
-            raise MeshCallError(ErrorCode.CANCELLED, "Call is closed")
+            raise CallCancelledError("Call is closed")
         validated = (
             self.input_type.model_validate(item)
             if self.input_type is not None and self.input_type is not BaseModel
@@ -691,9 +690,7 @@ class _ClientCall:
                     )
                 )
             except ConnectionError as exc:
-                error = MeshCallError(
-                    ErrorCode.UNAVAILABLE, "Connection was lost", retryable=True
-                )
+                error = UnavailableError("Connection was lost", retryable=True)
                 await self.fail(error)
                 raise error from exc
         return value
@@ -776,14 +773,12 @@ class _ClientCall:
             self.result_future.set_result(result)
         if self.output_type is not None and self.input_type is None:
             self.output_queue.put_nowait(_STREAM_END)
-        await self.send_credit.close(
-            MeshCallError(ErrorCode.CANCELLED, "Call is complete")
-        )
+        await self.send_credit.close(CallCancelledError("Call is complete"))
 
     async def receive_error(self, frame: CallErrorFrame) -> None:
         self.trailers = dict(frame.metadata or {})
         await self.fail(
-            MeshCallError(
+            MeshCallError.from_code(
                 frame.error.code,
                 frame.error.message,
                 retryable=frame.error.retryable,

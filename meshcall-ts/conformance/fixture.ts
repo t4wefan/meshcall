@@ -37,6 +37,10 @@ const fixture = defineService({
       description: "Raise an application error with the given code.", idempotent: true, request: failType, response: okType,
       handler: ({ code, message, retryable }) => { throw new MeshCallError(code, message, { retryable: retryable ?? false, details: { from: "fixture" } }); },
     }),
+    bad_response: unaryMethod({
+      description: "Return a response that breaks this method's own contract.", readOnly: true, request: emptyType, response: okType,
+      handler: () => ({ ok: "not-a-bool" } as unknown as { ok: boolean }),
+    }),
     slow: unaryMethod({
       description: "Sleep ms milliseconds; record tag if cancelled meanwhile.", idempotent: true, request: slowType, response: tagType,
       handler: async ({ ms, tag }, { signal }) => {

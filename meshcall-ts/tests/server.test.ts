@@ -98,13 +98,14 @@ test("request, response, input items and output items are validated at runtime",
   const app = await running();
   t.after(app.close);
   await assert.rejects(app.client.unary(service.name, "echo", { value: "wrong" }), isError("invalid_argument"));
-  await assert.rejects(app.client.unary(service.name, "invalidResult", { value: 1 }), isError("invalid_argument"));
+  // A response that breaks the contract is the service's fault, not the caller's.
+  await assert.rejects(app.client.unary(service.name, "invalidResult", { value: 1 }), isError("internal"));
   await assert.rejects(app.client.clientStream(
     service.name, "upload", { value: 0 },
     (async function* () { yield { value: "wrong" }; })(),
   ), isError("invalid_argument"));
   const invalid = app.client.serverStream(service.name, "invalidStream", { value: 1 });
-  await assert.rejects(invalid.next(), isError("invalid_argument"));
+  await assert.rejects(invalid.next(), isError("internal"));
   // Invalid calls do not poison other calls on the same connection.
   assert.deepEqual(await app.client.unary(service.name, "echo", { value: 3 }), { value: 3 });
 });

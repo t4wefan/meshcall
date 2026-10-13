@@ -81,7 +81,12 @@ func fakeInstance(t *testing.T, port int) {
 				case "greet":
 					name, ok := payload["name"].(string)
 					if !ok {
-						send(map[string]any{"kind": "call.error", "call_id": id, "error": map[string]any{"code": "invalid_argument", "message": "name is required"}})
+						send(map[string]any{"kind": "call.error", "call_id": id, "error": map[string]any{
+							"code": "invalid_argument", "message": "Invalid request",
+							"details": map[string]any{"source": "server", "reason": "request", "violations": []any{
+								map[string]any{"path": "name", "code": "missing", "message": "Field required"},
+							}},
+						}})
 						continue
 					}
 					meta, _ := f["metadata"].(map[string]any)
@@ -153,8 +158,10 @@ func TestInspectAndCall(t *testing.T) {
 	out.Reset()
 	err = Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "greet", Payload: map[string]any{"times": 2}, JSON: true}, &out)
 	var failure *Failure
-	if !errors.As(err, &failure) || failure.Code != "invalid_argument" || !strings.Contains(failure.Hint, "request is {name: string, times?: integer}") {
-		t.Fatalf("expected invalid_argument with a schema hint, got %v", err)
+	if !errors.As(err, &failure) || failure.Code != "invalid_argument" ||
+		!strings.Contains(failure.Hint, "name: Field required (missing)") ||
+		!strings.Contains(failure.Hint, "request is {name: string, times?: integer}") {
+		t.Fatalf("expected invalid_argument with violation and schema hints, got %v", err)
 	}
 	if err := Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "nope"}, &out); !errors.As(err, &failure) ||
 		failure.Code != "method_not_found" || !strings.Contains(failure.Hint, "count, greet, sum") {
