@@ -161,6 +161,27 @@ jobs:
       - name: Generated clients match their generators
         run: scripts/regenerate.sh --check
 
+  conformance:
+    needs: router
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: meshcall-router/go.mod
+          cache-dependency-path: meshcall-router/go.sum
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: meshcall-ts/yarn.lock
+      - name: Python and TypeScript runtimes pass the protocol conformance suite
+        run: scripts/check.sh conformance
+
   packaging:
     runs-on: ubuntu-latest
     steps:

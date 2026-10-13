@@ -2,7 +2,7 @@
 # The one command that verifies the whole repository. CI runs the same steps.
 #
 #   scripts/check.sh                  everything
-#   scripts/check.sh py demos drift   some parts: go | py | ts | demos | drift
+#   scripts/check.sh py demos drift   some parts: go | py | ts | demos | drift | conformance
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MESHCALL_ROUTER_BINARY="$PWD/meshcall-router/bin/meshcall-router"
@@ -51,18 +51,32 @@ drift() {
   step "generated clients match their generators"
   scripts/regenerate.sh --check
 }
+conformance() {
+  step "protocol conformance (Python and TypeScript fixtures)"
+  (cd meshcall-router && go build -o bin/meshcall-conformance ./cmd/meshcall-conformance)
+  (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s build)
+  (cd meshcall-py && uv sync --frozen --quiet)
+  printf 'python... '
+  meshcall-router/bin/meshcall-conformance --fixture "uv run --project $PWD/meshcall-py --locked python $PWD/meshcall-py/conformance/fixture.py" >"$PWD/.conformance-py.log" 2>&1 \
+    && echo ok || { echo FAILED; cat .conformance-py.log; return 1; }
+  printf 'typescript... '
+  meshcall-router/bin/meshcall-conformance --fixture "node $PWD/meshcall-ts/dist/conformance/fixture.js" >"$PWD/.conformance-ts.log" 2>&1 \
+    && echo ok || { echo FAILED; cat .conformance-ts.log; return 1; }
+  rm -f .conformance-py.log .conformance-ts.log
+}
 
 parts=${*:-all}
 router
 for part in $parts; do
   case $part in
-    all)   go_checks; py_checks; ts_checks; demos; drift ;;
+    all)   go_checks; py_checks; ts_checks; demos; drift; conformance ;;
     go)    go_checks ;;
     py)    py_checks ;;
     ts)    ts_checks ;;
     demos) demos ;;
     drift) drift ;;
-    *) echo "usage: scripts/check.sh [go|py|ts|demos|drift]..." >&2; exit 2 ;;
+    conformance) conformance ;;
+    *) echo "usage: scripts/check.sh [go|py|ts|demos|drift|conformance]..." >&2; exit 2 ;;
   esac
 done
 printf '\nall checks passed\n'

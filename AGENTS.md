@@ -14,7 +14,9 @@ explains the runtime design; `docs/router.md` the Router.
 
 1. **The protocol document comes first.** A behaviour change is made in
    `docs/protocol.md`, then in Go, Python and TypeScript, then covered by a
-   cross-language test in `meshcall-py/tests/test_multilang_interop.py`.
+   scenario in `meshcall-router/conformance/scenarios.go` (which runs against
+   every runtime's fixture) and, when it crosses generated clients, by
+   `meshcall-py/tests/test_multilang_interop.py`.
 2. **Three runtimes, one behaviour.** Error codes, `details` keys, timeouts,
    reconnect semantics and frame fields are the same everywhere. If you add
    an option to one runtime, add it to the other and document it.
@@ -59,7 +61,7 @@ intended (`description=""`). See docs/architecture.md → Contract warnings.
 
 ```bash
 scripts/check.sh          # everything CI runs: router build, Go, Python, TS, demos, drift
-scripts/check.sh py demos # some parts: go | py | ts | demos | drift
+scripts/check.sh py demos # some parts: go | py | ts | demos | drift | conformance
 scripts/regenerate.sh     # rewrite all checked-in generated clients (or name targets)
 ```
 

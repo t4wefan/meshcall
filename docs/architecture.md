@@ -135,6 +135,25 @@ task can't operate through a newly acquired generation.
   string maps that reach handlers through `RpcContext` and are otherwise opaque
   to the runtime.
 
+## Conformance suite
+
+`meshcall-router/conformance` is the executable definition of "behaves like a
+MeshCall runtime". It starts a real Router in-process, launches a *fixture
+program* for the runtime under test, and plays scripted raw-frame exchanges
+against it: registration shape, unary round trips and error pass-through,
+item credit on both stream directions (including the one-item prefetch at
+exhaustion), server-side `timeout_ms` and `idle_timeout_ms`, cancellation
+reaching the handler, metadata and trailers, keepalive within the Router idle
+window, re-registration after a Router restart, and drain.
+
+The fixture contract is in `meshcall-router/conformance/FIXTURE.md`; the
+reference fixtures are `meshcall-py/conformance/fixture.py` and
+`meshcall-ts/conformance/fixture.ts`. A new language runtime is conformant
+when `meshcall-conformance --fixture "<its fixture command>"` passes.
+`scripts/check.sh conformance` runs both reference fixtures; CI does too.
+Client-side conformance (a scripted fixture *client* driven by the suite
+acting as the Router) is a planned second phase.
+
 ## Contract warnings
 
 Hard rules raise at import time (`ContractError` / a thrown `Error`): service

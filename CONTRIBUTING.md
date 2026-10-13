@@ -17,7 +17,7 @@ it first, then the implementations, then the interop tests.
 
 ```bash
 scripts/check.sh            # everything CI runs: Router build, Go, Python, TypeScript, demos, drift
-scripts/check.sh py         # one part: go | py | ts | demos | drift
+scripts/check.sh py         # one part: go | py | ts | demos | drift | conformance
 scripts/regenerate.sh       # rewrite every checked-in generated client
 ```
 

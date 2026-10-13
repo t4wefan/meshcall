@@ -305,11 +305,15 @@ class ServerCall {
       return null;
     }
     while (!this.terminal) {
-      await this.credit.acquire();
+      // Pull before acquiring credit: holding one prefetched item lets the
+      // stream end when the producer is exhausted exactly as credit runs out,
+      // without waiting for a window that will never come.
       const next = await this.output.next();
       if (this.terminal) return null;
       if (next.done === true) break;
       const payload = validatePayload(this.method.validators.output, next.value, "output stream item");
+      await this.credit.acquire();
+      if (this.terminal) return null;
       await this.session.writer.send({
         kind: "stream.item", call_id: this.frame.call_id, direction: "server",
         sequence: this.outputSequence, payload,

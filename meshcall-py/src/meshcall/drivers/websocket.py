@@ -325,6 +325,7 @@ class WebSocketRouterServerDriver(ServerDriver):
             if self._connection is not connection:
                 return  # stop() took the connection away
             self._connection = None
+            await connection.close()  # releases the sender task of the dead socket
             if self._draining:
                 return
             if not self.reconnect.enabled:

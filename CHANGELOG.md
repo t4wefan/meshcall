@@ -23,6 +23,10 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Protocol conformance suite (`meshcall-conformance`) with reference
+  fixtures for Python and TypeScript; it found and fixed a TypeScript
+  server-stream stall when the producer is exhausted exactly as credit runs
+  out.
 - Graceful drain: `server.drain` / `server.drain.ack` frames; Python
   `RpcServer.stop(drain=True, drain_timeout=30)` and TypeScript
   `server.close({ drain: true })` leave the Router pool (or stop accepting)

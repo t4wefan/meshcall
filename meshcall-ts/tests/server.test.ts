@@ -133,10 +133,11 @@ test("a paused output stream is bounded and does not block concurrent unary call
   t.after(app.close);
   await app.client.connect();
   const stream = app.client.serverStream(service.name, "download", { value: 100 });
-  for (let i = 0; i < 100 && produced < 16; i += 1) await delay(5);
-  assert.equal(produced, 16);
+  // 16 items of credit plus the one prefetched item the protocol allows.
+  for (let i = 0; i < 100 && produced < 17; i += 1) await delay(5);
+  assert.equal(produced, 17);
   assert.deepEqual(await app.client.unary(service.name, "echo", { value: 9 }), { value: 9 });
-  assert.equal(produced, 16);
+  assert.equal(produced, 17);
   await stream.cancel();
   for (let i = 0; i < 100 && !closed; i += 1) await delay(5);
   assert.equal(closed, true);

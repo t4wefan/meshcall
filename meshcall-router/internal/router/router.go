@@ -206,6 +206,41 @@ func Start(config Config) (*Router, error) {
 	return r, nil
 }
 
+// Snapshot is a read-only view of registration state for tooling and tests.
+type Snapshot struct {
+	// Instances maps a service name to the ids of instances currently in its
+	// pool (draining instances are excluded).
+	Instances map[string][]string
+	// Methods maps a service name to its registered methods and stream kinds.
+	Methods map[string]map[string]string
+	Routes  int
+	Peers   int
+}
+
+func (r *Router) Snapshot() Snapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	snapshot := Snapshot{
+		Instances: make(map[string][]string, len(r.services)),
+		Methods:   make(map[string]map[string]string, len(r.services)),
+		Routes:    len(r.routes),
+		Peers:     len(r.peers),
+	}
+	for name, pool := range r.services {
+		ids := make([]string, 0, len(pool.instances))
+		for _, p := range pool.instances {
+			ids = append(ids, p.instanceID)
+		}
+		snapshot.Instances[name] = ids
+		methods := make(map[string]string, len(pool.signature.Methods))
+		for _, m := range pool.signature.Methods {
+			methods[m.Name] = m.Stream
+		}
+		snapshot.Methods[name] = methods
+	}
+	return snapshot
+}
+
 func (r *Router) Ready() Ready          { return r.ready }
 func (r *Router) Done() <-chan struct{} { return r.done }
 
