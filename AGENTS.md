@@ -33,19 +33,34 @@ explains the runtime design; `docs/router.md` the Router.
 
 ## Strict mode
 
-Run with `MESHCALL_STRICT=1` when you write or change services. Advisory
+Set `MESHCALL_STRICT=1` whenever you write or change a service. Advisory
 contract warnings (missing descriptions, unannotated mutating methods, …)
-then fail at import / `defineService` with a `hint` telling you exactly what
-to add. Fix the finding rather than silencing it unless the silence is
-clearly intended (`description=""`). See docs/architecture.md → Contract
-warnings.
+then fail at import / `defineService` with a `hint` saying exactly what to
+add. `scripts/check.sh demos` already runs the demos this way. To check one
+Python service by hand:
+
+```bash
+cd demo/showcase && MESHCALL_STRICT=1 uv run --locked --reinstall-package meshcall python -c "import showcase_demo.service"
+```
+
+Fix the finding rather than silencing it unless the silence is clearly
+intended (`description=""`). See docs/architecture.md → Contract warnings.
+
+## Recipe: changing a demo or best-practice service
+
+1. Edit `service.py` / `service.ts` (add a docstring/description and, for
+   mutating methods, an annotation — strict mode will insist).
+2. `scripts/regenerate.sh <target>` (`quickstart`, `showcase`, `router`,
+   `py2ts`, `best-practice`, `ts2py`) rewrites that demo's generated client.
+3. Update the runner (`run.py` / `run.mjs` / `cli.ts`) to use the new method.
+4. `scripts/check.sh py demos drift`.
 
 ## Verify
 
 ```bash
 scripts/check.sh          # everything CI runs: router build, Go, Python, TS, demos, drift
-scripts/check.sh py       # one part: go | py | ts | demos | drift
-scripts/regenerate.sh     # rewrite all checked-in generated clients
+scripts/check.sh py demos # some parts: go | py | ts | demos | drift
+scripts/regenerate.sh     # rewrite all checked-in generated clients (or name targets)
 ```
 
 `scripts/check.sh` sets `MESHCALL_ROUTER_BINARY` and `MESHCALL_RUN_INTEROP=1`

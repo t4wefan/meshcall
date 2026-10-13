@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # The one command that verifies the whole repository. CI runs the same steps.
 #
-#   scripts/check.sh            everything
-#   scripts/check.sh go|py|ts|demos|drift   one part
+#   scripts/check.sh                  everything
+#   scripts/check.sh py demos drift   some parts: go | py | ts | demos | drift
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MESHCALL_ROUTER_BINARY="$PWD/meshcall-router/bin/meshcall-router"
 export MESHCALL_RUN_INTEROP=1
-part=${1:-all}
+export NODE_OPTIONS="${NODE_OPTIONS:-} --no-deprecation"
 
 step() { printf '\n==> %s\n' "$*"; }
 
@@ -26,35 +26,43 @@ py_checks() {
 }
 ts_checks() {
   step "typescript types + tests"
-  (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s check && yarn -s test 2>&1 | grep -vE "DeprecationWarning|trace-deprecation")
+  (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s check && yarn -s test)
 }
 demos() {
-  step "demos end to end"
+  step "demos end to end (MESHCALL_STRICT=1: contract warnings fail)"
+  export MESHCALL_STRICT=1
+  local log
+  log=$(mktemp)
   for d in quickstart py2ts showcase router ts2py; do
     printf '%s... ' "$d"
     # uv caches builds of path dependencies; force the ones that live in this repo.
     reinstall="--reinstall-package meshcall"
     [ "$d" = ts2py ] && reinstall="$reinstall --reinstall-package meshcall-demo-ts2py-client"
     if [ "$d" = router ]; then
-      (cd demo/$d && env -u MESHCALL_ROUTER_BINARY uv run --locked $reinstall demo >/dev/null)
+      (cd demo/$d && env -u MESHCALL_ROUTER_BINARY uv run --locked $reinstall demo >"$log" 2>&1) || { echo FAILED; cat "$log"; return 1; }
     else
-      (cd demo/$d && uv run --locked $reinstall demo >/dev/null)
+      (cd demo/$d && uv run --locked $reinstall demo >"$log" 2>&1) || { echo FAILED; cat "$log"; return 1; }
     fi
     echo ok
   done
+  unset MESHCALL_STRICT
 }
 drift() {
   step "generated clients match their generators"
   scripts/regenerate.sh --check
 }
 
-case $part in
-  all)   router; go_checks; py_checks; ts_checks; demos; drift ;;
-  go)    router; go_checks ;;
-  py)    router; py_checks ;;
-  ts)    router; ts_checks ;;
-  demos) router; demos ;;
-  drift) router; drift ;;
-  *) echo "usage: scripts/check.sh [all|go|py|ts|demos|drift]" >&2; exit 2 ;;
-esac
+parts=${*:-all}
+router
+for part in $parts; do
+  case $part in
+    all)   go_checks; py_checks; ts_checks; demos; drift ;;
+    go)    go_checks ;;
+    py)    py_checks ;;
+    ts)    ts_checks ;;
+    demos) demos ;;
+    drift) drift ;;
+    *) echo "usage: scripts/check.sh [go|py|ts|demos|drift]..." >&2; exit 2 ;;
+  esac
+done
 printf '\nall checks passed\n'
