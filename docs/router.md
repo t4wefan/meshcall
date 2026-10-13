@@ -68,6 +68,12 @@ per instance, across its registered services.
   acknowledged; calls already routed to it finish normally. Python
   `RpcServer.stop(drain=True)` and TypeScript `server.close({ drain: true })`
   do this before disconnecting, so a rolling restart fails no request.
+- Instances may register `max_inflight`; the Router routes around full
+  instances and answers `resource_exhausted` / `overloaded` when all are full.
+  A per-instance circuit breaker (`--breaker-threshold`, default 5
+  consecutive failures; `--breaker-cooldown`, default 10 s) excludes an
+  instance that keeps timing out or answering `internal`/`unavailable`, then
+  admits one probe call. `Snapshot()` reports in-flight, cap and breaker state.
 - Unary calls carrying an `idempotency_key` are deduplicated per
   `(service, method, key)`: concurrent duplicates join the in-flight call,
   later duplicates replay the cached terminal frame for 60 s (bounded to

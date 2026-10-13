@@ -21,6 +21,9 @@ export interface SessionOptions {
   accessLog: boolean;
   logLevel: LogLevel;
   interceptors: ReadonlyArray<ServerInterceptor>;
+  /** Server-wide in-flight count and cap, for local max_inflight enforcement. */
+  inflight?: () => number;
+  maxInflight?: number;
 }
 
 export class ServerSession {
@@ -52,6 +55,17 @@ export class ServerSession {
       const existing = this.calls.get(frame.call_id);
       if (existing !== undefined) {
         void existing.fail(new MeshCallError("protocol_error", "Duplicate call_id"));
+        return;
+      }
+      if (this.options.maxInflight !== undefined && (this.options.inflight?.() ?? this.calls.size) >= this.options.maxInflight) {
+        const started = performance.now();
+        void this.writer.send({
+          kind: "call.error", call_id: frame.call_id,
+          error: {
+            code: "resource_exhausted", message: "Instance is at its max_inflight", retryable: true,
+            details: { source: "server", reason: "overloaded" },
+          },
+        }).catch(() => undefined).finally(() => this.logAccess(frame, "resource_exhausted", started, this.options.logger));
         return;
       }
       const method = this.services.get(frame.service)?.get(frame.method);

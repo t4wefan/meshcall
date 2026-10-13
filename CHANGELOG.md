@@ -23,6 +23,10 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- `max_inflight` per instance (Python `RpcServer(max_inflight=)`, TS
+  `maxInflight`), enforced locally and announced to the Router, which routes
+  around full instances; a per-instance circuit breaker in the Router with
+  half-open probing; instance health in `Router.Snapshot()`.
 - Idempotency keys on `call.open`; Router joins and replays duplicate unary
   calls and prefers another instance after `instance_lost`; built-in client
   `RetryPolicy` for unary calls; Router errors carry `details.reason`

@@ -62,6 +62,8 @@ export interface ServerRegisterFrame {
   kind: "server.register";
   instance_id: string;
   services: Array<RegisteredService>;
+  /** Calls this instance accepts concurrently across its services; absent = unlimited. */
+  max_inflight?: number | null;
 }
 
 export interface ServerRegisterAckFrame {
@@ -252,7 +254,7 @@ const validators = new Map([
   ["hello.ack", frame("hello.ack", { protocol: string, connection_id: string },
     ["protocol", "connection_id"])],
   ["server.register", frame("server.register", {
-    instance_id: string, services: { type: "array", items: service },
+    instance_id: string, services: { type: "array", items: service }, max_inflight: positiveMs,
   }, ["instance_id", "services"])],
   ["server.register.ack", frame("server.register.ack", { instance_id: string }, ["instance_id"])],
   ["call.open", frame("call.open", {

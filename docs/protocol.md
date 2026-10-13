@@ -30,7 +30,7 @@ unique string chosen by the client. All time values are integer milliseconds.
 | --- | --- | --- |
 | `hello` | `protocol`, `role`, `peer_id`, `instance_id?`, `capabilities?` | first frame from the connecting peer |
 | `hello.ack` | `protocol`, `connection_id` | reply from the accepting peer |
-| `server.register` | `instance_id`, `services[]` | Router mode only; one per connection |
+| `server.register` | `instance_id`, `services[]`, `max_inflight?` | Router mode only; one per connection |
 | `server.register.ack` | `instance_id` | |
 | `server.drain` | — | instance → Router: leave every pool, keep serving routed calls |
 | `server.drain.ack` | `instance_id?` | Router → instance |
@@ -77,6 +77,24 @@ services.
 `capabilities` is reserved for negotiating optional features (binary
 encodings, compression, byte credit) in later minor revisions; peers ignore
 entries they do not know.
+
+## Capacity and health
+
+`max_inflight` on `server.register` is the number of calls the instance
+accepts concurrently across all its services. The Router never selects an
+instance at its cap and answers retryable `resource_exhausted`
+(`reason: "overloaded"`) when every instance is full; an instance also
+enforces the cap itself, so direct-mode servers behave the same.
+
+The Router keeps a per-instance circuit breaker: a call that hits the
+Router's deadline, or that the instance answers with `internal` or
+`unavailable`, counts as a failure; application errors do not. After a
+configurable number of consecutive failures (default 5) the instance is
+excluded for a cooldown (default 10 s), then exactly one probe call is
+admitted; its success closes the circuit, its failure reopens it. When every
+instance is excluded the Router answers retryable `unavailable`
+(`reason: "circuit_open"`). Breaker state is in-memory and resets when the
+instance reconnects.
 
 ## Draining
 
@@ -244,6 +262,9 @@ uses `source` (`"client"`, `"router"`, `"server"`), `reason` and
 `instance_id`. Router-synthesised errors carry `source: "router"` and one of
 these reasons: `no_instances` (nothing registered for the service),
 `instance_lost` (the serving instance disconnected; `instance_id` names it),
-`overloaded` (a capacity limit), `balance_disabled`, `cancelled` (a joined
-idempotent call was cancelled by its first caller). Client retry policies add
+`overloaded` (a capacity limit: the Router's own, or every instance at its
+`max_inflight`), `circuit_open` (every instance is excluded by the Router's
+circuit breaker), `balance_disabled`, `cancelled` (a joined idempotent call
+was cancelled by its first caller). A server enforcing its own `max_inflight`
+answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`. Client retry policies add
 `attempts` to the final error when more than one attempt was made.

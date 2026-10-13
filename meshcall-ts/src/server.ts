@@ -52,6 +52,12 @@ export interface MeshCallServerOptions {
   readonly interceptors?: ReadonlyArray<ServerInterceptor>;
   /** Fail `start()` on advisory contract warnings (also `MESHCALL_STRICT=1`). */
   readonly strictContracts?: boolean;
+  /**
+   * Calls this instance accepts concurrently. Enforced locally and, in Router
+   * mode, announced at registration so the Router routes around a full
+   * instance with a retryable `resource_exhausted` (`reason: "overloaded"`).
+   */
+  readonly maxInflight?: number;
   readonly accessLog?: boolean;
   readonly logLevel?: LogLevel;
   readonly colorize?: boolean;
@@ -86,6 +92,9 @@ export class MeshCallServer {
     this.handshakeTimeout = options.handshakeTimeoutMs ?? 10_000;
     for (const value of [this.maxFrameSize, this.handshakeTimeout]) {
       if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError("Limits must be positive integers");
+    }
+    if (options.maxInflight !== undefined && (!Number.isSafeInteger(options.maxInflight) || options.maxInflight < 1)) {
+      throw new RangeError("maxInflight must be a positive integer");
     }
     this.instanceId = options.router?.instanceId ?? randomUUID().replaceAll("-", "");
     this.logger = options.logger ?? new ConsoleRpcLogger({}, options.colorize ?? false);
@@ -278,6 +287,8 @@ export class MeshCallServer {
       accessLog: this.options.accessLog ?? true,
       logLevel: this.options.logLevel ?? "info",
       interceptors: this.options.interceptors ?? [],
+      inflight: () => [...this.sessions.values()].reduce((sum, s) => sum + s.inFlight, 0),
+      ...(this.options.maxInflight === undefined ? {} : { maxInflight: this.options.maxInflight }),
     }, liveness);
     this.sessions.set(socket, session);
     socket.on("close", () => {
@@ -387,6 +398,7 @@ export class MeshCallServer {
             state = "register";
             void session.writer.send({
               kind: "server.register", instance_id: this.instanceId, services: this.registration,
+              ...(this.options.maxInflight === undefined ? {} : { max_inflight: this.options.maxInflight }),
             }).catch(fail);
           } else if (state === "register") {
             if (frame.kind !== "server.register.ack" || frame.instance_id !== this.instanceId) {

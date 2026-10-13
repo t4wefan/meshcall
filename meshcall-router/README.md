@@ -46,7 +46,9 @@ before the Router enforces it, so the service's own `deadline_exceeded`
 normally wins and the Router only steps in for an instance that has stopped
 answering. `--idle-timeout` (default `45s`) closes any connection that sends
 nothing for that long; clients and services keep healthy connections alive
-with protocol pings every 15 s. See [the protocol](../docs/protocol.md#timeouts).
+with protocol pings every 15 s. `--breaker-threshold` (default `5`) and
+`--breaker-cooldown` (default `10s`) configure the per-instance circuit
+breaker. See [the protocol](../docs/protocol.md#timeouts).
 
 ## Authentication
 

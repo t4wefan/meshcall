@@ -355,3 +355,19 @@ test("the retry policy re-sends unary calls only when it is safe", { timeout: 50
     e instanceof MeshCallError && JSON.stringify(e.details) === JSON.stringify({ key: null, attempts: 3 }));
   await assert.rejects(call("budget", 10, { idempotent: true, timeoutMs: 15 }), isError("unavailable"));
 });
+
+test("maxInflight is enforced locally in direct mode", { timeout: 5000 }, async (t) => {
+  const server = new MeshCallServer({ services: [service], accessLog: false, maxInflight: 1 });
+  await server.start();
+  const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, { retry: false });
+  t.after(async () => { await client.close(); await server.close(); });
+  const stream = client.serverStream<Trickle, Value>(service.name, "trickle", { count: 3, gapMs: 200 });
+  await stream.next();
+  await assert.rejects(client.unary(service.name, "echo", { value: 1 }), (e: unknown) =>
+    e instanceof MeshCallError && e.code === "resource_exhausted" && e.retryable
+    && JSON.stringify(e.details) === JSON.stringify({ source: "server", reason: "overloaded" }));
+  const rest: number[] = [];
+  for await (const item of stream) rest.push(item.value);
+  assert.deepEqual(rest, [1, 2]);
+  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 4 })).value, 4);
+});

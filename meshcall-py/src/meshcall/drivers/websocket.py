@@ -302,6 +302,7 @@ class WebSocketRouterServerDriver(ServerDriver):
                 ServerRegisterFrame(
                     instance_id=self.instance_id,
                     services=runtime.registration(),
+                    max_inflight=runtime.max_inflight,
                 )
             )
             register_ack = await connection.receive()

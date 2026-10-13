@@ -68,6 +68,8 @@ class ServerRegisterFrame(FrameModel):
     kind: Literal["server.register"] = "server.register"
     instance_id: str
     services: tuple[RegisteredService, ...]
+    # Calls this instance accepts concurrently across its services; absent = unlimited.
+    max_inflight: int | None = Field(default=None, gt=0)
 
 
 class ServerRegisterAckFrame(FrameModel):

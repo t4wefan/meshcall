@@ -46,6 +46,8 @@ func run() error {
 	flag.StringVar(&authPath, "auth-file", "", "JSON account and permission configuration")
 	flag.DurationVar(&config.DeadlineGrace, "deadline-grace", router.DefaultDeadlineGrace, "added to each call's timeout before the router enforces it")
 	flag.DurationVar(&config.IdleTimeout, "idle-timeout", router.DefaultIdleTimeout, "close connections that send nothing for this long")
+	flag.IntVar(&config.BreakerThreshold, "breaker-threshold", router.DefaultBreakerThreshold, "consecutive failures that open an instance's circuit")
+	flag.DurationVar(&config.BreakerCooldown, "breaker-cooldown", router.DefaultBreakerCooldown, "how long an open circuit excludes an instance before one probe call")
 	flag.BoolVar(&parentStdin, "shutdown-on-stdin-close", false, "exit when the owning process closes stdin")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()

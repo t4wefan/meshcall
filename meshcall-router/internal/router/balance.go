@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
@@ -35,9 +36,34 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 	if p == nil || len(p.instances) == 0 {
 		return fail("unavailable", "No instances registered for "+f.Service)
 	}
-	if avoid != nil && len(p.instances) > 1 {
-		p = &pool{signature: p.signature, cursors: p.cursors,
-			instances: slices.DeleteFunc(slices.Clone(p.instances), func(c *peer) bool { return c == avoid })}
+	// Eligibility: not avoided, not at its cap, breaker admits it.
+	now := time.Now()
+	eligible := make([]*peer, 0, len(p.instances))
+	full, tripped := 0, 0
+	for _, c := range p.instances {
+		switch {
+		case c == avoid && len(p.instances) > 1:
+		case c.maxInflight > 0 && c.inflight >= c.maxInflight:
+			full++
+		case !c.health.admit(now):
+			tripped++
+		default:
+			eligible = append(eligible, c)
+		}
+	}
+	if len(eligible) == 0 {
+		if full > 0 {
+			err := routerError(f.CallID, "resource_exhausted", "Every instance of "+f.Service+" is at its max_inflight", true, "overloaded", "")
+			return nil, &err
+		}
+		if tripped > 0 {
+			err := routerError(f.CallID, "unavailable", "Every instance of "+f.Service+" has an open circuit", true, "circuit_open", "")
+			return nil, &err
+		}
+		return fail("unavailable", "No instances registered for "+f.Service)
+	}
+	if len(eligible) != len(p.instances) {
+		p = &pool{signature: p.signature, cursors: p.cursors, instances: eligible}
 	}
 	var selected *method
 	for i := range p.signature.Methods {

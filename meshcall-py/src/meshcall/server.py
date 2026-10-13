@@ -92,6 +92,7 @@ class ServerRuntime:
         colorize: bool = False,
         logger: RpcLogger | None = None,
         interceptors: Sequence[ServerInterceptor] = (),
+        max_inflight: int | None = None,
     ) -> None:
         self.worker = worker
         self.access_log = access_log
@@ -99,6 +100,7 @@ class ServerRuntime:
         self.colorize = colorize
         self.logger: RpcLogger = logger if logger is not None else default_logger
         self.interceptors = tuple(interceptors)
+        self.max_inflight = max_inflight
         self._sessions: set[_ServerSession] = set()
         self._contracts: list[ServiceContract] = []
         self._methods: dict[tuple[str, str], RuntimeMethod] = {}
@@ -169,6 +171,7 @@ class ServerRuntime:
 
     async def serve_connection(self, connection: FrameConnection) -> None:
         session = _ServerSession(
+            self,
             connection,
             self._methods,
             self.worker,
@@ -214,6 +217,7 @@ class ServerRuntime:
 class _ServerSession:
     def __init__(
         self,
+        runtime: ServerRuntime,
         connection: FrameConnection,
         methods: dict[tuple[str, str], RuntimeMethod],
         worker: WorkerLoop,
@@ -224,6 +228,7 @@ class _ServerSession:
         logger: RpcLogger,
         interceptors: tuple[ServerInterceptor, ...] = (),
     ) -> None:
+        self.runtime = runtime
         self.connection = connection
         self.methods = methods
         self.worker = worker
@@ -273,6 +278,34 @@ class _ServerSession:
                     method=frame.method,
                     started_at=started_at,
                     status=ErrorCode.PROTOCOL_ERROR.value,
+                    level=self.log_level,
+                    colorize=self.colorize,
+                )
+            return
+        if self.runtime.max_inflight is not None and (
+            self.runtime.active_calls() >= self.runtime.max_inflight
+        ):
+            try:
+                await self.connection.send(
+                    CallErrorFrame(
+                        call_id=frame.call_id,
+                        error=ErrorPayload(
+                            code=ErrorCode.RESOURCE_EXHAUSTED,
+                            message="Instance is at its max_inflight",
+                            retryable=True,
+                            details={"source": "server", "reason": "overloaded"},
+                        ),
+                    )
+                )
+            finally:
+                _log_access(
+                    self.logger,
+                    enabled=self.access_log,
+                    call_id=frame.call_id,
+                    service=frame.service,
+                    method=frame.method,
+                    started_at=started_at,
+                    status=ErrorCode.RESOURCE_EXHAUSTED.value,
                     level=self.log_level,
                     colorize=self.colorize,
                 )
@@ -710,7 +743,11 @@ class RpcServer:
         colorize: bool = False,
         logger: RpcLogger | None = None,
         interceptors: Sequence[ServerInterceptor] = (),
+        max_inflight: int | None = None,
     ) -> None:
+        if max_inflight is not None and max_inflight < 1:
+            raise ValueError("max_inflight must be positive")
+        self.max_inflight = max_inflight
         self._services = list(services)
         self.driver = driver
         self.access_log = access_log
@@ -755,6 +792,7 @@ class RpcServer:
                     colorize=self.colorize,
                     logger=self.logger,
                     interceptors=self.interceptors,
+                    max_inflight=self.max_inflight,
                 )
                 await self.driver.start(binding, runtime)
             except BaseException:

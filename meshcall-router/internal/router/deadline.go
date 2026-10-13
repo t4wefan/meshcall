@@ -80,6 +80,7 @@ func (r *Router) expireLoop() {
 			}
 			delete(r.routes, id)
 			rt.instance.inflight--
+			r.observe(rt.instance, false)
 			if rt.dedup != nil && rt.dedup.route == rt {
 				r.dedupFail(rt.dedup, deadlineError(id), nil)
 			}

@@ -588,6 +588,140 @@ func TestIdempotencyJoinsReplaysAndRedelivers(t *testing.T) {
 	}
 }
 
+func TestMaxInflightAndCircuitBreaker(t *testing.T) {
+	r, err := Start(Config{BreakerThreshold: 2, BreakerCooldown: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	register := func(conn *websocket.Conn, id string, max int) {
+		hello(t, conn, "server", id)
+		send(t, conn, frame{Kind: "server.register", InstanceID: id, MaxInflight: max, Services: []service{
+			{Name: testService, Methods: []method{{Name: "echo", Stream: "unary", Balance: balance{Kind: "round_robin"}}}},
+		}})
+		if got := receive(t, conn); got.Kind != "server.register.ack" {
+			t.Fatalf("registration: %+v", got)
+		}
+	}
+	a, b := dial(t, r, ""), dial(t, r, "")
+	register(a, "a", 1)
+	register(b, "b", 1)
+	client := dial(t, r, "")
+	hello(t, client, "client", "client")
+	open := func(id string) {
+		send(t, client, frame{Kind: "call.open", CallID: id, Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+	}
+	// Caps: a takes one, b takes one, the third finds everyone full.
+	open("c1")
+	if got := receive(t, a); got.CallID != "c1" {
+		t.Fatal("c1 not on a")
+	}
+	open("c2")
+	if got := receive(t, b); got.CallID != "c2" {
+		t.Fatal("c2 not on b")
+	}
+	open("c3")
+	if got := receive(t, client); got.Error == nil || got.Error.Code != "resource_exhausted" || !got.Error.Retryable ||
+		!bytes.Contains(got.Error.Details, []byte(`"reason":"overloaded"`)) {
+		t.Fatalf("expected overloaded, got %+v", got)
+	}
+	if got := r.Snapshot().Health["a"]; got.Inflight != 1 || got.MaxInflight != 1 || got.Breaker != "closed" {
+		t.Fatalf("health: %+v", got)
+	}
+	send(t, a, frame{Kind: "call.result", CallID: "c1", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+	send(t, b, frame{Kind: "call.result", CallID: "c2", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+	// Breaker: a answers `internal` twice → open; calls go to b only.
+	for _, id := range []string{"f1", "f2"} {
+		open(id)
+		got := receive(t, a)
+		if got.CallID != id { // round robin alternates; drain b's turn when needed
+			t.Fatalf("expected %s on a, got %+v", id, got)
+		}
+		send(t, a, frame{Kind: "call.error", CallID: id, Error: &errorPayload{Code: "internal", Message: "boom"}})
+		receive(t, client)
+		// b's turn
+		open(id + "-b")
+		if got := receive(t, b); got.CallID != id+"-b" {
+			t.Fatal("b turn")
+		}
+		send(t, b, frame{Kind: "call.result", CallID: id + "-b", Payload: json.RawMessage(`{}`)})
+		receive(t, client)
+	}
+	if got := r.Snapshot().Health["a"]; got.Breaker != "open" || got.Failures != 2 {
+		t.Fatalf("breaker should be open: %+v", got)
+	}
+	for _, id := range []string{"o1", "o2"} {
+		open(id)
+		if got := receive(t, b); got.CallID != id {
+			t.Fatalf("open circuit still routed to a: %+v", got)
+		}
+		send(t, b, frame{Kind: "call.result", CallID: id, Payload: json.RawMessage(`{}`)})
+		receive(t, client)
+	}
+	// Half-open after the cooldown: exactly one probe reaches a; its success closes the circuit.
+	time.Sleep(350 * time.Millisecond)
+	if got := r.Snapshot().Health["a"]; got.Breaker != "half_open" {
+		t.Fatalf("expected half_open: %+v", got)
+	}
+	open("p1")
+	open("p2")
+	probe := receive(t, a)
+	if probe.CallID != "p1" && probe.CallID != "p2" {
+		t.Fatalf("probe: %+v", probe)
+	}
+	other := receive(t, b)
+	if other.CallID == probe.CallID {
+		t.Fatal("second call should not probe a")
+	}
+	send(t, a, frame{Kind: "call.result", CallID: probe.CallID, Payload: json.RawMessage(`{}`)})
+	send(t, b, frame{Kind: "call.result", CallID: other.CallID, Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+	receive(t, client)
+	if got := r.Snapshot().Health["a"]; got.Breaker != "closed" || got.Failures != 0 {
+		t.Fatalf("probe success should close: %+v", got)
+	}
+	// When every instance is tripped the reason says so. Read through
+	// channels: a timed-out websocket.Read would close the losing socket.
+	reader := func(conn *websocket.Conn) <-chan frame {
+		ch := make(chan frame, 8)
+		go func() {
+			for {
+				_, data, err := conn.Read(context.Background())
+				if err != nil {
+					close(ch)
+					return
+				}
+				var f frame
+				_ = json.Unmarshal(data, &f)
+				ch <- f
+			}
+		}()
+		return ch
+	}
+	fromA, fromB := reader(a), reader(b)
+	for _, id := range []string{"t1", "t2", "t3", "t4"} {
+		open(id)
+		var got frame
+		var from *websocket.Conn
+		select {
+		case got = <-fromA:
+			from = a
+		case got = <-fromB:
+			from = b
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s was not delivered", id)
+		}
+		send(t, from, frame{Kind: "call.error", CallID: got.CallID, Error: &errorPayload{Code: "internal", Message: "boom"}})
+		receive(t, client)
+	}
+	open("none")
+	if got := receive(t, client); got.Error == nil || !bytes.Contains(got.Error.Details, []byte(`"reason":"circuit_open"`)) {
+		t.Fatalf("expected circuit_open, got %+v", got)
+	}
+}
+
 func TestServiceNameValidation(t *testing.T) {
 	for _, name := range []string{"chat.v1", "demo.v1.Greeting", "chat.v1.2.0", "chat.v2.0.0-beta1", "a_b.v0", AuthService} {
 		if !validServiceName(name) {

@@ -34,6 +34,10 @@ type Config struct {
 	// IdleTimeout closes a connection that has sent no frame for this long.
 	// Connecting peers must ping more often than this.
 	IdleTimeout time.Duration
+	// BreakerThreshold consecutive failures open an instance's circuit for
+	// BreakerCooldown; then one probe call is admitted. See breaker.go.
+	BreakerThreshold int
+	BreakerCooldown  time.Duration
 }
 
 const (
@@ -51,17 +55,19 @@ type Ready struct {
 }
 
 type peer struct {
-	conn       *websocket.Conn
-	ctx        context.Context
-	cancel     context.CancelFunc
-	out        *outbox
-	user       *User
-	id         string
-	role       string
-	instanceID string
-	services   []service
-	inflight   int
-	draining   bool
+	conn        *websocket.Conn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	out         *outbox
+	user        *User
+	id          string
+	role        string
+	instanceID  string
+	services    []service
+	inflight    int
+	maxInflight int // 0 = unlimited
+	health      health
+	draining    bool
 }
 
 func (p *peer) send(f frame) {
@@ -143,6 +149,15 @@ func Start(config Config) (*Router, error) {
 	if config.DeadlineGrace < 0 || config.IdleTimeout < time.Second {
 		return nil, errors.New("deadline-grace must be non-negative and idle-timeout at least 1s")
 	}
+	if config.BreakerThreshold == 0 {
+		config.BreakerThreshold = DefaultBreakerThreshold
+	}
+	if config.BreakerCooldown == 0 {
+		config.BreakerCooldown = DefaultBreakerCooldown
+	}
+	if config.BreakerThreshold < 1 || config.BreakerCooldown <= 0 {
+		return nil, errors.New("breaker-threshold must be positive and breaker-cooldown greater than zero")
+	}
 	if config.Port < 0 || config.Port > 65535 {
 		return nil, errors.New("port must be between 0 and 65535")
 	}
@@ -221,6 +236,16 @@ type Snapshot struct {
 	Methods map[string]map[string]string
 	Routes  int
 	Peers   int
+	// Health describes every registered instance.
+	Health map[string]InstanceHealth
+}
+
+type InstanceHealth struct {
+	Inflight    int
+	MaxInflight int
+	Breaker     string // closed | open | half_open
+	Failures    int
+	Draining    bool
 }
 
 func (r *Router) Snapshot() Snapshot {
@@ -231,6 +256,14 @@ func (r *Router) Snapshot() Snapshot {
 		Methods:   make(map[string]map[string]string, len(r.services)),
 		Routes:    len(r.routes),
 		Peers:     len(r.peers),
+		Health:    make(map[string]InstanceHealth, len(r.instances)),
+	}
+	now := time.Now()
+	for id, p := range r.instances {
+		snapshot.Health[id] = InstanceHealth{
+			Inflight: p.inflight, MaxInflight: p.maxInflight,
+			Breaker: string(p.health.state(now)), Failures: p.health.failures, Draining: p.draining,
+		}
 	}
 	for name, pool := range r.services {
 		ids := make([]string, 0, len(pool.instances))
@@ -461,7 +494,7 @@ func (r *Router) register(p *peer, f frame) error {
 			return errors.New("incompatible service registration")
 		}
 	}
-	p.instanceID, p.services = f.InstanceID, f.Services
+	p.instanceID, p.services, p.maxInflight = f.InstanceID, f.Services, f.MaxInflight
 	r.instances[p.instanceID] = p
 	// Queue the ack before exposing the instance to calls.
 	p.send(frame{Kind: "server.register.ack", InstanceID: p.instanceID})
@@ -549,6 +582,7 @@ func (r *Router) forward(p *peer, f frame) {
 	} else if p.role == "server" && rt.instance == p {
 		rt.client.send(f)
 		if f.Kind == "call.result" || f.Kind == "call.error" {
+			r.observe(p, !instanceFailed(f))
 			if rt.dedup != nil {
 				r.dedupSettle(rt.dedup, f)
 			}

@@ -45,6 +45,7 @@ type frame struct {
 	Connection   string          `json:"connection_id,omitempty"`
 	InstanceID   string          `json:"instance_id,omitempty"`
 	Services     []service       `json:"services,omitempty"`
+	MaxInflight  int             `json:"max_inflight,omitempty"`
 	Service      string          `json:"service,omitempty"`
 	Method       string          `json:"method,omitempty"`
 	Payload      json.RawMessage `json:"payload,omitempty"`
@@ -78,7 +79,7 @@ func decode(data []byte) (frame, error) {
 			return f, errors.New("invalid hello or unsupported protocol")
 		}
 	case "server.register":
-		if f.InstanceID == "" || f.Services == nil {
+		if f.InstanceID == "" || f.Services == nil || f.MaxInflight < 0 {
 			return f, errors.New("invalid registration")
 		}
 	case "call.open":

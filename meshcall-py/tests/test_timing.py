@@ -489,3 +489,27 @@ async def test_retry_policy_retries_only_when_safe() -> None:
     finally:
         await client.stop()
         await server.stop()
+
+
+async def test_max_inflight_is_enforced_locally_in_direct_mode() -> None:
+    from meshcall.context import NO_RETRY
+
+    driver = WebSocketDirectServerDriver(host="127.0.0.1", port=0)
+    server = RpcServer(services=[TimingService()], driver=driver, max_inflight=1)
+    await server.start()
+    client = TimingClient(
+        WebSocketClientDriver(f"ws://127.0.0.1:{driver.bound_port}"), retry=NO_RETRY
+    )
+    try:
+        stream = client.trickle(3, 200)
+        await anext(stream)
+        with pytest.raises(MeshCallError) as error:
+            await client.echo_metadata(Request())
+        assert error.value.code == ErrorCode.RESOURCE_EXHAUSTED
+        assert error.value.retryable
+        assert error.value.details == {"source": "server", "reason": "overloaded"}
+        assert [item.value async for item in stream] == [1, 2]
+        assert (await client.echo_metadata(Request(value=4))).total == 4
+    finally:
+        await client.stop()
+        await server.stop()

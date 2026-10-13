@@ -118,6 +118,11 @@ task can't operate through a newly acquired generation.
 - Connecting peers send protocol `ping` frames (15 s) and drop the connection
   when a `pong` is late (10 s); accepting peers drop connections silent for
   45 s. The transport layer handles this; runtimes never see ping or pong.
+- `max_inflight` caps concurrent calls per instance; the server enforces it
+  itself (`resource_exhausted`, `reason: "overloaded"`) and the Router routes
+  around full instances. The Router's per-instance circuit breaker excludes
+  an instance after consecutive timeouts or `internal`/`unavailable` answers,
+  then admits one probe call.
 - A built-in `RetryPolicy` (outermost in the client interceptor chain)
   re-sends failed unary calls when the error is retryable, the code is in the
   policy's set, and the method is idempotent per the contract or the call has
