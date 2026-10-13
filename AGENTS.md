@@ -68,7 +68,19 @@ error hints. Prefer these over writing throwaway scripts.
 with `meshcall init`; it is the agent-facing summary of this repository's
 behaviour. When you change a CLI flag, an error shape or a service-definition
 rule, update the skill in the same commit and run `scripts/regenerate.sh
-skill` (the Go, Python and TypeScript CLIs each embed a copy; drift fails CI).
+skill` (the Go CLI embeds a copy; drift fails CI).
+
+## One CLI
+
+Client generation lives only in the Go `meshcall` CLI
+(`meshcall-router/internal/codegen`, driven by `internal/cli/generate.go`).
+Python keeps just the exporter (`python -m meshcall.export module:Class`),
+which the CLI calls through `MESHCALL_PYTHON`; `uv run meshcall` and
+`npx meshcall` are launchers (`launcher.py`, `launcher.ts`) that exec the
+binary. Generator output is pinned byte-for-byte by
+`internal/codegen/testdata/*` (contracts plus expected files); when you
+change a generator, update the expected files in the same commit, then
+`scripts/regenerate.sh` and commit the regenerated demo clients.
 
 ## Verify
 
@@ -101,11 +113,13 @@ for you. When running tools directly:
 | Transport, keepalive | `transport.py` | `transport.ts`, `liveness.ts` | `router.go` (idle timeout) |
 | Drivers (direct / router) | `drivers/websocket.py` | `server.ts` | — |
 | Router launcher, binary discovery | `router.py`, `router_install.py` | `router.ts` | `cmd/meshcall-router` |
-| Contract extraction, codegen | `contract.py`, `codegen_*.py`, `package_codegen.py` | `contract.ts` | — |
+| Contract extraction, export | `contract.py`, `contract_io.py`, `export.py` | `contract.ts` | `internal/contract` (reader) |
+| Client generation | — | — | `internal/codegen` (Python + TypeScript), `internal/cli/generate.go` |
+| CLI launchers | `launcher.py` | `launcher.ts` | `cmd/meshcall` |
 | Routing, balancing, deadlines | — | — | `router.go`, `balance.go`, `deadline.go` |
 | Registry RPC, dedup, breaker | — | — | `management.go`, `dedup.go`, `breaker.go` |
 | `meshcall` CLI (inspect, call) | — | — | `internal/cli`, `cmd/meshcall`; raw client in `internal/wire` |
-| `init` (agent skill installer) | `skill.py`, `cli.py` | `skill.ts`, `init.ts` | `internal/skill`; source `skills/meshcall/SKILL.md` |
+| `init` (agent skill installer) | — | — | `internal/skill`; source `skills/meshcall/SKILL.md` |
 | Conformance suite | `conformance/fixture.py` | `conformance/fixture.ts` | `conformance/` |
 | Auth, tokens | `router_auth.py` | `router-auth.ts` | `auth.go`, `management.go` |
 

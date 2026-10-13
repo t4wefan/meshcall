@@ -222,10 +222,19 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 ```
 
 `meshcall init [dir] [--force]` (also `uv run meshcall init`,
-`npx meshcall-init`) installs the first-party skill at
+`npx meshcall init`) installs the first-party skill at
 `.claude/skills/meshcall/SKILL.md` and a marked MeshCall section in
 `AGENTS.md`, so coding agents in that project use these commands. Re-running
 is idempotent; an edited skill file is kept unless `--force`.
+
+`meshcall generate <contract.json | module:Class> --output PATH
+[--language python|typescript] [--single-file] [--service NAME]
+[--package-name N] [--package-version V] [--class-name N]
+[--runtime-import M] [--runtime-version V] [--meshcall-requirement R]`
+writes a typed client package (or one file); `meshcall export module:Class
+--output contract.json` writes a Python service's contract. A `module:Class`
+source is exported through the interpreter in `MESHCALL_PYTHON`, which
+`uv run meshcall` sets to the project's own.
 
 Errors print the code, message, `details` and a hint: an unknown method
 lists the available ones, `invalid_argument` shows the request shape from the

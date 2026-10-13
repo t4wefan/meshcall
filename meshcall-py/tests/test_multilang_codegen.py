@@ -2,19 +2,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from pydantic import BaseModel, Field
-from test_contract import TestService
 
 from meshcall import RpcInputStream, method, service
-from meshcall.codegen_portable import render_portable_python_client
-from meshcall.codegen_typescript import render_typescript_client
 from meshcall.contract import get_service_contract
 from meshcall.contract_io import load_contract, render_contract
-from meshcall.package_codegen import (
-    write_python_client_package,
-    write_typescript_client_package,
-)
 
 
 class GreetingRequest(BaseModel):
@@ -74,8 +68,22 @@ class OneWayStreamService:
         return StreamResult(total=total)
 
 
-def test_renders_typescript_client_from_python_contract() -> None:
-    source = render_typescript_client(get_service_contract(GreetingService))
+TESTS = Path(__file__).resolve().parent
+
+
+def test_renders_typescript_client_from_python_contract(meshcall_cli, tmp_path) -> None:
+    output = tmp_path / "greeting.ts"
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen:GreetingService",
+        "--language",
+        "typescript",
+        "--single-file",
+        "--output",
+        str(output),
+        cwd=TESTS,
+    )
+    source = output.read_text(encoding="utf-8")
 
     assert "// External dependency: yarn add meshcall@^0.1.0" in source
     assert "export interface GreetingRequest" in source
@@ -87,7 +95,9 @@ def test_renders_typescript_client_from_python_contract() -> None:
     assert '"test.v1.GreetingService"' in source
 
 
-def test_generators_preserve_expanded_service_signatures(tmp_path) -> None:
+def test_generators_preserve_expanded_service_signatures(
+    meshcall_cli, tmp_path
+) -> None:
     contract = get_service_contract(ExpandedService)
     target = tmp_path / "expanded.meshcall.json"
     target.write_text(render_contract((contract,)), encoding="utf-8")
@@ -95,8 +105,19 @@ def test_generators_preserve_expanded_service_signatures(tmp_path) -> None:
     assert loaded.methods[0].parameters == ("left", "right")
     assert loaded.version == contract.version
 
-    python_source = render_portable_python_client(contract)
-    typescript_source = render_typescript_client(contract)
+    # Both languages, generated from the contract document rather than Python.
+    py, ts = tmp_path / "expanded.py", tmp_path / "expanded.ts"
+    meshcall_cli("generate", str(target), "--single-file", "--output", str(py))
+    meshcall_cli(
+        "generate",
+        str(target),
+        "--language",
+        "typescript",
+        "--single-file",
+        "--output",
+        str(ts),
+    )
+    python_source, typescript_source = py.read_text(), ts.read_text()
 
     compile(python_source, "generated_expanded_client.py", "exec")
     assert "class ExpandedServiceAddRequest(BaseModel):" in python_source
@@ -112,8 +133,21 @@ def test_generators_preserve_expanded_service_signatures(tmp_path) -> None:
     assert "left: left" in typescript_source
 
 
-def test_typescript_generator_preserves_one_way_streaming_shapes() -> None:
-    source = render_typescript_client(get_service_contract(OneWayStreamService))
+def test_typescript_generator_preserves_one_way_streaming_shapes(
+    meshcall_cli, tmp_path
+) -> None:
+    output = tmp_path / "oneway.ts"
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen:OneWayStreamService",
+        "--language",
+        "typescript",
+        "--single-file",
+        "--output",
+        str(output),
+        cwd=TESTS,
+    )
+    source = output.read_text(encoding="utf-8")
 
     assert "type MeshCallServerStream" in source
     assert "public download(" in source
@@ -129,29 +163,24 @@ def test_typescript_generator_preserves_one_way_streaming_shapes() -> None:
     )
 
 
-def test_portable_contract_round_trip_and_python_generation(tmp_path) -> None:
-    contract = get_service_contract(GreetingService)
-    target = tmp_path / "contract.json"
-    target.write_text(render_contract((contract,)), encoding="utf-8")
-
-    loaded = load_contract(target)
-    source = render_portable_python_client(loaded.services[0])
-
-    compile(source, "generated_portable_client.py", "exec")
-    assert "uv add 'meshcall>=0.1.0' 'pydantic>=2.11'" in source
-    assert "class GreetingRequest(BaseModel):" in source
-    assert "tags: list[str] | None = None" in source
-    assert "class GreetingResult(BaseModel):" in source
-    assert "class GreetingServiceClient(ClientBase):" in source
-    assert "async def greet(" in source
-
-
-def test_default_generators_write_complete_packages(tmp_path) -> None:
-    contract = get_service_contract(GreetingService)
-    python_root = write_python_client_package(contract, tmp_path / "python-client")
-    typescript_root = write_typescript_client_package(
-        contract,
-        tmp_path / "typescript-client",
+def test_default_generators_write_complete_packages(meshcall_cli, tmp_path) -> None:
+    python_root = tmp_path / "python-client"
+    typescript_root = tmp_path / "typescript-client"
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen:GreetingService",
+        "--output",
+        str(python_root),
+        cwd=TESTS,
+    )
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen:GreetingService",
+        "--language",
+        "typescript",
+        "--output",
+        str(typescript_root),
+        cwd=TESTS,
     )
 
     python_module = python_root / "src" / "meshcall_test_v1_greetingservice_client"
@@ -161,6 +190,9 @@ def test_default_generators_write_complete_packages(tmp_path) -> None:
     assert (python_module / "client.py").is_file()
     assert (python_module / "py.typed").is_file()
     assert "[tool.uv]" in (python_root / "pyproject.toml").read_text(encoding="utf-8")
+    source = (python_module / "models.py").read_text(encoding="utf-8")
+    assert "class GreetingRequest(BaseModel):" in source
+    assert "tags: list[str] | None = None" in source
 
     assert (typescript_root / "package.json").is_file()
     assert (typescript_root / "tsconfig.json").is_file()
@@ -174,10 +206,16 @@ def test_default_generators_write_complete_packages(tmp_path) -> None:
     assert package_json["exports"]["."]["types"] == "./dist/index.d.ts"
 
 
-def test_python_package_generation_preserves_all_stream_shapes(tmp_path) -> None:
-    package_root = write_python_client_package(
-        get_service_contract(TestService),
-        tmp_path / "python-streaming-client",
+def test_python_package_generation_preserves_all_stream_shapes(
+    meshcall_cli, tmp_path
+) -> None:
+    package_root = tmp_path / "python-streaming-client"
+    meshcall_cli(
+        "generate",
+        "test_contract:TestService",
+        "--output",
+        str(package_root),
+        cwd=TESTS,
     )
     module_root = package_root / "src" / "meshcall_test_v1_testservice_client"
     source = (module_root / "client.py").read_text(encoding="utf-8")

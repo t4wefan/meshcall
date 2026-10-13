@@ -1,0 +1,302 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "demo.v1.ShowcaseService",
+      "version": "1",
+      "source_module": "showcase_demo.service",
+      "source_qualname": "ShowcaseService",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "Stateful service using the recommended MeshCall Python API.",
+      "targeted": false,
+      "methods": [
+        {
+          "name": "greet",
+          "stream": "unary",
+          "request": {
+            "module": "showcase_demo.service",
+            "qualname": "ShowcaseServiceGreetRequest",
+            "schema": {
+              "properties": {
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "repeat": {
+                  "default": 1,
+                  "title": "Repeat",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "title": "ShowcaseServiceGreetRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "name",
+            "repeat"
+          ],
+          "response": {
+            "module": "showcase_demo.service",
+            "qualname": "GreetingResult",
+            "schema": {
+              "properties": {
+                "message": {
+                  "title": "Message",
+                  "type": "string"
+                },
+                "repeat": {
+                  "title": "Repeat",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "message",
+                "repeat"
+              ],
+              "title": "GreetingResult",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Parameters are the request: ``name`` and ``repeat`` are its fields.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "welcome",
+          "stream": "unary",
+          "request": {
+            "module": "showcase_demo.service",
+            "qualname": "ShowcaseServiceWelcomeRequest",
+            "schema": {
+              "$defs": {
+                "WelcomeRequest": {
+                  "properties": {
+                    "name": {
+                      "title": "Name",
+                      "type": "string"
+                    },
+                    "tags": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "title": "Tags",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "tags"
+                  ],
+                  "title": "WelcomeRequest",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "profile": {
+                  "$ref": "#/$defs/WelcomeRequest"
+                }
+              },
+              "required": [
+                "profile"
+              ],
+              "title": "ShowcaseServiceWelcomeRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "profile"
+          ],
+          "response": {
+            "module": "showcase_demo.service",
+            "qualname": "WelcomeResult",
+            "schema": {
+              "properties": {
+                "message": {
+                  "title": "Message",
+                  "type": "string"
+                },
+                "tags": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Tags",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "message",
+                "tags"
+              ],
+              "title": "WelcomeResult",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "A model-typed parameter is just one field of the request.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "count",
+          "stream": "server_stream",
+          "request": {
+            "module": "showcase_demo.service",
+            "qualname": "ShowcaseServiceCountRequest",
+            "schema": {
+              "properties": {
+                "start": {
+                  "title": "Start",
+                  "type": "integer"
+                },
+                "stop": {
+                  "title": "Stop",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "stop"
+              ],
+              "title": "ShowcaseServiceCountRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "start",
+            "stop"
+          ],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "showcase_demo.service",
+            "qualname": "CountItem",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "CountItem",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Server stream: the client receives typed items asynchronously.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "sum_values",
+          "stream": "client_stream",
+          "request": {
+            "module": "showcase_demo.service",
+            "qualname": "ShowcaseServiceSumValuesRequest",
+            "schema": {
+              "properties": {
+                "offset": {
+                  "title": "Offset",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "offset"
+              ],
+              "title": "ShowcaseServiceSumValuesRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "offset"
+          ],
+          "response": {
+            "module": "showcase_demo.service",
+            "qualname": "TotalResult",
+            "schema": {
+              "properties": {
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "title": "TotalResult",
+              "type": "object"
+            }
+          },
+          "input_item": {
+            "module": "showcase_demo.service",
+            "qualname": "NumberItem",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "NumberItem",
+              "type": "object"
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Client stream: the service consumes a typed inbound stream.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

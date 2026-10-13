@@ -1,0 +1,343 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.TestService",
+      "version": "1",
+      "source_module": "test_contract",
+      "source_qualname": "TestService",
+      "balance": {
+        "kind": "least_inflight",
+        "key": null
+      },
+      "description": null,
+      "targeted": false,
+      "methods": [
+        {
+          "name": "unary",
+          "stream": "unary",
+          "request": {
+            "module": "test_contract",
+            "qualname": "TestServiceUnaryRequest",
+            "schema": {
+              "$defs": {
+                "Request": {
+                  "properties": {
+                    "value": {
+                      "title": "Value",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "title": "Request",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "request": {
+                  "$ref": "#/$defs/Request"
+                }
+              },
+              "required": [
+                "request"
+              ],
+              "title": "TestServiceUnaryRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "request"
+          ],
+          "response": {
+            "module": "test_contract",
+            "qualname": "Result",
+            "schema": {
+              "properties": {
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "title": "Result",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "least_inflight",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "download",
+          "stream": "server_stream",
+          "request": {
+            "module": "test_contract",
+            "qualname": "TestServiceDownloadRequest",
+            "schema": {
+              "$defs": {
+                "Request": {
+                  "properties": {
+                    "value": {
+                      "title": "Value",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "title": "Request",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "request": {
+                  "$ref": "#/$defs/Request"
+                }
+              },
+              "required": [
+                "request"
+              ],
+              "title": "TestServiceDownloadRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "request"
+          ],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "test_contract",
+            "qualname": "Item",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "Item",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "upload",
+          "stream": "client_stream",
+          "request": {
+            "module": "test_contract",
+            "qualname": "TestServiceUploadRequest",
+            "schema": {
+              "$defs": {
+                "Request": {
+                  "properties": {
+                    "value": {
+                      "title": "Value",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "title": "Request",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "request": {
+                  "$ref": "#/$defs/Request"
+                }
+              },
+              "required": [
+                "request"
+              ],
+              "title": "TestServiceUploadRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "request"
+          ],
+          "response": {
+            "module": "test_contract",
+            "qualname": "Result",
+            "schema": {
+              "properties": {
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "title": "Result",
+              "type": "object"
+            }
+          },
+          "input_item": {
+            "module": "test_contract",
+            "qualname": "Item",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "Item",
+              "type": "object"
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "least_inflight",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "duplex",
+          "stream": "duplex",
+          "request": {
+            "module": "test_contract",
+            "qualname": "TestServiceDuplexRequest",
+            "schema": {
+              "$defs": {
+                "Request": {
+                  "properties": {
+                    "value": {
+                      "title": "Value",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "title": "Request",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "request": {
+                  "$ref": "#/$defs/Request"
+                }
+              },
+              "required": [
+                "request"
+              ],
+              "title": "TestServiceDuplexRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "request"
+          ],
+          "response": {
+            "module": "test_contract",
+            "qualname": "Result",
+            "schema": {
+              "properties": {
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "title": "Result",
+              "type": "object"
+            }
+          },
+          "input_item": {
+            "module": "test_contract",
+            "qualname": "Item",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "Item",
+              "type": "object"
+            }
+          },
+          "output_item": {
+            "module": "test_contract",
+            "qualname": "Item",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "Item",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "least_inflight",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

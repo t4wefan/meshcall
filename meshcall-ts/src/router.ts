@@ -31,6 +31,8 @@ function executable(path: string): boolean {
 
 const RELEASE_BASE_URL = "https://github.com/t4wefan/meshcall/releases/download";
 const EXECUTABLE = process.platform === "win32" ? "meshcall-router.exe" : "meshcall-router";
+/** The CLI ships in the same release archive and is installed next to the Router. */
+const CLI_EXECUTABLE = process.platform === "win32" ? "meshcall.exe" : "meshcall";
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 /** The Router release that matches this package. */
@@ -67,20 +69,34 @@ export function findRouterBinary(configured?: string): string {
     if (!executable(path)) throw new Error("Router binary is not executable: " + path);
     return path;
   }
-  const candidates = [resolve(PACKAGE_DIR, "bin", EXECUTABLE), resolve(routerCacheDir(), EXECUTABLE)];
+  return find(EXECUTABLE, "Go Router binary");
+}
+
+/** The `meshcall` CLI: next to a configured Router binary, else searched like the Router. */
+export function findCliBinary(): string {
+  const configured = process.env.MESHCALL_ROUTER_BINARY;
+  if (configured !== undefined) {
+    const sibling = resolve(dirname(resolve(configured)), CLI_EXECUTABLE);
+    if (executable(sibling)) return sibling;
+  }
+  return find(CLI_EXECUTABLE, "meshcall CLI");
+}
+
+function find(name: string, what: string): string {
+  const candidates = [resolve(PACKAGE_DIR, "bin", name), resolve(routerCacheDir(), name)];
   let root = PACKAGE_DIR;
   while (true) {
     if (existsSync(resolve(root, "meshcall-router/go.mod"))) {
-      candidates.push(resolve(root, "meshcall-router/bin", EXECUTABLE));
+      candidates.push(resolve(root, "meshcall-router/bin", name));
     }
     const parent = dirname(root);
     if (parent === root) break;
     root = parent;
   }
-  candidates.push(...(process.env.PATH ?? "").split(delimiter).filter(Boolean).map((path) => resolve(path, EXECUTABLE)));
+  candidates.push(...(process.env.PATH ?? "").split(delimiter).filter(Boolean).map((path) => resolve(path, name)));
   const found = candidates.find(executable);
   if (found !== undefined) return found;
-  throw new Error("Go Router binary not found. Run `npx meshcall-router-install`, build meshcall-router from source, or set MESHCALL_ROUTER_BINARY / binaryPath.");
+  throw new Error(what + " not found. Run `npx meshcall router install`, build meshcall-router from source, or set MESHCALL_ROUTER_BINARY.");
 }
 
 export interface InstallRouterOptions {
@@ -94,7 +110,7 @@ export async function installRouter(options: InstallRouterOptions = {}): Promise
   const version = (options.version ?? routerVersion()).replace(/^v/u, "");
   const directory = options.destination === undefined ? routerCacheDir(version) : resolve(options.destination);
   const target = resolve(directory, EXECUTABLE);
-  if (!options.force && executable(target)) return target;
+  if (!options.force && executable(target) && executable(resolve(directory, CLI_EXECUTABLE))) return target;
   const asset = platformAsset(version);
   const base = RELEASE_BASE_URL + "/v" + version;
   const checksums = Buffer.from(await fetchBytes(base + "/checksums.txt")).toString("utf8");
@@ -104,12 +120,18 @@ export async function installRouter(options: InstallRouterOptions = {}): Promise
   const archive = Buffer.from(await fetchBytes(base + "/" + asset));
   const actual = createHash("sha256").update(archive).digest("hex");
   if (actual !== expected) throw new Error("Checksum mismatch for " + asset + ": expected " + expected + ", got " + actual);
-  const binary = extractTarMember(gunzipSync(archive), EXECUTABLE);
-  if (binary === undefined) throw new Error(asset + " does not contain " + EXECUTABLE);
+  // The archive carries the Router and the `meshcall` CLI; both land side by
+  // side so the launcher can find the CLI next to the Router.
+  const tar = gunzipSync(archive);
   mkdirSync(directory, { recursive: true });
-  const staged = target + "." + process.pid + ".tmp";
-  writeFileSync(staged, binary, { mode: 0o755 });
-  renameSync(staged, target);
+  for (const name of [EXECUTABLE, CLI_EXECUTABLE]) {
+    const binary = extractTarMember(tar, name);
+    if (binary === undefined) throw new Error(asset + " does not contain " + name);
+    const destination = resolve(directory, name);
+    const staged = destination + "." + process.pid + ".tmp";
+    writeFileSync(staged, binary, { mode: 0o755 });
+    renameSync(staged, destination);
+  }
   return target;
 }
 

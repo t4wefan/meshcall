@@ -1,0 +1,74 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "example.v1.CounterService",
+      "version": "1",
+      "source_module": "quickstart_demo.service",
+      "source_qualname": "CounterService",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "The smallest complete MeshCall service: one streaming method.",
+      "targeted": false,
+      "methods": [
+        {
+          "name": "count",
+          "stream": "server_stream",
+          "request": {
+            "module": "quickstart_demo.service",
+            "qualname": "CounterServiceCountRequest",
+            "schema": {
+              "properties": {
+                "stop": {
+                  "title": "Stop",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "stop"
+              ],
+              "title": "CounterServiceCountRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "stop"
+          ],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "quickstart_demo.service",
+            "qualname": "CountItem",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "CountItem",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Stream the integers from 0 up to, but not including, ``stop``.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

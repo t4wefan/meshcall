@@ -20,8 +20,14 @@ the SHA-256 before installing:
 
 ```bash
 uv run meshcall router install      # Python
-npx meshcall-router-install         # Node
+npx meshcall router install         # Node
 ```
+
+The archive holds two binaries, `meshcall-router` and the `meshcall` CLI
+(`generate`, `export`, `router inspect`, `call`, `init`), installed side by
+side. `uv run meshcall …` and `npx meshcall …` are thin launchers that run
+the CLI (installing it on first use); they answer only `router install` and
+`router path` themselves.
 
 Launchers resolve the binary in this order: `MESHCALL_ROUTER_BINARY` or an
 explicit `binary_path` / `binaryPath`; a package-local `bin/`; the per-user

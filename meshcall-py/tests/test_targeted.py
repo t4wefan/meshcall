@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -10,12 +11,12 @@ from pydantic import BaseModel
 
 from meshcall import Balance, RpcContext, RpcServer, method, service
 from meshcall.client import ClientBase
-from meshcall.codegen_portable import render_portable_python_client
-from meshcall.codegen_typescript import render_typescript_client
 from meshcall.contract import get_service_contract
 from meshcall.diagnostics import lint_contract
 from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
 from meshcall.errors import InvalidArgumentError, UnavailableError
+
+TESTS = Path(__file__).resolve().parent
 
 
 class Empty(BaseModel):
@@ -89,16 +90,29 @@ def test_generated_instance_id_is_stable_per_driver() -> None:
     assert a.instance_id and a.instance_id != b.instance_id
 
 
-def test_contract_and_generated_clients_carry_targeting() -> None:
+def test_contract_and_generated_clients_carry_targeting(meshcall_cli, tmp_path) -> None:
     actor, plain = get_service_contract(Actor), get_service_contract(Plain)
     assert actor.targeted and not plain.targeted
-    py_actor = render_portable_python_client(actor)
-    py_plain = render_portable_python_client(plain)
+    generate = lambda spec, language, out: (
+        meshcall_cli(
+            "generate",
+            spec,
+            "--language",
+            language,
+            "--single-file",
+            "--output",
+            str(tmp_path / out),
+            cwd=TESTS,
+        ),
+        (tmp_path / out).read_text(),
+    )[1]
+    py_actor = generate("test_targeted:Actor", "python", "actor.py")
+    py_plain = generate("test_targeted:Plain", "python", "plain.py")
     assert "        instance: str,\n" in py_actor
     assert "        instance: str | None = None,\n" in py_plain
     assert "instance=instance," in py_actor
-    ts_actor = render_typescript_client(actor)
-    ts_plain = render_typescript_client(plain)
+    ts_actor = generate("test_targeted:Actor", "typescript", "actor.ts")
+    ts_plain = generate("test_targeted:Plain", "typescript", "plain.ts")
     assert "options: CallOptions & { instance: string }" in ts_actor
     assert "options?: CallOptions" in ts_plain
 

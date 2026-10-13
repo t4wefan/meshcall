@@ -24,17 +24,14 @@ from meshcall import (
     WebSocketRouter,
     get_service_contract,
 )
-from meshcall.contract_io import load_contract
+from meshcall.contract_io import write_contract
 from meshcall.drivers import (
     WebSocketClientDriver,
     WebSocketDirectServerDriver,
     WebSocketRouterServerDriver,
 )
 from meshcall.errors import ErrorCode, MeshCallError
-from meshcall.package_codegen import (
-    write_python_client_package,
-    write_typescript_client_package,
-)
+from meshcall.router_install import find_cli_binary
 
 PYTHON_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = PYTHON_PACKAGE_ROOT.parent
@@ -42,6 +39,20 @@ TYPESCRIPT_ROOT = REPOSITORY_ROOT / "meshcall-ts"
 RUNTIME_INDEX = TYPESCRIPT_ROOT / "dist" / "src" / "index.js"
 INTEROP_ROOT = Path(__file__).parent / "interop"
 RUN_INTEROP = os.environ.get("MESHCALL_RUN_INTEROP") == "1"
+
+
+def _generate(*args: str) -> None:
+    """Generate a client package with the Go CLI (built by scripts/check.sh)."""
+    env = {**os.environ, "MESHCALL_PYTHON": sys.executable}
+    completed = subprocess.run(
+        [find_cli_binary(), "generate", *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
 
 pytestmark = pytest.mark.skipif(
     not RUN_INTEROP,
@@ -75,10 +86,17 @@ async def test_python_service_with_generated_typescript_package(
     tmp_path: Path,
     routed: bool,
 ) -> None:
-    package_root = write_typescript_client_package(
-        get_service_contract(PythonInteropService),
-        tmp_path / "typescript-client",
-        runtime_version=f"file:{TYPESCRIPT_ROOT}",
+    package_root = tmp_path / "typescript-client"
+    contract_path = tmp_path / "python-interop.meshcall.json"
+    write_contract((get_service_contract(PythonInteropService),), contract_path)
+    _generate(
+        str(contract_path),
+        "--language",
+        "typescript",
+        "--runtime-version",
+        f"file:{TYPESCRIPT_ROOT}",
+        "--output",
+        str(package_root),
     )
     await _run_process("yarn", "install", cwd=package_root)
     await _run_process("yarn", "run", "build", cwd=package_root)
@@ -138,10 +156,9 @@ async def test_typescript_service_with_generated_python_package(
             raise AssertionError(await _process_failure(process))
         port = int(json.loads(ready_line)["port"])
 
-        document = load_contract(contract_path)
-        package_root = write_python_client_package(
-            document.services[0],
-            tmp_path / "python-client",
+        package_root = tmp_path / "python-client"
+        _generate(
+            str(contract_path), "--language", "python", "--output", str(package_root)
         )
         await _run_process("uv", "build", "--project", str(package_root))
         wheel_files = tuple((package_root / "dist").glob("*.whl"))
@@ -200,8 +217,8 @@ async def running_typescript(root: Path, options: dict):
 
 @contextmanager
 def generated_typescript_client(contract_path: Path, root: Path):
-    contract = load_contract(contract_path).services[0]
-    package = write_python_client_package(contract, root / "generated")
+    package = root / "generated"
+    _generate(str(contract_path), "--language", "python", "--output", str(package))
     name = "meshcall_test_v1_typescriptinteropservice_client"
     sys.path.insert(0, str(package / "src"))
     try:

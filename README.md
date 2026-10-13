@@ -63,23 +63,19 @@ DSL remain future milestones.
 ## Install
 
 ```bash
-uv add meshcall            # Python runtime and the `meshcall` CLI
+uv add meshcall            # Python runtime
 npm install meshcall       # TypeScript runtime
 ```
 
-Router mode also needs the Go Router binary. Fetch the release matching your
-SDK version into the per-user cache (verified against the release checksums):
-
-```bash
-uv run meshcall router install
-```
-
-or `npx meshcall-router-install` from a Node project. The same release ships
-the `meshcall` command: `meshcall router inspect` shows what is registered,
+There is one `meshcall` command, written in Go and released together with the
+Router. `uv run meshcall …` and `npx meshcall …` run that same binary (they
+download the release matching the SDK on first use, verified against the
+release checksums, into the per-user cache; `uv run meshcall router install`
+does it explicitly). `meshcall generate` produces typed clients for every
+language, `meshcall router inspect` shows what is registered and
 `meshcall call svc.method '{...}'` calls it — no generated code needed.
 
-If coding agents work on your project, run `meshcall init` once (also
-`uv run meshcall init` / `npx meshcall-init`): it installs the first-party
+If coding agents work on your project, run `meshcall init` once: it installs the first-party
 skill at `.claude/skills/meshcall/SKILL.md` and adds a short MeshCall section
 to `AGENTS.md`, so agents explore with `inspect`, call with `call`, read
 `violations` and write services under strict mode instead of guessing. Set
@@ -204,8 +200,10 @@ uv run meshcall generate \
   --output src/showcase_demo/generated_client.py
 ```
 
-For the normal production workflow, generate the default complete Python uv
-client package instead, still from `demo/showcase/`:
+`uv run meshcall` is the Go CLI; a `module:Class` source is exported through
+the project's Python interpreter, so run it from the project. For the normal
+production workflow, generate the default complete Python uv client package
+instead, still from `demo/showcase/`:
 
 ```bash
 uv run meshcall generate \
@@ -329,14 +327,16 @@ TypeScript).
 
 ## Portable contracts and cross-language generation
 
-Export a Python contract and generate a package in either language:
+Export a Python contract and generate a package in either language from it
+(`meshcall generate` accepts a contract document wherever it accepts a
+`module:Class`; `--service` picks one service of a multi-service document):
 
 ```bash
 uv run --project meshcall-py meshcall export \
   your_app.service:GreetingService \
   --output generated/greeting.meshcall.json
 
-uv run --project meshcall-py meshcall generate-contract \
+meshcall generate \
   generated/greeting.meshcall.json \
   --language typescript \
   --output generated/greeting-ts-client
@@ -390,7 +390,7 @@ await writeContract([service], "generated/math.meshcall.json");
 Then generate the Python uv package:
 
 ```bash
-uv run --project meshcall-py meshcall generate-contract \
+meshcall generate \
   generated/math.meshcall.json \
   --language python \
   --output generated/math-py-client

@@ -2,7 +2,8 @@
 
 Resolution order used by :class:`meshcall.router.WebSocketRouter`:
 
-1. an explicit ``binary_path`` or ``MESHCALL_ROUTER_BINARY``;
+1. an explicit ``binary_path`` or ``MESHCALL_ROUTER_BINARY`` (the ``meshcall``
+   CLI is looked for next to it);
 2. a binary installed next to this package (``meshcall/bin``);
 3. the per-user cache populated by ``meshcall router install``;
 4. ``meshcall-router/bin`` of the source checkout that contains this package
@@ -30,6 +31,8 @@ from meshcall.errors import DriverStateError
 
 RELEASE_BASE_URL = "https://github.com/t4wefan/meshcall/releases/download"
 EXECUTABLE = "meshcall-router.exe" if os.name == "nt" else "meshcall-router"
+#: The CLI ships in the same release archive and is installed next to the Router.
+CLI_EXECUTABLE = "meshcall.exe" if os.name == "nt" else "meshcall"
 
 
 def router_version() -> str:
@@ -72,24 +75,39 @@ def find_router_binary(binary_path: str | Path | None = None) -> str:
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             raise DriverStateError(f"Router binary is not executable: {candidate}")
         return str(candidate)
+    return _find(EXECUTABLE, "Go Router binary")
+
+
+def find_cli_binary() -> str:
+    """The ``meshcall`` CLI: next to a configured Router binary, else searched
+    like the Router itself."""
+    configured = os.environ.get("MESHCALL_ROUTER_BINARY")
+    if configured:
+        sibling = Path(configured).expanduser().absolute().parent / CLI_EXECUTABLE
+        if sibling.is_file() and os.access(sibling, os.X_OK):
+            return str(sibling)
+    return _find(CLI_EXECUTABLE, "meshcall CLI")
+
+
+def _find(executable: str, what: str) -> str:
     package = Path(__file__).resolve().parent
-    candidates = [package / "bin" / EXECUTABLE, cache_dir() / EXECUTABLE]
+    candidates = [package / "bin" / executable, cache_dir() / executable]
     # Development: the source checkout that contains this very file. The
     # working directory is deliberately not searched.
     candidates.extend(
-        root / "meshcall-router" / "bin" / EXECUTABLE
+        root / "meshcall-router" / "bin" / executable
         for root in package.parents
         if (root / "meshcall-router" / "go.mod").is_file()
     )
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
-    installed = shutil.which(EXECUTABLE)
+    installed = shutil.which(executable)
     if installed:
         return installed
     raise DriverStateError(
-        "Go Router binary not found. Run `meshcall router install`, build "
-        "meshcall-router from source, or set MESHCALL_ROUTER_BINARY / binary_path."
+        f"{what} not found. Run `meshcall router install`, build "
+        "meshcall-router from source, or set MESHCALL_ROUTER_BINARY."
     )
 
 
@@ -103,7 +121,7 @@ def install_router(
     version = (version or router_version()).lstrip("v")
     target_dir = Path(destination) if destination is not None else cache_dir(version)
     target = target_dir / EXECUTABLE
-    if target.is_file() and not force:
+    if target.is_file() and (target_dir / CLI_EXECUTABLE).is_file() and not force:
         return target
     asset = platform_asset(version)
     base = f"{RELEASE_BASE_URL}/v{version}"
@@ -128,24 +146,29 @@ def install_router(
     with tempfile.TemporaryDirectory(dir=target_dir) as scratch:
         archive_path = Path(scratch) / asset
         archive_path.write_bytes(archive)
+        # The archive carries the Router and the `meshcall` CLI; both land
+        # side by side so the launcher can find the CLI next to the Router.
         with tarfile.open(archive_path, "r:gz") as tar:
-            member = next(
-                (
-                    entry
-                    for entry in tar.getmembers()
-                    if Path(entry.name).name == EXECUTABLE and entry.isfile()
-                ),
-                None,
-            )
-            if member is None:
-                raise DriverStateError(f"{asset} does not contain {EXECUTABLE}")
-            extracted = tar.extractfile(member)
-            if extracted is None:
-                raise DriverStateError(f"Could not read {EXECUTABLE} from {asset}")
-            staged = Path(scratch) / EXECUTABLE
-            staged.write_bytes(extracted.read())
-        staged.chmod(staged.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        os.replace(staged, target)
+            for executable in (EXECUTABLE, CLI_EXECUTABLE):
+                member = next(
+                    (
+                        entry
+                        for entry in tar.getmembers()
+                        if Path(entry.name).name == executable and entry.isfile()
+                    ),
+                    None,
+                )
+                if member is None:
+                    raise DriverStateError(f"{asset} does not contain {executable}")
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    raise DriverStateError(f"Could not read {executable} from {asset}")
+                staged = Path(scratch) / executable
+                staged.write_bytes(extracted.read())
+                staged.chmod(
+                    staged.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                )
+                os.replace(staged, target_dir / executable)
     return target
 
 

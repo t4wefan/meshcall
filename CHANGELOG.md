@@ -10,6 +10,16 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Changed
 
+- **One CLI.** Client generation moved from the Python package into the Go
+  `meshcall` binary (`meshcall generate <contract.json | module:Class>`,
+  `meshcall export module:Class`); output is byte-identical to the previous
+  generators. The Python package no longer ships `codegen*`,
+  `package_codegen` or `meshcall generate-contract`; `uv run meshcall` and
+  `npx meshcall` are launchers that run the Go CLI (downloading the release
+  on first use). `meshcall router install` installs both binaries. The npm
+  bins `meshcall-router-install` and `meshcall-init` are replaced by
+  `npx meshcall router install` / `npx meshcall init`.
+
 - **Parameters are the request.** The "single Pydantic model parameter" style
   is gone; a model-typed parameter is one field of the generated request.
   Contract documents drop `request_style`/`request_fields` and gain

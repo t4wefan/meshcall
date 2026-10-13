@@ -1,0 +1,87 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "demo.v1.PythonGreetingService",
+      "version": "1",
+      "source_module": "py2ts_demo.service",
+      "source_qualname": "PythonGreetingService",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "A Python service consumed by the generated TypeScript client.",
+      "targeted": false,
+      "methods": [
+        {
+          "name": "greet",
+          "stream": "unary",
+          "request": {
+            "module": "py2ts_demo.service",
+            "qualname": "PythonGreetingServiceGreetRequest",
+            "schema": {
+              "properties": {
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "repeat": {
+                  "default": 1,
+                  "maximum": 5,
+                  "minimum": 1,
+                  "title": "Repeat",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "title": "PythonGreetingServiceGreetRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "name",
+            "repeat"
+          ],
+          "response": {
+            "module": "py2ts_demo.service",
+            "qualname": "GreetingResult",
+            "schema": {
+              "properties": {
+                "message": {
+                  "title": "Message",
+                  "type": "string"
+                },
+                "handled_by": {
+                  "title": "Handled By",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message",
+                "handled_by"
+              ],
+              "title": "GreetingResult",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Greet ``name`` ``repeat`` times and say which runtime answered.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

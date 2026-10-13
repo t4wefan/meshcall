@@ -28,12 +28,10 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "meshcall-router-install": "./dist/src/install-router.js",
-    "meshcall-init": "./dist/src/init.js"
+    "meshcall": "./dist/src/launcher.js"
   },
   "files": [
     "dist/src",
-    "skills",
     "README.md"
   ],
   "engines": {

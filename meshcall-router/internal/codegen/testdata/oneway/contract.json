@@ -1,0 +1,145 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.OneWayStreamService",
+      "version": "1",
+      "source_module": "test_multilang_codegen",
+      "source_qualname": "OneWayStreamService",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": null,
+      "targeted": false,
+      "methods": [
+        {
+          "name": "download",
+          "stream": "server_stream",
+          "request": {
+            "module": "test_multilang_codegen",
+            "qualname": "OneWayStreamServiceDownloadRequest",
+            "schema": {
+              "properties": {
+                "start": {
+                  "title": "Start",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start"
+              ],
+              "title": "OneWayStreamServiceDownloadRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "start"
+          ],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "test_multilang_codegen",
+            "qualname": "StreamItem",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "StreamItem",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "upload",
+          "stream": "client_stream",
+          "request": {
+            "module": "test_multilang_codegen",
+            "qualname": "OneWayStreamServiceUploadRequest",
+            "schema": {
+              "properties": {
+                "offset": {
+                  "title": "Offset",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "offset"
+              ],
+              "title": "OneWayStreamServiceUploadRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "offset"
+          ],
+          "response": {
+            "module": "test_multilang_codegen",
+            "qualname": "StreamResult",
+            "schema": {
+              "properties": {
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "title": "StreamResult",
+              "type": "object"
+            }
+          },
+          "input_item": {
+            "module": "test_multilang_codegen",
+            "qualname": "StreamItem",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "StreamItem",
+              "type": "object"
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

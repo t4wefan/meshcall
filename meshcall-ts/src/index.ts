@@ -69,11 +69,10 @@ export {
 } from "./server.js";
 
 export {
-  findRouterBinary, installRouter, routerCacheDir, routerVersion, WebSocketRouter,
+  findCliBinary, findRouterBinary, installRouter, routerCacheDir, routerVersion, WebSocketRouter,
   type InstallRouterOptions, type WebSocketRouterOptions,
 } from "./router.js";
 export {
   RouterAuthClient, ROUTER_AUTH_SERVICE, type RouterCredentials, type RouterScope,
   type RouterIdentity, type IssuedToken,
 } from "./router-auth.js";
-export { installSkill, SKILL_PATH, skillContent, type Outcome as SkillOutcome, type Report as SkillReport } from "./skill.js";

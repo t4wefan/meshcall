@@ -1,0 +1,80 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.ExpandedService",
+      "version": "1",
+      "source_module": "test_multilang_codegen",
+      "source_qualname": "ExpandedService",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": null,
+      "targeted": false,
+      "methods": [
+        {
+          "name": "add",
+          "stream": "unary",
+          "request": {
+            "module": "test_multilang_codegen",
+            "qualname": "ExpandedServiceAddRequest",
+            "schema": {
+              "properties": {
+                "left": {
+                  "title": "Left",
+                  "type": "integer"
+                },
+                "right": {
+                  "default": 1,
+                  "title": "Right",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "left"
+              ],
+              "title": "ExpandedServiceAddRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "left",
+            "right"
+          ],
+          "response": {
+            "module": "test_multilang_codegen",
+            "qualname": "ExpandedResult",
+            "schema": {
+              "properties": {
+                "total": {
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "title": "ExpandedResult",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

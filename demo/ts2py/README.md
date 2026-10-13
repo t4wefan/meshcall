@@ -28,7 +28,7 @@ the TypeScript service:
 cd ts-server
 yarn run export-contract
 cd ..
-uv run meshcall generate-contract \
+uv run meshcall generate \
   ts-server/service.meshcall.json \
   --language python \
   --package-name meshcall-demo-ts2py-client \

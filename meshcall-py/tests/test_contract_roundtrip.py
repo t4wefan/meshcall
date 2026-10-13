@@ -4,13 +4,15 @@ import sys
 import types
 from collections.abc import AsyncIterator
 from enum import IntEnum, StrEnum
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
-from meshcall import RpcInputStream, RpcServer, get_service_contract, method, service
-from meshcall.codegen import render_client
+from meshcall import RpcInputStream, RpcServer, method, service
 from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
+
+TESTS = Path(__file__).resolve().parent
 
 
 class Status(StrEnum):
@@ -61,10 +63,19 @@ class ContractRoundTrip:
 
 
 @pytest.fixture
-def generated(monkeypatch: pytest.MonkeyPatch):
+def generated(monkeypatch: pytest.MonkeyPatch, meshcall_cli, tmp_path):
     module = types.ModuleType("generated_contract_roundtrip")
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    source = render_client(get_service_contract(ContractRoundTrip))
+    output = tmp_path / "generated_client.py"
+    meshcall_cli(
+        "generate",
+        "test_contract_roundtrip:ContractRoundTrip",
+        "--single-file",
+        "--output",
+        str(output),
+        cwd=TESTS,
+    )
+    source = output.read_text(encoding="utf-8")
     # Execute our own generated client to exercise its actual runtime behavior.
     exec(compile(source, "<generated-contract-roundtrip>", "exec"), module.__dict__)  # noqa: S102
     return module

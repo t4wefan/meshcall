@@ -1,0 +1,367 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "best_practice.v1.LlmService",
+      "version": "1",
+      "source_module": "best_practice.service",
+      "source_qualname": "LlmService",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "A deterministic LLM facade with process-local session state.",
+      "targeted": false,
+      "methods": [
+        {
+          "name": "new_session",
+          "stream": "unary",
+          "request": {
+            "module": "best_practice.service",
+            "qualname": "LlmServiceNewSessionRequest",
+            "schema": {
+              "properties": {
+                "title": {
+                  "default": "New session",
+                  "title": "Title",
+                  "type": "string"
+                }
+              },
+              "title": "LlmServiceNewSessionRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "title"
+          ],
+          "response": {
+            "module": "best_practice.service",
+            "qualname": "NewSessionResponse",
+            "schema": {
+              "$defs": {
+                "SessionInfo": {
+                  "properties": {
+                    "id": {
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "message_count": {
+                      "title": "Message Count",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "message_count"
+                  ],
+                  "title": "SessionInfo",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "session": {
+                  "$ref": "#/$defs/SessionInfo"
+                }
+              },
+              "required": [
+                "session"
+              ],
+              "title": "NewSessionResponse",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Create a session and return it; each call creates a new one.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "list_sessions",
+          "stream": "unary",
+          "request": {
+            "module": "best_practice.service",
+            "qualname": "LlmServiceListSessionsRequest",
+            "schema": {
+              "properties": {},
+              "title": "LlmServiceListSessionsRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "best_practice.service",
+            "qualname": "ListSessionsResponse",
+            "schema": {
+              "$defs": {
+                "SessionInfo": {
+                  "properties": {
+                    "id": {
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "title": {
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "message_count": {
+                      "title": "Message Count",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "message_count"
+                  ],
+                  "title": "SessionInfo",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "sessions": {
+                  "items": {
+                    "$ref": "#/$defs/SessionInfo"
+                  },
+                  "title": "Sessions",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sessions"
+              ],
+              "title": "ListSessionsResponse",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "List the sessions held in this process.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "count_tokens",
+          "stream": "unary",
+          "request": {
+            "module": "best_practice.service",
+            "qualname": "LlmServiceCountTokensRequest",
+            "schema": {
+              "properties": {
+                "text": {
+                  "title": "Text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "title": "LlmServiceCountTokensRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "text"
+          ],
+          "response": {
+            "module": "best_practice.service",
+            "qualname": "TokenCountResponse",
+            "schema": {
+              "properties": {
+                "count": {
+                  "title": "Count",
+                  "type": "integer"
+                },
+                "tokenizer": {
+                  "title": "Tokenizer",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "count",
+                "tokenizer"
+              ],
+              "title": "TokenCountResponse",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Count simple lexical tokens; this deliberately is not a model tokenizer.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "assemble_prompt",
+          "stream": "client_stream",
+          "request": {
+            "module": "best_practice.service",
+            "qualname": "LlmServiceAssemblePromptRequest",
+            "schema": {
+              "properties": {},
+              "title": "LlmServiceAssemblePromptRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "best_practice.service",
+            "qualname": "PromptAssembly",
+            "schema": {
+              "properties": {
+                "text": {
+                  "title": "Text",
+                  "type": "string"
+                },
+                "chunk_count": {
+                  "title": "Chunk Count",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "text",
+                "chunk_count"
+              ],
+              "title": "PromptAssembly",
+              "type": "object"
+            }
+          },
+          "input_item": {
+            "module": "best_practice.service",
+            "qualname": "PromptChunk",
+            "schema": {
+              "properties": {
+                "text": {
+                  "title": "Text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "title": "PromptChunk",
+              "type": "object"
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Collect prompt chunks to demonstrate client-to-server backpressure.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "stream_chat",
+          "stream": "server_stream",
+          "request": {
+            "module": "best_practice.service",
+            "qualname": "LlmServiceStreamChatRequest",
+            "schema": {
+              "properties": {
+                "session_id": {
+                  "title": "Session Id",
+                  "type": "string"
+                },
+                "prompt": {
+                  "title": "Prompt",
+                  "type": "string"
+                },
+                "max_tokens": {
+                  "default": 64,
+                  "title": "Max Tokens",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "session_id",
+                "prompt"
+              ],
+              "title": "LlmServiceStreamChatRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "session_id",
+            "prompt",
+            "max_tokens"
+          ],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "best_practice.service",
+            "qualname": "ChatChunk",
+            "schema": {
+              "properties": {
+                "delta": {
+                  "title": "Delta",
+                  "type": "string"
+                },
+                "index": {
+                  "title": "Index",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "delta",
+                "index"
+              ],
+              "title": "ChatChunk",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Stream a deterministic reply for ``prompt`` into ``session_id``.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

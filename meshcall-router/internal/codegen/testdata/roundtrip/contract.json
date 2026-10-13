@@ -1,0 +1,300 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.ContractRoundTrip",
+      "version": "1",
+      "source_module": "test_contract_roundtrip",
+      "source_qualname": "ContractRoundTrip",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": null,
+      "targeted": false,
+      "methods": [
+        {
+          "name": "echo",
+          "stream": "unary",
+          "request": {
+            "module": "test_contract_roundtrip",
+            "qualname": "ContractRoundTripEchoRequest",
+            "schema": {
+              "$defs": {
+                "AliasRequest": {
+                  "properties": {
+                    "item-count": {
+                      "title": "Item-Count",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "item-count"
+                  ],
+                  "title": "AliasRequest",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "request": {
+                  "$ref": "#/$defs/AliasRequest"
+                }
+              },
+              "required": [
+                "request"
+              ],
+              "title": "ContractRoundTripEchoRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "request"
+          ],
+          "response": {
+            "module": "test_contract_roundtrip",
+            "qualname": "AliasResult",
+            "schema": {
+              "properties": {
+                "totalValue": {
+                  "title": "Totalvalue",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "totalValue"
+              ],
+              "title": "AliasResult",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "download",
+          "stream": "server_stream",
+          "request": {
+            "module": "test_contract_roundtrip",
+            "qualname": "ContractRoundTripDownloadRequest",
+            "schema": {
+              "$defs": {
+                "AliasRequest": {
+                  "properties": {
+                    "item-count": {
+                      "title": "Item-Count",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "item-count"
+                  ],
+                  "title": "AliasRequest",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "request": {
+                  "$ref": "#/$defs/AliasRequest"
+                }
+              },
+              "required": [
+                "request"
+              ],
+              "title": "ContractRoundTripDownloadRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "request"
+          ],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "test_contract_roundtrip",
+            "qualname": "AliasItem",
+            "schema": {
+              "$defs": {
+                "Priority": {
+                  "enum": [
+                    1,
+                    2
+                  ],
+                  "title": "Priority",
+                  "type": "integer"
+                },
+                "Status": {
+                  "enum": [
+                    "ready",
+                    "busy"
+                  ],
+                  "title": "Status",
+                  "type": "string"
+                }
+              },
+              "properties": {
+                "item-value": {
+                  "title": "Item-Value",
+                  "type": "integer"
+                },
+                "status": {
+                  "$ref": "#/$defs/Status"
+                },
+                "priorities": {
+                  "items": {
+                    "$ref": "#/$defs/Priority"
+                  },
+                  "title": "Priorities",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "item-value",
+                "status"
+              ],
+              "title": "AliasItem",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        },
+        {
+          "name": "upload",
+          "stream": "client_stream",
+          "request": {
+            "module": "test_contract_roundtrip",
+            "qualname": "ContractRoundTripUploadRequest",
+            "schema": {
+              "$defs": {
+                "AliasRequest": {
+                  "properties": {
+                    "item-count": {
+                      "title": "Item-Count",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "item-count"
+                  ],
+                  "title": "AliasRequest",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "request": {
+                  "$ref": "#/$defs/AliasRequest"
+                }
+              },
+              "required": [
+                "request"
+              ],
+              "title": "ContractRoundTripUploadRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "request"
+          ],
+          "response": {
+            "module": "test_contract_roundtrip",
+            "qualname": "AliasResult",
+            "schema": {
+              "properties": {
+                "totalValue": {
+                  "title": "Totalvalue",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "totalValue"
+              ],
+              "title": "AliasResult",
+              "type": "object"
+            }
+          },
+          "input_item": {
+            "module": "test_contract_roundtrip",
+            "qualname": "AliasItem",
+            "schema": {
+              "$defs": {
+                "Priority": {
+                  "enum": [
+                    1,
+                    2
+                  ],
+                  "title": "Priority",
+                  "type": "integer"
+                },
+                "Status": {
+                  "enum": [
+                    "ready",
+                    "busy"
+                  ],
+                  "title": "Status",
+                  "type": "string"
+                }
+              },
+              "properties": {
+                "item-value": {
+                  "title": "Item-Value",
+                  "type": "integer"
+                },
+                "status": {
+                  "$ref": "#/$defs/Status"
+                },
+                "priorities": {
+                  "items": {
+                    "$ref": "#/$defs/Priority"
+                  },
+                  "title": "Priorities",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "item-value",
+                "status"
+              ],
+              "title": "AliasItem",
+              "type": "object"
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

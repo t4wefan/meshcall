@@ -153,7 +153,11 @@ Generate a typed client instead of hand-writing frames:
 ```bash
 uv run meshcall generate my_app.service:Chat --output generated/chat-client            # Python package
 uv run meshcall generate my_app.service:Chat --language typescript --output generated/chat-ts
+meshcall generate service.meshcall.json --language python --output generated/client  # from a contract document
 ```
+
+`meshcall` is one Go binary; `uv run meshcall` / `npx meshcall` run it from a
+project environment (a `module:Class` source needs the project's Python).
 
 Generated methods take the same parameters as the handler plus `timeout=`,
 `idle_timeout=`, `metadata=`, `idempotency_key=`. Clients raise one class per
@@ -262,8 +266,9 @@ my_app/
 
 ## Operate
 
-- Router binary: `uv run meshcall router install` or `npx meshcall-router-install`
-  fetches the release matching the SDK; `meshcall-router --port 8765` runs it.
+- Router binary: `uv run meshcall router install` or `npx meshcall router install`
+  fetches the release matching the SDK (it also happens on first use);
+  `meshcall-router --port 8765` runs it.
 - Rolling restart: `server.stop(drain=True)` / `server.close({ drain: true })`
   leaves the pool first, so no request fails.
 - Several Routers: give services and clients the list of endpoints; no

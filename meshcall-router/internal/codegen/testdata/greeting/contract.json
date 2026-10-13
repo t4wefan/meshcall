@@ -1,0 +1,100 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.GreetingService",
+      "version": "1",
+      "source_module": "test_multilang_codegen",
+      "source_qualname": "GreetingService",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": null,
+      "targeted": false,
+      "methods": [
+        {
+          "name": "greet",
+          "stream": "unary",
+          "request": {
+            "module": "test_multilang_codegen",
+            "qualname": "GreetingServiceGreetRequest",
+            "schema": {
+              "$defs": {
+                "GreetingRequest": {
+                  "properties": {
+                    "name": {
+                      "title": "Name",
+                      "type": "string"
+                    },
+                    "tags": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "title": "Tags",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ],
+                  "title": "GreetingRequest",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "request": {
+                  "$ref": "#/$defs/GreetingRequest"
+                }
+              },
+              "required": [
+                "request"
+              ],
+              "title": "GreetingServiceGreetRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "request"
+          ],
+          "response": {
+            "module": "test_multilang_codegen",
+            "qualname": "GreetingResult",
+            "schema": {
+              "properties": {
+                "message": {
+                  "title": "Message",
+                  "type": "string"
+                },
+                "length": {
+                  "title": "Length",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "message",
+                "length"
+              ],
+              "title": "GreetingResult",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": null,
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

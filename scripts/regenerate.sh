@@ -21,6 +21,9 @@ trap 'rm -rf "$SCRATCH"' EXIT
 status=0
 export NODE_OPTIONS="${NODE_OPTIONS:-} --no-deprecation"
 
+# `uv run meshcall` is the Python launcher for the Go CLI; point it at the
+# binaries this checkout built so no release download is attempted.
+export MESHCALL_ROUTER_BINARY="$ROOT/meshcall-router/bin/meshcall-router"
 py() { (cd "$1" && shift && uv run --locked --reinstall-package meshcall "$@"); }
 
 # Python formatting is applied to generated Python so that output is stable
@@ -41,13 +44,11 @@ compare() { # compare <generated-path> <checked-in-path>
   fi
 }
 
-# --- the first-party skill, embedded by each CLI ----------------------------
-# skills/meshcall/SKILL.md is the source; `meshcall init` in Go, Python and
-# TypeScript ships a copy (no header: the frontmatter must stay on line 1).
+# --- the first-party skill, embedded by the Go CLI ---------------------------
+# skills/meshcall/SKILL.md is the source; `meshcall init` ships a copy (no
+# header: the frontmatter must stay on line 1).
 if wanted skill; then
-  for copy in meshcall-router/internal/skill/SKILL.md meshcall-py/src/meshcall/skills/meshcall/SKILL.md meshcall-ts/skills/meshcall/SKILL.md; do
-    compare skills/meshcall/SKILL.md "$copy"
-  done
+  compare skills/meshcall/SKILL.md meshcall-router/internal/skill/SKILL.md
 fi
 
 # --- single-file Python clients generated from Python services -------------
@@ -82,7 +83,7 @@ if wanted ts2py; then
 # drop it so the contract is exported with the current runtime.
 (cd demo/ts2py/ts-server && rm -rf node_modules/meshcall && yarn -s install --frozen-lockfile --check-files >/dev/null && yarn -s run export-contract >/dev/null)
 tmp="$SCRATCH/ts2py-py"
-py demo/ts2py meshcall generate-contract ts-server/service.meshcall.json --language python --package-name meshcall-demo-ts2py-client --output "$tmp"
+py demo/ts2py meshcall generate ts-server/service.meshcall.json --language python --package-name meshcall-demo-ts2py-client --output "$tmp"
 format_py "$tmp"/src/meshcall_demo_ts2py_client/*.py
 for f in client.py models.py; do compare "$tmp/src/meshcall_demo_ts2py_client/$f" "demo/ts2py/py-client/src/meshcall_demo_ts2py_client/$f"; done
 fi

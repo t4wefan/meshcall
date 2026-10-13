@@ -32,7 +32,7 @@ Changelog = "https://github.com/t4wefan/meshcall/blob/main/CHANGELOG.md"
 Issues = "https://github.com/t4wefan/meshcall/issues"
 
 [project.scripts]
-meshcall = "meshcall.cli:main"
+meshcall = "meshcall.launcher:main"
 
 [dependency-groups]
 dev = [
@@ -55,9 +55,6 @@ filterwarnings = ["ignore::meshcall.diagnostics.MeshCallWarning"]
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-# The embedded agent skill is a verbatim copy of skills/meshcall/SKILL.md;
-# reformatting its code blocks would make it drift from the source.
-extend-exclude = ["src/meshcall/skills"]
 
 [tool.pyright]
 extraPaths = [
