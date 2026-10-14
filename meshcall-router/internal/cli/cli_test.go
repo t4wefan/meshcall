@@ -79,6 +79,21 @@ func fakeInstance(t *testing.T, routerURL string) {
 	go func() {
 		totals := map[string]float64{}
 		echoes := map[string]int{} // duplex calls: output sequence so far
+		// count calls send only as much as the caller's credit allows, like a
+		// runtime: the Router drops a client whose outbox overflows.
+		type countCall struct{ n, next, credit int }
+		counts := map[string]*countCall{}
+		flush := func(id string) {
+			c := counts[id]
+			for ; c.credit > 0 && c.next < c.n; c.next, c.credit = c.next+1, c.credit-1 {
+				send(map[string]any{"kind": "stream.item", "call_id": id, "direction": "server", "sequence": c.next, "payload": map[string]any{"i": c.next}})
+			}
+			if c.next == c.n {
+				send(map[string]any{"kind": "stream.end", "call_id": id, "direction": "server"})
+				send(map[string]any{"kind": "call.result", "call_id": id, "payload": nil})
+				delete(counts, id)
+			}
+		}
 		for {
 			f := recv()
 			if f == nil {
@@ -104,18 +119,19 @@ func fakeInstance(t *testing.T, routerURL string) {
 					send(map[string]any{"kind": "call.result", "call_id": id, "payload": map[string]any{"greeting": "hello " + name, "saw": meta, "key": f["idempotency_key"]},
 						"metadata": map[string]string{"served_by": "fake"}})
 				case "count":
-					n := int(payload["n"].(float64))
-					for i := 0; i < n; i++ {
-						send(map[string]any{"kind": "stream.item", "call_id": id, "direction": "server", "sequence": i, "payload": map[string]any{"i": i}})
-					}
-					send(map[string]any{"kind": "stream.end", "call_id": id, "direction": "server"})
-					send(map[string]any{"kind": "call.result", "call_id": id, "payload": nil})
+					counts[id] = &countCall{n: int(payload["n"].(float64))}
+					flush(id)
 				case "sum":
 					send(map[string]any{"kind": "stream.window", "call_id": id, "direction": "client", "credit": 16})
 				case "echo":
 					// Little credit, so input must wait for each echo to go out.
 					echoes[id] = 0
 					send(map[string]any{"kind": "stream.window", "call_id": id, "direction": "client", "credit": 2})
+				}
+			case "stream.window":
+				if c := counts[id]; c != nil && f["direction"] == "server" {
+					c.credit += int(f["credit"].(float64))
+					flush(id)
 				}
 			case "stream.item":
 				payload, _ := f["payload"].(map[string]any)
