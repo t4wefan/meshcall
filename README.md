@@ -81,13 +81,22 @@ yarn add meshcall
 # or: npm install meshcall
 ```
 
-**Using an AI Coding Agent (Claude Code, Cursor, Antigravity, Codex)?** Run this once in your project root:
+**Using an AI Coding Agent?** Run `meshcall init` once in your project root:
 
 ```bash
-uv run meshcall init   # or: npx meshcall init
+# Default (Universal standard: .agents/skills/meshcall/SKILL.md + AGENTS.md)
+# Works out of the box with OpenAI Codex, Google Antigravity, OpenCode, Amp, etc.
+uv run meshcall init                  # or: npx meshcall init
+
+# Or target specific coding agents (comma-separated, repeatable, or --agent all):
+uv run meshcall init --agent claude   # .claude/skills/meshcall/SKILL.md + CLAUDE.md
+uv run meshcall init --agent cursor   # .cursor/rules/meshcall.mdc + AGENTS.md
+uv run meshcall init --agent copilot  # .github/skills/meshcall/SKILL.md + .github/copilot-instructions.md
+uv run meshcall init --agent windsurf # .windsurf/rules/meshcall.md + AGENTS.md
+uv run meshcall init --agent all      # Install for all supported agents at once
 ```
 
-This installs `.claude/skills/meshcall/SKILL.md` and adds a concise guide to `AGENTS.md`, teaching your AI agent to inspect live services, read structured validation violations, and write `MESHCALL_STRICT=1`-compliant services automatically.
+This teaches your AI agent to inspect live services (`meshcall router inspect`), read structured validation violations, and write `MESHCALL_STRICT=1`-compliant services automatically.
 
 ---
 
@@ -284,7 +293,7 @@ Run via `uv run meshcall …` (Python), `npx meshcall …` (Node.js), or `meshca
 
 | Command | Purpose |
 | --- | --- |
-| `meshcall init [DIR] [--force]` | Install `.claude/skills/meshcall/SKILL.md` and `AGENTS.md` instructions for AI agents |
+| `meshcall init [DIR] [--agent <target>] [--force]` | Install AI agent skill & instructions (`universal` default: `.agents/skills/` + `AGENTS.md`; or `claude`, `cursor`, `copilot`, `windsurf`, `all`) |
 | `meshcall router inspect [--router URL] [SERVICE] [--json]` | Inspect registered services, live instances, in-flight load, circuit breakers, and schemas |
 | `meshcall call [--router URL] <svc.method> '<json>' [flags]` | Call unary, server-stream, or client-stream (`--stdin`) methods with contract-aware error hints |
 | `meshcall generate <contract.json \| module:Class> --output DIR` | Generate a typed Python (`--language python`) or TypeScript (`--language typescript`) package or `--single-file` |

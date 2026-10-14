@@ -17,7 +17,8 @@ uv add meshcall
 如果项目中使用 AI 编程助手，只需安装一次官方 Agent 技能：
 
 ```bash
-uv run meshcall init
+uv run meshcall init                  # 默认生成通用标准：.agents/skills/meshcall/SKILL.md + AGENTS.md
+uv run meshcall init --agent claude   # 或定向生成：claude | cursor | copilot | windsurf | all
 ```
 
 ## 定义并运行服务

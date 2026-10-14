@@ -81,13 +81,22 @@ yarn add meshcall
 # 或: npm install meshcall
 ```
 
-**正在使用 AI 编程助手（Claude Code、Cursor、Antigravity、Codex）？** 在你的项目根目录执行一次：
+**正在使用 AI 编程助手？** 在你的项目根目录执行一次 `meshcall init`：
 
 ```bash
-uv run meshcall init   # 或: npx meshcall init
+# 默认（通用开放标准：生成 .agents/skills/meshcall/SKILL.md + AGENTS.md）
+# 原生支持 OpenAI Codex、Google Antigravity、OpenCode、Amp 等主流 Agent
+uv run meshcall init                  # 或: npx meshcall init
+
+# 或通过 --agent 定向生成对应 Agent 的专属配置（支持逗号分隔、重复传参或 all）：
+uv run meshcall init --agent claude   # 生成 .claude/skills/meshcall/SKILL.md + CLAUDE.md
+uv run meshcall init --agent cursor   # 生成 .cursor/rules/meshcall.mdc (带 MDC 头部) + AGENTS.md
+uv run meshcall init --agent copilot  # 生成 .github/skills/meshcall/SKILL.md + .github/copilot-instructions.md
+uv run meshcall init --agent windsurf # 生成 .windsurf/rules/meshcall.md + AGENTS.md
+uv run meshcall init --agent all      # 一次性生成以上所有 Agent 的技能与规则文件
 ```
 
-该命令会自动安装 `.claude/skills/meshcall/SKILL.md` 并在 `AGENTS.md` 中注入使用规范，让 AI 自动学会用 `meshcall router inspect` 探测服务、用 `meshcall call` 调试接口，并在 `MESHCALL_STRICT=1` 严格模式下编写高质量服务契约。
+该命令会让 AI 自动学会用 `meshcall router inspect` 探测运行中的服务、用 `meshcall call` 调试接口，并在 `MESHCALL_STRICT=1` 严格模式下编写高质量服务契约。
 
 ---
 
@@ -284,7 +293,7 @@ try {
 
 | 命令 | 用途 |
 | --- | --- |
-| `meshcall init [DIR] [--force]` | 安装 `.claude/skills/meshcall/SKILL.md` 与 `AGENTS.md` AI 助手规范 |
+| `meshcall init [DIR] [--agent <target>] [--force]` | 安装 AI 助手技能与规范（默认 `universal` 生成 `.agents/skills/` + `AGENTS.md`；支持 `claude`、`cursor`、`copilot`、`windsurf`、`all`） |
 | `meshcall router inspect [--router URL] [SERVICE] [--json]` | 查看 Router 中已注册的服务、在线实例、当前并发数、熔断状态与完整契约 |
 | `meshcall call [--router URL] <svc.method> '<json>' [flags]` | 从终端直接调用一元、服务端流或客户端流（`--stdin`）方法，报错时附带契约级修复建议 |
 | `meshcall generate <contract.json \| module:Class> --output DIR` | 生成 Python（`--language python`）或 TypeScript（`--language typescript`）客户端包或单文件（`--single-file`） |

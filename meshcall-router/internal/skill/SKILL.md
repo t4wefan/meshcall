@@ -276,6 +276,11 @@ my_app/
   platform package), so nothing to install; `meshcall-router --port 8765`
   runs it. `uv run meshcall router install` only matters on a platform
   without a bundled binary.
+- Agent skill installation: `meshcall init [--agent universal|claude|cursor|copilot|windsurf|all] [--force]`
+  writes `.agents/skills/meshcall/SKILL.md` and `AGENTS.md` by default, or
+  the agent-specific skill/rule files (`CLAUDE.md`, `.cursor/rules/meshcall.mdc`,
+  `.github/copilot-instructions.md`, `.windsurf/rules/meshcall.md`) when
+  `--agent` is specified.
 - Rolling restart: `server.stop(drain=True)` / `server.close({ drain: true })`
   leaves the pool first, so no request fails.
 - Several Routers: give services and clients the list of endpoints; no

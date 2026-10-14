@@ -63,7 +63,8 @@ func run(args []string) error {
 		fmt.Fprintln(os.Stderr, "    [--service NAME] [--class-name N] [--package-name N] [--package-version V]")
 		fmt.Fprintln(os.Stderr, "    [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]")
 		fmt.Fprintln(os.Stderr, "  export module:Class --output contract.json   write a Python service's portable contract")
-		fmt.Fprintln(os.Stderr, "  init [dir] [--force]           install the MeshCall skill for coding agents into a project")
+		fmt.Fprintln(os.Stderr, "  init [dir] [--agent universal|claude|cursor|copilot|windsurf|all] [--force]")
+		fmt.Fprintln(os.Stderr, "                                 install the MeshCall skill for coding agents into a project")
 		fmt.Fprintln(os.Stderr, "  version")
 	}
 	// Allow global flags before or after the subcommand.
@@ -129,19 +130,18 @@ func run(args []string) error {
 		if len(positional) > 1 {
 			dir = positional[1]
 		}
-		report, err := skill.Install(dir, callFlags.force)
+		report, err := skill.InstallForAgents(dir, callFlags.agents, callFlags.force)
 		if err != nil {
 			return err
 		}
 		if asJSON {
-			return json.NewEncoder(os.Stdout).Encode(map[string]any{
-				"skill": report.Skill, "agents_md": report.Agents, "next_steps": report.NextSteps,
-			})
+			return json.NewEncoder(os.Stdout).Encode(report)
 		}
-		fmt.Printf("%-9s %s\n", report.Skill, skill.SkillPath)
-		fmt.Printf("%-9s AGENTS.md\n", report.Agents)
-		if report.Skill == skill.Kept {
-			fmt.Println("the existing skill differs (edited, or from another version); rerun with --force to replace it")
+		for _, f := range report.Files {
+			fmt.Printf("%-9s %s\n", f.Outcome, f.Path)
+		}
+		if report.HasKept() {
+			fmt.Println("an existing skill file differs (edited, or from another version); rerun with --force to replace it")
 		}
 		for _, step := range report.NextSteps {
 			fmt.Println("- " + step)
@@ -202,6 +202,7 @@ type callFlagSet struct {
 	idleTimeout    time.Duration
 	stdinItems     bool
 	force          bool
+	agents         []string
 	instance       string
 	// generate / export
 	output, service, language, className, packageName, packageVersion string
@@ -240,6 +241,8 @@ func extractCallFlags(flags *[]string) callFlagSet {
 			out.stdinItems = true
 		case "force":
 			out.force = true
+		case "agent":
+			out.agents = append(out.agents, next())
 		case "output", "o":
 			out.output = next()
 		case "service":
@@ -271,7 +274,7 @@ func extractCallFlags(flags *[]string) callFlagSet {
 func needsValue(flag string) bool {
 	switch strings.TrimLeft(flag, "-") {
 	case "router", "auth", "token", "timeout", "metadata", "idempotency-key", "idle-timeout", "instance",
-		"output", "o", "service", "language", "class-name", "package-name", "package-version",
+		"agent", "output", "o", "service", "language", "class-name", "package-name", "package-version",
 		"runtime-import", "runtime-version", "meshcall-requirement":
 		return true
 	}

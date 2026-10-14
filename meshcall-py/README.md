@@ -23,7 +23,8 @@ the per-user cache.
 If coding agents work on your project, install the first-party agent skill once:
 
 ```bash
-uv run meshcall init
+uv run meshcall init                  # default: .agents/skills/meshcall/SKILL.md + AGENTS.md
+uv run meshcall init --agent claude   # or target: claude | cursor | copilot | windsurf | all
 ```
 
 ## Define and run a service
