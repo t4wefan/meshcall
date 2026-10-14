@@ -195,6 +195,8 @@ type CallOptions struct {
 	Items []any
 	// JSON prints machine-readable lines instead of text.
 	JSON bool
+	// HTTP calls through the Router's HTTP entry point instead of WebSocket.
+	HTTP bool
 }
 
 // CallResult is the outcome of a unary or client-stream call.
@@ -206,6 +208,9 @@ type CallResult struct {
 // Call looks the method up in the Registry, performs the call and streams
 // output to w: the result as JSON, or one JSON line per streamed item.
 func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
+	if c.HTTP {
+		return callHTTP(ctx, opts, c, w)
+	}
 	conn, err := opts.dial(ctx)
 	if err != nil {
 		return err

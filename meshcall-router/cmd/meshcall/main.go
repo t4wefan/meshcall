@@ -59,6 +59,7 @@ func run(args []string) error {
 		fmt.Fprintln(os.Stderr, "  router inspect [service]       list services, instances, health and methods")
 		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; client streams read JSON lines from stdin")
 		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D   --instance ID")
+		fmt.Fprintln(os.Stderr, "    --http  call through the Router's HTTP entry point (not for duplex)")
 		fmt.Fprintln(os.Stderr, "  generate <contract.json|module:Class> --output PATH [--language python|typescript] [--single-file]")
 		fmt.Fprintln(os.Stderr, "    [--service NAME] [--class-name N] [--package-name N] [--package-version V]")
 		fmt.Fprintln(os.Stderr, "    [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]")
@@ -175,7 +176,7 @@ func run(args []string) error {
 		call := cli.CallOptions{
 			Service: positional[1][:dot], Method: positional[1][dot+1:], Timeout: timeout, JSON: asJSON,
 			Metadata: callFlags.metadata, IdempotencyKey: callFlags.idempotencyKey, IdleTimeout: callFlags.idleTimeout,
-			Instance: callFlags.instance,
+			Instance: callFlags.instance, HTTP: callFlags.http,
 		}
 		if len(positional) > 2 {
 			if err := json.Unmarshal([]byte(positional[2]), &call.Payload); err != nil {
@@ -201,6 +202,7 @@ type callFlagSet struct {
 	idempotencyKey string
 	idleTimeout    time.Duration
 	stdinItems     bool
+	http           bool
 	force          bool
 	agents         []string
 	instance       string
@@ -239,6 +241,8 @@ func extractCallFlags(flags *[]string) callFlagSet {
 			out.idleTimeout, _ = time.ParseDuration(next())
 		case "items-from-stdin", "stdin":
 			out.stdinItems = true
+		case "http":
+			out.http = true
 		case "force":
 			out.force = true
 		case "agent":

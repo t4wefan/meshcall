@@ -10,6 +10,16 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- HTTP calls through the Router (`POST /v1/call/{service}/{method}` on the
+  same listener): unary calls and server streams (NDJSON, or SSE with
+  `Accept: text/event-stream`, plus a `MeshCall-Status` trailer), client
+  streams from an NDJSON body read only as fast as the instance grants
+  credit, duplex refused with `405`. Same accounts/tokens, permissions,
+  deadlines, balancing, dedup and targeting as WebSocket calls; headers
+  carry timeouts, idempotency keys, instance and metadata; errors map to
+  HTTP statuses; closing the request cancels the call; `GET /v1/services`
+  mirrors the Registry. `meshcall call --http`. Conformance scenarios drive
+  the Python and TypeScript fixtures over HTTP.
 - Generated Python unary methods take `idempotency_key=` (TypeScript
   methods already accept `idempotencyKey` in their options), so retry-safe
   mutating calls no longer need `ClientBase.call_*`.

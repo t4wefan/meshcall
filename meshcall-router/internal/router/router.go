@@ -316,6 +316,10 @@ func (r *Router) Close() {
 }
 
 func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
+	if strings.HasPrefix(req.URL.Path, httpPrefix) && !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
+		r.serveHTTP(w, req)
+		return
+	}
 	user, ok := r.config.Auth.authenticate(w, req)
 	if !ok {
 		return

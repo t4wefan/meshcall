@@ -123,9 +123,19 @@ func LoadAuth(path string) (*Auth, error) {
 	return auth, nil
 }
 
-func (a *Auth) authenticate(w http.ResponseWriter, r *http.Request) (*User, bool) {
+// authFailure says why a request was not authenticated; challenge asks the
+// caller to send Basic credentials.
+type authFailure struct {
+	status    int
+	message   string
+	challenge bool
+}
+
+// check authenticates an HTTP request (a WebSocket upgrade or an HTTP call).
+// It never writes a response, so each entry point answers in its own format.
+func (a *Auth) check(r *http.Request) (*User, *authFailure) {
 	if a == nil {
-		return nil, true
+		return nil, nil
 	}
 	if scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
 		digest := sha256.Sum256([]byte(token))
@@ -135,24 +145,20 @@ func (a *Auth) authenticate(w http.ResponseWriter, r *http.Request) (*User, bool
 		valid := user != nil && time.Now().Before(user.expires)
 		a.mu.Unlock()
 		if valid {
-			return user, true
+			return user, nil
 		}
-		http.Error(w, "authentication failed", http.StatusUnauthorized)
-		return nil, false
+		return nil, &authFailure{status: http.StatusUnauthorized, message: "authentication failed"}
 	}
 	// Bound expensive password checks. Do not retain credentials or log headers.
 	select {
 	case a.slots <- struct{}{}:
 		defer func() { <-a.slots }()
 	default:
-		http.Error(w, "authentication busy", http.StatusServiceUnavailable)
-		return nil, false
+		return nil, &authFailure{status: http.StatusServiceUnavailable, message: "authentication busy"}
 	}
 	username, password, ok := r.BasicAuth()
 	if !ok || len(password) > 1024 {
-		w.Header().Set("WWW-Authenticate", `Basic realm="meshcall", charset="UTF-8"`)
-		http.Error(w, "authentication required", http.StatusUnauthorized)
-		return nil, false
+		return nil, &authFailure{status: http.StatusUnauthorized, message: "authentication required", challenge: true}
 	}
 	u, exists := a.users[username]
 	if !exists {
@@ -160,11 +166,23 @@ func (a *Auth) authenticate(w http.ResponseWriter, r *http.Request) (*User, bool
 	}
 	key, err := pbkdf2.Key(sha256.New, password, u.salt, passwordIterations, 32)
 	if err != nil || subtle.ConstantTimeCompare(key, u.key) != 1 || !exists {
-		w.Header().Set("WWW-Authenticate", `Basic realm="meshcall", charset="UTF-8"`)
-		http.Error(w, "authentication failed", http.StatusUnauthorized)
-		return nil, false
+		return nil, &authFailure{status: http.StatusUnauthorized, message: "authentication failed", challenge: true}
 	}
-	return u, true
+	return u, nil
+}
+
+// authenticate is check for WebSocket upgrades: failures are plain-text HTTP
+// errors before the upgrade.
+func (a *Auth) authenticate(w http.ResponseWriter, r *http.Request) (*User, bool) {
+	user, failure := a.check(r)
+	if failure == nil {
+		return user, true
+	}
+	if failure.challenge {
+		w.Header().Set("WWW-Authenticate", `Basic realm="meshcall", charset="UTF-8"`)
+	}
+	http.Error(w, failure.message, failure.status)
+	return nil, false
 }
 
 func (a *Auth) valid(user *User) bool {

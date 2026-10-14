@@ -353,3 +353,93 @@ No field of a validation error may contain the rejected input value. Clients
 and tooling rely on `violations` to point at the offending parameter; the
 runtime exposes a typed subclass per code (`InvalidArgumentError`,
 `DeadlineExceededError`, …) so callers never compare code strings.
+
+## HTTP calls
+
+A Router also accepts calls as plain HTTP requests on the same listener, so
+any HTTP client can call the mesh without a MeshCall runtime. Each request
+is one call; the Router translates it into the frames above, so permission
+checks, balancing, deadlines, breakers, deduplication and targeting behave
+exactly as for a WebSocket caller. HTTP carries **unary calls and server
+streams fully, client streams with the limits below, and no duplex calls**.
+Requests whose path does not start with `/v1/` are WebSocket upgrades as
+before.
+
+### Requests
+
+`POST /v1/call/{service}/{method}`. Headers:
+
+| Header | Meaning |
+| --- | --- |
+| `Authorization` | `Basic …` (account) or `Bearer …` (token), as for WebSocket connections; the identity needs the `client` role |
+| `MeshCall-Timeout-Ms` | `timeout_ms` |
+| `MeshCall-Idle-Timeout-Ms` | `idle_timeout_ms` |
+| `Idempotency-Key` | `idempotency_key` |
+| `MeshCall-Instance` | `instance_id` (targeted call) |
+| `MeshCall-Meta-<key>` | one metadata entry; `<key>` is lower-cased |
+
+The body depends on the method's shape:
+
+- **unary, server stream**: the request payload as JSON; an empty body is
+  `{}`. The content type is not checked (`curl -d` labels JSON as a form).
+- **client stream**: `Content-Type: application/x-ndjson`; the first line is
+  the request payload, every further non-empty line one input item. The
+  Router reads a line only when the instance has granted credit for it, so
+  a slow instance slows the sender through TCP backpressure rather than
+  buffering in the Router; a client that cannot stream a request body
+  simply sends it whole. The input stream ends with the body.
+- **duplex**: refused with `405` and `method_not_found`,
+  `details.reason = "duplex_over_http"`.
+
+Closing the request (the HTTP client disconnects) sends `call.cancel`.
+
+### Responses
+
+- **unary**: `200`, `Content-Type: application/json`, the result payload.
+  Each trailer is a `MeshCall-Trailer-<key>` response header.
+- **server stream**: `200`, then one item at a time:
+  - `application/x-ndjson` (default): one JSON item per line;
+  - `text/event-stream` when the request's `Accept` asks for it:
+    `event: item` with the item as `data`, and a final `event: end`.
+
+  The end of the body is the end of the stream. Trailers are HTTP trailers
+  named `MeshCall-Trailer-<key>`. An error after the `200` was sent arrives
+  as a final line `{"error": {…}}` (NDJSON) or an `event: error` (SSE).
+  Every streamed response also ends with the HTTP trailer `MeshCall-Status`:
+  `ok`, or the error code. An NDJSON consumer whose items may themselves
+  have a top-level `error` key reads that trailer to tell the two apart; a
+  client that cannot read trailers (a browser's `fetch`) uses SSE, whose
+  event names are unambiguous.
+- **client stream**: as unary, once the instance answers.
+
+Errors before any item use the error envelope as the body,
+`{"error": {"code", "message", "retryable", "details"}}`, with this status:
+
+| Code | Status |
+| --- | --- |
+| `invalid_argument` | 400 |
+| `unauthenticated` | 401 |
+| `permission_denied` | 403 |
+| `method_not_found` | 404 (405 for `duplex_over_http`) |
+| `resource_exhausted` | 429 |
+| `cancelled` | 499 |
+| `internal`, `protocol_error`, application codes | 500 |
+| `unavailable` | 503 |
+| `deadline_exceeded` | 504 |
+
+A body that is not valid JSON / NDJSON is `400`, and a client stream sent
+without `Content-Type: application/x-ndjson` is `415`, both with
+`invalid_argument` and `details.source = "router"`.
+
+### Discovery
+
+`GET /v1/services` is `meshcall.router.v1.Registry/list` and
+`GET /v1/services/{service}` is `describe`, with the same permissions.
+
+### Deployment
+
+A reverse proxy in front of the Router must not buffer request bodies for
+client streams to stream (nginx: `proxy_request_buffering off`), and should
+not buffer responses for server streams to arrive item by item (nginx:
+`proxy_buffering off`, or the `X-Accel-Buffering: no` header the Router
+sends on streaming responses).

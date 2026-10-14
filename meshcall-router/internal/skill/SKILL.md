@@ -38,6 +38,16 @@ and the error hint lists the live instance ids). The request is one JSON
 object whose keys are the method's parameters. Do not write throwaway
 scripts to probe a service; use these two commands.
 
+Over plain HTTP (same port, no client needed): `curl
+http://HOST:8765/v1/call/svc.v1.Name/method -d '{json}'`; server streams
+come back as NDJSON (`-N`, or SSE with `Accept: text/event-stream`), client
+streams take an NDJSON body (first line the request), duplex is
+WebSocket-only. Headers: `Authorization`, `MeshCall-Timeout-Ms`,
+`Idempotency-Key`, `MeshCall-Instance`, `MeshCall-Meta-<key>`. Errors are the
+same JSON envelope with an HTTP status (400, 401, 403, 404, 429, 503, 504…);
+`GET /v1/services` lists contracts. `meshcall call … --http` does the same
+from the CLI.
+
 ## Read errors
 
 Every error has `code`, `message`, `details.source` (`client` | `router` |
