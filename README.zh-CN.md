@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python, TypeScript & Go" width="300">
+  <img src="docs/assets/wordmark.svg" alt="MeshCall" width="300">
 </p>
 
 <p align="center">
@@ -8,15 +8,30 @@
 
 # MeshCall
 
-**用写普通 Python / TypeScript 异步函数的方式，编写跨语言流式 RPC。**
+**面向 Python 与 Node.js / TypeScript 服务之间的类型化调用与流式通信框架。**
 
-MeshCall 是一个面向 **Python** 与 **TypeScript** 的异步强类型流式 RPC 框架，由独立的 **Go Router** 提供高性能路由支撑。
+MeshCall 让你用普通异步函数定义远程服务，并在跨进程或跨语言调用时自动完成参数与返回值的类型校验。
 
-- **用普通函数声明服务** —— 函数参数即请求 Schema，返回值类型即响应 Schema
-- **原生流式编程** —— 服务端流只需 `yield`，客户端流只需 `async for`
-- **告别手写 `.proto` 文件** —— 一条命令即可从 Python 服务生成强类型 TypeScript 客户端（反之亦然）
-- **将基础设施复杂度留在运行时边界之外** —— 路由转发、负载均衡、背压流控、超时控制与断线重连由 Router 与 Driver 承担，不侵入业务代码
-- **对人类与 AI 编程助手同样友好** —— 任何运行中的服务都自带契约描述，可直接从终端查看和调用
+- **普通函数即服务** —— 函数参数与返回模型自动描述请求和响应结构
+- **支持流式结果** —— 服务端用 `yield` 逐项返回数据，调用方用 `async for` 或 `for await` 边接收边处理
+- **生成强类型客户端** —— 一条命令生成 Python 或 TypeScript 客户端，无需手写 `.proto` 文件
+- **框架托管通信细节** —— 框架负责连接管理、请求转发、超时、取消和流量控制，服务函数只需处理业务
+- **支持终端直接调试** —— 随时在命令行查看已注册服务并发起调用
+
+---
+
+## 组件如何连接
+
+MeshCall 使用 **Router** 作为服务之间的中转进程：
+
+```text
+调用方 (Client)  --->  Router (ws://127.0.0.1:8765)  <---  服务端 (Server)
+```
+
+- **服务端**连接到 Router 并注册自己提供的服务与方法。
+- **调用方**连接到同一个 Router，按服务名和方法名发起调用。
+- 由于所有参与者都连接到 Router，**我们推荐无论何时都通过 Router 通信**：同一个 Python 或 Node.js 进程可以同时注册自身服务，并作为客户端调用其他服务，无需为每个服务单独分配端口或维护节点地址。
+- 安装包已附带预编译的 `meshcall-router` 与 `meshcall` CLI，无需另行安装 Go。
 
 ---
 
@@ -32,17 +47,19 @@ yarn add meshcall
 # 或: npm install meshcall
 ```
 
-预编译的 `meshcall-router` 与 `meshcall` CLI 二进制已内置在各平台安装包中，无需安装 Go 工具链。
-
 ---
 
-## 快速开始 (Quick Start)
+## 快速开始
 
-从最小的服务定义开始：
+### 1. 定义并启动服务
+
+将以下代码保存为 `server.py`：
 
 ```python
+import asyncio
 from pydantic import BaseModel
-from meshcall import method, service
+from meshcall import RpcServer, WebSocketRouter, method, service
+from meshcall.drivers import WebSocketRouterServerDriver
 
 
 class Reply(BaseModel):
@@ -57,34 +74,83 @@ class Greeter:
     async def greet(self, name: str) -> Reply:
         """向指定名字返回问候语。"""
         return Reply(message=f"hello, {name}")
+
+
+async def main() -> None:
+    async with WebSocketRouter(host="127.0.0.1", port=8765):
+        server = RpcServer(
+            services=[Greeter()],
+            driver=WebSocketRouterServerDriver(
+                "ws://127.0.0.1:8765",
+                instance_id="greeter-1",
+            ),
+        )
+        await server.start()
+        print("Router and Greeter running at ws://127.0.0.1:8765")
+        await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-这几行代码已经展示了 MeshCall 的基本形态：
+代码说明：
 
-- 用 `@service(...)` 声明一个服务
-- 用 `@method(...)` 暴露一个方法
-- 编写普通的 `async def` 函数——它的参数（`name: str`）与返回模型（`Reply`）**本身就是契约**
-- 服务定义中不包含任何网络传输或连接管理代码
+- `demo.v1.Greeter` 是调用方使用的服务名，包含版本标识（`v1`）。
+- `read_only=True` 声明这个方法不修改业务状态。
+- 函数参数（`name: str`）和返回模型（`Reply`）共同描述请求与响应的结构，本文称它为**服务契约**。
+- `WebSocketRouter` 在本机启动 Router（监听 `ws://127.0.0.1:8765`），`RpcServer` 将当前运行的服务实例（实例名 `instance_id="greeter-1"`）注册到 Router。
 
-当你继续深入时，MeshCall 的所有能力都建立在这个极简模型之上：
+在第一个终端启动服务：
 
-- **Router 优先的对等网格** —— 所有节点统一连接到 Router（`ws://...`），任何进程都能同时对外提供服务并作为客户端调用其他服务，无需管理端口与节点地址
-- **流式通信** 只是普通的异步生成器（`@method.server_stream`）或异步迭代器（`@method.client_stream`）
-- **上下文与日志**（`ctx: RpcContext`、`logger: RpcLogger`）仅在处理函数声明需要时按需注入
+```bash
+uv run python server.py
+```
 
-下面是一个可直接运行的完整示例，展示如何启动 Router、注册服务，并发起普通调用与服务端流调用：
+### 2. 生成强类型客户端
+
+保持 `server.py` 运行，打开第二个终端，根据 `server.py` 中的 `Greeter` 类（格式为 `模块名:类名`）生成单文件客户端：
+
+```bash
+uv run meshcall generate server:Greeter --single-file --output greeter_client.py
+```
+
+### 3. 发起调用
+
+在同一目录下新建 `client.py`：
 
 ```python
 import asyncio
+from meshcall.drivers import WebSocketClientDriver
+from greeter_client import GreeterClient
+
+
+async def main() -> None:
+    driver = WebSocketClientDriver("ws://127.0.0.1:8765")
+    async with GreeterClient(driver) as client:
+        reply = await client.greet("Alice")
+        print(reply.message)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+在第二个终端运行客户端：
+
+```bash
+uv run python client.py
+# 输出: hello, Alice
+```
+
+---
+
+## 增加一个流式方法
+
+如果需要分批返回多条结果，可以在 `server.py` 的 `Greeter` 中增加一个 `@method.server_stream` 生成器方法：
+
+```python
 from collections.abc import AsyncIterator
-from pydantic import BaseModel
-from meshcall import RpcServer, WebSocketRouter, method, service
-from meshcall.client import ClientBase
-from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
-
-
-class Reply(BaseModel):
-    message: str
 
 
 class Tick(BaseModel):
@@ -102,91 +168,35 @@ class Greeter:
 
     @method.server_stream(read_only=True)
     async def countdown(self, start: int) -> AsyncIterator[Tick]:
-        """从 start 倒数到 1 并流式推送。"""
+        """从 start 倒数到 1 并依次返回。"""
         for n in range(start, 0, -1):
             yield Tick(step=n)
-
-
-async def main() -> None:
-    async with WebSocketRouter(host="127.0.0.1", port=8765):
-        server = RpcServer(
-            services=[Greeter()],
-            driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="greeter-1"),
-        )
-        await server.start()
-
-        async with ClientBase(WebSocketClientDriver("ws://127.0.0.1:8765")) as client:
-            reply = await client.call_unary("demo.v1.Greeter", "greet", {"name": "Alice"})
-            print(reply)  # {'message': 'hello, Alice'}
-
-            async for tick in client.call_server_stream("demo.v1.Greeter", "countdown", {"start": 3}):
-                print(tick)  # {'step': 3}, {'step': 2}, {'step': 1}
-
-        await server.stop(drain=True)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
 ```
 
-这段代码做了什么：
+`countdown` 逐项返回结果，调用方可以边接收边处理；框架会根据消费速度自动控制发送速度。
 
-- `WebSocketRouter` 在后台启动内置的 Go Router
-- `RpcServer` 通过 `WebSocketRouterServerDriver` 将 `Greeter` 注册到 Router
-- `greet` 处理请求/响应调用，并根据 Pydantic 模型自动校验入参和返回值
-- `countdown` 通过 `yield` 流式推送 `Tick` 条目，底层自动完成信用窗口背压控制
-
----
-
-## 为什么选择 MeshCall？
-
-在构建跨语言服务（例如 Python AI 后端与 TypeScript/Node 应用协同）时，开发者往往被迫在**繁重的工具链仪式**（手写 `.proto`、配置 `protoc` 插件、维护生成桩代码）与**脆弱的手写胶水代码**（FastAPI + 原生 WebSocket，缺少类型校验、流控背压与取消传播）之间二选一。
-
-MeshCall 试图回答一个更纯粹的问题：
-
-**如何让跨语言远程调用拥有像写本地异步函数一样的开发体验，同时保留生产级 RPC 的严格语义？**
-
-1. **代码即契约** —— 直接使用 Python（Pydantic v2）或 TypeScript（JSON Schema）声明类型，框架自动提取可移植契约。
-2. **统一的流式模型** —— 一元调用（`request -> response`）、服务端流（`request -> stream`）与客户端流（`stream -> response`）共享同一套连接、错误模型与背压机制。
-3. **Router 优先的对等节点架构** —— 我们推荐**在任何场景下都通过 Go Router 进行通信**（即使是单机开发）。当所有节点都主动连接至 Router 时，任何一个节点都可以**同时承担服务端与客户端角色**——无需为每个服务分配监听端口，也无需维护其他节点的地址列表。
-4. **运行时自描述** —— 任何在线服务无需翻阅源码，即可在终端中直接查看签名与发起调试调用。
-
----
-
-## 核心能力递进
-
-### 1. 按需注入上下文与日志
-
-如果处理函数需要读取调用元数据、剩余超时时间、设置响应尾部（Trailers）或输出结构化日志，只需在函数签名中声明 `ctx: RpcContext` 或 `logger: RpcLogger`：
+重启 `server.py` 并重新执行上一步的生成命令后，即可在 `client.py` 中遍历流式结果：
 
 ```python
-from meshcall import RpcContext, RpcLogger, method
-
-@method(idempotent=True)
-async def greet(self, name: str, ctx: RpcContext, logger: RpcLogger) -> Reply:
-    """返回问候语，并在响应尾部附带处理该请求的实例 ID。"""
-    logger.info("greeting {}", name)
-    ctx.set_trailer("served_by", ctx.instance_id or "router")
-    return Reply(message=f"hello, {name}")
+async for tick in client.countdown(3):
+    print(tick.step)  # 依次输出: 3, 2, 1
 ```
 
-`ctx` 与 `logger` 由运行时在每次调用时自动注入，**不会**出现在对外的请求契约或生成的客户端参数中。
+### 从 TypeScript 调用同一个服务
 
----
-
-### 2. 跨语言强类型客户端生成
-
-无需手写字典调用 `ClientBase`，只需一条命令即可为 Python 或 TypeScript 生成自带类型提示的客户端包：
+同样可以从 `server.py` 生成 TypeScript 客户端包：
 
 ```bash
-# 从 Python 服务直接生成 TypeScript 客户端包
-uv run meshcall generate my_app.service:Greeter --language typescript --output ./greeter-ts
+# 1. 在 ./greeter-ts 目录生成 TypeScript 客户端包
+uv run meshcall generate server:Greeter --language typescript --output ./greeter-ts
 
-# 或生成单文件版 Python 客户端
-uv run meshcall generate my_app.service:Greeter --single-file --output ./greeter_client.py
+# 2. 构建生成的本地包并安装到你的 TypeScript 项目中
+yarn --cwd ./greeter-ts install
+yarn --cwd ./greeter-ts build
+yarn add ./greeter-ts
 ```
 
-在 TypeScript 中直接获得完整的 IDE 自动补全与运行时响应校验：
+随后在 TypeScript 中调用正在运行的 Python 服务：
 
 ```typescript
 import { GreeterClient } from "meshcall-demo-v1-greeter-client";
@@ -206,95 +216,59 @@ try {
 
 ---
 
-### 3. 在终端中探索与调用服务
+## 终端调试与 AI 开发支持
 
-当 Router 运行时，你可以随时通过 CLI 查看网格中的所有服务并直接发起调用：
+### 在终端查看与调用服务
+
+保持 `server.py` 运行，在另一个终端执行以下命令（默认连接 `ws://127.0.0.1:8765`，也可通过 `--router ws://host:port` 指定）：
 
 ```bash
-# 查看已注册的服务、在线实例、健康状态与方法签名
+# 查看已注册的服务、在线实例和方法签名
 uv run meshcall router inspect
 
-# 直接用 JSON 调用一元方法或流式方法
+# 使用 JSON 直接调用方法
 uv run meshcall call demo.v1.Greeter.greet '{"name": "Alice"}'
 uv run meshcall call demo.v1.Greeter.countdown '{"start": 3}'
 ```
 
-如果传错了字段名或类型，`meshcall call` 会自动结合服务端实时契约给出精确到字段路径的修复提示。
+如果传入的字段名或类型有误，`meshcall call` 会对照服务契约指出具体错误字段与期望格式。
 
----
+### 安装 AI 编程助手开发说明
 
-### 4. 原生 AI 编程助手集成
-
-如果你使用 AI 编程助手开发项目，在项目根目录执行一次 `meshcall init`：
+在项目根目录运行以下命令，可安装供 AI 编程助手参考的开发说明：
 
 ```bash
-# 默认：安装通用开放标准（.agents/skills/meshcall/SKILL.md + 更新 AGENTS.md）
-# 原生支持 OpenAI Codex、Google Antigravity、OpenCode、Amp 等主流 Agent
 uv run meshcall init
-
-# 或通过 --agent 定向生成对应工具的配置（claude | cursor | copilot | windsurf | all）：
-uv run meshcall init --agent claude
-uv run meshcall init --agent cursor
-uv run meshcall init --agent all
 ```
 
-安装后，AI 助手会自动掌握用 `meshcall router inspect` 探测在线服务、用 `meshcall call` 调试接口，并按照 MeshCall 最佳实践编写服务与客户端。
+该命令会在项目中生成 `.agents/skills/meshcall/SKILL.md` 并更新 `AGENTS.md`，帮助 AI 助手了解如何使用命令行探测服务、编写服务契约和生成客户端。如需为特定工具生成配置文件（`--agent claude|cursor|copilot|windsurf|all`），请参阅[快速上手与实战指南](docs/zh-CN/guide.md)。
 
 ---
 
-### 5. 为什么推荐始终使用 Router：单节点同时作为服务端与客户端
+## 运行仓库示例项目
 
-由于预编译的 `meshcall-router` 二进制已经内置在 SDK 中，我们推荐**无论单机还是分布式场景，始终通过 Router 进行通信**。
-
-当所有节点都连接到同一个 Router（如 `ws://127.0.0.1:8765`）时：
-
-- **免除端口与地址管理** —— 各个业务节点无需自己监听端口，也不用关心其他服务部署在哪里
-- **节点天然双向对等** —— 同一个 Python 或 TypeScript 节点既能通过 `RpcServer` 向 Router 注册自身服务，又能同时作为客户端调用网格中的任何其他服务（例如在 A 服务的处理函数内部直接调用 B 服务）
-- **全局可观测与可调试** —— 随时可以使用 `meshcall router inspect` 和 `meshcall call` 观测和调试整个系统
-
-```python
-# 同一个节点同时承担 OrderService 服务端，并作为客户端调用 InventoryService
-inventory = InventoryClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
-server = RpcServer(
-    services=[OrderService(inventory_client=inventory)],
-    driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="order-1"),
-)
-await server.start()
-```
-
----
-
-## 可运行示例
-
-`demo/` 与 `best-practice/` 下的每个目录都是独立可运行的示例项目：
+如需运行仓库自带的示例项目，请先克隆本仓库：
 
 ```bash
-uv run --project demo/quickstart demo   # Python 最小一元与流式调用示例
-uv run --project demo/showcase demo     # Python 全特性演练
-uv run --project demo/router demo       # 负载均衡与 Router 路由特性演示
-uv run --project demo/py2ts demo        # Python 服务 -> 生成 TypeScript 客户端跨语言调用
-uv run --project demo/ts2py demo        # TypeScript 服务 -> 生成 Python 客户端跨语言调用
+git clone https://github.com/t4wefan/meshcall.git
+cd meshcall
+
+uv run --project demo/quickstart demo   # Python 基础调用与流式调用示例
+uv run --project demo/showcase demo     # Python 完整特性示例
+uv run --project demo/router demo       # 多实例路由与负载均衡示例
+uv run --project demo/py2ts demo        # Python 服务 -> TypeScript 客户端调用
+uv run --project demo/ts2py demo        # TypeScript 服务 -> Python 客户端调用
 ```
 
 ---
 
-## 进阶文档导航
+## 文档导航
 
-当你需要了解生产环境进阶特性——负载均衡策略、有状态实例定向调用（`targeted=True`）、超时与幂等重试、优雅停机（Drain）、Router 账号鉴权或底层帧协议时，请查阅以下文档：
-
-| 文档 | 内容概览 | English |
+| 使用目的 | 文档入口 | English |
 | --- | --- | --- |
-| **[快速上手与实战指南 (Cookbook)](docs/zh-CN/guide.md)** | 涵盖流式调用、负载均衡、有状态节点定向调用、超时重试、优雅停机、鉴权与拦截器的完整实战范例 | **[User Guide & Cookbook](docs/guide.md)** |
-| **[Python SDK 指南](meshcall-py/README.zh-CN.md)** | Python 包安装与核心 API 速查 | [Python SDK](meshcall-py/README.md) |
-| **[TypeScript SDK 指南](meshcall-ts/README.zh-CN.md)** | TypeScript 包安装与核心 API 速查 | [TypeScript SDK](meshcall-ts/README.md) |
-| **[Go Router 部署指南](meshcall-router/README.zh-CN.md)** | Router 启动参数、密码哈希生成与 Docker 部署 | [Go Router & CLI](meshcall-router/README.md) |
-| **[Router 架构与鉴权](docs/zh-CN/router.md)** | 路由模型、多 Router 容灾、ACL 账号配置与受限临时 Token | [Router & Auth Guide](docs/router.md) |
-| **[运行时架构设计](docs/zh-CN/architecture.md)** | 双事件循环隔离、信用窗口流控、故障边界与契约静态检查规则 | [Runtime Architecture](docs/architecture.md) |
-| **[协议规范 (`meshcall/1`)](docs/zh-CN/protocol.md)** | 逻辑帧格式、握手流程、三层超时计算与标准错误码 | [Protocol Specification](docs/protocol.md) |
-| **[贡献指南](CONTRIBUTING.zh-CN.md)** | 本地开发检查（`scripts/check.sh`）、一致性测试与发布流程 | [Contributing](CONTRIBUTING.md) |
-
----
-
-## 一句话设计哲学
-
-MeshCall 将普通强类型异步函数的极简开发体验延伸至 Python 与 TypeScript 的跨语言流式通信，并将所有分布式路由复杂度收敛于无状态的 Go Router 边界之内。
+| **学习常用开发模式**（上下文与日志、客户端流、超时与重试、负载均衡、鉴权） | **[快速上手与实战指南](docs/zh-CN/guide.md)** | **[User Guide & Cookbook](docs/guide.md)** |
+| **查阅 Python SDK 用法** | **[Python SDK 指南](meshcall-py/README.zh-CN.md)** | [Python SDK](meshcall-py/README.md) |
+| **查阅 TypeScript SDK 用法** | **[TypeScript SDK 指南](meshcall-ts/README.zh-CN.md)** | [TypeScript SDK](meshcall-ts/README.md) |
+| **部署 Router 与配置权限** | **[Go Router 部署指南](meshcall-router/README.zh-CN.md)** / **[Router 架构与鉴权](docs/zh-CN/router.md)** | [Go Router & CLI](meshcall-router/README.md) / [Router Guide](docs/router.md) |
+| **了解运行时设计与底层协议** | **[运行时架构设计](docs/zh-CN/architecture.md)** / **[协议规范](docs/zh-CN/protocol.md)** | [Runtime Architecture](docs/architecture.md) / [Protocol Spec](docs/protocol.md) |
+| **参与项目开发与测试** | **[贡献指南](CONTRIBUTING.zh-CN.md)** | [Contributing](CONTRIBUTING.md) |
