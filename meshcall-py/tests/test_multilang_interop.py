@@ -42,6 +42,12 @@ INTEROP_ROOT = Path(__file__).parent / "interop"
 RUN_INTEROP = os.environ.get("MESHCALL_RUN_INTEROP") == "1"
 
 
+def _tool(name: str) -> str:
+    """The full path of a command: on Windows yarn and npm are .cmd scripts,
+    which CreateProcess finds only by their full name."""
+    return shutil.which(name) or name
+
+
 def _generate(*args: str) -> None:
     """Generate a client package with the Go CLI (built by scripts/check.sh)."""
     env = {**os.environ, "MESHCALL_PYTHON": sys.executable}
@@ -74,7 +80,7 @@ def build_typescript_runtime() -> None:
             "`yarn --cwd meshcall-ts install --frozen-lockfile`"
         )
     subprocess.run(
-        ["yarn", "run", "build"],
+        [_tool("yarn"), "run", "build"],
         cwd=TYPESCRIPT_ROOT,
         check=True,
         capture_output=True,
@@ -142,7 +148,7 @@ async def test_typescript_service_with_generated_python_package(
 ) -> None:
     contract_path = tmp_path / "typescript-contract.json"
     process = await asyncio.create_subprocess_exec(
-        "node",
+        _tool("node"),
         str(INTEROP_ROOT / "typescript_server.mjs"),
         str(RUNTIME_INDEX),
         str(contract_path),
@@ -197,7 +203,7 @@ async def test_typescript_service_with_generated_python_package(
 async def running_typescript(root: Path, options: dict):
     contract_path = root / f"{uuid.uuid4().hex}.json"
     process = await asyncio.create_subprocess_exec(
-        "node",
+        _tool("node"),
         str(INTEROP_ROOT / "typescript_server.mjs"),
         str(RUNTIME_INDEX),
         str(contract_path),
@@ -342,7 +348,8 @@ async def _run_process(
     cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     process = await asyncio.create_subprocess_exec(
-        *command,
+        _tool(command[0]),
+        *command[1:],
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -388,7 +395,7 @@ async def _process_failure(process: asyncio.subprocess.Process) -> str:
 
 async def _auth_peer(options: dict[str, object]) -> dict[str, object]:
     process = await asyncio.create_subprocess_exec(
-        "node",
+        _tool("node"),
         str(INTEROP_ROOT / "router_auth_peer.mjs"),
         str(RUNTIME_INDEX),
         stdin=asyncio.subprocess.PIPE,
@@ -423,7 +430,7 @@ async def test_go_router_launchers_and_service_scoped_tokens_interoperate(
             port = router.bound_port
         else:
             node = await asyncio.create_subprocess_exec(
-                "node",
+                _tool("node"),
                 str(INTEROP_ROOT / "router_auth_peer.mjs"),
                 str(RUNTIME_INDEX),
                 stdin=asyncio.subprocess.PIPE,

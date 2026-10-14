@@ -29,6 +29,7 @@ class NumberResult(BaseModel):
 
 
 handler_cancelled = asyncio.Event()
+handler_started = asyncio.Event()
 
 
 @service(name="test.v1.NumberService")
@@ -44,6 +45,7 @@ class NumberService:
 
     @method()
     async def cancellable(self, value: int) -> NumberResult:
+        handler_started.set()
         try:
             await asyncio.sleep(value)
         except asyncio.CancelledError:
@@ -259,10 +261,13 @@ async def test_all_call_shapes_over_tcp_websocket() -> None:
         assert deadline_error.value.code == ErrorCode.DEADLINE_EXCEEDED
 
         handler_cancelled.clear()
+        handler_started.clear()
         cancelled_call = asyncio.create_task(
             client.cancellable(NumberRequest(value=10))
         )
-        await asyncio.sleep(0.01)
+        # Cancel once the call is running: a fixed sleep can be shorter than
+        # one tick of Windows' 15.6 ms timer.
+        await asyncio.wait_for(handler_started.wait(), timeout=5)
         cancelled_call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await cancelled_call

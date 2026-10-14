@@ -39,7 +39,10 @@ async def test_go_router_process_lifecycle_and_failed_bind_retry() -> None:
         assert router.pid != first_pid
         assert router.pid is not None
         os.kill(router.pid, signal.SIGTERM)
-        assert await asyncio.wait_for(router.wait_closed(), 5) == 0
+        # POSIX: a graceful exit. Windows has no SIGTERM: os.kill terminates
+        # the process with the signal number as its exit code.
+        expected = signal.SIGTERM if sys.platform == "win32" else 0
+        assert await asyncio.wait_for(router.wait_closed(), 5) == expected
         assert not router.is_running
     finally:
         await router.stop()
@@ -111,7 +114,9 @@ async def test_go_router_exits_when_owning_parent_is_killed() -> None:
             parent.kill()
             await parent.wait()
         if child_pid is not None:
+            # Gone already (the point of the test): ProcessLookupError on
+            # POSIX, OSError (invalid parameter) on Windows.
             try:
                 os.kill(child_pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except OSError:
                 pass
