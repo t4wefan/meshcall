@@ -3,7 +3,7 @@
 [English](./README.md) | **简体中文**
 
 基于 WebSocket 的 Python 与 TypeScript 异步强类型流式 RPC 框架。
-服务使用 Pydantic v2 模型定义契约，注册到独立 Go Router（或直接监听），并暴露一元调用（Unary）、服务端流（Server Stream）与客户端流（Client Stream）方法。
+服务使用 Pydantic v2 模型定义契约，注册到独立 Go Router，并暴露一元调用（Unary）、服务端流（Server Stream）与客户端流（Client Stream）方法。
 
 ## 安装
 
@@ -81,7 +81,7 @@ if __name__ == "__main__":
 
 在开发与 CI 阶段设置 `MESHCALL_STRICT=1`，可在导入模块时立即发现缺失的文档字符串或未标注副作用的变更方法，并给出精确的修复提示。
 
-若需无 Router 的点对点直连模式，向 `RpcServer` 传入 `WebSocketDirectServerDriver(host="127.0.0.1", port=8765)`（或 `unix_path=...`）即可。
+我们推荐在所有场景下都通过 Router 连接（`WebSocketRouterServerDriver`），这样同一个节点既能注册自身服务，也能同时作为客户端调用网格中的其他服务（`WebSocketDirectServerDriver` 仅作为早期兼容性方法保留，不推荐使用）。
 
 ## 使用 CLI 探索与调用
 

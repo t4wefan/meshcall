@@ -8,7 +8,7 @@ This guide is designed for both **human engineers** and **AI coding agents**. Ea
 
 ## Table of Contents
 
-1. [Choosing Your Topology: Direct vs. Router Mode](#1-choosing-your-topology-direct-vs-router-mode)
+1. [Router-First Architecture: Why Every Node Connects Through the Router](#1-router-first-architecture-why-every-node-connects-through-the-router)
 2. [Service Contracts & Strict Mode (`MESHCALL_STRICT=1`)](#2-service-contracts--strict-mode-meshcall_strict1)
 3. [The Three Call Shapes: Unary, Server Stream, Client Stream](#3-the-three-call-shapes-unary-server-stream-client-stream)
 4. [Generating & Using Typed Clients](#4-generating--using-typed-clients)
@@ -20,76 +20,56 @@ This guide is designed for both **human engineers** and **AI coding agents**. Ea
 
 ---
 
-## 1. Choosing Your Topology: Direct vs. Router Mode
+## 1. Router-First Architecture: Why Every Node Connects Through the Router
 
-**Benefit:** Your service definition (`@service` / `defineService`) and generated client code are **100% identical** in both modes. Only the driver/transport configuration changes.
+**Recommendation:** Always run MeshCall through the Go Router (`meshcall-router` / `WebSocketRouter`), whether you are developing on a single laptop or deploying across a cluster. Because the prebuilt Router binary is bundled directly inside the Python and TypeScript SDKs, starting a Router requires zero extra installation.
 
-| Topology | Best For | How It Connects |
-| --- | --- | --- |
-| **Direct Mode** | 1-to-1 local IPC (e.g., Electron/Node frontend talking to a local Python sidecar over a Unix socket) or single-instance services | Client connects directly to the Server's TCP port or Unix socket |
-| **Router Mode** | Multi-service meshes, horizontal scaling across N workers, rolling upgrades, sticky/targeted routing, centralized ACLs, and `meshcall router inspect` | Both Servers and Clients connect outbound to the stateless `meshcall-router` process |
+Why go through the Router in all cases?
 
-### Python: Direct vs. Router
+1. **Every node can be both a service provider and a client** — In traditional point-to-point RPC, every service must allocate and listen on its own inbound port, and callers must track every peer's address. With the Router, there is only one endpoint (`ws://127.0.0.1:8765`). Any Python or TypeScript process connects outbound to the Router, registers the `@service`s it provides, and simultaneously uses clients to call other services in the mesh.
+2. **Full CLI and AI visibility** — `meshcall router inspect` and `meshcall call` can discover and test every service in your system at any time.
+3. **Seamless scaling and fault tolerance** — Starting a second worker instance automatically load-balances traffic, enforces deadlines, and supports zero-downtime rolling drains (`drain=True`).
+
+### Python: Serving and Calling Through the Router
 
 ```python
 from meshcall import RpcServer, WebSocketRouter
-from meshcall.drivers import (
-    WebSocketClientDriver,
-    WebSocketDirectServerDriver,
-    WebSocketRouterServerDriver,
-)
+from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
 
-# --- Option A: Direct Mode (TCP or Unix Socket) ---
-server = RpcServer(
-    services=[MyService()],
-    driver=WebSocketDirectServerDriver(host="127.0.0.1", port=8765),
-    # Or local IPC: WebSocketDirectServerDriver(unix_path="/tmp/app.sock")
-)
-await server.start()
-
-# --- Option B: Router Mode ---
 # 1. Start the bundled Go Router (or run `meshcall-router --port 8765` externally)
 router = WebSocketRouter(host="127.0.0.1", port=8765)
 await router.start()
 
-# 2. Register one or more service instances with the Router
+# 2. Any node can register its own services AND create clients to call other services
+other_service_client = OtherServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
+
 server = RpcServer(
-    services=[MyService()],
+    services=[MyService(downstream=other_service_client)],
     driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="worker-1"),
 )
 await server.start()
-
-# --- Client (identical for both Direct and Router!) ---
-driver = WebSocketClientDriver("ws://127.0.0.1:8765")
 ```
 
-### TypeScript: Direct vs. Router
+### TypeScript: Serving and Calling Through the Router
 
 ```typescript
 import { MeshCallClient, MeshCallServer, WebSocketRouter } from "meshcall";
 
-// --- Option A: Direct Mode (TCP or Unix Socket) ---
-const directServer = new MeshCallServer({
-  services: [myService],
-  host: "127.0.0.1",
-  port: 8765,
-  // Or local IPC: unixPath: "/tmp/app.sock",
-});
-await directServer.start();
-
-// --- Option B: Router Mode ---
+// 1. Start the bundled Go Router (or connect to an existing one)
 const router = new WebSocketRouter({ host: "127.0.0.1", port: 8765 });
 await router.start();
 
-const routedServer = new MeshCallServer({
+// 2. Register services on this node while also calling other services through the Router
+const client = new MeshCallClient("ws://127.0.0.1:8765");
+
+const server = new MeshCallServer({
   services: [myService],
   router: { endpoint: "ws://127.0.0.1:8765", instanceId: "worker-ts-1" },
 });
-await routedServer.start();
-
-// --- Client (identical for both Direct and Router!) ---
-const client = new MeshCallClient("ws://127.0.0.1:8765");
+await server.start();
 ```
+
+> **Note on Direct Mode (`WebSocketDirectServerDriver` / `MeshCallServer({ port })`):** Point-to-point direct mode is retained only as an early evolutionary artifact and low-level compatibility fallback. It is **not recommended** for application use, as it requires manual port management, prevents symmetric peer-to-peer service/client sharing through a single mesh endpoint, and disables `meshcall router inspect`.
 
 ---
 

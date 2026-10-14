@@ -4,7 +4,7 @@
 
 **Write cross-language streaming RPC the way you write ordinary TypeScript and Python functions.**
 
-MeshCall is an asynchronous, typed streaming RPC framework for TypeScript and Python over WebSocket, supporting unary, server-streaming, and client-streaming calls over Direct WebSocket or the standalone Go Router.
+MeshCall is an asynchronous, typed streaming RPC framework for TypeScript and Python over WebSocket, supporting unary, server-streaming, and client-streaming calls routed through the standalone Go Router.
 
 ## Install
 
@@ -78,7 +78,7 @@ What happens here:
 
 - `defineType` binds a TypeScript type to a JSON Schema for runtime validation
 - `defineService` declares the service contract (`unaryMethod`, `serverStreamMethod`, or `clientStreamMethod`)
-- `MeshCallServer` registers the service with the Go Router (or listens directly when given `port: 8765` instead of `router`)
+- `MeshCallServer` registers the service with the Go Router, allowing the same node to both expose services and act as a client calling other services in the mesh
 
 ## Explore, Call, and Generate Clients with the CLI
 

@@ -8,7 +8,7 @@
 
 ## 目录
 
-1. [拓扑选型：Direct 直连模式 vs. Router 路由模式](#1-拓扑选型direct-直连模式-vs-router-路由模式)
+1. [Router 优先架构：为什么推荐始终通过 Router 通信](#1-router-优先架构为什么推荐始终通过-router-通信)
 2. [服务契约编写规范与严格模式 (`MESHCALL_STRICT=1`)](#2-服务契约编写规范与严格模式-meshcall_strict1)
 3. [三种核心调用模式：Unary、Server Stream、Client Stream](#3-三种核心调用模式unaryserver-streamclient-stream)
 4. [生成与使用跨语言强类型客户端](#4-生成与使用跨语言强类型客户端)
@@ -20,76 +20,56 @@
 
 ---
 
-## 1. 拓扑选型：Direct 直连模式 vs. Router 路由模式
+## 1. Router 优先架构：为什么推荐始终通过 Router 通信
 
-**核心优势：** 你的业务服务定义（`@service` / `defineService`）和生成的客户端调用代码在两种模式下**完全一致，零代码改动**，仅需切换底层 Driver 配置。
+**核心建议：** 无论是在单机开发还是分布式生产环境中，**我们推荐始终通过 Go Router（`meshcall-router` / `WebSocketRouter`）进行通信**。由于预编译的 Router 二进制已直接内置在 Python 与 TypeScript 安装包中，启动 Router 无需任何额外依赖。
 
-| 拓扑模式 | 最佳适用场景 | 连接方式 |
-| --- | --- | --- |
-| **Direct 直连模式** | 1 对 1 本机进程间通信（例如 Electron/Node 前端通过 Unix Socket 调用本地 Python 推理进程）或单实例简单服务 | 客户端直接连接服务端监听的 TCP 端口或 Unix Socket 文件 |
-| **Router 路由模式** | 多服务网格、多 Worker 水平扩缩容、滚动升级、粘性会话/指定实例调用、统一账号鉴权，以及使用 `meshcall router inspect` 实时调试 | 所有服务端实例与客户端都主动向无状态的 `meshcall-router` 发起出站 WebSocket 连接 |
+为什么在所有场景下都应该使用 Router？
 
-### Python：Direct 直连 vs. Router 路由
+1. **单个节点可同时承担服务端与客户端角色** —— 在传统的点对点 RPC 中，每个服务都必须分配并监听自己的端口，调用方也必须维护所有对端节点的地址。而在 Router 模式下，全网只有一个统一入口（如 `ws://127.0.0.1:8765`）。任何一个 Python 或 TypeScript 节点只需主动连接 Router，既可以向 Router 注册自身提供的 `@service`，又可以同时作为客户端调用网格中的任何其他服务。
+2. **原生 CLI 与 AI 实时可观测** —— 只要通过 Router 运行，你和 AI 编程助手随时都可以使用 `meshcall router inspect` 查看全网服务契约，并用 `meshcall call` 直接发起调用调试。
+3. **平滑扩缩容与高可用** —— 随时拉起第二个实例即可自动获得负载均衡、健康检查、熔断保护与无损滚动停机（`drain=True`），业务代码零改动。
+
+### Python：同一节点兼具服务端与客户端
 
 ```python
 from meshcall import RpcServer, WebSocketRouter
-from meshcall.drivers import (
-    WebSocketClientDriver,
-    WebSocketDirectServerDriver,
-    WebSocketRouterServerDriver,
-)
+from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
 
-# --- 方式 A：Direct 直连模式（支持 TCP 或 Unix Socket） ---
-server = RpcServer(
-    services=[MyService()],
-    driver=WebSocketDirectServerDriver(host="127.0.0.1", port=8765),
-    # 本机高速 IPC 可用: WebSocketDirectServerDriver(unix_path="/tmp/app.sock")
-)
-await server.start()
-
-# --- 方式 B：Router 路由模式 ---
 # 1. 启动 SDK 内置的 Go Router（也可在外部独立运行 `meshcall-router --port 8765`）
 router = WebSocketRouter(host="127.0.0.1", port=8765)
 await router.start()
 
-# 2. 将一个或多个服务实例注册到 Router
+# 2. 任何节点都可以同时创建客户端调用其他服务，并通过 RpcServer 注册自身服务
+other_service_client = OtherServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
+
 server = RpcServer(
-    services=[MyService()],
+    services=[MyService(downstream=other_service_client)],
     driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="worker-1"),
 )
 await server.start()
-
-# --- 客户端（无论是连 Direct Server 还是连 Router，写法完全相同！） ---
-driver = WebSocketClientDriver("ws://127.0.0.1:8765")
 ```
 
-### TypeScript：Direct 直连 vs. Router 路由
+### TypeScript：同一节点兼具服务端与客户端
 
 ```typescript
 import { MeshCallClient, MeshCallServer, WebSocketRouter } from "meshcall";
 
-// --- 方式 A：Direct 直连模式（支持 TCP 或 Unix Socket） ---
-const directServer = new MeshCallServer({
-  services: [myService],
-  host: "127.0.0.1",
-  port: 8765,
-  // 本机高速 IPC 可用: unixPath: "/tmp/app.sock",
-});
-await directServer.start();
-
-// --- 方式 B：Router 路由模式 ---
+// 1. 启动内置的 Go Router（或连接已有的 Router）
 const router = new WebSocketRouter({ host: "127.0.0.1", port: 8765 });
 await router.start();
 
-const routedServer = new MeshCallServer({
+// 2. 该节点既可以调用其他服务，也可以向 Router 注册自身服务
+const client = new MeshCallClient("ws://127.0.0.1:8765");
+
+const server = new MeshCallServer({
   services: [myService],
   router: { endpoint: "ws://127.0.0.1:8765", instanceId: "worker-ts-1" },
 });
-await routedServer.start();
-
-// --- 客户端（Direct 与 Router 写法完全一致！） ---
-const client = new MeshCallClient("ws://127.0.0.1:8765");
+await server.start();
 ```
+
+> **关于直连模式（`WebSocketDirectServerDriver` / `MeshCallServer({ port })`）的说明：** 点对点直连模式仅作为架构早期演进的痕迹与底层兼容性方法保留，**不推荐在实际项目中使用**。直连模式需要手动管理服务端监听端口，无法让节点在统一网格中对等地兼具服务端与客户端身份，且无法使用 `meshcall router inspect` 等路由与可观测能力。
 
 ---
 

@@ -135,12 +135,15 @@ you edit so warnings fail fast with a `hint` that says exactly what to add):
   `ctx.set_trailer()`; `logger: RpcLogger` for logging. Both are injected,
   never part of the request.
 
-Run it through the Router (Python):
+Run it through the Router (always recommended—connecting through the Router
+allows a single node to simultaneously register its own services and act as a
+client calling other services in the mesh; direct mode is legacy compatibility
+only and not recommended):
 
 ```python
 from meshcall import RpcServer
 from meshcall.drivers import WebSocketRouterServerDriver
-server = RpcServer(services=[Chat], driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="chat-1"))
+server = RpcServer(services=[Chat()], driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="chat-1"))
 await server.start()
 ```
 
@@ -181,7 +184,7 @@ my_app/
 ├── src/my_app/service.py      # @service classes and their Pydantic models; no transport code
 ├── src/my_app/server.py       # RpcServer + driver + signal handling, config from env
 ├── generated/<svc>-client/    # generated client package, checked in, regenerated on contract change
-└── tests/test_service.py      # in-process server on port 0, generated client against it
+└── tests/test_service.py      # in-process Router + server on port 0, generated client against it
 ```
 
 **Designing a service**
@@ -262,13 +265,11 @@ my_app/
 
 **Testing**
 
-- Start a real `RpcServer` with `WebSocketDirectServerDriver(host="127.0.0.1",
-  port=0)` (TypeScript: `new MeshCallServer({ services, port: 0 })`) in a
-  fixture and call it through the generated client: this exercises
-  validation, streaming and error mapping, not just the handler.
+- Start a real `WebSocketRouter(host="127.0.0.1", port=0)` and register `RpcServer`
+  with `WebSocketRouterServerDriver` (TypeScript: `new MeshCallServer({ services, router: { endpoint } })`)
+  in a fixture, then call it through the generated client: this exercises
+  routing, validation, streaming and error mapping end to end.
 - Assert on error *classes* and `details`, not message text.
-- A Router is only needed in tests that cover balancing or failover;
-  `WebSocketRouter(...)` launches the real binary for that.
 
 ## Operate
 

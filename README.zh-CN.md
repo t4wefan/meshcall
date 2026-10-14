@@ -68,7 +68,7 @@ class Greeter:
 
 当你继续深入时，MeshCall 的所有能力都建立在这个极简模型之上：
 
-- **`Server` + `Driver` 负责运行时边界**（无论是点对点直连，还是接入共享的 Go Router）
+- **Router 优先的对等网格** —— 所有节点统一连接到 Router（`ws://...`），任何进程都能同时对外提供服务并作为客户端调用其他服务，无需管理端口与节点地址
 - **流式通信** 只是普通的异步生成器（`@method.server_stream`）或异步迭代器（`@method.client_stream`）
 - **上下文与日志**（`ctx: RpcContext`、`logger: RpcLogger`）仅在处理函数声明需要时按需注入
 
@@ -148,7 +148,7 @@ MeshCall 试图回答一个更纯粹的问题：
 
 1. **代码即契约** —— 直接使用 Python（Pydantic v2）或 TypeScript（JSON Schema）声明类型，框架自动提取可移植契约。
 2. **统一的流式模型** —— 一元调用（`request -> response`）、服务端流（`request -> stream`）与客户端流（`stream -> response`）共享同一套连接、错误模型与背压机制。
-3. **运行时复杂度收敛于 Router** —— 独立的 Go Router 负责服务发现、负载均衡、健康检查、熔断与超时兜底，且自身保持无状态，不会成为系统的状态单点。
+3. **Router 优先的对等节点架构** —— 我们推荐**在任何场景下都通过 Go Router 进行通信**（即使是单机开发）。当所有节点都主动连接至 Router 时，任何一个节点都可以**同时承担服务端与客户端角色**——无需为每个服务分配监听端口，也无需维护其他节点的地址列表。
 4. **运行时自描述** —— 任何在线服务无需翻阅源码，即可在终端中直接查看签名与发起调试调用。
 
 ---
@@ -166,7 +166,7 @@ from meshcall import RpcContext, RpcLogger, method
 async def greet(self, name: str, ctx: RpcContext, logger: RpcLogger) -> Reply:
     """返回问候语，并在响应尾部附带处理该请求的实例 ID。"""
     logger.info("greeting {}", name)
-    ctx.set_trailer("served_by", ctx.instance_id or "direct")
+    ctx.set_trailer("served_by", ctx.instance_id or "router")
     return Reply(message=f"hello, {name}")
 ```
 
@@ -242,16 +242,24 @@ uv run meshcall init --agent all
 
 ---
 
-### 5. 直连模式与 Router 模式无缝切换
+### 5. 为什么推荐始终使用 Router：单节点同时作为服务端与客户端
 
-当部署拓扑从单机点对点演进为多实例服务网格时，你的服务代码无需任何修改，只需替换 `driver`：
+由于预编译的 `meshcall-router` 二进制已经内置在 SDK 中，我们推荐**无论单机还是分布式场景，始终通过 Router 进行通信**。
+
+当所有节点都连接到同一个 Router（如 `ws://127.0.0.1:8765`）时：
+
+- **免除端口与地址管理** —— 各个业务节点无需自己监听端口，也不用关心其他服务部署在哪里
+- **节点天然双向对等** —— 同一个 Python 或 TypeScript 节点既能通过 `RpcServer` 向 Router 注册自身服务，又能同时作为客户端调用网格中的任何其他服务（例如在 A 服务的处理函数内部直接调用 B 服务）
+- **全局可观测与可调试** —— 随时可以使用 `meshcall router inspect` 和 `meshcall call` 观测和调试整个系统
 
 ```python
-# 点对点直连模式（客户端直接连接服务端，无需启动 Router）
-driver = WebSocketDirectServerDriver(host="127.0.0.1", port=8765)
-
-# Router 网格模式（多服务复用连接、自动负载均衡与容灾）
-driver = WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="greeter-1")
+# 同一个节点同时承担 OrderService 服务端，并作为客户端调用 InventoryService
+inventory = InventoryClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
+server = RpcServer(
+    services=[OrderService(inventory_client=inventory)],
+    driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="order-1"),
+)
+await server.start()
 ```
 
 ---

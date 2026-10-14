@@ -4,8 +4,7 @@
 
 Asynchronous, typed streaming RPC for Python and TypeScript over WebSocket.
 Services define contracts with Pydantic v2 models, register with the standalone
-Go Router (or listen directly), and expose unary, server-streaming, and
-client-streaming methods.
+Go Router, and expose unary, server-streaming, and client-streaming methods.
 
 ## Install
 
@@ -88,9 +87,10 @@ if __name__ == "__main__":
 Set `MESHCALL_STRICT=1` during development and CI so missing docstrings or
 unannotated mutating methods fail fast at import with a hint.
 
-For direct point-to-point connections without a Router, pass
-`WebSocketDirectServerDriver(host="127.0.0.1", port=8765)` (or `unix_path=...`)
-to `RpcServer`.
+We recommend always connecting through the Router (`WebSocketRouterServerDriver`),
+which allows any node to simultaneously register its own services and act as a
+client calling other services in the mesh (`WebSocketDirectServerDriver` is only
+retained for legacy compatibility and is not recommended).
 
 ## Explore and call from the CLI
 

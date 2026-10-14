@@ -4,7 +4,7 @@
 
 **用写普通 TypeScript / Python 异步函数的方式，编写跨语言流式 RPC。**
 
-MeshCall 是面向 TypeScript 与 Python 的异步强类型流式 RPC 框架，支持在直连 WebSocket 或独立 Go Router 上运行一元调用（Unary）、服务端流（Server Stream）与客户端流（Client Stream）。
+MeshCall 是面向 TypeScript 与 Python 的异步强类型流式 RPC 框架，由独立的 Go Router 提供路由支撑，支持一元调用（Unary）、服务端流（Server Stream）与客户端流（Client Stream）。
 
 ## 安装
 
@@ -78,7 +78,7 @@ await server.start();
 
 - `defineType` 将 TypeScript 类型与用于运行时校验的 JSON Schema 绑定
 - `defineService` 声明服务契约（支持 `unaryMethod`、`serverStreamMethod` 或 `clientStreamMethod`）
-- `MeshCallServer` 将服务注册到 Go Router（若传入 `port: 8765` 代替 `router`，则直接作为点对点服务端监听）
+- `MeshCallServer` 将服务注册到 Go Router，使同一个节点既能对外提供服务，也能同时作为客户端调用网格中的其他服务
 
 ## 使用 CLI 探索、调用与生成客户端
 

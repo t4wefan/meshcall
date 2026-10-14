@@ -68,9 +68,9 @@ Those few lines already show the core model of MeshCall:
 
 As you go further, MeshCall builds on top of that same minimal model:
 
-- **`Server` + `Driver` own the runtime boundary** (Direct WebSocket or shared Go Router)
-- **streaming** is just an async generator (`@method.server_stream`) or async iterator (`@method.client_stream`)
-- **context and logging** (`ctx: RpcContext`, `logger: RpcLogger`) are injected only when a handler asks for them
+- **Router-first symmetric mesh** — every node connects to the Router (`ws://...`), so any process can simultaneously expose services and call other services without port juggling
+- **Streaming is just an async generator or iterator** (`@method.server_stream`, `@method.client_stream`)
+- **Context and logging** (`ctx: RpcContext`, `logger: RpcLogger`) are injected only when a handler asks for them
 
 Here is a complete runnable example that starts a Router, registers the service, and calls both a unary method and a server stream:
 
@@ -148,7 +148,7 @@ MeshCall is built around a simpler question:
 
 1. **Code is the contract** — You write normal Python (Pydantic v2) or TypeScript (JSON Schema) definitions. MeshCall extracts a portable contract automatically.
 2. **Three streaming shapes in one model** — Unary (`request -> response`), Server Stream (`request -> stream`), and Client Stream (`stream -> response`) share the same connection, error model, and flow control.
-3. **Runtime complexity stays in the Router** — The standalone Go Router handles service discovery, load balancing, health checks, circuit breaking, and deadline enforcement without holding application state.
+3. **Router-first symmetric peers** — We recommend **always connecting through the Go Router**, even on a single machine. Because every participant connects outbound to the Router, any process can simultaneously serve its own RPCs and act as a client calling other services—without allocating per-service ports or configuring peer addresses.
 4. **Self-describing at runtime** — Any running mesh can be inspected and called from the CLI without reading source files or writing throwaway scripts.
 
 ---
@@ -166,7 +166,7 @@ from meshcall import RpcContext, RpcLogger, method
 async def greet(self, name: str, ctx: RpcContext, logger: RpcLogger) -> Reply:
     """Return a greeting and attach the serving instance ID."""
     logger.info("greeting {}", name)
-    ctx.set_trailer("served_by", ctx.instance_id or "direct")
+    ctx.set_trailer("served_by", ctx.instance_id or "router")
     return Reply(message=f"hello, {name}")
 ```
 
@@ -242,16 +242,24 @@ With the skill installed, your AI agent knows how to discover live services via 
 
 ---
 
-### 5. Direct Mode vs. Router Mode
+### 5. Why Always Use the Router: Every Node Is Both Server and Client
 
-Your service definition never changes when your deployment topology changes. Only the `driver` changes:
+Because the prebuilt `meshcall-router` binary ships inside the SDK, we recommend **always routing through the Router**—even in local development.
+
+When every node connects to `ws://127.0.0.1:8765`:
+
+- **No port management** — nodes do not need to allocate or expose their own inbound ports
+- **Bidirectional peers** — a single Python or TypeScript process can register its own `@service` with the Router **and** use a generated client to call any other service in the mesh (including inside its own RPC handlers)
+- **Live observability** — `meshcall router inspect` and `meshcall call` always have a complete view of every service in the system
 
 ```python
-# Point-to-point (1 client <-> 1 server, no Router process needed)
-driver = WebSocketDirectServerDriver(host="127.0.0.1", port=8765)
-
-# Multi-service / multi-instance mesh through the Go Router
-driver = WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="greeter-1")
+# One node simultaneously serving OrderService and calling InventoryClient via the Router
+inventory = InventoryClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
+server = RpcServer(
+    services=[OrderService(inventory_client=inventory)],
+    driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="order-1"),
+)
+await server.start()
 ```
 
 ---
