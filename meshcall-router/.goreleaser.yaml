@@ -20,9 +20,42 @@ builds:
       - linux
       - darwin
       - windows
+      - freebsd
     goarch:
       - amd64
       - arm64
+      - "386"
+      - arm
+      - riscv64
+      - ppc64le
+      - s390x
+    goarm:
+      - "7"
+    ignore:
+      - goos: darwin
+        goarch: "386"
+      - goos: darwin
+        goarch: arm
+      - goos: darwin
+        goarch: riscv64
+      - goos: darwin
+        goarch: ppc64le
+      - goos: darwin
+        goarch: s390x
+      - goos: windows
+        goarch: riscv64
+      - goos: windows
+        goarch: ppc64le
+      - goos: windows
+        goarch: s390x
+      - goos: freebsd
+        goarch: "386"
+      - goos: freebsd
+        goarch: arm
+      - goos: freebsd
+        goarch: ppc64le
+      - goos: freebsd
+        goarch: s390x
 
   - id: meshcall
     main: ./cmd/meshcall
@@ -37,14 +70,48 @@ builds:
       - linux
       - darwin
       - windows
+      - freebsd
     goarch:
       - amd64
       - arm64
+      - "386"
+      - arm
+      - riscv64
+      - ppc64le
+      - s390x
+    goarm:
+      - "7"
+    ignore:
+      - goos: darwin
+        goarch: "386"
+      - goos: darwin
+        goarch: arm
+      - goos: darwin
+        goarch: riscv64
+      - goos: darwin
+        goarch: ppc64le
+      - goos: darwin
+        goarch: s390x
+      - goos: windows
+        goarch: riscv64
+      - goos: windows
+        goarch: ppc64le
+      - goos: windows
+        goarch: s390x
+      - goos: freebsd
+        goarch: "386"
+      - goos: freebsd
+        goarch: arm
+      - goos: freebsd
+        goarch: ppc64le
+      - goos: freebsd
+        goarch: s390x
 
 archives:
   - id: default
     formats: [tar.gz]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # arm carries its variant (armv7); every other arch is Go's name.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     files:
       - README.md
       - ../LICENSE

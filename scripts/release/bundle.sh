@@ -14,19 +14,34 @@ DIST=${1:?goreleaser dist dir}
 TARGETS=${2:-python npm}
 VERSION=$(cd meshcall-py && uv version --short)
 
-wheel_tag() { # <os> <arch>
+# Wheel tags per release target. Go binaries are static, so one Linux build
+# serves glibc (manylinux) and musl (musllinux) alike: two wheels per arch.
+# PyPI has no FreeBSD tag; FreeBSD gets npm packages and the download path.
+wheel_tags() { # <os> <arch> → zero or more tags
   case "$1/$2" in
-    linux/amd64)   echo manylinux_2_17_x86_64.manylinux2014_x86_64 ;;
-    linux/arm64)   echo manylinux_2_17_aarch64.manylinux2014_aarch64 ;;
+    linux/amd64)   echo manylinux_2_17_x86_64.manylinux2014_x86_64 musllinux_1_2_x86_64 ;;
+    linux/arm64)   echo manylinux_2_17_aarch64.manylinux2014_aarch64 musllinux_1_2_aarch64 ;;
+    linux/386)     echo manylinux_2_17_i686.manylinux2014_i686 musllinux_1_2_i686 ;;
+    linux/armv7)   echo manylinux_2_17_armv7l.manylinux2014_armv7l musllinux_1_2_armv7l ;;
+    linux/riscv64) echo manylinux_2_31_riscv64 musllinux_1_2_riscv64 ;;
+    linux/ppc64le) echo manylinux_2_17_ppc64le.manylinux2014_ppc64le musllinux_1_2_ppc64le ;;
+    linux/s390x)   echo manylinux_2_17_s390x.manylinux2014_s390x musllinux_1_2_s390x ;;
     darwin/amd64)  echo macosx_11_0_x86_64 ;;
     darwin/arm64)  echo macosx_11_0_arm64 ;;
     windows/amd64) echo win_amd64 ;;
     windows/arm64) echo win_arm64 ;;
+    windows/386)   echo win32 ;;
+    freebsd/*)     ;;
     *) echo "unknown platform $1/$2" >&2; return 1 ;;
   esac
 }
-node_os() { case "$1" in linux) echo linux ;; darwin) echo darwin ;; windows) echo win32 ;; esac; }
-node_cpu() { case "$1" in amd64) echo x64 ;; arm64) echo arm64 ;; esac; }
+node_os() { case "$1" in linux) echo linux ;; darwin) echo darwin ;; windows) echo win32 ;; freebsd) echo freebsd ;; esac; }
+node_cpu() {
+  case "$1" in
+    amd64) echo x64 ;; arm64) echo arm64 ;; 386) echo ia32 ;; armv7) echo arm ;;
+    riscv64) echo riscv64 ;; ppc64le) echo ppc64 ;; s390x) echo s390x ;;
+  esac
+}
 
 SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
@@ -37,8 +52,9 @@ for archive in "$DIST"/meshcall-router_"$VERSION"_*.tar.gz; do
   dir="$SCRATCH/$os-$arch"; mkdir -p "$dir"
   tar -xzf "$archive" -C "$dir"
   if [[ " $TARGETS " == *" python "* ]]; then
-    tag=$(wheel_tag "$os" "$arch")
-    (cd meshcall-py && MESHCALL_BUNDLE_DIR="$dir" MESHCALL_WHEEL_TAG="$tag" uv build --wheel --out-dir dist)
+    for tag in $(wheel_tags "$os" "$arch"); do
+      (cd meshcall-py && MESHCALL_BUNDLE_DIR="$dir" MESHCALL_WHEEL_TAG="$tag" uv build --wheel --out-dir dist)
+    done
   fi
   if [[ " $TARGETS " == *" npm "* ]]; then
     pkg="meshcall-router-$(node_os "$os")-$(node_cpu "$arch")"

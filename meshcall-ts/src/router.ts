@@ -49,9 +49,15 @@ export function routerCacheDir(version = routerVersion()): string {
   return resolve(base, "meshcall", "router", version);
 }
 
+/** process.platform / process.arch → the release asset's segments. */
+const RELEASE_OS: Record<string, string> = { linux: "linux", darwin: "darwin", win32: "windows", freebsd: "freebsd" };
+const RELEASE_ARCH: Record<string, string> = {
+  x64: "amd64", arm64: "arm64", ia32: "386", arm: "armv7", riscv64: "riscv64", ppc64: "ppc64le", s390x: "s390x",
+};
+
 function platformAsset(version: string): string {
-  const os = ({ linux: "linux", darwin: "darwin", win32: "windows" } as Record<string, string>)[process.platform];
-  const arch = ({ x64: "amd64", arm64: "arm64" } as Record<string, string>)[process.arch];
+  const os = RELEASE_OS[process.platform];
+  const arch = RELEASE_ARCH[process.arch];
   if (os === undefined || arch === undefined) {
     throw new Error("No Router build for " + process.platform + "/" + process.arch);
   }

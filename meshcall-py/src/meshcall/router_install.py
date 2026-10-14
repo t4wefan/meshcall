@@ -54,18 +54,31 @@ def cache_dir(version: str | None = None) -> Path:
 
 def platform_asset(version: str) -> str:
     system = platform.system().lower()
-    if system not in {"linux", "darwin", "windows"}:
+    if system not in {"linux", "darwin", "windows", "freebsd"}:
         raise DriverStateError(f"No Router build for platform {system}")
     machine = platform.machine().lower()
-    arch = {
-        "x86_64": "amd64",
-        "amd64": "amd64",
-        "aarch64": "arm64",
-        "arm64": "arm64",
-    }.get(machine)
+    arch = _RELEASE_ARCH.get(machine)
     if arch is None:
         raise DriverStateError(f"No Router build for architecture {machine}")
     return f"meshcall-router_{version}_{system}_{arch}.tar.gz"
+
+
+#: platform.machine() → the architecture segment of a release asset name.
+_RELEASE_ARCH = {
+    "x86_64": "amd64",
+    "amd64": "amd64",
+    "aarch64": "arm64",
+    "arm64": "arm64",
+    "i386": "386",
+    "i686": "386",
+    "x86": "386",
+    "armv7l": "armv7",
+    "armv7": "armv7",
+    "armv8l": "armv7",  # 32-bit userland on a 64-bit core
+    "riscv64": "riscv64",
+    "ppc64le": "ppc64le",
+    "s390x": "s390x",
+}
 
 
 def find_router_binary(binary_path: str | Path | None = None) -> str:
