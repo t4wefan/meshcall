@@ -79,7 +79,7 @@ Run one command in the directory containing `service.py` to generate `greeter_cl
 uv run meshcall generate service:Greeter --single-file --output greeter_client.py
 ```
 
-Instead of passing string method names or raw dictionaries, your editor and type checker can now verify parameters and return values statically.
+Instead of passing string method names or raw dictionaries, you get full IDE autocomplete for methods and fields, along with static type checking for parameters and return values.
 
 ### 3. Start and Register the Service Through the "Router"
 
@@ -145,7 +145,7 @@ if __name__ == "__main__":
 uv run python client.py
 ```
 
-Both the parameters and return value of `client.greet` are fully typed, so missing or mismatched arguments are caught directly by your editor and type checker.
+Both the parameters and return value of `client.greet` carry full type signatures—giving you IDE autocomplete and static type checking so missing or mismatched arguments are caught right in your editor.
 
 ---
 
