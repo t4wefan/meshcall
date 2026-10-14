@@ -3,7 +3,6 @@ package conformance
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/t4wefan/meshcall/meshcall-router/internal/router"
 	"reflect"
 	"strings"
 	"time"
@@ -19,7 +18,6 @@ var scenarios = []scenario{
 	{"unary: application errors pass through", applicationError},
 	{"targeted: instance_id routes, targeted services require it", targeted},
 	{"router: unknown method is method_not_found", unknownMethod},
-	{"peering: a linked Router serves the fixture through the link", peering},
 	{"server stream: item credit is respected", serverStreamCredit},
 	{"client stream: window, items, end, result", clientStream},
 	{"timeout: server enforces timeout_ms", serverTimeout},
@@ -243,51 +241,6 @@ func unknownMethod(h *harness) error {
 	return nil
 }
 
-// peering starts a second Router linked to the harness Router. The fixture,
-// registered only on the harness Router, must be callable from a client of
-// the peer, including a targeted call through a path-qualified id.
-func peering(h *harness) error {
-	peer, err := router.Start(router.Config{
-		Peers:         []string{fmt.Sprintf("ws://127.0.0.1:%d", h.port)},
-		PeerID:        "conformance-peer",
-		IdleTimeout:   1500 * time.Millisecond,
-		DeadlineGrace: 300 * time.Millisecond,
-	})
-	if err != nil {
-		return fmt.Errorf("start peer router: %w", err)
-	}
-	defer peer.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && len(peer.Snapshot().Instances[Service]) == 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if len(peer.Snapshot().Instances[Service]) == 0 {
-		return fmt.Errorf("peer router did not learn %s over the link", Service)
-	}
-	c, err := h.clientAt(peer.Ready().Port)
-	if err != nil {
-		return err
-	}
-	defer c.close()
-	result, err := c.unary("echo", frame{"value": 19, "text": "peered"}, nil)
-	if err != nil {
-		return err
-	}
-	payload, _ := result["payload"].(map[string]any)
-	if result["kind"] != "call.result" || number(payload["value"]) != 19 || payload["text"] != "peered" {
-		return fmt.Errorf("peered echo: %v", result)
-	}
-	// Path-qualified targeting: <harness peer id>/<fixture instance>.
-	result, err = c.unary("echo", frame{"value": 1, "text": "pinned"}, frame{"instance_id": h.router.PeerID() + "/" + InstanceID})
-	if err != nil {
-		return err
-	}
-	if result["kind"] != "call.result" {
-		return fmt.Errorf("targeted call through the link: %v", result)
-	}
-	return nil
-}
-
 func serverStreamCredit(h *harness) error {
 	c, err := h.client()
 	if err != nil {
@@ -370,24 +323,10 @@ func clientStream(h *harness) error {
 			return err
 		}
 	}
-	// Credit is replenished as items are consumed while the stream is open.
-	// Wait for the first grant before half-closing: a server that sees the
-	// end before it consumed anything has nothing left to grant for, so
-	// sending the end immediately would make this check timing-dependent.
-	credits := 0
-	for credits == 0 {
-		f, err := c.receive()
-		if err != nil {
-			return err
-		}
-		if f["kind"] != "stream.window" || f["direction"] != "client" || number(f["credit"]) < 1 {
-			return fmt.Errorf("expected the server to replenish input credit, got %v", f)
-		}
-		credits += int(number(f["credit"]))
-	}
 	if err := c.send(frame{"kind": "stream.end", "call_id": id, "direction": "client"}); err != nil {
 		return err
 	}
+	credits := 0
 	for {
 		f, err := c.receive()
 		if err != nil {
@@ -400,6 +339,9 @@ func clientStream(h *harness) error {
 			total := number(f["payload"].(map[string]any)["total"])
 			if total != 25 {
 				return fmt.Errorf("sum total %v, want 25", total)
+			}
+			if credits == 0 {
+				return fmt.Errorf("server never replenished input credit")
 			}
 			return nil
 		case "call.error":

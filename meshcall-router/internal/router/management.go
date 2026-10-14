@@ -223,9 +223,6 @@ type RegistryInstance struct {
 	MaxInflight int    `json:"max_inflight,omitempty"`
 	Breaker     string `json:"breaker"`
 	Draining    bool   `json:"draining"`
-	// Peer: a router link standing in for the instances behind it.
-	Peer  bool  `json:"peer,omitempty"`
-	RttMs int64 `json:"rtt_ms,omitempty"`
 }
 
 type registryMethod struct {
@@ -326,7 +323,6 @@ func (r *Router) describeService(name string) registryService {
 		out.Instances = append(out.Instances, RegistryInstance{
 			ID: inst.instanceID, Inflight: inst.inflight, MaxInflight: inst.maxInflight,
 			Breaker: string(inst.health.state(now)), Draining: inst.draining,
-			Peer: inst.role == "router", RttMs: inst.rtt.Milliseconds(),
 		})
 	}
 	// Draining instances have left the pool but still hold the id.

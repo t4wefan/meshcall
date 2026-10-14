@@ -81,15 +81,9 @@ func decode(data []byte) (frame, error) {
 	}
 	switch f.Kind {
 	case "hello":
-		if f.Protocol != Protocol || (f.Role != "client" && f.Role != "server" && f.Role != "router") || f.PeerID == "" {
+		if f.Protocol != Protocol || (f.Role != "client" && f.Role != "server") || f.PeerID == "" {
 			return f, errors.New("invalid hello or unsupported protocol")
 		}
-	case "hello.ack":
-		if f.Protocol != Protocol || f.Connection == "" {
-			return f, errors.New("invalid hello.ack")
-		}
-	case "server.register.ack":
-		// Received over router links, where this Router is also a server.
 	case "server.register":
 		if f.InstanceID == "" || f.Services == nil || f.MaxInflight < 0 {
 			return f, errors.New("invalid registration")
@@ -165,24 +159,6 @@ func validMetadata(raw json.RawMessage) bool {
 func (f frame) bytes() []byte {
 	if f.raw != nil {
 		return f.raw
-	}
-	if f.Kind == "server.register" {
-		// services is required even when empty (a peer Router with nothing
-		// local yet); other kinds omit it.
-		services := f.Services
-		if services == nil {
-			services = []service{}
-		}
-		data, err := json.Marshal(struct {
-			Kind        string    `json:"kind"`
-			InstanceID  string    `json:"instance_id"`
-			Services    []service `json:"services"`
-			MaxInflight int       `json:"max_inflight,omitempty"`
-		}{f.Kind, f.InstanceID, services, f.MaxInflight})
-		if err != nil {
-			panic(err)
-		}
-		return data
 	}
 	if f.Kind == "ping" || f.Kind == "pong" {
 		// nonce is required even when empty; other frame kinds must omit it.

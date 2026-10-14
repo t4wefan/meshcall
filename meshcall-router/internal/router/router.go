@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -40,13 +39,6 @@ type Config struct {
 	// BreakerCooldown; then one probe call is admitted. See breaker.go.
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
-	// Peers are ws:// or wss:// URLs of Routers to link with; userinfo carries
-	// the account (`user:pass@`) or token (`:TOKEN@`) used on that Router.
-	Peers []string
-	// PeerID names this Router towards peers and in path-qualified instance
-	// ids (`peer/instance`); generated when empty. Set it in deployments so it
-	// survives restarts.
-	PeerID string
 }
 
 const (
@@ -77,11 +69,6 @@ type peer struct {
 	maxInflight int // 0 = unlimited
 	health      health
 	draining    bool
-	// peerID is the remote Router's id on a router link (its instanceID once
-	// it registered); lastSentRegistration dedupes our own advertisements.
-	peerID               string
-	lastSentRegistration []byte
-	lastDropped          []string // advertised services refused by the account, for one warning
 	// Adaptive scheduling inputs: per-method service-time estimates and the
 	// round trip to reach this instance (zero on this Router).
 	stats map[string]*methodStats
@@ -132,7 +119,6 @@ type route struct {
 
 type Router struct {
 	config       Config
-	peerID       string
 	listener     net.Listener
 	socketInfo   os.FileInfo
 	http         *http.Server
@@ -141,7 +127,6 @@ type Router struct {
 	mu           sync.Mutex
 	closed       bool
 	peers        map[*peer]struct{}
-	routerPeers  map[*peer]struct{}
 	instances    map[string]*peer
 	services     map[string]*pool
 	routes       map[string]*route
@@ -185,22 +170,6 @@ func Start(config Config) (*Router, error) {
 	if config.Port < 0 || config.Port > 65535 {
 		return nil, errors.New("port must be between 0 and 65535")
 	}
-	for _, peerURL := range config.Peers {
-		u, err := url.Parse(peerURL)
-		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
-			return nil, errors.New("peer must be a ws:// or wss:// URL")
-		}
-	}
-	peerID := config.PeerID
-	if peerID == "" {
-		random := make([]byte, 6)
-		if _, err := rand.Read(random); err != nil {
-			return nil, err
-		}
-		peerID = "router-" + hex.EncodeToString(random)
-	} else if strings.ContainsAny(peerID, "/ ") {
-		return nil, errors.New("peer id must not contain '/' or spaces")
-	}
 	var listener net.Listener
 	var err error
 	if config.UnixPath != "" {
@@ -241,8 +210,8 @@ func Start(config Config) (*Router, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Router{
-		config: config, peerID: peerID, listener: listener, socketInfo: socketInfo, ctx: ctx, cancel: cancel,
-		peers: make(map[*peer]struct{}), routerPeers: make(map[*peer]struct{}), instances: make(map[string]*peer),
+		config: config, listener: listener, socketInfo: socketInfo, ctx: ctx, cancel: cancel,
+		peers: make(map[*peer]struct{}), instances: make(map[string]*peer),
 		services: make(map[string]*pool), routes: make(map[string]*route), done: make(chan struct{}),
 		deadlineWake: make(chan struct{}, 1),
 		dedup:        make(map[string]*dedupEntry),
@@ -251,10 +220,6 @@ func Start(config Config) (*Router, error) {
 	}
 	r.wg.Add(1)
 	go r.expireLoop()
-	for _, peerURL := range config.Peers {
-		r.wg.Add(1)
-		go r.dialPeerLoop(peerURL)
-	}
 	r.ready = Ready{Kind: "router.ready", Protocol: Protocol, PID: os.Getpid(), UnixPath: config.UnixPath}
 	if tcp, ok := listener.Addr().(*net.TCPAddr); ok {
 		r.ready.Host, r.ready.Port = config.Host, tcp.Port
@@ -296,10 +261,6 @@ type InstanceHealth struct {
 	Breaker     string // closed | open | half_open
 	Failures    int
 	Draining    bool
-	// Peer marks a router link standing in for the instances behind it; RTT
-	// is the measured round trip over that link.
-	Peer bool
-	RTT  time.Duration
 }
 
 func (r *Router) Snapshot() Snapshot {
@@ -319,7 +280,6 @@ func (r *Router) Snapshot() Snapshot {
 		snapshot.Health[id] = InstanceHealth{
 			Inflight: p.inflight, MaxInflight: p.maxInflight,
 			Breaker: string(p.health.state(now)), Failures: p.health.failures, Draining: p.draining,
-			Peer: p.role == "router", RTT: p.rtt,
 		}
 	}
 	for name, pool := range r.services {
@@ -344,7 +304,6 @@ func (r *Router) Snapshot() Snapshot {
 }
 
 func (r *Router) Ready() Ready          { return r.ready }
-func (r *Router) PeerID() string        { return r.peerID }
 func (r *Router) Done() <-chan struct{} { return r.done }
 
 func (r *Router) Close() {
@@ -420,22 +379,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	p.id, p.role = hex.EncodeToString(id), f.Role
-	ack := frame{Kind: "hello.ack", Protocol: Protocol, Connection: p.id}
-	if p.role == "router" {
-		if f.PeerID == r.peerID {
-			_ = conn.Close(websocket.StatusPolicyViolation, "peer id collides with this router")
-			return
-		}
-		p.peerID = f.PeerID
-		ack.PeerID = r.peerID
-	}
-	p.send(ack)
-	if p.role == "router" {
-		r.mu.Lock()
-		r.routerPeers[p] = struct{}{}
-		r.syncPeersLocked()
-		r.mu.Unlock()
-	}
+	p.send(frame{Kind: "hello.ack", Protocol: Protocol, Connection: p.id})
 	if p.role == "server" {
 		registration, err := readFrame(handshake, conn)
 		if err != nil || registration.Kind != "server.register" || f.InstanceID == "" || f.InstanceID != registration.InstanceID {
@@ -448,15 +392,6 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	stop()
-	r.readLoop(p)
-}
-
-// readLoop serves an established connection until it fails or misbehaves.
-func (r *Router) readLoop(p *peer) {
-	conn, ctx := p.conn, p.ctx
-	if p.role == "router" {
-		go r.pingLink(p)
-	}
 	for {
 		// A peer that sends nothing for IdleTimeout is treated as gone; connecting
 		// peers keep the connection alive with protocol pings.
@@ -470,7 +405,6 @@ func (r *Router) readLoop(p *peer) {
 				p.send(callError(f.CallID, "protocol_error", "Invalid "+f.Kind+" frame", false))
 				continue
 			}
-			slog.Debug("connection closed", "role", p.role, "peer", p.peerID, "reason", err)
 			return
 		}
 		if f.Kind == "ping" {
@@ -478,30 +412,16 @@ func (r *Router) readLoop(p *peer) {
 			continue
 		}
 		if f.Kind == "pong" {
-			if p.role == "router" {
-				r.observeLinkRTT(p, f.Nonce)
-			}
 			continue
 		}
 		if f.Kind == "server.drain" {
 			// Graceful exit: leave every pool now, keep serving routed calls.
-			if p.role != "server" && p.role != "router" {
+			if p.role != "server" {
 				_ = conn.Close(websocket.StatusPolicyViolation, "frame not allowed for role")
 				return
 			}
 			r.drain(p)
 			p.send(frame{Kind: "server.drain.ack", InstanceID: p.instanceID})
-			continue
-		}
-		if (f.Kind == "server.register.ack" || f.Kind == "server.drain.ack") && p.role == "router" {
-			continue // our own registration on the peer was accepted
-		}
-		if f.Kind == "server.register" && p.role == "router" {
-			if err := r.registerLink(p, f); err != nil {
-				slog.Warn("peer registration rejected", "peer", p.peerID, "reason", err)
-				_ = conn.Close(websocket.StatusPolicyViolation, "registration rejected")
-				return
-			}
 			continue
 		}
 		if !allowedFrame(p.role, f) {
@@ -557,42 +477,22 @@ func validServiceName(name string) bool {
 	return versions == 1 && names > 0
 }
 
-// callerFrame is what the caller side of a call may send; calleeFrame what
-// the serving side may send. A router link carries both directions.
-func callerFrame(f frame) bool {
-	return f.Kind == "call.open" || f.Kind == "call.cancel" ||
-		((f.Kind == "stream.item" || f.Kind == "stream.end") && f.Direction == "client") ||
-		(f.Kind == "stream.window" && f.Direction == "server")
-}
-
-func calleeFrame(f frame) bool {
+func allowedFrame(role string, f frame) bool {
+	if role == "client" {
+		return f.Kind == "call.open" || f.Kind == "call.cancel" ||
+			((f.Kind == "stream.item" || f.Kind == "stream.end") && f.Direction == "client") ||
+			(f.Kind == "stream.window" && f.Direction == "server")
+	}
 	return f.Kind == "call.result" || f.Kind == "call.error" ||
 		((f.Kind == "stream.item" || f.Kind == "stream.end") && f.Direction == "server") ||
 		(f.Kind == "stream.window" && f.Direction == "client")
 }
 
-func allowedFrame(role string, f frame) bool {
-	switch role {
-	case "client":
-		return callerFrame(f)
-	case "server":
-		return calleeFrame(f)
-	case "router":
-		return callerFrame(f) || calleeFrame(f)
-	}
-	return false
-}
-
-// validateServices checks a registration's shape and the account's right to
-// advertise each service.
-func validateServices(services []service, user *User) error {
+func (r *Router) register(p *peer, f frame) error {
 	seen := make(map[string]bool)
-	for _, s := range services {
-		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !user.allowsRegistration(s.Name) {
+	for _, s := range f.Services {
+		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) {
 			return errors.New("duplicate, invalid, or unauthorized service")
-		}
-		if s.Contract != nil && !json.Valid(s.Contract) {
-			return errors.New("invalid service contract")
 		}
 		seen[s.Name] = true
 		methods := make(map[string]bool)
@@ -607,13 +507,15 @@ func validateServices(services []service, user *User) error {
 			methods[m.Name] = true
 		}
 	}
-	return nil
-}
-
-// compatibleWithPoolsLocked rejects a registration that redefines a method
-// or disagrees on `targeted`. Called under r.mu.
-func (r *Router) compatibleWithPoolsLocked(services []service) error {
-	for _, s := range services {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.instances[f.InstanceID] != nil {
+		return errors.New("duplicate instance_id")
+	}
+	for _, s := range f.Services {
+		if s.Contract != nil && !json.Valid(s.Contract) {
+			return errors.New("invalid service contract")
+		}
 		// Supersets are fine (rolling upgrades); the same method must mean
 		// the same thing, and targeted is a property of the whole service.
 		if pool := r.services[s.Name]; pool != nil {
@@ -627,13 +529,11 @@ func (r *Router) compatibleWithPoolsLocked(services []service) error {
 			}
 		}
 	}
-	return nil
-}
-
-// joinPoolsLocked adds a registered instance to its services' pools. Called
-// under r.mu.
-func (r *Router) joinPoolsLocked(p *peer) {
-	for _, s := range p.services {
+	p.instanceID, p.services, p.maxInflight = f.InstanceID, f.Services, f.MaxInflight
+	r.instances[p.instanceID] = p
+	// Queue the ack before exposing the instance to calls.
+	p.send(frame{Kind: "server.register.ack", InstanceID: p.instanceID})
+	for _, s := range f.Services {
 		if r.services[s.Name] == nil {
 			r.services[s.Name] = &pool{targeted: s.Targeted, methods: make(map[string]method), cursors: make(map[string]int)}
 		}
@@ -648,29 +548,6 @@ func (r *Router) joinPoolsLocked(p *peer) {
 		pool.instances = append(pool.instances, p)
 		slices.SortFunc(pool.instances, func(a, b *peer) int { return strings.Compare(a.instanceID, b.instanceID) })
 	}
-}
-
-func (r *Router) register(p *peer, f frame) error {
-	if strings.Contains(f.InstanceID, "/") {
-		return errors.New("instance_id must not contain '/'")
-	}
-	if err := validateServices(f.Services, p.user); err != nil {
-		return err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.instances[f.InstanceID] != nil {
-		return errors.New("duplicate instance_id")
-	}
-	if err := r.compatibleWithPoolsLocked(f.Services); err != nil {
-		return err
-	}
-	p.instanceID, p.services, p.maxInflight = f.InstanceID, f.Services, f.MaxInflight
-	r.instances[p.instanceID] = p
-	// Queue the ack before exposing the instance to calls.
-	p.send(frame{Kind: "server.register.ack", InstanceID: p.instanceID})
-	r.joinPoolsLocked(p)
-	r.syncPeersLocked()
 	return nil
 }
 
@@ -716,15 +593,10 @@ func (r *Router) forward(p *peer, f frame) {
 				entry = nil
 			}
 		}
-		instance, errorFrame := r.selectInstance(p, f, avoid)
+		instance, errorFrame := r.selectInstance(f, avoid)
 		if errorFrame != nil {
 			p.send(*errorFrame)
 			return
-		}
-		// The last Router before the instance strips its own prefix from a
-		// path-qualified target so the service sees its own id.
-		if _, forwardID := r.resolveInstanceID(f.InstanceID); forwardID != f.InstanceID && instance.role != "router" {
-			f = withInstanceID(f, forwardID)
 		}
 		rt := &route{id: f.CallID, client: p, instance: instance, method: f.Method, started: time.Now(), index: -1}
 		r.routes[f.CallID] = rt
@@ -742,14 +614,14 @@ func (r *Router) forward(p *peer, f frame) {
 	if rt == nil {
 		return
 	}
-	if rt.client == p && callerFrame(f) {
+	if p.role == "client" && rt.client == p {
 		rt.instance.send(f)
 		if f.Kind == "call.cancel" {
 			// The client has given up; forget the route now so a service that
 			// ignores cancellation cannot pin router capacity.
 			r.endRoute(f.CallID, rt)
 		}
-	} else if rt.instance == p && calleeFrame(f) {
+	} else if p.role == "server" && rt.instance == p {
 		rt.client.send(f)
 		if f.Kind == "call.result" || f.Kind == "call.error" {
 			// Any answer, including an application error, measures the service
@@ -786,7 +658,6 @@ func (r *Router) drain(p *peer) {
 	}
 	p.draining = true
 	r.leavePools(p)
-	r.syncPeersLocked()
 }
 
 func (r *Router) leavePools(p *peer) {
@@ -808,11 +679,9 @@ func (r *Router) remove(p *peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.peers, p)
-	delete(r.routerPeers, p)
 	if r.instances[p.instanceID] == p {
 		delete(r.instances, p.instanceID)
 		r.leavePools(p)
-		r.syncPeersLocked()
 	}
 	for id, rt := range r.routes {
 		switch {

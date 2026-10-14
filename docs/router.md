@@ -128,42 +128,6 @@ and `meshcall call … --instance ID` addresses one.
   provides no automatic call replay, stream resumption, route migration, or
   replicated Router state.
 
-## Router peering
-
-Routers in different networks or regions link with `--peer`:
-
-```bash
-meshcall-router --port 8765 --peer-id region-a \
-  --peer ws://region-a-link:secret@router-b.example:8765   # account on B
-meshcall-router --port 8765 --peer-id region-b \
-  --peer ws://:TOKEN@router-c.example:8765                 # token on C
-```
-
-Python `WebSocketRouter(peers=[...], peer_id=...)`, TypeScript
-`new WebSocketRouter({ peers: [...], peerId })`. The dialling Router
-authenticates with an account (or token) on the Router it dials whose
-`roles` include `router`; that account's `register` list bounds the services
-the link may advertise there and its `call` list bounds the methods it may
-forward there. The dialler trusts the Router it chose to dial.
-
-A link is an ordinary instance on both sides, named by the other Router's
-`peer_id` and marked `peer` in `router inspect` (with its measured RTT). It
-advertises the union of the local instances' methods, the widest contract,
-and their summed `max_inflight`; the advertisement is re-sent whenever local
-registrations change and is forgotten when the link drops (in-flight calls
-fail with retryable `unavailable` / `instance_lost`). Everything else is the
-standard machinery: `adaptive` balancing sees a link as an instance with a
-round trip, so local instances win while they have capacity and traffic
-spills over the link when they do not; a call that arrived over a link is
-never routed back over it. `meshcall call … --instance region-b/gpu-3`
-addresses an instance behind a peer; each Router strips its own prefix.
-
-Links are direct and one hop in this version: a Router advertises only its
-local instances, so two Routers that cannot reach each other see nothing of
-one another even if both reach a third (relay and mesh formation are tracked
-in #24). The dialler reconnects with backoff; set `--peer-id` explicitly so
-targets and dashboards survive restarts.
-
 ## High availability without Router state
 
 Run several independent Routers. A service instance registers with each of

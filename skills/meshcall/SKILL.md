@@ -258,11 +258,7 @@ my_app/
   Pick `sticky` only for session affinity, `round_robin` only when you need
   determinism, `disabled` for a singleton.
 - Point services and clients at **all** Routers (`[uri1, uri2]`); no
-  Router-side coordination is needed. Across regions or networks, link
-  Routers instead: `meshcall-router --peer ws://user:pass@hub:8765`
-  (`WebSocketRouter(peers=[...])`). The link is an ordinary instance on both
-  sides; `inspect` shows it as `peer rtt=…`, and
-  `--instance region-b/gpu-3` reaches an instance behind it.
+  Router-side coordination is needed.
 - Keep `MESHCALL_STRICT=1` in CI so missing descriptions and unannotated
   mutating methods fail the build, not a review.
 
