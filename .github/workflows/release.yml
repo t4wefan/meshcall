@@ -98,6 +98,15 @@ jobs:
       - run: yarn build
       - name: Platform packages with the Go binaries; main package depends on them optionally
         run: ../scripts/release/bundle.sh "$GITHUB_WORKSPACE/router-dist" npm
+      # npm trusted publishing (OIDC) can only be configured on packages that
+      # already exist, so the first release of each package uses the NPM_TOKEN
+      # secret (a granular token allowed to publish new packages). Once the
+      # packages exist and have a trusted publisher, delete the secret: the
+      # id-token permission above then authenticates on its own.
       - name: Publish platform packages first so the main package's optional dependencies resolve
         run: for pkg in ./dist-npm/*/; do npm publish "$pkg" --provenance --access public; done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
