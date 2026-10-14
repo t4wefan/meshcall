@@ -482,12 +482,24 @@ async def test_retry_policy_retries_only_when_safe() -> None:
             await client.flaky("hopeless", 10, idempotent=True)
         assert error.value.details == {"key": None, "attempts": 3}
 
-        # Attempts share the call's budget.
-        with pytest.raises(MeshCallError) as error:
-            await client.flaky("budget", 10, idempotent=True, timeout=0.015)
-        assert error.value.code == ErrorCode.UNAVAILABLE
     finally:
         await client.stop()
+
+    # Attempts share the call's budget: a backoff longer than what is left
+    # ends the call with the last error instead of waiting for the deadline.
+    # The delays dwarf any timer resolution, so this holds on Windows too.
+    patient = FlakyClient(
+        WebSocketClientDriver(f"ws://127.0.0.1:{driver.bound_port}"),
+        retry=RetryPolicy(max_attempts=3, initial_delay=5, max_delay=5),
+    )
+    try:
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(MeshCallError) as error:
+            await patient.flaky("budget", 10, idempotent=True, timeout=1)
+        assert error.value.code == ErrorCode.UNAVAILABLE
+        assert asyncio.get_running_loop().time() - started < 1
+    finally:
+        await patient.stop()
         await server.stop()
 
 
