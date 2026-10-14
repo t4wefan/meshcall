@@ -25,6 +25,17 @@ try {
     for (const itemValue of values) yield { itemValue, status: "ready" };
   })(), 7);
   assert.equal(upload.total, 2023);
+  const exchange = client.exchange(100);
+  const echoed = [];
+  for (const itemValue of [1, 2, 3]) {
+    await exchange.send({ itemValue, status: "busy" });
+    const next = await exchange.next();
+    assert.equal(next.value.status, "busy");
+    echoed.push(next.value.itemValue);
+  }
+  await exchange.closeSend();
+  assert.equal((await exchange.next()).done, true);
+  assert.deepEqual(echoed, [101, 102, 103]);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally {
   await rpc.close();

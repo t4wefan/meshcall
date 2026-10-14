@@ -65,7 +65,8 @@
             "read_only": true,
             "destructive": false
           },
-          "deprecated": null
+          "deprecated": null,
+          "duplex_reason": null
         },
         {
           "name": "sum",
@@ -130,7 +131,8 @@
             "read_only": false,
             "destructive": false
           },
-          "deprecated": null
+          "deprecated": null,
+          "duplex_reason": null
         },
         {
           "name": "greet",
@@ -193,7 +195,8 @@
             "read_only": true,
             "destructive": false
           },
-          "deprecated": null
+          "deprecated": null,
+          "duplex_reason": null
         }
       ]
     }

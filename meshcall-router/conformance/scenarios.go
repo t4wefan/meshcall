@@ -24,6 +24,10 @@ var scenarios = []scenario{
 	{"idle: server enforces idle_timeout_ms on input", serverIdle},
 	{"cancel: handler observes call.cancel", cancelObserved},
 	{"metadata: request metadata and trailers", metadataAndTrailers},
+	{"duplex: interleaved, per-direction credit, input half-close", duplexInterleaved},
+	{"duplex: output half-closes while input stays open", duplexServerHalfClose},
+	{"duplex: server enforces idle_timeout_ms on input", duplexIdle},
+	{"duplex: an idempotency key is refused", duplexIdempotencyKey},
 	{"http: unary calls, metadata, errors and deadlines", httpUnary},
 	{"http: server stream as typed NDJSON envelopes", httpServerStream},
 	{"http: client stream from an NDJSON body", httpClientStream},
@@ -40,6 +44,7 @@ func registration(h *harness) error {
 	want := map[string]string{
 		"echo": "unary", "bad_response": "unary", "fail": "unary", "slow": "unary", "cancelled_tags": "unary", "invoked_tags": "unary",
 		"count": "server_stream", "sum": "client_stream", "metadata_echo": "unary", "drain_self": "unary",
+		"chat": "duplex", "announce": "duplex",
 	}
 	if !reflect.DeepEqual(methods, want) {
 		return fmt.Errorf("registered methods %v, want %v", methods, want)
@@ -49,10 +54,13 @@ func registration(h *harness) error {
 		Description *string `json:"description"`
 		Methods     []struct {
 			Name        string  `json:"name"`
+			Stream      string  `json:"stream"`
 			Description *string `json:"description"`
 			Annotations struct {
 				ReadOnly bool `json:"read_only"`
 			} `json:"annotations"`
+			Response     any     `json:"response"`
+			DuplexReason *string `json:"duplex_reason"`
 		} `json:"methods"`
 	}
 	raw := snapshot.Contracts[Service]
@@ -68,6 +76,9 @@ func registration(h *harness) error {
 		}
 		if m.Name == "echo" && !m.Annotations.ReadOnly {
 			return fmt.Errorf("echo should be registered read_only")
+		}
+		if duplex := m.Stream == "duplex"; duplex != (m.DuplexReason != nil && *m.DuplexReason != "") || duplex && m.Response != nil {
+			return fmt.Errorf("method %s: a duplex method, and only one, has a duplex_reason and no response: %s", m.Name, raw)
 		}
 	}
 	return nil
@@ -588,6 +599,18 @@ func drain(h *harness) error {
 	if _, err := c.receive(); err != nil { // first item: the stream is live
 		return err
 	}
+	talk, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer talk.close()
+	chat, err := talk.openChat("chat", frame{"prefix": "~"}, nil)
+	if err != nil {
+		return err
+	}
+	if err := talk.send(frame{"kind": "stream.window", "call_id": chat, "direction": "server", "credit": 8}); err != nil {
+		return err
+	}
 	control, err := h.client()
 	if err != nil {
 		return err
@@ -610,6 +633,22 @@ func drain(h *harness) error {
 	}
 	if code, _, _, _ := errorOf(gone); code != "unavailable" {
 		return fmt.Errorf("expected unavailable after drain, got %v", gone)
+	}
+	// A duplex call open before the drain goes on in both directions.
+	if err := talk.input(chat, 0, "still"); err != nil {
+		return err
+	}
+	if err := talk.expectOutput(chat, 0, "~still"); err != nil {
+		return fmt.Errorf("duplex during drain: %w", err)
+	}
+	if err := talk.send(frame{"kind": "stream.end", "call_id": chat, "direction": "client"}); err != nil {
+		return err
+	}
+	if err := talk.expectOutput(chat, 1, "done:1"); err != nil {
+		return err
+	}
+	if err := talk.expectEnd(chat); err != nil {
+		return fmt.Errorf("duplex during drain: %w", err)
 	}
 	items := 1
 	for {

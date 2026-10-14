@@ -66,17 +66,14 @@ class NumberService:
             total += item.value
         return NumberResult(total=total)
 
-    @method.duplex()
+    @method.duplex(reason="doubles each item as it arrives")
     async def duplex(
         self,
         value: int,
         channel: RpcDuplex[NumberItem, NumberItem],
-    ) -> NumberResult:
-        total = value
+    ) -> None:
         async for item in channel:
-            total += item.value
-            await channel.send(NumberItem(value=item.value * 2))
-        return NumberResult(total=total)
+            await channel.send(NumberItem(value=value + item.value * 2))
 
 
 class NumberServiceClient(ClientBase):
@@ -140,14 +137,13 @@ class NumberServiceClient(ClientBase):
     def duplex(
         self,
         request: NumberRequest,
-    ) -> RpcDuplexClient[NumberItem, NumberItem, NumberResult]:
+    ) -> RpcDuplexClient[NumberItem, NumberItem]:
         return self._duplex(
             self.service_name,
             "duplex",
             request,
             NumberItem,
             NumberItem,
-            NumberResult,
         )
 
 
@@ -191,17 +187,14 @@ class ExpandedService:
             total += item.value
         return NumberResult(total=total)
 
-    @method.duplex()
+    @method.duplex(reason="doubles each item as it arrives")
     async def duplex(
         self,
         offset: int,
         channel: RpcDuplex[NumberItem, NumberItem],
-    ) -> NumberResult:
-        total = offset
+    ) -> None:
         async for item in channel:
-            total += item.value
-            await channel.send(NumberItem(value=item.value * 2))
-        return NumberResult(total=total)
+            await channel.send(NumberItem(value=offset + item.value * 2))
 
 
 class ExpandedServiceClient(ClientBase):
@@ -240,14 +233,13 @@ class ExpandedServiceClient(ClientBase):
     def duplex(
         self,
         offset: int,
-    ) -> RpcDuplexClient[NumberItem, NumberItem, NumberResult]:
+    ) -> RpcDuplexClient[NumberItem, NumberItem]:
         return self._duplex(
             self.service_name,
             "duplex",
             ExpandedDuplexRequest(offset=offset),
             NumberItem,
             NumberItem,
-            NumberResult,
         )
 
 
@@ -291,8 +283,7 @@ async def test_all_call_shapes_over_tcp_websocket() -> None:
         await channel.send(NumberItem(value=2))
         await channel.send(NumberItem(value=3))
         await channel.close_send()
-        assert [item.value async for item in channel] == [4, 6]
-        assert await channel.result() == NumberResult(total=15)
+        assert [item.value async for item in channel] == [14, 16]
     finally:
         await client.stop()
         await server.stop()
@@ -356,8 +347,7 @@ async def test_expanded_parameters_over_all_call_shapes() -> None:
         await channel.send(NumberItem(value=2))
         await channel.send(NumberItem(value=3))
         await channel.close_send()
-        assert [item.value async for item in channel] == [4, 6]
-        assert await channel.result() == NumberResult(total=15)
+        assert [item.value async for item in channel] == [14, 16]
     finally:
         await client.stop()
         await server.stop()

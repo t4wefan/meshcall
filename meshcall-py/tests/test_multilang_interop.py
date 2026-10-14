@@ -273,6 +273,17 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
                             )
 
                     assert (await client.upload(input_items(), 64, 2)).product == 4096
+
+                    async with client.exchange(0, 3) as exchange:
+                        for value in range(5):
+                            await exchange.send(
+                                generated.TypeScriptItem(
+                                    value=value, handled_by="python"
+                                )
+                            )
+                            assert (await anext(exchange)).value == value * 3
+                        await exchange.close_send()
+                        assert [item async for item in exchange] == []
     finally:
         await router.stop()
     if unix:

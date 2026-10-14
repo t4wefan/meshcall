@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { recordWarnings } from "./diagnostics.js";
 import type { BalancePolicy } from "./protocol.js";
 import type {
-  ClientStreamMethod, ServerStreamMethod, ServiceDefinition, UnaryMethod,
+  ClientStreamMethod, DuplexMethod, ServerStreamMethod, ServiceDefinition, UnaryMethod,
 } from "./service.js";
 export type { ServiceDefinition } from "./service.js";
 
@@ -50,10 +50,19 @@ export interface ContractClientStreamMethod<Request, Item, Response>
   readonly response: TypeContract<Response>;
 }
 
+/** A duplex call is never replayed, so it has no idempotent / readOnly hint. */
+export interface ContractDuplexMethod<Request, Input, Output>
+  extends DuplexMethod<Request, Input, Output>, Omit<MethodSemantics, "idempotent" | "readOnly"> {
+  readonly request: TypeContract<Request>;
+  readonly inputItem: TypeContract<Input>;
+  readonly outputItem: TypeContract<Output>;
+}
+
 export type ContractMethod =
   | ContractUnaryMethod<any, any>
   | ContractServerStreamMethod<any, any>
-  | ContractClientStreamMethod<any, any, any>;
+  | ContractClientStreamMethod<any, any, any>
+  | ContractDuplexMethod<any, any, any>;
 
 export type ExportableServiceDefinition<
   Methods extends Readonly<Record<string, ContractMethod>> = Readonly<
@@ -177,6 +186,33 @@ export function clientStreamMethod<Request, Item, Response>(
   return { ...definition, stream: "client_stream" };
 }
 
+/**
+ * Input and output stream at the same time — the shape of last resort. A
+ * duplex call is never retried or deduplicated, takes no idempotency key, is
+ * not reachable over HTTP, pins one instance for its whole life and can
+ * deadlock if a side only sends. Prefer a server stream plus unary calls, or
+ * a client stream. `reason` says why this method needs it; it goes into the
+ * contract. The handler receives a `DuplexChannel` and returns nothing.
+ */
+export function duplexMethod<Request, Input, Output>(
+  definition: Omit<ContractDuplexMethod<Request, Input, Output>, "stream"> & { readonly description: string },
+): ContractDuplexMethod<Request, Input, Output>;
+/**
+ * @deprecated W001: add `description` — it becomes the contract's description
+ * and the text LLM callers see. Pass `description: ""` to declare none on purpose.
+ */
+export function duplexMethod<Request, Input, Output>(
+  definition: Omit<ContractDuplexMethod<Request, Input, Output>, "stream">,
+): ContractDuplexMethod<Request, Input, Output>;
+export function duplexMethod<Request, Input, Output>(
+  definition: Omit<ContractDuplexMethod<Request, Input, Output>, "stream">,
+): ContractDuplexMethod<Request, Input, Output> {
+  if (typeof definition.reason !== "string" || definition.reason.trim() === "") {
+    throw new Error("duplexMethod needs reason: say why a server stream plus unary calls, or a client stream, will not do");
+  }
+  return { ...definition, reason: definition.reason.trim(), stream: "duplex" };
+}
+
 export function defineService<
   const Methods extends Readonly<Record<string, ContractMethod>>,
 >(
@@ -194,6 +230,9 @@ export function defineService<
     if (method.readOnly === true && method.destructive === true) {
       throw new Error(`Method ${methodName} cannot be both readOnly and destructive`);
     }
+    if ((method as { stream?: string }).stream === "duplex" && (method.readOnly === true || method.idempotent === true)) {
+      throw new Error(`Duplex method ${methodName} cannot be idempotent or readOnly: a duplex call is never replayed`);
+    }
   }
   return recordWarnings(name === definition.name ? definition : { ...definition, name });
 }
@@ -210,24 +249,28 @@ export function contractEntry(service: ExportableServiceDefinition): Record<stri
     balance: serviceBalance,
     description: service.description ?? null,
     targeted: service.targeted === true,
-    methods: Object.entries(service.methods).map(([name, method]) => ({
-      name,
-      stream: method.stream,
-      request: renderTypeRef(method.request),
-      // Parameters are the request object's properties, in schema order.
-      parameters: Object.keys((method.request.schema.properties as Record<string, unknown> | undefined) ?? {}),
-      response: method.stream === "server_stream" ? null : renderTypeRef(method.response),
-      input_item: method.stream === "client_stream" ? renderTypeRef(method.inputItem) : null,
-      output_item: method.stream === "server_stream" ? renderTypeRef(method.outputItem) : null,
-      balance: normalizeBalance(method.balance ?? serviceBalance),
-      description: method.description ?? null,
-      annotations: {
-        idempotent: method.idempotent === true || method.readOnly === true,
-        read_only: method.readOnly === true,
-        destructive: method.destructive === true,
-      },
-      deprecated: method.deprecated ?? null,
-    })),
+    methods: Object.entries(service.methods).map(([name, method]) => {
+      const semantics = method as MethodSemantics;
+      return {
+        name,
+        stream: method.stream,
+        request: renderTypeRef(method.request),
+        // Parameters are the request object's properties, in schema order.
+        parameters: Object.keys((method.request.schema.properties as Record<string, unknown> | undefined) ?? {}),
+        response: method.stream === "unary" || method.stream === "client_stream" ? renderTypeRef(method.response) : null,
+        input_item: method.stream === "client_stream" || method.stream === "duplex" ? renderTypeRef(method.inputItem) : null,
+        output_item: method.stream === "server_stream" || method.stream === "duplex" ? renderTypeRef(method.outputItem) : null,
+        balance: normalizeBalance(method.balance ?? serviceBalance),
+        description: method.description ?? null,
+        annotations: {
+          idempotent: semantics.idempotent === true || semantics.readOnly === true,
+          read_only: semantics.readOnly === true,
+          destructive: method.destructive === true,
+        },
+        deprecated: method.deprecated ?? null,
+        duplex_reason: method.stream === "duplex" ? method.reason : null,
+      };
+    }),
   };
 }
 

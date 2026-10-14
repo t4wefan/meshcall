@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
-from typing import Generic, TypeVar
+from typing import Generic, Self, TypeVar
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
-ResultT = TypeVar("ResultT")
 
 
 class RpcInputStream(AsyncIterator[InputT], ABC, Generic[InputT]):
@@ -20,7 +19,12 @@ class RpcInputStream(AsyncIterator[InputT], ABC, Generic[InputT]):
 
 
 class RpcDuplex(RpcInputStream[InputT], ABC, Generic[InputT, OutputT]):
-    """Experimental typed duplex channel supplied to a service method."""
+    """The channel a duplex handler receives.
+
+    Iterate it for input items; ``send`` output items while doing so. Returning
+    from the handler closes the output and ends the call; ``close_send`` closes
+    the output earlier while input is still being read.
+    """
 
     @abstractmethod
     async def send(self, item: OutputT) -> None: ...
@@ -44,25 +48,25 @@ class RpcServerStream(AsyncIterator[OutputT], ABC, Generic[OutputT]):
     def trailers(self) -> Mapping[str, str]:
         """Server trailers, available once the stream has terminated."""
 
+    async def __aenter__(self) -> Self:
+        return self
 
-class RpcDuplexClient(
-    RpcInputStream[OutputT],
-    ABC,
-    Generic[InputT, OutputT, ResultT],
-):
+    async def __aexit__(self, *args: object) -> None:
+        """Leaving the block cancels the call if it is still running."""
+        await self.cancel()
+
+
+class RpcDuplexClient(RpcServerStream[OutputT], ABC, Generic[InputT, OutputT]):
+    """A duplex call: ``send`` input items while iterating output items.
+
+    The output ends when the call ends successfully; a failure is raised from
+    the iteration. Read output concurrently with sending: a client that only
+    sends stalls once the server's output credit runs out.
+    """
+
     @abstractmethod
     async def send(self, item: InputT) -> None: ...
 
     @abstractmethod
-    async def close_send(self) -> None: ...
-
-    @abstractmethod
-    async def result(self) -> ResultT: ...
-
-    @abstractmethod
-    async def cancel(self, reason: str = "client_closed") -> None: ...
-
-    @property
-    @abstractmethod
-    def trailers(self) -> Mapping[str, str]:
-        """Server trailers, available once the call has terminated."""
+    async def close_send(self) -> None:
+        """Half-close the input; the server's iteration of it then ends."""

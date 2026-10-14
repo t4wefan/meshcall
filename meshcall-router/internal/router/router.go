@@ -643,9 +643,14 @@ func (r *Router) forward(p *peer, f frame) {
 			p.send(routerError(f.CallID, "resource_exhausted", "Router call capacity reached", true, "overloaded", ""))
 			return
 		}
+		stream := r.methodStream(f.Service, f.Method)
+		if f.Idempotency != "" && stream == "duplex" {
+			p.send(routerError(f.CallID, "invalid_argument", "Duplex calls are never replayed and take no idempotency key", false, "idempotency_key_on_duplex", ""))
+			return
+		}
 		var entry *dedupEntry
 		var avoid *peer
-		if f.Idempotency != "" && r.methodStream(f.Service, f.Method) == "unary" {
+		if f.Idempotency != "" && stream == "unary" {
 			key := dedupKey(f)
 			if entry = r.dedupLookup(key); entry != nil {
 				if entry.result != nil {
@@ -672,7 +677,7 @@ func (r *Router) forward(p *peer, f frame) {
 		if f.TimeoutMS != nil {
 			r.track(rt, time.Duration(*f.TimeoutMS)*time.Millisecond)
 		}
-		if f.Idempotency != "" && r.methodStream(f.Service, f.Method) == "unary" {
+		if f.Idempotency != "" && stream == "unary" {
 			r.dedupInsert(dedupKey(f), rt)
 		}
 		instance.send(f)

@@ -54,7 +54,7 @@ unique string chosen by the client. All time values are integer milliseconds.
 `services[]` entries are `{name, methods[{name, stream, balance{kind, key?}}], contract?}`.
 `contract` is the service's portable contract entry (the same object a
 `*.meshcall.json` document holds: version, description, methods with
-schemas, parameters and annotations). It is opaque to routing; the Router
+schemas, parameters, annotations and, for duplex methods, `duplex_reason`). It is opaque to routing; the Router
 keeps the first one registered per service and serves it through the
 `meshcall.router.v1.Registry` service (`list`, `describe {service}`), which
 is readable without an account in development mode and needs a call
@@ -137,7 +137,9 @@ Each method has one of four shapes:
 | unary | no | no | yes |
 | server_stream | no | yes | no |
 | client_stream | yes | no | yes |
-| duplex (experimental) | yes | yes | optional |
+| duplex | yes | yes | no |
+
+Duplex is a restricted shape; see [Duplex calls](#duplex-calls).
 
 ## Targeted calls
 
@@ -221,7 +223,11 @@ and receives the same terminal frame; after completion the terminal frame is
 replayed for a short window (60 s by default). If the serving instance is
 lost before answering, every joined caller receives the same retryable
 `unavailable` and the next call with that key prefers a different instance.
-Streams carry the key to the handler but are never deduplicated. The
+Server and client streams carry the key to the handler but are never
+deduplicated. A duplex call cannot be replayed safely at all, so a duplex
+`call.open` with `idempotency_key` is refused with `invalid_argument`,
+`details.reason = "idempotency_key_on_duplex"`, by the Router before routing
+and by a direct server. The
 deduplication table is a cache: a Router restart loses it, and the worst
 case is one extra execution against a handler that honours the key.
 
@@ -263,11 +269,38 @@ that `call_id`. The instance still sends its own terminal frame, which the
 Router drops. Because the client has already given up on the call, it is also
 free to fail the call locally as `cancelled` as soon as it sends the cancel.
 
-The duplex shape is retained as an experimental protocol capability. Its public
-service and client API is not part of the current recommended usage surface.
-
 A connection loss terminates every active call on that connection. Version 1
 does not resume streams or migrate them between service instances.
+
+## Duplex calls
+
+A duplex call streams in both directions at once: the server may send output
+items while the client is still sending input items. It uses no frame of its
+own. Each direction has its own sequence, credit and half-close exactly as
+above, and the client's `idle_timeout_ms` applies to each direction by its
+consumer. The call ends with `call.result` **without a payload**, or with
+`call.error`; there is no final result value. Trailers ride on the terminal
+frame as for every shape.
+
+Duplex is the shape of last resort: it switches off guarantees the other
+shapes keep, and a method opts into it explicitly, giving the reason in its
+contract (`duplex_reason`, required). A duplex method:
+
+- is never retried and never deduplicated, takes no `idempotency_key` (see
+  [Idempotency keys](#idempotency-keys)) and cannot be annotated
+  `idempotent` or `read_only`;
+- is not reachable over HTTP (`405`, `details.reason = "duplex_over_http"`);
+- pins one instance for its whole life: balancing happens once at
+  `call.open`, and draining waits for it, bounded by the drain timeout;
+- is seen by deadlines, circuit breakers and interceptors as one call: they
+  observe the open and the end, not individual items;
+- can deadlock itself: if the client sends without reading output, the
+  server's output credit runs out, it stops reading input, and the client's
+  input credit runs out too. Read output concurrently with sending (or
+  alternate one item each way). The runtime does not detect this.
+
+Prefer a server stream plus unary calls, or a client stream, whenever the
+two directions do not truly interleave.
 
 ## Liveness
 
@@ -319,7 +352,8 @@ circuit breaker), `balance_disabled`, `cancelled` (a joined idempotent call
 was cancelled by its first caller), `instance_unknown` / `instance_draining`
 (a targeted call named an instance that is not registered or is leaving) and
 `instance_required` (an `invalid_argument` for a targeted service called
-without `instance_id`). A direct server uses the same reasons with
+without `instance_id`) and `idempotency_key_on_duplex` (an
+`invalid_argument` for a duplex call carrying an idempotency key). A direct server uses the same reasons with
 `source: "server"`. A server enforcing its own `max_inflight`
 answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`. Client retry policies add
 `attempts` to the final error when more than one attempt was made.

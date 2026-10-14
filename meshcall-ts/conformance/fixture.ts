@@ -2,7 +2,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
-  clientStreamMethod, defineService, defineType, MeshCallError, MeshCallServer, serverStreamMethod, unaryMethod,
+  clientStreamMethod, defineService, defineType, duplexMethod, MeshCallError, MeshCallServer, serverStreamMethod, unaryMethod,
 } from "../src/index.js";
 
 const object = (properties: Record<string, unknown>, required: string[] = []) =>
@@ -22,6 +22,8 @@ const valueType = defineType<{ value: number }>("Value", object({ value: { type:
 const totalType = defineType<{ total: number }>("Total", object({ total: { type: "integer" } }, ["total"]));
 const metadataType = defineType<{ metadata: Record<string, string> }>("Metadata", object({ metadata: { type: "object", additionalProperties: { type: "string" } } }, ["metadata"]));
 const instanceType = defineType<{ instance: string }>("Instance", object({ instance: { type: "string" } }, ["instance"]));
+const chatType = defineType<{ prefix?: string }>("Chat", object({ prefix: { type: "string", default: "" } }));
+const textType = defineType<{ text: string }>("Text", object({ text: { type: "string" } }, ["text"]));
 const drainType = defineType<{ delay_ms?: number }>("Drain", object({ delay_ms: { type: "integer", default: 0 } }));
 
 const cancelled: string[] = [];
@@ -73,6 +75,29 @@ const fixture = defineService({
     metadata_echo: unaryMethod({
       description: "Return the call metadata and set trailers describing it.", readOnly: true, request: emptyType, response: metadataType,
       handler: (_, ctx) => { ctx.setTrailer("echoed", "yes"); ctx.setTrailer("count", String(Object.keys(ctx.metadata).length)); return { metadata: { ...ctx.metadata } }; },
+    }),
+    chat: duplexMethod({
+      description: "Echo each input with prefix; send done:<inputs> when input ends.",
+      reason: "conformance: answers interleave with input",
+      request: chatType, inputItem: textType, outputItem: textType,
+      handler: async ({ prefix }, channel) => {
+        let count = 0;
+        for await (const item of channel) {
+          count += 1;
+          await channel.send({ text: (prefix ?? "") + item.text });
+        }
+        await channel.send({ text: "done:" + count });
+      },
+    }),
+    announce: duplexMethod({
+      description: "Send hello, close the output, then read the input to its end.",
+      reason: "conformance: output ends before input",
+      request: emptyType, inputItem: textType, outputItem: textType,
+      handler: async (_, channel) => {
+        await channel.send({ text: "hello" });
+        await channel.closeSend();
+        for await (const _item of channel) { /* read to the end */ }
+      },
     }),
     drain_self: unaryMethod({
       description: "Drain and stop this instance after delay_ms.", destructive: true, request: drainType, response: okType,

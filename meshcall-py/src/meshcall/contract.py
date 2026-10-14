@@ -128,6 +128,7 @@ class MethodOptions:
     read_only: bool | None = None
     destructive: bool | None = None
     deprecated: str | None = None
+    duplex_reason: str | None = None
 
 
 _NO_STREAM = object()
@@ -277,23 +278,36 @@ class Method:
     def duplex(
         self,
         *,
+        reason: str,
         balance: BalancePolicy | None = None,
         description: str | None = None,
-        idempotent: bool | None = None,
-        read_only: bool | None = None,
         destructive: bool | None = None,
         deprecated: str | None = None,
     ) -> MethodDeclaration:
-        """Declare the experimental duplex method shape."""
+        """Declare a duplex method: input and output stream at the same time.
+
+        The shape of last resort. A duplex call is never retried or
+        deduplicated, takes no idempotency key, is not reachable over HTTP,
+        pins one instance for its whole life and can deadlock if a side only
+        sends. Prefer a server stream plus unary calls, or a client stream.
+        ``reason`` says why this method needs it; it goes into the contract.
+
+        The handler takes an ``RpcDuplex[In, Out]`` channel and returns
+        ``None``; there is no result value.
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ContractError(
+                "@method.duplex needs reason=: say why a server stream plus unary "
+                "calls, or a client stream, will not do"
+            )
         return MethodDeclaration(
             stream=StreamKind.DUPLEX,
             balance=balance,
             binding=BindingKind.INSTANCE,
             description=description,
-            idempotent=idempotent,
-            read_only=read_only,
             destructive=destructive,
             deprecated=deprecated,
+            duplex_reason=reason.strip(),
         )
 
 
@@ -311,6 +325,7 @@ class MethodDeclaration:
         read_only: bool | None = None,
         destructive: bool | None = None,
         deprecated: str | None = None,
+        duplex_reason: str | None = None,
     ) -> None:
         self.options = MethodOptions(
             balance=balance,
@@ -321,6 +336,7 @@ class MethodDeclaration:
             read_only=read_only,
             destructive=destructive,
             deprecated=deprecated,
+            duplex_reason=duplex_reason,
         )
 
     if TYPE_CHECKING:
@@ -682,21 +698,26 @@ def _extract_method(
         return _validated_method(contract, declared_stream, func, method_binding)
 
     if stream_origin is RpcDuplex:
+        if declared_stream is not StreamKind.DUPLEX:
+            raise ContractError(
+                f"RPC method {func.__qualname__} takes an RpcDuplex channel; "
+                'declare it with @method.duplex(reason="...")'
+            )
         if len(stream_args) != 2:
             raise ContractError(f"Invalid duplex stream on {func.__qualname__}")
         input_type, output_type = stream_args
         _require_model(input_type, f"duplex input for {func.__qualname__}")
         _require_model(output_type, f"duplex output for {func.__qualname__}")
-        response_ref = None
         if return_type not in (None, type(None)):
-            _require_model(return_type, f"response for {func.__qualname__}")
-            response_ref = _type_ref(return_type)
+            raise ContractError(
+                f"Duplex method {func.__qualname__} must return None: a duplex "
+                "call has no result value; send it as an output item"
+            )
         contract = MethodContract(
             name=name,
             stream=StreamKind.DUPLEX,
             binding=binding,
             request=request_ref,
-            response=response_ref,
             input_item=_type_ref(input_type),
             output_item=_type_ref(output_type),
             balance=balance,
@@ -715,6 +736,13 @@ def _method_semantics(
         raise ContractError(
             f"RPC method {func.__qualname__} cannot be both read_only and destructive"
         )
+    if options.stream is StreamKind.DUPLEX and (
+        options.idempotent or options.read_only
+    ):
+        raise ContractError(
+            f"Duplex method {func.__qualname__} cannot be idempotent or read_only: "
+            "a duplex call is never replayed"
+        )
     read_only = bool(options.read_only)
     return {
         "description": options.description
@@ -726,6 +754,7 @@ def _method_semantics(
             destructive=bool(options.destructive),
         ),
         "deprecated": options.deprecated,
+        "duplex_reason": options.duplex_reason,
     }
 
 

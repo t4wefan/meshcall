@@ -18,6 +18,17 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Changed
 
+- **Duplex is a supported, restricted shape** (#26). It must be declared
+  with a reason (`@method.duplex(reason=…)` / `duplexMethod({ reason })`),
+  which goes into the contract as `duplex_reason` and shows in `router
+  inspect`. The handler iterates an `RpcDuplex` / `DuplexChannel`, sends
+  output on it and returns nothing: the optional result value and
+  `RpcDuplexClient.result()` are gone, and the client's output iteration
+  ends with the call. Duplex methods cannot be `idempotent` or `read_only`,
+  take no idempotency key (`invalid_argument`, `reason:
+  idempotency_key_on_duplex`, from the Router and from servers) and are
+  never retried. A `RpcDuplex` parameter on a plain `@method()` is now an
+  error instead of an inferred duplex.
 - **Authenticate at connect, authorise at call.** With accounts configured,
   a connection or HTTP request without credentials is the reserved user
   `anonymous` instead of being refused; it may call only what its auth-file
@@ -27,6 +38,12 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Duplex in TypeScript: `duplexMethod`, `MeshCallClient.duplex()` returning
+  `MeshCallDuplexCall` (`send`, `closeSend`, async iteration, `cancel`),
+  generated TypeScript clients for duplex methods, and `meshcall call
+  … --stdin` for duplex calls (each line is sent as it is read). Python's
+  `RpcServerStream` declares `async with` (cancel on exit), so type
+  checkers accept it on every stream.
 - HTTP v1 (#31): server streams are NDJSON envelopes (`{"item"}` per item,
   then `{"end": {"trailers"}}` or `{"error"}`), replacing bare items, SSE
   and the `MeshCall-Status` trailer; `--http-default-timeout` (30 s for

@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,10 @@ import (
 
 	"github.com/t4wefan/meshcall/meshcall-router/internal/contract"
 )
+
+// update rewrites the expected files that exist from the current generators:
+// go test ./internal/codegen -update. Review the diff before committing.
+var update = flag.Bool("update", false, "rewrite golden files")
 
 // testdata/<case>/ holds a contract and the exact output the original Python
 // generators produced for it (single files, package modules, whole packages).
@@ -39,6 +44,12 @@ func TestGeneratorsMatchGolden(t *testing.T) {
 				}
 				if err != nil {
 					t.Fatal(err)
+				}
+				if *update && string(want) != got {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(got), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					return
 				}
 				if string(want) != got {
 					t.Errorf("%s differs:\n%s", name, firstDiff(string(want), got))

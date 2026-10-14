@@ -73,6 +73,8 @@ class MethodContract(BaseModel):
     description: str | None = None
     annotations: MethodAnnotations = MethodAnnotations()
     deprecated: str | None = None
+    # Why the method needs the duplex shape; required for duplex, absent otherwise.
+    duplex_reason: str | None = None
 
 
 class ServiceContract(BaseModel):

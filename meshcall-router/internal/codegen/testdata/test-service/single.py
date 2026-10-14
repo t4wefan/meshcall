@@ -123,7 +123,7 @@ class TestServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
-    ) -> RpcDuplexClient[Item, Item, Result]:
+    ) -> RpcDuplexClient[Item, Item]:
         request = TestServiceDuplexRequest(
             request=request,
         )
@@ -133,7 +133,6 @@ class TestServiceClient(ClientBase):
             request,
             Item,
             Item,
-            Result,
             timeout=timeout,
             idle_timeout=idle_timeout,
             metadata=metadata,

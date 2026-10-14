@@ -65,6 +65,12 @@ export interface CallOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Options for a duplex call: it is never retried or deduplicated, so it
+ * takes no idempotency key and no `idempotent` flag, and has no result.
+ */
+export type DuplexCallOptions = Omit<CallOptions, "idempotencyKey" | "idempotent" | "responseSchema">;
+
 export interface MeshCallClientOptions {
   readonly auth?: RouterCredentials;
   readonly maxFrameSize?: number;
@@ -98,7 +104,7 @@ export interface MeshCallClientOptions {
 export interface ClientCallInfo {
   readonly service: string;
   readonly method: string;
-  readonly stream: "unary" | "server_stream" | "client_stream";
+  readonly stream: "unary" | "server_stream" | "client_stream" | "duplex";
   options: CallOptions;
   trailers: Readonly<Metadata>;
 }
@@ -106,7 +112,8 @@ export interface ClientCallInfo {
 /**
  * Runs the rest of the client chain and resolves with what the call returns:
  * the response for unary and client-stream calls, or the `MeshCallServerStream`
- * for server streams. It may be called more than once to retry.
+ * (`MeshCallDuplexCall`) for server streams (duplex calls). It may be called
+ * more than once to retry.
  */
 export type ClientCallNext = (info: ClientCallInfo) => Promise<unknown>;
 
@@ -163,6 +170,23 @@ export class MeshCallServerStream<Item>
   public async return(): Promise<IteratorResult<Item>> {
     await this.cancel("iterator_closed");
     return { done: true, value: undefined };
+  }
+}
+
+/**
+ * A duplex call: `send` input items while iterating output items. The output
+ * ends when the call ends successfully; a failure is thrown from the
+ * iteration. Read output concurrently with sending: a caller that only sends
+ * stalls once the server's output credit runs out.
+ */
+export class MeshCallDuplexCall<Input, Output> extends MeshCallServerStream<Output> {
+  public async send(item: Input): Promise<void> {
+    await (await this.opened).sendInput(item);
+  }
+
+  /** Half-close the input; the server's iteration of it then ends. */
+  public async closeSend(): Promise<void> {
+    await (await this.opened).closeInput();
   }
 }
 
@@ -388,6 +412,33 @@ export class MeshCallClient {
   }
 
   /**
+   * Opens a duplex call (docs/protocol.md → Duplex calls). Never retried; an
+   * idempotency key is refused by the server.
+   */
+  public duplex<Request, Input, Output>(
+    service: string,
+    method: string,
+    request: Request,
+    options: DuplexCallOptions = {},
+  ): MeshCallDuplexCall<Input, Output> {
+    this.validateOptions(options);
+    const info: ClientCallInfo = { service, method, stream: "duplex", options, trailers: {} };
+    const innermost = async (info: ClientCallInfo): Promise<MeshCallDuplexCall<Input, Output>> =>
+      new MeshCallDuplexCall<Input, Output>(
+        this.openServerStream(info.service, info.method, request, info.options, true),
+      );
+    if (this.options.interceptors === undefined || this.options.interceptors.length === 0) {
+      return new MeshCallDuplexCall(this.openServerStream(service, method, request, options, true));
+    }
+    return new MeshCallDuplexCall(this.runChain(info, innermost).then((call) => {
+      if (!(call instanceof MeshCallDuplexCall)) {
+        throw new TypeError("Client interceptors must return the call produced by next");
+      }
+      return (call as MeshCallDuplexCall<Input, Output>).opened;
+    }));
+  }
+
+  /**
    * Invoke the interceptor chain; the first interceptor is outermost. The
    * built-in retry policy wraps everything so user interceptors see each
    * attempt.
@@ -432,6 +483,7 @@ export class MeshCallClient {
     method: string,
     request: unknown,
     options: CallOptions,
+    duplex = false,
   ): Promise<ServerStreamState<Item>> {
     this.ensureNotAborted(options);
     const startedAt = performance.now();
@@ -444,6 +496,7 @@ export class MeshCallClient {
       (frame) => this.send(frame),
       () => this.streams.delete(callId),
       options.itemSchema,
+      duplex,
     );
     this.streams.set(callId, stream as ServerStreamState<unknown>);
     try {
@@ -728,9 +781,7 @@ export class MeshCallClient {
       }
       return;
     }
-    this.streams.get(frame.call_id)?.fail(
-      new ProtocolError("Unexpected output stream window"),
-    );
+    this.streams.get(frame.call_id)?.receiveWindow(frame);
   }
 
   private handleItem(frame: StreamItemFrame): void {
@@ -915,13 +966,50 @@ class ServerStreamState<Item> {
   private signal: AbortSignal | undefined;
   private abortListener: (() => void) | undefined;
   public trailers: Readonly<Metadata> = {};
+  /** The input side of a duplex call; absent for a server stream. */
+  private readonly input: { credit: CreditWindow; sequence: number; closed: boolean } | undefined;
 
   public constructor(
     private readonly callId: string,
     private readonly send: (frame: Frame) => Promise<void>,
     private readonly remove: () => void,
     private readonly itemSchema?: JsonSchema,
-  ) {}
+    duplex = false,
+  ) {
+    this.input = duplex ? { credit: new CreditWindow(), sequence: 0, closed: false } : undefined;
+  }
+
+  public receiveWindow(frame: StreamWindowFrame): void {
+    if (this.input === undefined || frame.direction !== "client") {
+      this.fail(new ProtocolError("Unexpected output stream window"));
+      return;
+    }
+    try {
+      this.input.credit.grant(frame.credit);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  public async sendInput(item: unknown): Promise<void> {
+    const input = this.input;
+    if (input === undefined) throw new ProtocolError("Call has no input stream");
+    if (input.closed) throw new ProtocolError("Input stream is closed");
+    await input.credit.acquire();
+    if (this.terminal) throw new CallCancelledError("Call is closed");
+    // Claim the sequence before awaiting so concurrent sends stay in order.
+    const sequence = input.sequence;
+    input.sequence += 1;
+    await this.send({ kind: "stream.item", call_id: this.callId, direction: "client", sequence, payload: item });
+  }
+
+  public async closeInput(): Promise<void> {
+    const input = this.input;
+    if (input === undefined) throw new ProtocolError("Call has no input stream");
+    if (input.closed || this.terminal) return;
+    input.closed = true;
+    await this.send({ kind: "stream.end", call_id: this.callId, direction: "client" });
+  }
 
   public grant(credit: number): void {
     this.allowance += credit;
@@ -1091,6 +1179,7 @@ class ServerStreamState<Item> {
   }
 
   private cleanup(): void {
+    this.input?.credit.close(new CallCancelledError("Call is closed"));
     for (const timer of [this.timer, this.idleTimer]) {
       if (timer !== undefined) clearTimeout(timer);
     }

@@ -16,8 +16,9 @@ entry point.
 - `router/` — a router process and a service process that connects to it.
 - `ts2py/` — a TypeScript service and a generated Python uv client package.
 
-The showcase deliberately does not demonstrate duplex RPC. Duplex is still an
-experimental capability and is tested separately from the recommended demos.
+The showcase deliberately does not demonstrate duplex RPC: it is a restricted
+shape of last resort (see [Duplex calls](../docs/protocol.md#duplex-calls)),
+tested separately from the recommended demos.
 
 ## Run the demos
 

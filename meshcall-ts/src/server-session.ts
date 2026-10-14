@@ -7,7 +7,7 @@ import { safelyLog, type LogLevel, type RpcLogger } from "./logging.js";
 import type {
   CallOpenFrame, ErrorPayload, Frame, Metadata, StreamEndFrame, StreamItemFrame, StreamWindowFrame,
 } from "./protocol.js";
-import type { RpcContext, ServerCallNext, ServerInterceptor, ServiceMethod } from "./service.js";
+import type { DuplexChannel, RpcContext, ServerCallNext, ServerInterceptor, ServiceMethod } from "./service.js";
 import type { FrameWriter } from "./transport.js";
 import { InvalidOutputError, validatePayload, type MethodValidators } from "./validation.js";
 
@@ -86,7 +86,7 @@ export class ServerSession {
       }
       // Targeting, applied the same way the Router does (protocol.md →
       // Targeted calls), so direct and routed services behave alike.
-      const rejection = this.targetingError(frame);
+      const rejection = this.openError(frame, method);
       if (rejection !== undefined) {
         const started = performance.now();
         void this.writer.send({
@@ -120,7 +120,7 @@ export class ServerSession {
     }
   }
 
-  private targetingError(frame: CallOpenFrame): MeshCallError | undefined {
+  private openError(frame: CallOpenFrame, method: RuntimeMethod): MeshCallError | undefined {
     const instance = frame.instance_id ?? undefined;
     if (instance !== undefined && instance !== this.options.instanceId) {
       return new UnavailableError("Instance " + instance + " is not this server (" + this.options.instanceId + ")", {
@@ -130,6 +130,11 @@ export class ServerSession {
     if (instance === undefined && this.options.targeted.has(frame.service)) {
       return new InvalidArgumentError(frame.service + " is a targeted service: call.open needs instance_id", {
         details: { source: "server", reason: "instance_required" },
+      });
+    }
+    if (method.definition.stream === "duplex" && frame.idempotency_key != null) {
+      return new InvalidArgumentError("Duplex calls are never replayed and take no idempotency key", {
+        details: { source: "server", reason: "idempotency_key_on_duplex" },
       });
     }
     return undefined;
@@ -191,6 +196,9 @@ class ServerCall {
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private terminal = false;
   private inputClosed = false;
+  private outputClosed = false;
+  /** Serialises a duplex handler's sends so sequences follow call order. */
+  private sending: Promise<void> = Promise.resolve();
   private inputAllowance = 0;
   private inputSequence = 0;
   private outputSequence = 0;
@@ -261,14 +269,14 @@ class ServerCall {
   }
 
   public receiveWindow(frame: StreamWindowFrame): void {
-    if (this.method.definition.stream !== "server_stream" || frame.direction !== "server") {
+    if (!this.hasOutput() || frame.direction !== "server") {
       throw new ProtocolError("Invalid output stream window");
     }
     this.credit.grant(frame.credit);
   }
 
   public receiveItem(frame: StreamItemFrame): void {
-    if (this.method.definition.stream !== "client_stream" || frame.direction !== "client"
+    if (!this.hasInput() || frame.direction !== "client"
       || this.inputClosed || this.inputAllowance <= 0 || frame.sequence !== this.inputSequence) {
       throw new ProtocolError("Invalid input stream item, sequence, or credit");
     }
@@ -280,7 +288,7 @@ class ServerCall {
   }
 
   public receiveEnd(frame: StreamEndFrame): void {
-    if (this.method.definition.stream !== "client_stream" || frame.direction !== "client") {
+    if (!this.hasInput() || frame.direction !== "client" || this.inputClosed) {
       throw new ProtocolError("Invalid input stream end");
     }
     this.inputClosed = true;
@@ -336,6 +344,16 @@ class ServerCall {
     }
   }
 
+  private hasInput(): boolean {
+    const stream = this.method.definition.stream;
+    return stream === "client_stream" || stream === "duplex";
+  }
+
+  private hasOutput(): boolean {
+    const stream = this.method.definition.stream;
+    return stream === "server_stream" || stream === "duplex";
+  }
+
   /** Run the handler to completion, streaming every output item. */
   private async invokeHandler(request: unknown): Promise<unknown> {
     const definition = this.method.definition;
@@ -343,14 +361,16 @@ class ServerCall {
       return definition.handler(request, this.context);
     }
     if (definition.stream === "client_stream") {
-      this.inputAllowance = INITIAL_STREAM_CREDIT;
-      await this.session.writer.send({
-        kind: "stream.window", call_id: this.frame.call_id,
-        direction: "client", credit: INITIAL_STREAM_CREDIT,
-      });
+      await this.openInput();
       if (this.terminal) return null;
-      this.armIdle();
       return definition.handler(request, this.inputItems(), this.context);
+    }
+    if (definition.stream === "duplex") {
+      await this.openInput();
+      if (this.terminal) return null;
+      await definition.handler(request, this.duplexChannel(), this.context);
+      if (!this.terminal) await this.serialized(() => this.closeOutput());
+      return null;
     }
     const iterable = await definition.handler(request, this.context);
     this.output = iterable[Symbol.asyncIterator]();
@@ -365,20 +385,61 @@ class ServerCall {
       const next = await this.output.next();
       if (this.terminal) return null;
       if (next.done === true) break;
-      const payload = validatePayload(this.method.validators.output, next.value, "output_item");
-      await this.credit.acquire();
-      if (this.terminal) return null;
-      await this.session.writer.send({
-        kind: "stream.item", call_id: this.frame.call_id, direction: "server",
-        sequence: this.outputSequence, payload,
-      });
-      this.outputSequence += 1;
+      if (!await this.sendOutput(next.value)) return null;
     }
     if (this.terminal) return null;
+    await this.closeOutput();
+    return null;
+  }
+
+  /** Grant the client its first input credit and start the input idle clock. */
+  private async openInput(): Promise<void> {
+    this.inputAllowance = INITIAL_STREAM_CREDIT;
+    await this.session.writer.send({
+      kind: "stream.window", call_id: this.frame.call_id,
+      direction: "client", credit: INITIAL_STREAM_CREDIT,
+    });
+    this.armIdle();
+  }
+
+  /** Validate and send one output item once credit allows; false if the call ended. */
+  private async sendOutput(value: unknown): Promise<boolean> {
+    const payload = validatePayload(this.method.validators.output, value, "output_item");
+    await this.credit.acquire();
+    if (this.terminal) return false;
+    await this.session.writer.send({
+      kind: "stream.item", call_id: this.frame.call_id, direction: "server",
+      sequence: this.outputSequence, payload,
+    });
+    this.outputSequence += 1;
+    return true;
+  }
+
+  private async closeOutput(): Promise<void> {
+    if (this.outputClosed || this.terminal) return;
+    this.outputClosed = true;
     await this.session.writer.send({
       kind: "stream.end", call_id: this.frame.call_id, direction: "server",
     });
-    return null;
+  }
+
+  private serialized(operation: () => Promise<void>): Promise<void> {
+    const run = this.sending.then(operation);
+    this.sending = run.catch(() => undefined);
+    return run;
+  }
+
+  private duplexChannel(): DuplexChannel<unknown, unknown> {
+    const items = this.inputItems();
+    return {
+      [Symbol.asyncIterator]: () => items[Symbol.asyncIterator](),
+      send: (item) => this.serialized(async () => {
+        if (this.terminal) throw new CallCancelledError("Call is closed");
+        if (this.outputClosed) throw new ProtocolError("Call output stream is closed");
+        if (!await this.sendOutput(item)) throw new CallCancelledError("Call is closed");
+      }),
+      closeSend: () => this.serialized(() => this.closeOutput()),
+    };
   }
 
   private trailerField(): { metadata?: Metadata } {

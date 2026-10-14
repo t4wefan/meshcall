@@ -236,6 +236,8 @@ type registryMethod struct {
 	Annotations json.RawMessage `json:"annotations,omitempty"`
 	Deprecated  *string         `json:"deprecated,omitempty"`
 	Parameters  []string        `json:"parameters,omitempty"`
+	// DuplexReason is why a duplex method needs the shape (from the contract).
+	DuplexReason *string `json:"duplex_reason,omitempty"`
 	// Instances lists the ids serving this method; during a rolling upgrade
 	// a new method is served by a subset of the service's instances.
 	Instances []string `json:"instances"`
@@ -255,11 +257,12 @@ type contractEntry struct {
 	Version     string  `json:"version"`
 	Description *string `json:"description"`
 	Methods     []struct {
-		Name        string          `json:"name"`
-		Description *string         `json:"description"`
-		Annotations json.RawMessage `json:"annotations"`
-		Deprecated  *string         `json:"deprecated"`
-		Parameters  []string        `json:"parameters"`
+		Name         string          `json:"name"`
+		Description  *string         `json:"description"`
+		Annotations  json.RawMessage `json:"annotations"`
+		Deprecated   *string         `json:"deprecated"`
+		Parameters   []string        `json:"parameters"`
+		DuplexReason *string         `json:"duplex_reason"`
 	} `json:"methods"`
 }
 
@@ -392,6 +395,7 @@ func (r *Router) describeService(name string, u *User) registryService {
 		for _, cm := range entry.Methods {
 			if cm.Name == m.Name {
 				rm.Description, rm.Annotations, rm.Deprecated, rm.Parameters = cm.Description, cm.Annotations, cm.Deprecated, cm.Parameters
+				rm.DuplexReason = cm.DuplexReason
 			}
 		}
 		out.Methods = append(out.Methods, rm)

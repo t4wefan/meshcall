@@ -40,9 +40,6 @@ func TypeScriptTypeNames(service *contract.Service) []string {
 
 // RenderTypeScriptClient renders one self-contained module: types and client.
 func RenderTypeScriptClient(service *contract.Service, opts TypeScriptOptions) (string, error) {
-	if err := requireTypeScriptStreams(service); err != nil {
-		return "", err
-	}
 	opts = opts.withDefaults()
 	registry := newTypeRegistry(service, tsIdentifier)
 	received := receivedTypes(service, registry)
@@ -67,9 +64,6 @@ func RenderTypeScriptClient(service *contract.Service, opts TypeScriptOptions) (
 
 // RenderTypeScriptModels renders the models module of a package.
 func RenderTypeScriptModels(service *contract.Service, opts TypeScriptOptions) (string, error) {
-	if err := requireTypeScriptStreams(service); err != nil {
-		return "", err
-	}
 	opts = opts.withDefaults()
 	registry := newTypeRegistry(service, tsIdentifier)
 	received := receivedTypes(service, registry)
@@ -84,9 +78,6 @@ func RenderTypeScriptModels(service *contract.Service, opts TypeScriptOptions) (
 
 // RenderTypeScriptClientModule renders the client module of a package.
 func RenderTypeScriptClientModule(service *contract.Service, opts TypeScriptOptions) (string, error) {
-	if err := requireTypeScriptStreams(service); err != nil {
-		return "", err
-	}
 	opts = opts.withDefaults()
 	registry := newTypeRegistry(service, tsIdentifier)
 	lines := []string{
@@ -177,6 +168,15 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 			rpcCall = "clientStream<" + request + ", " + input + ", " + response + ">"
 			extraParams = []string{"items: AsyncIterable<" + input + ">"}
 			extraArgs = []string{"      items,"}
+		case "duplex":
+			input := registry.Name(requiredRef(m.InputItem, "duplex input item"))
+			output := registry.Name(requiredRef(m.OutputItem, "duplex output item"))
+			resultType = "MeshCallDuplexCall<" + input + ", " + output + ">"
+			rpcCall = "duplex<" + request + ", " + input + ", " + output + ">"
+		}
+		optionsType := "CallOptions"
+		if m.Stream == "duplex" {
+			optionsType = "DuplexCallOptions" // no idempotency key: never replayed
 		}
 		lines = append(lines, "")
 		lines = append(lines, tsDocLines(m.Description, "  ")...)
@@ -189,9 +189,9 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 			lines = append(lines, "    "+p+",")
 		}
 		if service.Targeted {
-			lines = append(lines, "    options: CallOptions & { instance: string },")
+			lines = append(lines, "    options: "+optionsType+" & { instance: string },")
 		} else {
-			lines = append(lines, "    options?: CallOptions,")
+			lines = append(lines, "    options?: "+optionsType+",")
 		}
 		lines = append(lines,
 			"  ): "+resultType+" {",
@@ -206,7 +206,7 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 		}
 		fields = append(fields, "...options")
 		switch m.Stream {
-		case "server_stream":
+		case "server_stream", "duplex":
 			fields = append(fields, "itemSchema: "+registry.Name(m.OutputItem)+"Schema")
 		default:
 			fields = append(fields, "responseSchema: "+registry.Name(m.Response)+"Schema")
@@ -382,18 +382,8 @@ func tsRuntimeTypes(service *contract.Service) string {
 	if hasStream(service, "server_stream") {
 		names = append(names, "type MeshCallServerStream")
 	}
+	if hasStream(service, "duplex") {
+		names = append(names, "type MeshCallDuplexCall", "type DuplexCallOptions")
+	}
 	return strings.Join(names, ", ")
-}
-
-func requireTypeScriptStreams(service *contract.Service) error {
-	var unsupported []string
-	for _, m := range service.Methods {
-		if m.Stream == "duplex" {
-			unsupported = append(unsupported, m.Name)
-		}
-	}
-	if len(unsupported) > 0 {
-		return genError("TypeScript generation does not expose experimental duplex methods: " + strings.Join(unsupported, ", "))
-	}
-	return nil
 }

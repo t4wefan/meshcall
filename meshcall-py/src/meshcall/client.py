@@ -278,22 +278,18 @@ class ClientBase:
         request: BaseModel,
         input_type: type[BaseModel],
         output_type: type[BaseModel],
-        result_type: type[BaseModel] | None,
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
-        idempotency_key: str | None = None,
-        idempotent: bool = False,
         instance: str | None = None,
-    ) -> RpcDuplexClient[Any, Any, Any]:
+    ) -> RpcDuplexClient[Any, Any]:
+        """Open a duplex call. It is never retried and takes no idempotency key."""
         info = ClientCallInfo(
             service,
             method,
             "duplex",
-            CallOptions(
-                timeout, idle_timeout, metadata, idempotency_key, idempotent, instance
-            ),
+            CallOptions(timeout, idle_timeout, metadata, None, False, instance),
         )
 
         async def innermost(info: ClientCallInfo) -> _ClientDuplex:
@@ -304,7 +300,6 @@ class ClientBase:
                             info.service,
                             info.method,
                             request,
-                            response_type=result_type,
                             input_type=input_type,
                             output_type=output_type,
                             options=info.options,
@@ -771,11 +766,8 @@ class _ClientCall:
             if self._idle_handle is not None:
                 self._idle_handle.cancel()
                 self._idle_handle = None
-            # A pure server stream ends for its consumer when the terminal
-            # frame (with trailers) arrives; duplex consumers see the end now
-            # and read the result separately.
-            if self.input_type is not None:
-                self.output_queue.put_nowait(_STREAM_END)
+            # The consumer's iteration ends when the terminal frame (with
+            # trailers, or an error raised from the iteration) arrives.
 
     async def receive_result(self, frame: CallResultFrame) -> None:
         if self.terminal:
@@ -803,7 +795,7 @@ class _ClientCall:
             return
         if not self.result_future.done():
             self.result_future.set_result(result)
-        if self.output_type is not None and self.input_type is None:
+        if self.output_type is not None:
             self.output_queue.put_nowait(_STREAM_END)
         await self.send_credit.close(CallCancelledError("Call is complete"))
 
@@ -857,32 +849,8 @@ class _ClientServerStream(RpcServerStream[BaseModel]):
         call = await self._open_task
         await call.cancel(reason)
 
-    async def __aenter__(self) -> Self:
-        return self
 
-    async def __aexit__(self, *args: object) -> None:
-        await self.cancel()
-
-
-class _ClientDuplex(RpcDuplexClient[BaseModel, BaseModel, Any]):
-    def __init__(self, open_task: asyncio.Task[_ClientCall]) -> None:
-        self._open_task = open_task
-
-    def __aiter__(self) -> _ClientDuplex:
-        return self
-
-    async def __anext__(self) -> BaseModel:
-        call = await self._open_task
-        return await call.next_output()
-
-    @property
-    def trailers(self) -> Mapping[str, str]:
-        if not self._open_task.done() or self._open_task.cancelled():
-            return {}
-        if self._open_task.exception() is not None:
-            return {}
-        return self._open_task.result().trailers
-
+class _ClientDuplex(_ClientServerStream, RpcDuplexClient[BaseModel, BaseModel]):
     async def send(self, item: BaseModel) -> None:
         call = await self._open_task
         await call.send(item)
@@ -890,17 +858,3 @@ class _ClientDuplex(RpcDuplexClient[BaseModel, BaseModel, Any]):
     async def close_send(self) -> None:
         call = await self._open_task
         await call.close_send()
-
-    async def result(self) -> Any:
-        call = await self._open_task
-        return await call.result()
-
-    async def cancel(self, reason: str = "client_closed") -> None:
-        call = await self._open_task
-        await call.cancel(reason)
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        await self.cancel()

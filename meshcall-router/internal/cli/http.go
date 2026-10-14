@@ -140,6 +140,11 @@ func callHTTP(ctx context.Context, opts Options, c CallOptions, w io.Writer) err
 	var body io.Reader = bytes.NewReader(request)
 	contentType := "application/json"
 	if stream == "client_stream" {
+		if c.Items == nil && c.Input != nil {
+			if c.Items, err = ReadItems(c.Input); err != nil {
+				return err
+			}
+		}
 		var b bytes.Buffer
 		b.Write(request)
 		b.WriteByte('\n')

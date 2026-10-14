@@ -31,8 +31,11 @@ model-typed parameter is simply one field of it. Service names are normalised
 to carry exactly one version segment (`chat` → `chat.v0`). The Runtime operates on logical
 frames and doesn't know whether the connection is direct or routed. WebSocket
 drivers own connection setup, role handshakes, TCP/Unix endpoints, and server
-registration. Duplex remains experimental protocol/runtime plumbing and is
-intentionally omitted from the recommended usage surface.
+registration. Duplex (`@method.duplex(reason=…)` / `duplexMethod({ reason })`)
+is a restricted, opt-in shape of last resort: the handler gets a channel
+(`RpcDuplex` / `DuplexChannel`) to iterate input and `send` output, returns
+nothing, and the call is never retried, deduplicated or reachable over HTTP;
+see protocol.md → Duplex calls.
 
 Parameters named `logger` / typed `RpcLogger` and `ctx` / `context` / typed
 `RpcContext` are dependency injection, not RPC fields. They are removed while
@@ -188,7 +191,9 @@ acting as the Router) is a planned second phase.
 
 Hard rules raise at import time (`ContractError` / a thrown `Error`): service
 name shape, untyped parameters, declared-vs-inferred shape mismatches,
-`read_only` together with `destructive`. Everything else about contract
+`read_only` together with `destructive`, and the duplex rules (declared
+explicitly with a non-empty `reason`, no result value, not `idempotent` or
+`read_only`). Everything else about contract
 quality is an **advisory warning** with a stable code, a `hint` written as a
 direct instruction, and an explicit way to silence it:
 

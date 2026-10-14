@@ -10,7 +10,7 @@ from typing import cast
 
 from pydantic import BaseModel
 
-from meshcall import RpcContext, RpcInputStream, RpcServer, method, service
+from meshcall import RpcContext, RpcDuplex, RpcInputStream, RpcServer, method, service
 from meshcall.drivers import WebSocketRouterServerDriver
 from meshcall.errors import MeshCallError
 
@@ -50,6 +50,10 @@ class Ok(BaseModel):
 
 class Instance(BaseModel):
     instance: str
+
+
+class Text(BaseModel):
+    text: str
 
 
 @service("conformance.v1.Targeted", targeted=True)
@@ -129,6 +133,23 @@ class Fixture:
         ctx.set_trailer("echoed", "yes")
         ctx.set_trailer("count", str(len(ctx.metadata)))
         return Metadata(metadata=dict(ctx.metadata))
+
+    @method.duplex(reason="conformance: answers interleave with input")
+    async def chat(self, channel: RpcDuplex[Text, Text], prefix: str = "") -> None:
+        """Echo each input with ``prefix``; send ``done:<inputs>`` when input ends."""
+        count = 0
+        async for item in channel:
+            count += 1
+            await channel.send(Text(text=prefix + item.text))
+        await channel.send(Text(text=f"done:{count}"))
+
+    @method.duplex(reason="conformance: output ends before input")
+    async def announce(self, channel: RpcDuplex[Text, Text]) -> None:
+        """Send ``hello``, close the output, then read the input to its end."""
+        await channel.send(Text(text="hello"))
+        await channel.close_send()
+        async for _ in channel:
+            pass
 
     @method(destructive=True)
     async def drain_self(self, delay_ms: int = 0) -> Ok:

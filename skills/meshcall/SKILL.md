@@ -17,9 +17,9 @@ meshcall router inspect                      # services, instances, health, meth
 meshcall router inspect chat.v1.Chat --json  # one service with its full contract
 ```
 
-Each method line shows shape (`unary` / `server_stream` / `client_stream`),
-parameters, annotations (`read_only`, `idempotent`, `destructive`,
-`deprecated`) and the description. `--router ws://host:port` or
+Each method line shows shape (`unary` / `server_stream` / `client_stream` /
+`duplex`), parameters, annotations (`read_only`, `idempotent`,
+`destructive`, `deprecated`), the description and, for duplex, its reason. `--router ws://host:port` or
 `MESHCALL_ROUTER_URL` selects the Router (default `ws://127.0.0.1:8765`);
 `--auth user:pass` / `--token T` when accounts are configured.
 
@@ -29,6 +29,7 @@ parameters, annotations (`read_only`, `idempotent`, `destructive`,
 meshcall call chat.v1.Chat.send '{"session_id":"s1","text":"hi"}'
 meshcall call demo.v1.Counter.count '{"n":5}'                 # server stream: one JSON line per item
 printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{"offset":10}' --stdin
+meshcall call chat.v1.Chat.talk '{"session_id":"s1"}' --stdin   # duplex: each stdin line is sent as read
 ```
 
 Flags: `--json` (machine-readable output and errors), `--timeout 10s`,
@@ -234,6 +235,15 @@ my_app/
   Credit-based flow control is automatic, so a slow consumer slows the
   producer rather than exhausting memory. Streams are never retried: make
   the caller able to restart from a known point.
+- Duplex (`@method.duplex(reason="…")`, handler takes `channel:
+  RpcDuplex[In, Out]`, returns `None`) only when output must interleave
+  with input that keeps arriving *in one call* (a voice or chat turn that
+  is answered while the user is still sending). It gives up retry,
+  deduplication, idempotency keys, `idempotent` / `read_only`, HTTP access
+  and rebalancing (one instance for the whole call). First try a server
+  stream plus unary calls (`subscribe` + `send`), or a client stream. If you
+  use it, read output concurrently with sending (a task per direction): a
+  side that only sends stalls once the other side's credit runs out.
 - Respect cancellation and deadlines: check `ctx.remaining()` before an
   expensive step; in Python an `asyncio.CancelledError` means the caller
   left, clean up and re-raise. TypeScript handlers get `ctx.signal`.

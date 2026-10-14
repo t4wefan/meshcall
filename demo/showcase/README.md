@@ -8,5 +8,5 @@ uv run demo
 ```
 
 It covers default unary calls with expanded parameters, request-model calls,
-server streaming, client streaming, and generated Pydantic models. Duplex is
-experimental and is intentionally not part of this demo.
+server streaming, client streaming, and generated Pydantic models. Duplex is a
+restricted shape of last resort and is intentionally not part of this demo.

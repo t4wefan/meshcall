@@ -368,6 +368,14 @@ class _ServerSession:
                 f"{frame.service} is a targeted service: call.open needs instance_id",
                 details={"source": "server", "reason": "instance_required"},
             )
+        elif (
+            method.contract.stream is StreamKind.DUPLEX
+            and frame.idempotency_key is not None
+        ):
+            rejection = InvalidArgumentError(
+                "Duplex calls are never replayed and take no idempotency key",
+                details={"source": "server", "reason": "idempotency_key_on_duplex"},
+            )
         if rejection is not None:
             try:
                 await self.connection.send(

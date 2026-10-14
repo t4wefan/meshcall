@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-from meshcall import RpcInputStream, method, service
+from meshcall import RpcDuplex, RpcInputStream, method, service
 
 
 class PythonResult(BaseModel):
@@ -52,3 +52,14 @@ class PythonInteropService:
         async for item in items:
             total += item.value
         return PythonTotal(total=total)
+
+    @method.duplex(reason="interop: answers each item as it arrives")
+    async def exchange(
+        self, offset: int, channel: RpcDuplex[PythonItem, PythonItem]
+    ) -> None:
+        async for item in channel:
+            await channel.send(
+                PythonItem.model_validate(
+                    {"itemValue": item.value + offset, "status": item.status}
+                )
+            )

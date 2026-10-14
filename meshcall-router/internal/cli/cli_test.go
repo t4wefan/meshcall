@@ -53,6 +53,8 @@ func fakeInstance(t *testing.T, port int) {
 					"name": map[string]any{"type": "string"}, "times": map[string]any{"type": "integer", "default": 1}}, "required": []string{"name"}}}},
 			{"name": "count", "stream": "server_stream", "description": "Count up.", "parameters": []string{"n"}},
 			{"name": "sum", "stream": "client_stream", "description": "Add items.", "parameters": []string{}},
+			{"name": "echo", "stream": "duplex", "description": "Echo items.", "parameters": []string{},
+				"duplex_reason": "answers while the caller types"},
 		},
 	}
 	send(map[string]any{"kind": "server.register", "instance_id": "fake", "max_inflight": 4, "services": []map[string]any{{
@@ -61,6 +63,7 @@ func fakeInstance(t *testing.T, port int) {
 			{"name": "greet", "stream": "unary", "balance": map[string]any{"kind": "round_robin"}},
 			{"name": "count", "stream": "server_stream", "balance": map[string]any{"kind": "round_robin"}},
 			{"name": "sum", "stream": "client_stream", "balance": map[string]any{"kind": "round_robin"}},
+			{"name": "echo", "stream": "duplex", "balance": map[string]any{"kind": "round_robin"}},
 		},
 	}}})
 	if recv()["kind"] != "server.register.ack" {
@@ -68,6 +71,7 @@ func fakeInstance(t *testing.T, port int) {
 	}
 	go func() {
 		totals := map[string]float64{}
+		echoes := map[string]int{} // duplex calls: output sequence so far
 		for {
 			f := recv()
 			if f == nil {
@@ -101,11 +105,26 @@ func fakeInstance(t *testing.T, port int) {
 					send(map[string]any{"kind": "call.result", "call_id": id, "payload": nil})
 				case "sum":
 					send(map[string]any{"kind": "stream.window", "call_id": id, "direction": "client", "credit": 16})
+				case "echo":
+					// Little credit, so input must wait for each echo to go out.
+					echoes[id] = 0
+					send(map[string]any{"kind": "stream.window", "call_id": id, "direction": "client", "credit": 2})
 				}
 			case "stream.item":
 				payload, _ := f["payload"].(map[string]any)
+				if seq, ok := echoes[id]; ok {
+					send(map[string]any{"kind": "stream.item", "call_id": id, "direction": "server", "sequence": seq, "payload": payload})
+					send(map[string]any{"kind": "stream.window", "call_id": id, "direction": "client", "credit": 1})
+					echoes[id] = seq + 1
+					continue
+				}
 				totals[id] += payload["v"].(float64)
 			case "stream.end":
+				if _, ok := echoes[id]; ok {
+					send(map[string]any{"kind": "stream.end", "call_id": id, "direction": "server"})
+					send(map[string]any{"kind": "call.result", "call_id": id, "metadata": map[string]string{"echoed": fmt.Sprint(echoes[id])}})
+					continue
+				}
 				send(map[string]any{"kind": "call.result", "call_id": id, "payload": map[string]any{"total": totals[id]}})
 			}
 		}
@@ -164,7 +183,7 @@ func TestInspectAndCall(t *testing.T) {
 		t.Fatalf("expected invalid_argument with violation and schema hints, got %v", err)
 	}
 	if err := Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "nope"}, &out); !errors.As(err, &failure) ||
-		failure.Code != "method_not_found" || !strings.Contains(failure.Hint, "count, greet, sum") {
+		failure.Code != "method_not_found" || !strings.Contains(failure.Hint, "count, echo, greet, sum") {
 		t.Fatalf("expected method_not_found listing methods, got %v", err)
 	}
 	out.Reset()
@@ -186,5 +205,47 @@ func TestInspectAndCall(t *testing.T) {
 	parsed, err := ReadItems(strings.NewReader("{\"v\":1}\n\n{\"v\":2}\n"))
 	if err != nil || len(parsed) != 2 {
 		t.Fatalf("ReadItems: %v %v", parsed, err)
+	}
+}
+
+func TestDuplexCall(t *testing.T) {
+	r, err := router.Start(router.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	fakeInstance(t, r.Ready().Port)
+	opts := Options{Router: fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port), Timeout: 3 * time.Second}
+	ctx := context.Background()
+
+	var input strings.Builder
+	for i := 0; i < 10; i++ {
+		fmt.Fprintf(&input, "{\"i\":%d}\n\n", i)
+	}
+	var out bytes.Buffer
+	if err := Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "echo", Input: strings.NewReader(input.String()), JSON: true}, &out); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 11 || lines[0] != `{"i":0}` || lines[9] != `{"i":9}` || !strings.Contains(lines[10], `"echoed":"10"`) {
+		t.Fatalf("duplex output:\n%s", out.String())
+	}
+	var failure *Failure
+	err = Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "echo", IdempotencyKey: "k"}, &out)
+	if !errors.As(err, &failure) || failure.Code != "invalid_argument" || failure.Details["reason"] != "idempotency_key_on_duplex" {
+		t.Fatalf("expected a local refusal of the idempotency key, got %v", err)
+	}
+	err = Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "echo", Input: strings.NewReader("{\"i\":0}\nnot json\n")}, &out)
+	if err == nil || !strings.Contains(err.Error(), "input item 2 is not JSON") {
+		t.Fatalf("expected a bad input line to fail the call, got %v", err)
+	}
+	result, err := Inspect(ctx, opts, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	FormatInspect(result, &out)
+	if !strings.Contains(out.String(), "duplex         echo()  — Echo items.  (duplex: answers while the caller types)") {
+		t.Fatalf("inspect does not show the duplex reason:\n%s", out.String())
 	}
 }

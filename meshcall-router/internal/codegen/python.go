@@ -209,17 +209,13 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 		default: // duplex
 			input := registry.Name(requiredRef(m.InputItem, m.Name+" input item"))
 			output := registry.Name(requiredRef(m.OutputItem, m.Name+" output item"))
-			result := "None"
-			if m.Response != nil {
-				result = registry.Name(m.Response)
-			}
 			lines = append(lines, "    def "+m.Name+"(", "        self,")
 			lines = append(lines, indented(params)...)
 			lines = append(lines, kwargs()...)
-			lines = append(lines, "    ) -> RpcDuplexClient["+input+", "+output+", "+result+"]:")
+			lines = append(lines, "    ) -> RpcDuplexClient["+input+", "+output+"]:")
 			lines = append(lines, pyDocstringLines(m.Description, "        ")...)
 			lines = append(lines, pyRequestLines(m, request)...)
-			lines = append(lines, tail("        return self.call_duplex(", input, output, result)...)
+			lines = append(lines, tail("        return self.call_duplex(", input, output)...)
 		}
 	}
 	return lines

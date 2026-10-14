@@ -975,3 +975,27 @@ func TestSupersetRegistrationsRoutePerMethod(t *testing.T) {
 		t.Fatalf("expected method_not_found after b left, got %+v", got)
 	}
 }
+
+func TestDuplexRefusesIdempotencyKeys(t *testing.T) {
+	r := runningRouter(t, nil)
+	server := dial(t, r, "")
+	hello(t, server, "server", "s")
+	send(t, server, frame{Kind: "server.register", InstanceID: "s", Services: []service{
+		{Name: testService, Methods: []method{{Name: "chat", Stream: "duplex", Balance: balance{Kind: "round_robin"}}}},
+	}})
+	if got := receive(t, server); got.Kind != "server.register.ack" {
+		t.Fatalf("registration: %+v", got)
+	}
+	client := dial(t, r, "")
+	hello(t, client, "client", "client")
+	send(t, client, frame{Kind: "call.open", CallID: "d1", Service: testService, Method: "chat", Idempotency: "k", Payload: json.RawMessage(`{}`)})
+	got := receive(t, client)
+	if got.Error == nil || got.Error.Code != "invalid_argument" || !bytes.Contains(got.Error.Details, []byte(`"reason":"idempotency_key_on_duplex"`)) {
+		t.Fatalf("expected idempotency_key_on_duplex, got %+v", got)
+	}
+	// Without a key the call is routed.
+	send(t, client, frame{Kind: "call.open", CallID: "d2", Service: testService, Method: "chat", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, server); got.Kind != "call.open" || got.CallID != "d2" {
+		t.Fatalf("d2 not routed: %+v", got)
+	}
+}

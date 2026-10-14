@@ -10,6 +10,7 @@ const {
   clientStreamMethod,
   defineService,
   defineType,
+  duplexMethod,
   unaryMethod,
   serverStreamMethod,
   writeContract,
@@ -79,6 +80,15 @@ const service = defineService({
         let product = payload.value;
         for await (const item of items) product += item.value * payload.factor;
         return { product, handled_by: handledBy };
+      },
+    }),
+    exchange: duplexMethod({
+      request, inputItem: item, outputItem: item,
+      reason: "interop: answers each item as it arrives",
+      handler: async (payload, channel) => {
+        for await (const item of channel) {
+          await channel.send({ value: item.value * payload.factor, handled_by: handledBy });
+        }
       },
     }),
   },

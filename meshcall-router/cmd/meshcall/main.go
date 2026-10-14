@@ -57,9 +57,9 @@ func run(args []string) error {
 	global.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: meshcall [--router URL] [--auth user:pass | --token T] [--json] [--timeout D] <command>")
 		fmt.Fprintln(os.Stderr, "  router inspect [service]       list services, instances, health and methods")
-		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; client streams read JSON lines from stdin")
+		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; with --stdin, client streams and duplex calls read JSON lines from stdin")
 		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D   --instance ID")
-		fmt.Fprintln(os.Stderr, "    --http  call through the Router's HTTP entry point (not for duplex)")
+		fmt.Fprintln(os.Stderr, "    --stdin  input items as JSON lines (a duplex call sends each line as it is read)   --http  through the Router's HTTP entry point (not for duplex)")
 		fmt.Fprintln(os.Stderr, "  generate <contract.json|module:Class> --output PATH [--language python|typescript] [--single-file]")
 		fmt.Fprintln(os.Stderr, "    [--service NAME] [--class-name N] [--package-name N] [--package-version V]")
 		fmt.Fprintln(os.Stderr, "    [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]")
@@ -184,11 +184,7 @@ func run(args []string) error {
 			}
 		}
 		if callFlags.stdinItems {
-			items, err := cli.ReadItems(os.Stdin)
-			if err != nil {
-				return err
-			}
-			call.Items = items
+			call.Input = os.Stdin
 		}
 		return cli.Call(ctx, opts, call, os.Stdout)
 	default:

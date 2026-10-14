@@ -227,4 +227,4 @@ def test_python_package_generation_preserves_all_stream_shapes(
     assert "def duplex(" in source
     assert "RpcServerStream[Item]" in source
     assert "AsyncIterable[Item]" in source
-    assert "RpcDuplexClient[Item, Item, Result]" in source
+    assert "RpcDuplexClient[Item, Item]" in source

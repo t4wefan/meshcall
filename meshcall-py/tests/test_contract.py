@@ -46,13 +46,14 @@ class TestService:
     ) -> Result:
         return Result(total=request.value)
 
-    @method.duplex()
+    @method.duplex(reason="items flow both ways while the call is open")
     async def duplex(
         self,
         request: Request,
         channel: RpcDuplex[Item, Item],
-    ) -> Result:
-        return Result(total=request.value)
+    ) -> None:
+        async for item in channel:
+            await channel.send(item)
 
 
 def test_extracts_all_method_shapes() -> None:

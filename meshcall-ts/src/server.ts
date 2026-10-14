@@ -25,7 +25,7 @@ import type { RouterCredentials } from "./router-auth.js";
 
 export type {
   ClientStreamMethod, RpcContext, ServerCallNext, ServerInterceptor, ServerStreamMethod,
-  ServiceDefinition, ServiceMethod, UnaryContext, UnaryMethod,
+  ServiceDefinition, ServiceMethod, UnaryContext, UnaryMethod, DuplexMethod, DuplexChannel,
 } from "./service.js";
 
 export interface RouterConnectionOptions {
@@ -120,7 +120,7 @@ export class MeshCallServer {
       if (services.has(service.name)) throw new Error("Duplicate service name: " + service.name);
       const methods = new Map<string, RuntimeMethod>();
       for (const [name, definition] of Object.entries(service.methods)) {
-        if (!["unary", "server_stream", "client_stream"].includes(definition.stream)) {
+        if (!["unary", "server_stream", "client_stream", "duplex"].includes(definition.stream)) {
           throw new TypeError("Unsupported service method shape: " + definition.stream);
         }
         methods.set(name, { definition, validators: compileMethod(definition) });

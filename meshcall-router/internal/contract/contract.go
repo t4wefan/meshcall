@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Document is a portable contract: one or more services.
@@ -45,7 +46,9 @@ type Method struct {
 	Description *string
 	Annotations Annotations
 	Deprecated  *string
-	Raw         *Object
+	// DuplexReason says why a duplex method needs the shape; duplex only.
+	DuplexReason *string
+	Raw          *Object
 }
 
 type Service struct {
@@ -150,14 +153,15 @@ func parseService(obj *Object) (*Service, error) {
 
 func parseMethod(obj *Object) (*Method, error) {
 	m := &Method{
-		Name:        obj.Str("name"),
-		Stream:      obj.Str("stream"),
-		Parameters:  obj.Strings("parameters"),
-		Balance:     parseBalance(obj.Obj("balance")),
-		Binding:     obj.Str("binding"),
-		Description: optionalString(obj, "description"),
-		Deprecated:  optionalString(obj, "deprecated"),
-		Raw:         obj,
+		Name:         obj.Str("name"),
+		Stream:       obj.Str("stream"),
+		Parameters:   obj.Strings("parameters"),
+		Balance:      parseBalance(obj.Obj("balance")),
+		Binding:      obj.Str("binding"),
+		Description:  optionalString(obj, "description"),
+		Deprecated:   optionalString(obj, "deprecated"),
+		DuplexReason: optionalString(obj, "duplex_reason"),
+		Raw:          obj,
 	}
 	if m.Name == "" {
 		return nil, errors.New("method needs a name")
@@ -191,7 +195,32 @@ func parseMethod(obj *Object) (*Method, error) {
 		m.Annotations.ReadOnly, _ = a.Values["read_only"].(bool)
 		m.Annotations.Destructive, _ = a.Values["destructive"].(bool)
 	}
+	if err := checkDuplex(m); err != nil {
+		return nil, err
+	}
 	return m, nil
+}
+
+// checkDuplex applies the duplex restrictions (docs/protocol.md → Duplex
+// calls) so no generator emits a client for a method that breaks them.
+func checkDuplex(m *Method) error {
+	if m.Stream != "duplex" {
+		if m.DuplexReason != nil {
+			return fmt.Errorf("method %s: duplex_reason on a %s method", m.Name, m.Stream)
+		}
+		return nil
+	}
+	switch {
+	case m.DuplexReason == nil || strings.TrimSpace(*m.DuplexReason) == "":
+		return fmt.Errorf("method %s: a duplex method needs duplex_reason", m.Name)
+	case m.Response != nil:
+		return fmt.Errorf("method %s: a duplex method has no response", m.Name)
+	case m.InputItem == nil || m.OutputItem == nil:
+		return fmt.Errorf("method %s: a duplex method needs input_item and output_item", m.Name)
+	case m.Annotations.Idempotent || m.Annotations.ReadOnly:
+		return fmt.Errorf("method %s: a duplex method cannot be idempotent or read_only", m.Name)
+	}
+	return nil
 }
 
 func parseTypeRef(obj *Object) (*TypeRef, error) {

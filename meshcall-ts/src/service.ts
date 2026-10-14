@@ -53,11 +53,39 @@ export interface ClientStreamMethod<Request = unknown, Item = unknown, Response 
   ) => Response | Promise<Response>;
 }
 
+/**
+ * What a duplex handler receives: iterate it for input items and `send`
+ * output items while doing so. Returning from the handler closes the output
+ * and ends the call; `closeSend` closes the output earlier while input is
+ * still being read.
+ */
+export interface DuplexChannel<Input, Output> extends AsyncIterable<Input> {
+  send(item: Output): Promise<void>;
+  closeSend(): Promise<void>;
+}
+
+/**
+ * Input and output stream at the same time: the shape of last resort (see
+ * `duplexMethod`). There is no result value.
+ */
+export interface DuplexMethod<Request = unknown, Input = unknown, Output = unknown> {
+  readonly stream: "duplex";
+  readonly balance?: BalancePolicy;
+  /** Why a server stream plus unary calls, or a client stream, will not do. */
+  readonly reason: string;
+  readonly handler: (
+    request: Request,
+    channel: DuplexChannel<Input, Output>,
+    context: RpcContext,
+  ) => void | Promise<void>;
+}
+
 // Handler payload types are erased only after their contracts have been compiled.
 export type ServiceMethod =
   | UnaryMethod<any, any>
   | ServerStreamMethod<any, any>
-  | ClientStreamMethod<any, any, any>;
+  | ClientStreamMethod<any, any, any>
+  | DuplexMethod<any, any, any>;
 
 export interface ServiceDefinition {
   readonly name: string;
@@ -74,7 +102,7 @@ export interface ServiceDefinition {
 /**
  * Runs the rest of the server chain: later interceptors, then the handler.
  * Resolves after the whole call, including every streamed item, with the
- * handler's final result (`null` for server streams). Handler and runtime
+ * handler's final result (`null` for server streams and duplex calls). Handler and runtime
  * errors reject through it.
  */
 export type ServerCallNext = () => Promise<unknown>;

@@ -158,9 +158,8 @@ async def test_router_balancing_and_stream_forwarding_over_tcp() -> None:
             await channel.send(NumberItem(value=value))
         await channel.close_send()
         assert [item.value async for item in channel] == [
-            value * 2 for value in range(20)
+            10 + value * 2 for value in range(20)
         ]
-        assert await channel.result() == NumberResult(total=200)
 
         interrupted = asyncio.create_task(
             route_client.least_inflight(RouteRequest(delay=1))

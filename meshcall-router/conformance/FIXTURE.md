@@ -6,7 +6,7 @@ using the instance id in `MESHCALL_CONFORMANCE_INSTANCE` and a keepalive ping
 interval of `MESHCALL_PING_INTERVAL_MS` milliseconds. The program keeps running
 until it is drained (see `drain_self`) or killed. It must start under
 `MESHCALL_STRICT=1`, so every method needs a description and mutating ones an
-annotation.
+annotation; duplex methods need a reason.
 
 | Method | Shape | Request | Response | Behaviour |
 | --- | --- | --- | --- | --- |
@@ -20,6 +20,8 @@ annotation.
 | `sum` | client stream | `offset: int = 0`, items `{value}` | `{total}` | `offset + Σ value` |
 | `metadata_echo` | unary | — | `{metadata: {str: str}}` | returns the call metadata; sets trailers `echoed="yes"` and `count=<number of metadata keys>` |
 | `drain_self` | unary | `delay_ms: int = 0` | `{ok: true}` | schedules `stop(drain=True)` after `delay_ms`, then exits the process |
+| `chat` | duplex | `prefix: str = ""`, items `{text}` | items `{text}` | sends `{text: prefix + text}` for each input as it arrives; when the input ends, sends `{text: "done:<inputs>"}` and returns |
+| `announce` | duplex | — , items `{text}` | items `{text}` | sends `{text: "hello"}`, closes its output, then reads the input to its end and returns |
 
 The program also registers `conformance.v1.Targeted` with `targeted: true`
 and one method, `whoami` (unary, read-only, no parameters), returning

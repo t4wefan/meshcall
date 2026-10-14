@@ -11,6 +11,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/t4wefan/meshcall/meshcall-router/internal/wire"
@@ -154,6 +155,9 @@ func FormatInspect(result map[string]any, w io.Writer) {
 			if d, ok := m["description"].(string); ok && d != "" {
 				line += "  — " + firstLine(d)
 			}
+			if reason, ok := m["duplex_reason"].(string); ok {
+				line += "  (duplex: " + firstLine(reason) + ")"
+			}
 			// A method on a subset of instances is a rolling upgrade in progress.
 			if on := asList(m["instances"]); len(on) > 0 && len(on) < len(instances) {
 				ids := make([]string, 0, len(on))
@@ -193,6 +197,10 @@ type CallOptions struct {
 	Instance string
 	// Items feeds a client stream; each element is one item payload.
 	Items []any
+	// Input, when set, supplies items as JSON lines: read whole for a client
+	// stream (unless Items is set), line by line as they arrive for a duplex
+	// call. A duplex call without Input sends no items.
+	Input io.Reader
 	// JSON prints machine-readable lines instead of text.
 	JSON bool
 	// HTTP calls through the Router's HTTP entry point instead of WebSocket.
@@ -236,6 +244,16 @@ func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
 	}
 	stream, _ := method["stream"].(string)
 	hints := callHints{schema: requestHint(described, c.Method), instances: instanceHint(described)}
+	if stream == "duplex" && c.IdempotencyKey != "" {
+		return &Failure{Code: "invalid_argument", Message: "duplex calls take no idempotency key",
+			Details: map[string]any{"source": "client", "reason": "idempotency_key_on_duplex"},
+			Hint:    "a duplex call is never retried or deduplicated; drop --idempotency-key"}
+	}
+	if stream == "client_stream" && c.Items == nil && c.Input != nil {
+		if c.Items, err = ReadItems(c.Input); err != nil {
+			return err
+		}
+	}
 	extra := wire.Frame{}
 	if c.Timeout > 0 {
 		extra["timeout_ms"] = c.Timeout.Milliseconds()
@@ -275,7 +293,7 @@ func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
 	case "client_stream":
 		return streamIn(conn, id, c, w, hints)
 	case "duplex":
-		return &Failure{Code: "unimplemented", Message: "duplex calls are not supported by the CLI"}
+		return duplex(conn, id, c, w, hints)
 	default:
 		f, err := waitTerminal(conn, id, c.Timeout)
 		if err != nil {
@@ -364,6 +382,103 @@ func streamIn(conn *wire.Conn, id string, c CallOptions, w io.Writer, hint callH
 		return err
 	}
 	return emitTerminal(f, c, w, hint)
+}
+
+// duplex sends stdin lines as input items, one per credit, while printing
+// output items as they arrive; stdin's end half-closes the input. There is
+// no wait limit without --timeout: an interactive session may idle.
+func duplex(conn *wire.Conn, id string, c CallOptions, w io.Writer, hint callHints) error {
+	var credit atomic.Int64
+	granted := make(chan struct{}, 1)
+	done := make(chan struct{})
+	defer close(done)
+	var failure atomic.Pointer[error]
+	go func() {
+		fail := func(err error) {
+			failure.Store(&err)
+			_ = conn.Send(wire.Frame{"kind": "call.cancel", "call_id": id, "reason": "invalid_input"})
+			conn.Close()
+		}
+		sequence := 0
+		if c.Input != nil {
+			scanner := bufio.NewScanner(c.Input)
+			scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if line == "" {
+					continue
+				}
+				var item any
+				if err := json.Unmarshal([]byte(line), &item); err != nil {
+					fail(fmt.Errorf("input item %d is not JSON: %w", sequence+1, err))
+					return
+				}
+				for credit.Load() == 0 {
+					select {
+					case <-granted:
+					case <-done:
+						return
+					}
+				}
+				credit.Add(-1)
+				if conn.Send(wire.Frame{"kind": "stream.item", "call_id": id, "direction": "client", "sequence": sequence, "payload": item}) != nil {
+					return
+				}
+				sequence++
+			}
+			if err := scanner.Err(); err != nil {
+				fail(err)
+				return
+			}
+		}
+		_ = conn.Send(wire.Frame{"kind": "stream.end", "call_id": id, "direction": "client"})
+	}()
+	if err := conn.Send(wire.Frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": windowCredit}); err != nil {
+		return err
+	}
+	wait := 24 * time.Hour
+	if c.Timeout > 0 {
+		wait = c.Timeout + 2*time.Second
+	}
+	consumed := 0
+	for {
+		f, err := conn.RecvWithin(wait)
+		if p := failure.Load(); p != nil {
+			return *p
+		}
+		if errors.Is(err, wire.ErrNoFrame) {
+			return &Failure{Code: "deadline_exceeded", Message: "no answer from the service"}
+		}
+		if err != nil {
+			return err
+		}
+		if f["call_id"] != id {
+			continue
+		}
+		switch f["kind"] {
+		case "stream.window":
+			credit.Add(int64(number(f["credit"])))
+			select {
+			case granted <- struct{}{}:
+			default:
+			}
+		case "stream.item":
+			line, _ := json.Marshal(f["payload"])
+			fmt.Fprintln(w, string(line))
+			if consumed++; consumed%(windowCredit/2) == 0 {
+				if err := conn.Send(wire.Frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": windowCredit / 2}); err != nil {
+					return err
+				}
+			}
+		case "call.result":
+			if len(asMap(f["metadata"])) == 0 {
+				return nil
+			}
+			return emitTerminal(f, c, w, hint)
+		case "call.error":
+			return emitTerminal(f, c, w, hint)
+		}
+	}
 }
 
 func waitTerminal(conn *wire.Conn, id string, timeout time.Duration) (wire.Frame, error) {
