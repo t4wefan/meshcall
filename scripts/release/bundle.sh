@@ -46,9 +46,11 @@ node_cpu() {
 SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
 optional="{"
-for archive in "$DIST"/meshcall-router_"$VERSION"_*.tar.gz; do
+# Archive names end in _<os>_<arch>.tar.gz; the version in between is
+# GoReleaser's (a snapshot locally, the tag in a release) and is ignored here.
+for archive in "$DIST"/meshcall-router_*_*_*.tar.gz; do
   name=$(basename "$archive" .tar.gz)
-  os=${name#meshcall-router_"$VERSION"_}; arch=${os#*_}; os=${os%_*}
+  arch=${name##*_}; rest=${name%_*}; os=${rest##*_}
   dir="$SCRATCH/$os-$arch"; mkdir -p "$dir"
   tar -xzf "$archive" -C "$dir"
   if [[ " $TARGETS " == *" python "* ]]; then

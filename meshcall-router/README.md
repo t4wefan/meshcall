@@ -14,7 +14,7 @@ go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-rout
 
 Only building requires Go. Each tagged release publishes prebuilt binaries for
 Linux (amd64, arm64, 386, armv7, riscv64, ppc64le, s390x), macOS (amd64,
-arm64), Windows (amd64, arm64, 386) and FreeBSD (amd64, arm64, riscv64) with
+arm64), Windows (amd64, arm64, 386) and FreeBSD (amd64, arm64) with
 a `checksums.txt`, and the
 same binaries are bundled into the SDK packages (`scripts/release/bundle.sh`):
 a PyPI platform wheel per target and an npm `meshcall-router-<os>-<cpu>`

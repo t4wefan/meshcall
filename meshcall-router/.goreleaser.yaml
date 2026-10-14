@@ -56,6 +56,8 @@ builds:
         goarch: ppc64le
       - goos: freebsd
         goarch: s390x
+      - goos: freebsd
+        goarch: riscv64
 
   - id: meshcall
     main: ./cmd/meshcall
@@ -106,6 +108,8 @@ builds:
         goarch: ppc64le
       - goos: freebsd
         goarch: s390x
+      - goos: freebsd
+        goarch: riscv64
 
 archives:
   - id: default

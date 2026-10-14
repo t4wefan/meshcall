@@ -71,7 +71,7 @@ There is one `meshcall` command, written in Go and released together with the
 Router. Both binaries ship inside the SDK packages for every platform Go
 builds for (Linux glibc and musl on x86_64, aarch64, i686, armv7l, riscv64,
 ppc64le and s390x; macOS and Windows on amd64 and arm64, Windows i686;
-FreeBSD via npm): PyPI publishes a platform wheel per target and npm installs a matching
+FreeBSD amd64 and arm64 via npm): PyPI publishes a platform wheel per target and npm installs a matching
 `meshcall-router-<os>-<cpu>` package as an optional dependency, so
 `uv run meshcall …` and `npx meshcall …` run the bundled binary with no
 download. On a platform without a prebuilt binary they fall back to fetching
