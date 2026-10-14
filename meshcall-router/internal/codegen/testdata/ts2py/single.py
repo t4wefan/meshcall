@@ -102,6 +102,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> GreetingResult:
         """Greet name repeat times and say which runtime answered."""
         request = GreetingRequest(
@@ -117,5 +118,6 @@ class TypeScriptGreetingServiceClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
             idempotent=True,
         )

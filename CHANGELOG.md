@@ -8,6 +8,12 @@ and are released together from a `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- Generated Python unary methods take `idempotency_key=` (TypeScript
+  methods already accept `idempotencyKey` in their options), so retry-safe
+  mutating calls no longer need `ClientBase.call_*`.
+
 ## [0.1.0] - 2026-10-14
 
 First public release of the `meshcall/1` protocol, the Python and TypeScript

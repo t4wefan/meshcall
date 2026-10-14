@@ -136,6 +136,9 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 		if m.Annotations.Idempotent {
 			idempotent = []string{"            idempotent=True,"}
 		}
+		// Only unary calls are deduplicated and retried on their key, so only
+		// unary methods take one; streams can still pass it through call_*.
+		keyed := m.Stream == "unary"
 		tail := func(call string, args ...string) []string {
 			out := []string{call, "            self.service_name,", "            " + pyStringRepr(m.Name) + ",", "            request,"}
 			for _, a := range args {
@@ -146,17 +149,24 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 				"            idle_timeout=idle_timeout,",
 				"            metadata=metadata,",
 				"            instance=instance,")
+			if keyed {
+				out = append(out, "            idempotency_key=idempotency_key,")
+			}
 			out = append(out, idempotent...)
 			return append(out, "        )")
 		}
 		kwargs := func() []string {
-			return []string{
+			out := []string{
 				"        *,",
 				instanceParam,
 				"        timeout: float | None = None,",
 				"        idle_timeout: float | None = None,",
 				"        metadata: Mapping[str, str] | None = None,",
 			}
+			if keyed {
+				out = append(out, "        idempotency_key: str | None = None,")
+			}
+			return out
 		}
 		indented := func(items []string) []string {
 			out := make([]string, len(items))

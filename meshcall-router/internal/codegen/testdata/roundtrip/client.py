@@ -20,6 +20,7 @@ class ContractRoundTripClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> AliasResult:
         request = ContractRoundTripEchoRequest(
             request=request,
@@ -33,6 +34,7 @@ class ContractRoundTripClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
         )
 
     def download(

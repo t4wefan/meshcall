@@ -21,6 +21,7 @@ class LlmServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> NewSessionResponse:
         """Create a session and return it; each call creates a new one."""
         request = LlmServiceNewSessionRequest(
@@ -35,6 +36,7 @@ class LlmServiceClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
         )
 
     async def list_sessions(
@@ -44,6 +46,7 @@ class LlmServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> ListSessionsResponse:
         """List the sessions held in this process."""
         request = LlmServiceListSessionsRequest()
@@ -56,6 +59,7 @@ class LlmServiceClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
             idempotent=True,
         )
 
@@ -67,6 +71,7 @@ class LlmServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> TokenCountResponse:
         """Count simple lexical tokens; this deliberately is not a model tokenizer."""
         request = LlmServiceCountTokensRequest(
@@ -81,6 +86,7 @@ class LlmServiceClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
             idempotent=True,
         )
 

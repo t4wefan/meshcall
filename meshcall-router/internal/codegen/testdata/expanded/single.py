@@ -30,6 +30,7 @@ class ExpandedServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> ExpandedResult:
         request = ExpandedServiceAddRequest(
             left=left,
@@ -44,4 +45,5 @@ class ExpandedServiceClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
         )

@@ -19,6 +19,7 @@ class GreetingServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> GreetingResult:
         request = GreetingServiceGreetRequest(
             request=request,
@@ -32,4 +33,5 @@ class GreetingServiceClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
         )

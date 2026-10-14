@@ -68,6 +68,7 @@ class ShowcaseServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> GreetingResult:
         """Parameters are the request: ``name`` and ``repeat`` are its fields."""
         request = ShowcaseServiceGreetRequest(
@@ -83,6 +84,7 @@ class ShowcaseServiceClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
             idempotent=True,
         )
 
@@ -94,6 +96,7 @@ class ShowcaseServiceClient(ClientBase):
         timeout: float | None = None,
         idle_timeout: float | None = None,
         metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
     ) -> WelcomeResult:
         """A model-typed parameter is just one field of the request."""
         request = ShowcaseServiceWelcomeRequest(
@@ -108,6 +111,7 @@ class ShowcaseServiceClient(ClientBase):
             idle_timeout=idle_timeout,
             metadata=metadata,
             instance=instance,
+            idempotency_key=idempotency_key,
             idempotent=True,
         )
 
