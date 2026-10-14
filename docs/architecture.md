@@ -30,7 +30,8 @@ generated Pydantic request model for validation and transport, and a
 model-typed parameter is simply one field of it. Service names are normalised
 to carry exactly one version segment (`chat` → `chat.v0`). The Runtime operates on logical
 frames and doesn't know whether the connection is direct or routed. WebSocket
-drivers own connection setup, role handshakes, TCP/Unix endpoints, and server
+drivers own connection setup, role handshakes, TCP and local (Unix socket /
+Windows named pipe, `unix_path=` / `pipe=`) endpoints, and server
 registration. Duplex (`@method.duplex(reason=…)` / `duplexMethod({ reason })`)
 is a restricted, opt-in shape of last resort: the handler gets a channel
 (`RpcDuplex` / `DuplexChannel`) to iterate input and `send` output, returns
@@ -72,8 +73,8 @@ Unary, server-streaming, and client-streaming handlers receive a call-bound
 logger and abort signal. Declared schemas validate requests, responses, and
 stream items; raw legacy handlers without schemas remain unchecked.
 
-TypeScript supports TCP and Unix sockets for clients, Direct servers, and
-Router service connections. Both languages use the same Go Router; its
+TypeScript supports TCP and the local transport (`unixPath`, or `pipe` on
+Windows) for clients, Direct servers, and Router service connections. Both languages use the same Go Router; its
 process is launched by thin Python/TypeScript wrappers. Its registry, account
 authentication, scoped token RPC and failure boundaries are described in
 [Router architecture](router.md).

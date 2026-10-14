@@ -5,6 +5,13 @@
 MeshCall transports JSON frames over an ordered, reliable connection. WebSocket
 is the first transport, but the rules in this document are transport-independent.
 
+WebSocket runs over TCP, or over the platform's local transport: a Unix socket
+on Linux, macOS and FreeBSD, a named pipe (`\\.\pipe\NAME`) on Windows.
+Each platform has exactly one local transport; the other is refused with a
+hint. The WebSocket upgrade, frames and HTTP calls are identical on all of
+them. Tools write the endpoints as `ws://host:port`, `unix:///path` and
+`pipe://NAME`.
+
 ## Connection handshake
 
 The first frame sent by a connection is `hello`. Its role is either `client` or

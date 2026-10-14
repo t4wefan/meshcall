@@ -38,6 +38,15 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Windows named pipes (#29), Windows' local transport in place of Unix
+  sockets: `meshcall-router --pipe NAME` (`MESHCALL_ROUTER_PIPE`), `pipe=` /
+  `pipe:` on the Python and TypeScript Router launchers, clients and
+  servers, and `--router pipe://NAME` (and `unix:///path`) in the CLI. A
+  pipe admits only the Router's user, SYSTEM and Administrators. Each
+  platform refuses the other's local transport with a hint. CI runs the Go,
+  Python and TypeScript suites, interop and conformance on Windows, over a
+  pipe and TCP; conformance also runs over the local transport elsewhere
+  (`meshcall-conformance --transport local`).
 - Duplex in TypeScript: `duplexMethod`, `MeshCallClient.duplex()` returning
   `MeshCallDuplexCall` (`send`, `closeSend`, async iteration, `cancel`),
   generated TypeScript clients for duplex methods, and `meshcall call

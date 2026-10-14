@@ -19,8 +19,8 @@ flowchart LR
 ```
 
 Choose one launcher, or launch the binary directly. Clients and services initiate
-WebSocket connections to the Router. TCP and Unix sockets carry the same logical
-frames. See [building and deploying the executable](../meshcall-router/README.md).
+WebSocket connections to the Router. TCP and the local transport (a Unix socket,
+or a named pipe on Windows) carry the same logical frames. See [building and deploying the executable](../meshcall-router/README.md).
 
 ## Registration and routing
 
@@ -250,7 +250,9 @@ headers; see the [upstream changelog](https://websockets.readthedocs.io/en/stabl
 Node clients do not follow redirects by default.
 
 Use `wss://` through a TLS reverse proxy across a network. The Go listener does
-not terminate TLS itself. The same checks apply to Unix sockets. Browser-native
+not terminate TLS itself. The same checks apply to Unix sockets and named
+pipes; a named pipe admits only the Router's own user, SYSTEM and
+Administrators, as a Unix socket's file mode does. Browser-native
 WebSocket credential transport, JWT, and an external login system are outside
 this version; the current launchers and clients run in Python or Node.
 
@@ -469,7 +471,7 @@ implement balancing or need to know the individual service addresses.
 ## Verification
 
 The headless cross-language suite verifies all three recommended call shapes
-through generated clients, Direct TCP/Unix endpoints, Router TCP/Unix endpoints,
+through generated clients, Direct TCP/local endpoints, Router TCP/local endpoints,
 multiple TypeScript instances, stream pinning, instance-disconnect cleanup, both
 launchers, and tokens issued and consumed across languages:
 

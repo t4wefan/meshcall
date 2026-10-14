@@ -186,6 +186,53 @@ jobs:
       - name: Python and TypeScript runtimes pass the protocol conformance suite
         run: scripts/check.sh conformance
 
+  windows:
+    # Windows' local transport is a named pipe (#29): the Router, both
+    # runtimes, interop and conformance all run here over a pipe and TCP.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      MESHCALL_ROUTER_BINARY: ${{ github.workspace }}\meshcall-router\bin\meshcall-router.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: meshcall-router/go.mod
+          cache-dependency-path: meshcall-router/go.sum
+      - name: Go tests and binaries
+        working-directory: meshcall-router
+        run: |
+          go vet ./...
+          go test ./...
+          go build -o bin/meshcall-router.exe ./cmd/meshcall-router
+          go build -o bin/meshcall.exe ./cmd/meshcall
+          go build -o bin/meshcall-conformance.exe ./cmd/meshcall-conformance
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: meshcall-ts/yarn.lock
+      - run: yarn install --frozen-lockfile && yarn test
+        working-directory: meshcall-ts
+      - run: uv sync --frozen && uv run --no-sync pytest -q
+        working-directory: meshcall-py
+        env:
+          MESHCALL_RUN_INTEROP: "1"
+      - name: Conformance over a named pipe and over TCP
+        run: |
+          for transport in local tcp; do
+            meshcall-router/bin/meshcall-conformance.exe --transport $transport \
+              --fixture "uv run --project meshcall-py --locked python meshcall-py/conformance/fixture.py"
+            meshcall-router/bin/meshcall-conformance.exe --transport $transport \
+              --fixture "node meshcall-ts/dist/conformance/fixture.js"
+          done
+
   packaging:
     needs: router
     runs-on: ubuntu-latest
