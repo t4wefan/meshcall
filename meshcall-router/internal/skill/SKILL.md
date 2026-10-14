@@ -253,6 +253,10 @@ my_app/
   stays reachable for diagnosis but also stays blamed by its callers.
 - Set `max_inflight` on instances with a real capacity limit (GPU, DB pool)
   so the Router routes around full instances instead of queueing on them.
+- Leave balancing on the default `adaptive` policy: it minimises expected
+  completion time from observed service times, queue depth and path RTT.
+  Pick `sticky` only for session affinity, `round_robin` only when you need
+  determinism, `disabled` for a singleton.
 - Point services and clients at **all** Routers (`[uri1, uri2]`); no
   Router-side coordination is needed.
 - Keep `MESHCALL_STRICT=1` in CI so missing descriptions and unannotated

@@ -69,6 +69,10 @@ type peer struct {
 	maxInflight int // 0 = unlimited
 	health      health
 	draining    bool
+	// Adaptive scheduling inputs: per-method service-time estimates and the
+	// round trip to reach this instance (zero on this Router).
+	stats map[string]*methodStats
+	rtt   time.Duration
 }
 
 func (p *peer) send(f frame) {
@@ -106,6 +110,8 @@ type route struct {
 	id       string
 	client   *peer
 	instance *peer
+	method   string
+	started  time.Time
 	deadline time.Time
 	index    int         // position in Router.deadlines, or -1
 	dedup    *dedupEntry // set when the call carries an idempotency key
@@ -127,11 +133,13 @@ type Router struct {
 	deadlines    deadlineHeap
 	deadlineWake chan struct{}
 	dedup        map[string]*dedupEntry
-	dedupOrder   *list.List
-	wg           sync.WaitGroup
-	closeOnce    sync.Once
-	done         chan struct{}
-	ready        Ready
+	// pick draws random indices for balancing; tests make it deterministic.
+	pick       func(n int) int
+	dedupOrder *list.List
+	wg         sync.WaitGroup
+	closeOnce  sync.Once
+	done       chan struct{}
+	ready      Ready
 }
 
 func Start(config Config) (*Router, error) {
@@ -207,6 +215,7 @@ func Start(config Config) (*Router, error) {
 		services: make(map[string]*pool), routes: make(map[string]*route), done: make(chan struct{}),
 		deadlineWake: make(chan struct{}, 1),
 		dedup:        make(map[string]*dedupEntry),
+		pick:         defaultPick,
 		dedupOrder:   list.New(),
 	}
 	r.wg.Add(1)
@@ -489,7 +498,7 @@ func (r *Router) register(p *peer, f frame) error {
 		methods := make(map[string]bool)
 		for _, m := range s.Methods {
 			if m.Name == "" || methods[m.Name] || !slices.Contains([]string{"unary", "server_stream", "client_stream", "duplex"}, m.Stream) ||
-				!slices.Contains([]string{"round_robin", "least_inflight", "random", "sticky", "disabled"}, m.Balance.Kind) {
+				!slices.Contains([]string{"adaptive", "round_robin", "least_inflight", "random", "sticky", "disabled"}, m.Balance.Kind) {
 				return errors.New("invalid method registration")
 			}
 			if m.Balance.Kind == "sticky" && (m.Balance.Key == nil || !strings.HasPrefix(*m.Balance.Key, "request.") || strings.HasSuffix(*m.Balance.Key, ".")) {
@@ -589,7 +598,7 @@ func (r *Router) forward(p *peer, f frame) {
 			p.send(*errorFrame)
 			return
 		}
-		rt := &route{id: f.CallID, client: p, instance: instance, index: -1}
+		rt := &route{id: f.CallID, client: p, instance: instance, method: f.Method, started: time.Now(), index: -1}
 		r.routes[f.CallID] = rt
 		instance.inflight++
 		if f.TimeoutMS != nil {
@@ -615,6 +624,11 @@ func (r *Router) forward(p *peer, f frame) {
 	} else if p.role == "server" && rt.instance == p {
 		rt.client.send(f)
 		if f.Kind == "call.result" || f.Kind == "call.error" {
+			// Any answer, including an application error, measures the service
+			// time; infrastructure failures feed the breaker instead.
+			if !instanceFailed(f) {
+				p.observeDuration(rt.method, time.Since(rt.started))
+			}
 			r.observe(p, !instanceFailed(f))
 			if rt.dedup != nil {
 				r.dedupSettle(rt.dedup, f)

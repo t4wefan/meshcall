@@ -60,11 +60,19 @@ validation happens at the service and applicable client runtimes.
 
 | Policy | Selection |
 | --- | --- |
+| `adaptive` (default) | Shortest expected completion: `service_time(instance, method) × (inflight + 1) + rtt`, where `service_time` is an EWMA of observed durations (a cold instance starts from the pool average) and `rtt` is the round trip to the instance (zero locally); chosen by power of two: two candidates drawn at random, the better one wins |
 | `round_robin` | Advances a cursor per service method through sorted instance IDs |
 | `least_inflight` | Chooses the instance with the fewest active calls; instance ID breaks ties |
 | `random` | Chooses a random registered instance |
 | `sticky` | Hashes a declared request field, such as `request.session_id`, into the instance list |
 | `disabled` | Requires exactly one registered instance |
+
+`adaptive` is a black box on purpose: its constants are implementation details,
+not configuration. Slow or stalling instances lose traffic as their estimates
+grow; a stalled call that reaches the Router's deadline also counts as a
+breaker failure, so an instance that stops answering is excluded before five
+full timeouts. Use an explicit policy only when you need determinism
+(`round_robin`), session affinity (`sticky`) or a single instance (`disabled`).
 
 Streams balance only when they open. An active stream never switches instances.
 Sticky selection is ordinary hashing modulo the current pool size, so changing

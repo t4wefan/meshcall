@@ -19,6 +19,7 @@ class BindingKind(StrEnum):
 
 
 class BalanceKind(StrEnum):
+    ADAPTIVE = "adaptive"
     ROUND_ROBIN = "round_robin"
     LEAST_INFLIGHT = "least_inflight"
     RANDOM = "random"
@@ -29,7 +30,7 @@ class BalanceKind(StrEnum):
 class BalancePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: BalanceKind = BalanceKind.ROUND_ROBIN
+    kind: BalanceKind = BalanceKind.ADAPTIVE
     key: str | None = None
 
 

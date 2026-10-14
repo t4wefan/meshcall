@@ -277,8 +277,10 @@ test("drain finishes in-flight streams, refuses new work, then stops", { timeout
   t.after(() => router.stop());
   await router.start();
   const endpoint = "ws://127.0.0.1:" + router.boundPort;
+  // The assertions below count on round robin; the default is adaptive.
   const tagged = (tag: string) => defineService({
     ...service,
+    balance: { kind: "round_robin" },
     methods: {
       ...service.methods,
       echo: unaryMethod({

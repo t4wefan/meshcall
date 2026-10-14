@@ -283,7 +283,7 @@ function renderTypeRef(type: TypeContract<unknown>): Record<string, unknown> {
 
 function normalizeBalance(balance?: BalancePolicy): Required<BalancePolicy> {
   return {
-    kind: balance?.kind ?? "round_robin",
+    kind: balance?.kind ?? "adaptive",
     key: balance?.key ?? null,
   };
 }

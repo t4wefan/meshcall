@@ -33,6 +33,13 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- `adaptive` balance policy, now the default for services that do not name
+  one: the Router routes each call to the instance with the shortest expected
+  completion time (EWMA service time per instance and method × queue depth +
+  path RTT), picking the better of two random candidates. Explicit
+  `round_robin`, `least_inflight`, `random`, `sticky`, `disabled` are
+  unchanged. Instances registering the same method with different policies
+  still conflict, so upgrade a service's instances together.
 - Generated clients validate what they receive: TypeScript clients carry
   `responseSchema` / `itemSchema` (exported as `<Type>Schema` constants from
   the generated models) and the runtime checks results and stream items
