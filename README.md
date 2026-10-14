@@ -307,6 +307,6 @@ When you are ready to explore production capabilities, follow the guides below:
 
 ---
 
-## Philosophy in One Sentence
+## Design Philosophy
 
-MeshCall brings the intuitive feel of ordinary async functions to cross-language streaming RPC: replacing hand-written schemas and raw dictionary plumbing with typed signatures, while keeping connection management, flow control, and routing quietly out of your application code.
+**Focus on your procedure.**

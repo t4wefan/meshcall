@@ -307,6 +307,6 @@ uv run --project demo/ts2py demo        # TypeScript 服务 -> Python 客户端�
 
 ---
 
-## 一句话设计哲学
+## 设计哲学
 
-MeshCall 让跨语言流式 RPC 回归普通异步函数的直觉体验：用类型签名代替手写协议与字典拼装，将连接管理、流量控制与服务路由安静地收敛在业务代码之外。
+**Focus on your procedure.**
