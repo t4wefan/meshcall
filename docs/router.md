@@ -242,7 +242,13 @@ The Router keeps the contract each instance registers and serves it through
 instances (in-flight, cap, breaker, draining) and methods (shape,
 description, annotations, parameters); `describe {service}` adds the full
 contract entry. Both work without an account in development mode; with
-accounts they need `meshcall.router.v1.Registry/*` in `call`.
+accounts they need `meshcall.router.v1.Registry/*` in `call`, and they show
+only what the caller may call: a service appears only if the caller may call
+at least one of its methods, and only those methods and their contract
+entries are listed. Describing a service the caller may not call returns the
+same error as describing one that does not exist, and a call to a method the
+caller may not call is `permission_denied` whether or not it exists, so
+neither can be used to discover services.
 
 The `meshcall` command (built from `cmd/meshcall`, shipped next to
 `meshcall-router`) is the human and agent front end to it:

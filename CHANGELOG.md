@@ -8,6 +8,14 @@ and are released together from a `vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Security
+
+- The Registry (`router inspect`, `GET /v1/services`) shows only services and
+  methods the caller may call, with contract entries filtered the same way;
+  describing a forbidden service is indistinguishable from describing a
+  missing one. Previously any identity allowed on the Registry saw every
+  registered service.
+
 ### Added
 
 - Router configuration from the environment: every flag has a

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/t4wefan/meshcall/meshcall-router/internal/contract"
 	"io"
 	"slices"
 	"strings"
@@ -263,6 +264,12 @@ type contractEntry struct {
 // Called under Router.mu. Readable without an account so that tooling works in
 // development mode; with accounts configured it needs a call permission on
 // meshcall.router.v1.Registry like any other service.
+//
+// Results are filtered by the caller's call permissions: a service appears
+// only if the caller may call at least one of its methods, and only those
+// methods (and their contract entries) are shown. Describing a service the
+// caller may not call is answered exactly like describing one that does not
+// exist, so the Registry cannot be used to probe for services.
 func (r *Router) registry(p *peer, f frame) {
 	fail := func(code, message string) { p.send(callError(f.CallID, code, message, false)) }
 	var result any
@@ -275,12 +282,14 @@ func (r *Router) registry(p *peer, f frame) {
 		}
 		names := make([]string, 0, len(r.services))
 		for name := range r.services {
-			names = append(names, name)
+			if p.user.allowsAnyCall(name, r.services[name]) {
+				names = append(names, name)
+			}
 		}
 		slices.Sort(names)
 		services := make([]registryService, 0, len(names))
 		for _, name := range names {
-			services = append(services, r.describeService(name))
+			services = append(services, r.describeService(name, p.user))
 		}
 		result = struct {
 			Services []registryService `json:"services"`
@@ -294,15 +303,15 @@ func (r *Router) registry(p *peer, f frame) {
 			return
 		}
 		pool := r.services[request.Service]
-		if pool == nil {
+		if pool == nil || !p.user.allowsAnyCall(request.Service, pool) {
 			fail("method_not_found", "No instances registered for "+request.Service)
 			return
 		}
-		described := r.describeService(request.Service)
+		described := r.describeService(request.Service, p.user)
 		result = struct {
 			registryService
 			Contract json.RawMessage `json:"contract,omitempty"`
-		}{described, pool.contract}
+		}{described, visibleContract(pool.contract, request.Service, p.user)}
 	default:
 		fail("method_not_found", "Unknown Registry method "+f.Method)
 		return
@@ -315,7 +324,39 @@ func (r *Router) registry(p *peer, f frame) {
 	p.send(frame{Kind: "call.result", CallID: f.CallID, Payload: payload})
 }
 
-func (r *Router) describeService(name string) registryService {
+// allowsAnyCall reports whether u may call at least one method of the pool.
+func (u *User) allowsAnyCall(service string, pool *pool) bool {
+	for name := range pool.methods {
+		if u.allowsCall(service, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// visibleContract keeps only the method entries u may call, preserving the
+// document's key order so schemas read the same as the service registered them.
+func visibleContract(raw json.RawMessage, service string, u *User) json.RawMessage {
+	if raw == nil || u == nil {
+		return raw
+	}
+	decoded, err := contract.DecodeOrdered(raw)
+	doc, ok := decoded.(*contract.Object)
+	if err != nil || !ok {
+		return nil
+	}
+	methods, _ := doc.Values["methods"].([]any)
+	kept := make([]any, 0, len(methods))
+	for _, m := range methods {
+		if entry, ok := m.(*contract.Object); ok && u.allowsCall(service, entry.Str("name")) {
+			kept = append(kept, m)
+		}
+	}
+	doc.Set("methods", kept)
+	return contract.Encode(doc)
+}
+
+func (r *Router) describeService(name string, u *User) registryService {
 	pool := r.services[name]
 	out := registryService{Name: name, Targeted: pool.targeted, Instances: []RegistryInstance{}, Methods: []registryMethod{}}
 	now := time.Now()
@@ -337,6 +378,9 @@ func (r *Router) describeService(name string) registryService {
 		out.Version, out.Description = entry.Version, entry.Description
 	}
 	for _, m := range sortedMethods(pool.methods) {
+		if !u.allowsCall(name, m.Name) {
+			continue
+		}
 		rm := registryMethod{Name: m.Name, Stream: m.Stream, Balance: m.Balance, Instances: []string{}}
 		for _, inst := range pool.instances {
 			if inst.serves(name, m.Name) {
