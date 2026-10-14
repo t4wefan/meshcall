@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Self
 
+from meshcall.drivers.local import PIPE_PREFIX, check_unix_supported, pipe_address
 from meshcall.errors import DriverStateError
 from meshcall.protocol import PROTOCOL_VERSION
 from meshcall.router_install import find_router_binary
@@ -20,6 +21,7 @@ class WebSocketRouter:
         port: int | None = None,
         *,
         unix_path: str | Path | None = None,
+        pipe: str | None = None,
         max_frame_size: int = 1024 * 1024,
         binary_path: str | Path | None = None,
         auth_file: str | Path | None = None,
@@ -27,8 +29,16 @@ class WebSocketRouter:
         startup_timeout: float = 10,
         shutdown_timeout: float = 5,
     ) -> None:
-        if unix_path is not None and (host is not None or port is not None):
-            raise ValueError("Unix socket cannot be combined with host or port")
+        if sum(v is not None for v in (unix_path, pipe, host or port)) > 1:
+            raise ValueError(
+                "Choose one of host/port, unix_path (not on Windows) or pipe (Windows)"
+            )
+        if unix_path is not None:
+            check_unix_supported()
+        #: Named pipe name (\\.\pipe\NAME), the Windows local transport.
+        self.pipe = (
+            pipe_address(pipe).removeprefix(PIPE_PREFIX) if pipe is not None else None
+        )
         if port is not None and not 0 <= port <= 65535:
             raise ValueError("Port must be between 0 and 65535")
         if not 1 <= max_frame_size <= 64 * 1024 * 1024:
@@ -74,8 +84,8 @@ class WebSocketRouter:
 
     @property
     def bound_port(self) -> int:
-        if self.unix_path is not None:
-            raise DriverStateError("Unix socket listener does not have a TCP port")
+        if self.unix_path is not None or self.pipe is not None:
+            raise DriverStateError("A local listener does not have a TCP port")
         if not self.is_running or self._bound_port is None:
             raise DriverStateError("Go Router is not running")
         return self._bound_port
@@ -97,10 +107,12 @@ class WebSocketRouter:
                 "--max-frame-size",
                 str(self.max_frame_size),
             ]
-            if self.unix_path is None:
-                command.extend(["--host", self.host, "--port", str(self.port)])
-            else:
+            if self.pipe is not None:
+                command.extend(["--pipe", self.pipe])
+            elif self.unix_path is not None:
                 command.extend(["--unix-socket", str(self.unix_path)])
+            else:
+                command.extend(["--host", self.host, "--port", str(self.port)])
             if self.auth_file is not None:
                 command.extend(["--auth-file", str(self.auth_file)])
             if self.max_connections is not None:
@@ -132,13 +144,17 @@ class WebSocketRouter:
                     or ready.get("pid") != process.pid
                 ):
                     raise DriverStateError("Invalid Go Router readiness message")
-                if self.unix_path is None:
+                if self.pipe is not None:
+                    if ready.get("pipe") != self.pipe:
+                        raise DriverStateError("Invalid Go Router pipe name")
+                elif self.unix_path is not None:
+                    if ready.get("unix_path") != str(self.unix_path):
+                        raise DriverStateError("Invalid Go Router Unix socket path")
+                else:
                     port = ready.get("port")
                     if type(port) is not int or not 1 <= port <= 65535:
                         raise DriverStateError("Invalid Go Router bound port")
                     self._bound_port = port
-                elif ready.get("unix_path") != str(self.unix_path):
-                    raise DriverStateError("Invalid Go Router Unix socket path")
                 self._readers.append(
                     asyncio.create_task(self._drain(process.stdout, diagnostic=False))
                 )

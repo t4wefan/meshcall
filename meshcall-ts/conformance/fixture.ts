@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import {
   clientStreamMethod, defineService, defineType, duplexMethod, MeshCallError, MeshCallServer, serverStreamMethod, unaryMethod,
+  type WebSocketEndpoint,
 } from "../src/index.js";
 
 const object = (properties: Record<string, unknown>, required: string[] = []) =>
@@ -25,6 +26,13 @@ const instanceType = defineType<{ instance: string }>("Instance", object({ insta
 const chatType = defineType<{ prefix?: string }>("Chat", object({ prefix: { type: "string", default: "" } }));
 const textType = defineType<{ text: string }>("Text", object({ text: { type: "string" } }, ["text"]));
 const drainType = defineType<{ delay_ms?: number }>("Drain", object({ delay_ms: { type: "integer", default: 0 } }));
+
+/** unix:///path and pipe://NAME select the local transport. */
+function routerEndpoint(url: string): WebSocketEndpoint {
+  if (url.startsWith("unix://")) return { unixPath: url.slice("unix://".length) };
+  if (url.startsWith("pipe://")) return { pipe: url.slice("pipe://".length) };
+  return url;
+}
 
 const cancelled: string[] = [];
 const invoked: string[] = [];
@@ -124,7 +132,7 @@ const targeted = defineService({
 
 server = new MeshCallServer({
   services: [fixture, targeted],
-  router: { endpoint: process.env.MESHCALL_ROUTER_URL as string, instanceId: process.env.MESHCALL_CONFORMANCE_INSTANCE ?? "fixture-1" },
+  router: { endpoint: routerEndpoint(process.env.MESHCALL_ROUTER_URL as string), instanceId: process.env.MESHCALL_CONFORMANCE_INSTANCE ?? "fixture-1" },
   pingIntervalMs: ping, pingTimeoutMs: Math.max(1000, ping * 2),
   accessLog: false,
 });

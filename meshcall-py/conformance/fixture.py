@@ -83,7 +83,9 @@ class Fixture:
     @method(idempotent=True)
     async def fail(self, code: str, message: str, retryable: bool = False) -> Ok:
         """Raise an application error with the given code."""
-        raise MeshCallError(code, message, retryable=retryable, details={"from": "fixture"})
+        raise MeshCallError(
+            code, message, retryable=retryable, details={"from": "fixture"}
+        )
 
     @method(read_only=True)
     async def bad_response(self) -> Ok:
@@ -166,17 +168,26 @@ class Fixture:
 
 async def main() -> None:
     fixture = Fixture()
+    url = os.environ["MESHCALL_ROUTER_URL"]
+    instance = os.environ.get("MESHCALL_CONFORMANCE_INSTANCE", "fixture-1")
     ping = float(os.environ.get("MESHCALL_PING_INTERVAL_MS", "15000")) / 1000
-    server = RpcServer(
-        services=[fixture, Targeted],
-        driver=WebSocketRouterServerDriver(
-            os.environ["MESHCALL_ROUTER_URL"],
-            instance_id=os.environ.get("MESHCALL_CONFORMANCE_INSTANCE", "fixture-1"),
-            ping_interval=ping,
-            ping_timeout=max(1.0, ping * 2),
-        ),
-        access_log=False,
-    )
+    options = {
+        "instance_id": instance,
+        "ping_interval": ping,
+        "ping_timeout": max(1.0, ping * 2),
+    }
+    # unix:///path and pipe://NAME select the local transport.
+    if url.startswith("unix://"):
+        driver = WebSocketRouterServerDriver(
+            unix_path=url.removeprefix("unix://"), **options
+        )
+    elif url.startswith("pipe://"):
+        driver = WebSocketRouterServerDriver(
+            pipe=url.removeprefix("pipe://"), **options
+        )
+    else:
+        driver = WebSocketRouterServerDriver(url, **options)
+    server = RpcServer(services=[fixture, Targeted], driver=driver, access_log=False)
     fixture.server = server
     await server.start()
     print("fixture registered", file=sys.stderr, flush=True)
