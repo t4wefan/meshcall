@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python, TypeScript & Go" width="300">
+  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python & TypeScript" width="300">
 </p>
 
 <p align="center">
@@ -12,7 +12,7 @@
 
 MeshCall is an asynchronous, strongly typed streaming RPC framework for **Python** and **TypeScript**.
 
-The **Router** is the relay process between services. Servers register services with it, and callers find and call services through it; because every node communicates through the Router, any process can simultaneously provide services and call other services as a client. The Router binary is bundled in the package—no Go installation is required.
+The **Router** is the relay process between services. Servers register services with it, and callers find and call services through it; because every node communicates through the Router, any process can simultaneously provide services and call other services as a client. The Router is bundled in the package—no extra setup is required.
 
 - **Declare services with normal functions** — function parameters define the request structure, return types define the response structure, with automatic type validation
 - **Stream results naturally** — `yield` items from an async generator for server streams, iterate with `async for` for client streams
@@ -275,7 +275,7 @@ uv run --project demo/ts2py demo        # TypeScript service -> Python client
 | **[User Guide & Cookbook](docs/guide.md)** | Handle streaming, timeouts and retries, context/logger injection, load balancing, and auth | **[快速上手与实战指南](docs/zh-CN/guide.md)** |
 | **[Python SDK](meshcall-py/README.md)** | Install and use the Python package API | [Python SDK 指南](meshcall-py/README.zh-CN.md) |
 | **[TypeScript SDK](meshcall-ts/README.md)** | Install and use the TypeScript package API | [TypeScript SDK 指南](meshcall-ts/README.zh-CN.md) |
-| **[Go Router & CLI](meshcall-router/README.md)** | Deploy the standalone Router binary, configure CLI flags, and run with Docker | [Go Router 部署指南](meshcall-router/README.zh-CN.md) |
+| **[Router & CLI](meshcall-router/README.md)** | Deploy the standalone Router binary, configure CLI flags, and run with Docker | [Router 与 CLI 部署指南](meshcall-router/README.zh-CN.md) |
 | **[Router & Auth Guide](docs/router.md)** | Configure multi-instance routing, accounts, and access tokens | [Router 架构与鉴权](docs/zh-CN/router.md) |
 | **[Runtime Architecture](docs/architecture.md)** | Understand the internal design of the client and server runtimes | [运行时架构设计](docs/zh-CN/architecture.md) |
 | **[Protocol Specification](docs/protocol.md)** | Read the `meshcall/1` wire protocol, timeout calculation, and error codes | [协议规范 (`meshcall/1`)](docs/zh-CN/protocol.md) |

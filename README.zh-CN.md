@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python, TypeScript & Go" width="300">
+  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python & TypeScript" width="300">
 </p>
 
 <p align="center">
@@ -12,7 +12,7 @@
 
 MeshCall 是一个面向 **Python** 与 **TypeScript** 的异步强类型流式 RPC 框架。
 
-**Router** 是服务之间的中转进程。服务端向它注册服务，调用方通过它找到并调用服务；因为所有节点都通过 Router 通信，任何一个节点都可以同时对外提供服务并作为客户端调用其他服务。安装包已附带 Router，无需另装 Go。
+**Router** 是服务之间的中转进程。服务端向它注册服务，调用方通过它找到并调用服务；因为所有节点都通过 Router 通信，任何一个节点都可以同时对外提供服务并作为客户端调用其他服务。安装包已附带 Router，无需额外安装其他组件。
 
 - **用普通函数声明服务** —— 函数参数即请求结构，返回值类型即响应结构，自动完成类型校验
 - **原生流式结果** —— 服务端流只需 `yield`，客户端流只需 `async for`
@@ -275,7 +275,7 @@ uv run --project demo/ts2py demo        # TypeScript 服务 -> Python 客户端�
 | **[快速上手与实战指南](docs/zh-CN/guide.md)** | 处理流式调用、超时与重试、上下文与日志注入、负载均衡及鉴权配置 | **[User Guide & Cookbook](docs/guide.md)** |
 | **[Python SDK 指南](meshcall-py/README.zh-CN.md)** | 查阅 Python 包安装与 API 用法 | [Python SDK](meshcall-py/README.md) |
 | **[TypeScript SDK 指南](meshcall-ts/README.zh-CN.md)** | 查阅 TypeScript 包安装与 API 用法 | [TypeScript SDK](meshcall-ts/README.md) |
-| **[Go Router 部署指南](meshcall-router/README.zh-CN.md)** | 独立部署 Router 进程、配置命令行参数与 Docker 运行 | [Go Router & CLI](meshcall-router/README.md) |
+| **[Router 与 CLI 部署指南](meshcall-router/README.zh-CN.md)** | 独立部署 Router 进程、配置命令行参数与 Docker 运行 | [Router & CLI](meshcall-router/README.md) |
 | **[Router 架构与鉴权](docs/zh-CN/router.md)** | 配置多实例路由、账号权限与访问令牌 | [Router & Auth Guide](docs/router.md) |
 | **[运行时架构设计](docs/zh-CN/architecture.md)** | 了解客户端与服务端运行时的内部设计 | [Runtime Architecture](docs/architecture.md) |
 | **[协议规范 (`meshcall/1`)](docs/zh-CN/protocol.md)** | 了解底层通信协议、超时计算与错误码定义 | [Protocol Specification](docs/protocol.md) |
