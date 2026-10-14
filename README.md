@@ -1,348 +1,292 @@
+<p align="center">
+  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python, TypeScript & Go" width="760">
+</p>
+
+<p align="center">
+  <strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
 # MeshCall
 
-**English** | [简体中文](README.zh-CN.md)
+**Write cross-language streaming RPC the way you write ordinary Python and TypeScript functions.**
 
-**Typed, streaming RPC between Python and TypeScript—with a bundled Go Router, zero `.proto` files, and first-class AI Agent tooling.**
+MeshCall is an asynchronous, typed RPC framework for **Python** and **TypeScript**, powered by a standalone **Go Router**.
 
-Write a Python class with Pydantic models (or a TypeScript service with JSON Schema). MeshCall turns it into a multiplexed WebSocket RPC service with bidirectional backpressure, generates static clients for both languages, routes and load-balances across instances via a stateless Go Router, and lets humans or AI agents inspect and call any live service from the CLI.
-
----
-
-## Why MeshCall? (What Benefits Does It Bring?)
-
-| Pain Point | Traditional Approach | How MeshCall Solves It |
-| --- | --- | --- |
-| **Cross-language RPC between Python & TypeScript** | Maintain `.proto` files + `protoc` plugins, or hand-write REST + OpenAPI glue | **Code is the contract.** Write native Python (`Pydantic`) or TypeScript (`JSON Schema`). One command (`meshcall generate`) outputs a typed `uv` or `Yarn`/`npm` client package. |
-| **Streaming LLM tokens, progress, or uploads** | SSE hacks, chunked HTTP, or custom WebSocket framing without backpressure | **Native `server_stream` & `client_stream`** over one multiplexed WebSocket connection, with per-call item credit (window of 16), fair scheduling, and instant cancellation on loop break. |
-| **Routing, load balancing & stateful workers** | Deploy Nginx/Envoy + Redis/Consul, or build custom worker routing | **Bundled stateless Go Router** (`meshcall-router` ships inside `pip`/`npm`). Supports `round_robin`, `least_inflight`, `sticky`, rolling upgrades, and **instance-targeted calls** (`instance="gpu-worker-2"`). |
-| **Production reliability without stateful brokers** | Complex message queues or fragile retry loops | **Built-in stateless reliability:** 3-layer relative deadlines (Server → Router → Client), `max_inflight` backpressure, automatic circuit breaking, `idempotency_key` deduplication/replay, and zero-downtime `drain=True`. |
-| **Human & AI Agent developer experience** | Dig through source code or outdated docs to figure out payloads and errors | **Self-describing live mesh:** `meshcall init` equips AI agents in 1 second; `meshcall router inspect` shows live schemas & health; `meshcall call` gives field-level `violations` and repair hints; `MESHCALL_STRICT=1` enforces contract quality at import time. |
+- **Declare services with normal functions** — parameters become the request schema, return types become the response schema
+- **Stream naturally** — `yield` items from a generator for server streams, iterate with `async for` for client streams
+- **Cross language boundaries without `.proto` files** — generate a fully typed TypeScript client from a Python service (or vice versa) in one command
+- **Keep infrastructure out of application code** — routing, load balancing, backpressure, deadlines, and reconnects belong to the Router and Driver, not your handlers
+- **Built for both humans and AI agents** — every running service is self-describing and callable from the terminal
 
 ---
 
-## How It Works at a Glance
-
-```mermaid
-flowchart LR
-  subgraph Step1["1. Define Service"]
-    PY["Python @service (Pydantic)"]
-    TS["TypeScript defineService (JSON Schema)"]
-  end
-
-  subgraph Step2["2. Run & Route"]
-    R["Go Router (bundled in pip / npm)"]
-    CLI["meshcall inspect / call"]
-    PY <-->|"register"| R
-    TS <-->|"register"| R
-    CLI <-->|"explore & debug"| R
-  end
-
-  subgraph Step3["3. Generate & Call"]
-    GEN["meshcall generate"]
-    PYC["Typed Python Client"]
-    TSC["Typed TypeScript Client"]
-    PY -.-> GEN
-    TS -.-> GEN
-    GEN --> PYC
-    GEN --> TSC
-    PYC <-->|"unary / stream"| R
-    TSC <-->|"unary / stream"| R
-  end
-```
-
-> **Need 1-to-1 local IPC instead of a Router?** Every service and generated client also supports **Direct Mode** over TCP (`ws://127.0.0.1:8765`) or Unix Domain Sockets (`unix_path="/tmp/app.sock"`) without changing a single line of service or client call code.
-
----
-
-## Documentation Map
-
-| Document | What You'll Learn | 中文版 |
-| --- | --- | --- |
-| **[User Guide & Cookbook](docs/guide.md)** | **Start here:** Decision tables & copy-paste recipes for streaming, load balancing, targeted stateful workers, retries & idempotency, graceful drain, auth tokens, interceptors, and strict mode | **[快速上手与实战指南](docs/zh-CN/guide.md)** |
-| **[Router Architecture](docs/router.md)** | How the Go Router balances calls, handles multi-Router failover, and manages ACL accounts & temporary tokens | [Router 架构与鉴权](docs/zh-CN/router.md) |
-| **[Runtime Architecture](docs/architecture.md)** | Python worker-loop isolation, credit flow control, failure boundaries, and contract lint rules (`W001`–`W006`) | [运行时架构设计](docs/zh-CN/architecture.md) |
-| **[Protocol Specification (`meshcall/1`)](docs/protocol.md)** | Wire frames, handshake, 3-layer timeout math, liveness pings, and standard error codes | [协议规范 (`meshcall/1`)](docs/zh-CN/protocol.md) |
-| **[Python SDK (`meshcall-py`)](meshcall-py/README.md)** | Python package quick reference | [Python SDK 指南](meshcall-py/README.zh-CN.md) |
-| **[TypeScript SDK (`meshcall-ts`)](meshcall-ts/README.md)** | TypeScript package quick reference | [TypeScript SDK 指南](meshcall-ts/README.zh-CN.md) |
-| **[Go Router & CLI (`meshcall-router`)](meshcall-router/README.md)** | Standalone binary flags, password hashing, and Docker deployment | [Go Router 部署指南](meshcall-router/README.zh-CN.md) |
-| **[Contributing](CONTRIBUTING.md)** | Monorepo checks, conformance suite, and release workflow | [贡献指南](CONTRIBUTING.zh-CN.md) |
-
----
-
-## Install (Zero Go Toolchain Required)
+## Install
 
 ```bash
-# Python (3.11+) — bundles meshcall-router & meshcall CLI in platform wheels
+# Python (3.11+)
 uv add meshcall
 # or: pip install meshcall
 
-# TypeScript / Node.js (20+) — bundles binaries via meshcall-router-<os>-<cpu>
+# TypeScript / Node.js (20+)
 yarn add meshcall
 # or: npm install meshcall
 ```
 
-**Using an AI Coding Agent?** Run `meshcall init` once in your project root:
-
-```bash
-# Default (Universal standard: .agents/skills/meshcall/SKILL.md + AGENTS.md)
-# Works out of the box with OpenAI Codex, Google Antigravity, OpenCode, Amp, etc.
-uv run meshcall init                  # or: npx meshcall init
-
-# Or target specific coding agents (comma-separated, repeatable, or --agent all):
-uv run meshcall init --agent claude   # .claude/skills/meshcall/SKILL.md + CLAUDE.md
-uv run meshcall init --agent cursor   # .cursor/rules/meshcall.mdc + AGENTS.md
-uv run meshcall init --agent copilot  # .github/skills/meshcall/SKILL.md + .github/copilot-instructions.md
-uv run meshcall init --agent windsurf # .windsurf/rules/meshcall.md + AGENTS.md
-uv run meshcall init --agent all      # Install for all supported agents at once
-```
-
-This teaches your AI agent to inspect live services (`meshcall router inspect`), read structured validation violations, and write `MESHCALL_STRICT=1`-compliant services automatically.
+Prebuilt `meshcall-router` and `meshcall` CLI binaries ship inside the Python wheels and npm packages—no Go toolchain is required.
 
 ---
 
-## 5-Minute End-to-End Quickstart (Python ↔ TypeScript)
+## Quick Start
 
-### Step 1: Write & Start a Service (`service.py`)
+Start with the smallest possible service:
 
-In MeshCall, **parameters are the request** and **return types are the response**:
-- `@method()` → Unary (`request -> response`)
-- `@method.server_stream()` → Server Stream (`request -> AsyncIterator[Item]`)
-- `@method.client_stream()` → Client Stream (`RpcInputStream[Item] + params -> response`)
-- `ctx: RpcContext` and `logger: RpcLogger` are injected automatically by the server and never appear as client arguments.
+```python
+from pydantic import BaseModel
+from meshcall import method, service
+
+
+class Reply(BaseModel):
+    message: str
+
+
+@service("demo.v1.Greeter")
+class Greeter:
+    """Greeting service."""
+
+    @method(read_only=True)
+    async def greet(self, name: str) -> Reply:
+        """Return a greeting for name."""
+        return Reply(message=f"hello, {name}")
+```
+
+Those few lines already show the core model of MeshCall:
+
+- declare a service with `@service(...)`
+- expose a method with `@method(...)`
+- write a normal `async def` function—its parameters (`name: str`) and return model (`Reply`) **are** the contract
+- no transport or networking code leaks into the service definition
+
+As you go further, MeshCall builds on top of that same minimal model:
+
+- **`Server` + `Driver` own the runtime boundary** (Direct WebSocket or shared Go Router)
+- **streaming** is just an async generator (`@method.server_stream`) or async iterator (`@method.client_stream`)
+- **context and logging** (`ctx: RpcContext`, `logger: RpcLogger`) are injected only when a handler asks for them
+
+Here is a complete runnable example that starts a Router, registers the service, and calls both a unary method and a server stream:
 
 ```python
 import asyncio
 from collections.abc import AsyncIterator
 from pydantic import BaseModel
-from meshcall import (
-    RpcContext,
-    RpcInputStream,
-    RpcLogger,
-    RpcServer,
-    WebSocketRouter,
-    method,
-    service,
-)
-from meshcall.drivers import WebSocketRouterServerDriver
+from meshcall import RpcServer, WebSocketRouter, method, service
+from meshcall.client import ClientBase
+from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
 
 
-class CountItem(BaseModel):
-    value: int
+class Reply(BaseModel):
+    message: str
 
 
-class SumResult(BaseModel):
-    total: int
+class Tick(BaseModel):
+    step: int
 
 
-@service("example.v1.CounterService")
-class CounterService:
-    """Count numbers and aggregate streams."""
+@service("demo.v1.Greeter")
+class Greeter:
+    """Greeting and countdown service."""
 
     @method(read_only=True)
-    async def add(self, left: int, right: int, ctx: RpcContext) -> SumResult:
-        """Return the sum of left and right."""
-        ctx.set_trailer("handled-by", ctx.instance_id)
-        return SumResult(total=left + right)
+    async def greet(self, name: str) -> Reply:
+        """Return a greeting for name."""
+        return Reply(message=f"hello, {name}")
 
     @method.server_stream(read_only=True)
-    async def count(self, stop: int, logger: RpcLogger) -> AsyncIterator[CountItem]:
-        """Stream integers from 0 up to stop - 1."""
-        logger.info("counting up to {}", stop)
-        for value in range(stop):
-            yield CountItem(value=value)
-
-    @method.client_stream(idempotent=True)
-    async def sum_stream(
-        self,
-        items: RpcInputStream[CountItem],
-        offset: int = 0,
-    ) -> SumResult:
-        """Sum a stream of CountItem payloads starting from offset."""
-        total = offset
-        async for item in items:
-            total += item.value
-        return SumResult(total=total)
+    async def countdown(self, start: int) -> AsyncIterator[Tick]:
+        """Stream ticks down to 1."""
+        for n in range(start, 0, -1):
+            yield Tick(step=n)
 
 
 async def main() -> None:
-    # Starts the bundled Go Router and registers this Python instance
     async with WebSocketRouter(host="127.0.0.1", port=8765):
-        driver = WebSocketRouterServerDriver(
-            "ws://127.0.0.1:8765",
-            instance_id="counter-py-1",
+        server = RpcServer(
+            services=[Greeter()],
+            driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="greeter-1"),
         )
-        server = RpcServer(services=[CounterService()], driver=driver)
         await server.start()
-        print("Ready on ws://127.0.0.1:8765")
-        await asyncio.Event().wait()
+
+        async with ClientBase(WebSocketClientDriver("ws://127.0.0.1:8765")) as client:
+            reply = await client.call_unary("demo.v1.Greeter", "greet", {"name": "Alice"})
+            print(reply)  # {'message': 'hello, Alice'}
+
+            async for tick in client.call_server_stream("demo.v1.Greeter", "countdown", {"start": 3}):
+                print(tick)  # {'step': 3}, {'step': 2}, {'step': 1}
+
+        await server.stop(drain=True)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-Run it with strict contract checking enabled:
+What happens here:
 
-```bash
-MESHCALL_STRICT=1 uv run python service.py
-```
+- `WebSocketRouter` starts the bundled Go Router in the background
+- `RpcServer` attaches `Greeter` to the Router using `WebSocketRouterServerDriver`
+- `greet` handles a request/reply call and validates both inputs and outputs against the Pydantic schema
+- `countdown` streams `Tick` items back to the caller with automatic credit-based backpressure
 
-### Step 2: Inspect & Call from the Terminal (No Codegen Needed)
+---
 
-Before writing any client code, you (or your AI agent) can inspect the live Router and call any method directly:
+## Why MeshCall?
 
-```bash
-# 1. See all registered services, instance health, and method signatures
-uv run meshcall router inspect --router ws://127.0.0.1:8765
+Many RPC tools force you to choose between **heavy toolchain ceremony** (`.proto` files, `protoc` plugins, rigid stubs) and **fragile hand-rolled glue** (FastAPI + raw WebSockets with no schema validation, backpressure, or cancellation).
 
-# 2. Call a unary method
-uv run meshcall call example.v1.CounterService.add '{"left": 20, "right": 22}'
+MeshCall is built around a simpler question:
 
-# 3. Call a server stream (streams one JSON line per item)
-uv run meshcall call example.v1.CounterService.count '{"stop": 4}'
+**How do you make cross-language services feel like local async functions while keeping production RPC guarantees?**
 
-# 4. Call a client stream (pipe JSON lines via --stdin)
-printf '{"value":10}\n{"value":20}\n' | \
-  uv run meshcall call example.v1.CounterService.sum_stream '{"offset": 5}' --stdin
-```
+1. **Code is the contract** — You write normal Python (Pydantic v2) or TypeScript (JSON Schema) definitions. MeshCall extracts a portable contract automatically.
+2. **Three streaming shapes in one model** — Unary (`request -> response`), Server Stream (`request -> stream`), and Client Stream (`stream -> response`) share the same connection, error model, and flow control.
+3. **Runtime complexity stays in the Router** — The standalone Go Router handles service discovery, load balancing, health checks, circuit breaking, and deadline enforcement without holding application state.
+4. **Self-describing at runtime** — Any running mesh can be inspected and called from the CLI without reading source files or writing throwaway scripts.
 
-### Step 3: Generate Typed Clients for Python & TypeScript
+---
 
-```bash
-# Generate an installable Python uv package (or add --single-file for one self-contained .py file)
-uv run meshcall generate service:CounterService --output generated/counter-py
+## Core Concepts
 
-# Generate a TypeScript package from the exact same Python service
-uv run meshcall generate service:CounterService \
-  --language typescript \
-  --output generated/counter-ts
-```
+### 1. Context and Logger Injection
 
-### Step 4: Call with Full Autocomplete & Validation
-
-**From Python:**
+If a handler needs call metadata, remaining deadline, response trailers, or structured logging, declare `ctx: RpcContext` or `logger: RpcLogger` in its signature:
 
 ```python
-from meshcall.drivers import WebSocketClientDriver
-from meshcall_example_v1_counterservice_client import CounterServiceClient, CountItem
+from meshcall import RpcContext, RpcLogger, method
 
-async with CounterServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765")) as client:
-    # Unary
-    res = await client.add(20, 22, timeout=5.0)
-    print("add:", res.total)  # 42
-
-    # Server stream
-    async for item in client.count(4, timeout=5.0):
-        print("count:", item.value)
-
-    # Client stream
-    stream = await client.sum_stream(offset=5)
-    await stream.send(CountItem(value=10))
-    await stream.send(CountItem(value=20))
-    await stream.close_send()
-    total = await stream
-    print("sum_stream:", total.total)  # 35
+@method(idempotent=True)
+async def greet(self, name: str, ctx: RpcContext, logger: RpcLogger) -> Reply:
+    """Return a greeting and attach the serving instance ID."""
+    logger.info("greeting {}", name)
+    ctx.set_trailer("served_by", ctx.instance_id or "direct")
+    return Reply(message=f"hello, {name}")
 ```
 
-**From TypeScript:**
+`ctx` and `logger` are injected by the runtime per call—they never appear in the public request schema or generated client parameters.
+
+---
+
+### 2. Cross-Language Client Generation
+
+Instead of passing raw dictionaries to `ClientBase`, generate a typed client package for Python or TypeScript in one command:
+
+```bash
+# Generate a TypeScript client package directly from the Python service
+uv run meshcall generate my_app.service:Greeter --language typescript --output ./greeter-ts
+
+# Or generate a single-file Python client
+uv run meshcall generate my_app.service:Greeter --single-file --output ./greeter_client.py
+```
+
+Your TypeScript code gets full IDE autocomplete and runtime schema validation:
 
 ```typescript
-import { MeshCallClient } from "meshcall";
-import { CounterServiceClient } from "./generated/counter-ts/src/index.js";
+import { GreeterClient } from "meshcall-demo-v1-greeter-client";
 
-const raw = new MeshCallClient("ws://127.0.0.1:8765");
-const client = new CounterServiceClient(raw);
-
+const client = new GreeterClient("ws://127.0.0.1:8765");
 try {
-  // Unary
-  const res = await client.add(20, 22, { timeoutMs: 5_000 });
-  console.log("add:", res.total); // 42
+  const reply = await client.greet("Alice");
+  console.log(reply.message);
 
-  // Server stream (breaking out of for-await cancels the server stream automatically)
-  for await (const item of client.count(4, { timeoutMs: 5_000 })) {
-    console.log("count:", item.value);
+  for await (const tick of client.countdown(3)) {
+    console.log(tick.step);
   }
 } finally {
-  await raw.close();
+  await client.close();
 }
 ```
 
 ---
 
-## Feature Cheat Sheet: Which Option Should I Use?
+### 3. Explore and Call from the Terminal
 
-| Scenario | What to Use | Python Example | TypeScript Example |
-| --- | --- | --- | --- |
-| **Pure query (safe to auto-retry)** | `read_only` | `@method(read_only=True)` | `unaryMethod({ readOnly: true, ... })` |
-| **Safe repeatable mutation** | `idempotent` | `@method(idempotent=True)` | `unaryMethod({ idempotent: true, ... })` |
-| **Non-repeatable mutation (e.g., charge, delete)** | `destructive` + `idempotency_key` at call site | `@method(destructive=True)` | `unaryMethod({ destructive: true, ... })` |
-| **Distribute load across stateless workers** | Balance policy | `@method(balance=Balance.least_inflight())` | `unaryMethod({ balance: { kind: "least_inflight" }, ... })` |
-| **Route by session key (soft affinity)** | Sticky balance | `@method(balance=Balance.sticky("session_id"))` | `unaryMethod({ balance: { kind: "sticky", key: "session_id" }, ... })` |
-| **Address a specific stateful worker (GPU / Actor)** | Targeted service / call | `@service("gpu.v1.Worker", targeted=True)` + `client.run(..., instance="gpu-1")` | `defineService({ targeted: true, ... })` + `client.run(..., { instance: "gpu-1" })` |
-| **Protect a worker from overload** | `max_inflight` | `RpcServer(..., max_inflight=32)` | `new MeshCallServer({ maxInflight: 32, ... })` |
-| **Zero-downtime rolling restart** | Graceful drain | `await server.stop(drain=True, drain_timeout=30)` | `await server.close({ drain: true, drainTimeoutMs: 30_000 })` |
-| **High availability across multiple Routers** | Endpoint list | `WebSocketRouterServerDriver(["ws://r1:8765", "ws://r2:8765"])` | `router: { endpoint: ["ws://r1:8765", "ws://r2:8765"] }` |
-
-See the **[User Guide & Cookbook](docs/guide.md)** for complete code recipes covering each scenario.
-
----
-
-## CLI Cheat Sheet (`meshcall`)
-
-Run via `uv run meshcall …` (Python), `npx meshcall …` (Node.js), or `meshcall …`:
-
-| Command | Purpose |
-| --- | --- |
-| `meshcall init [DIR] [--agent <target>] [--force]` | Install AI agent skill & instructions (`universal` default: `.agents/skills/` + `AGENTS.md`; or `claude`, `cursor`, `copilot`, `windsurf`, `all`) |
-| `meshcall router inspect [--router URL] [SERVICE] [--json]` | Inspect registered services, live instances, in-flight load, circuit breakers, and schemas |
-| `meshcall call [--router URL] <svc.method> '<json>' [flags]` | Call unary, server-stream, or client-stream (`--stdin`) methods with contract-aware error hints |
-| `meshcall generate <contract.json \| module:Class> --output DIR` | Generate a typed Python (`--language python`) or TypeScript (`--language typescript`) package or `--single-file` |
-| `meshcall export <module:Class> --output contract.json` | Export a Python service's portable `.meshcall.json` contract |
-| `meshcall router install` / `meshcall router path` | Download release binaries on unbundled platforms / print the active binary path |
-
----
-
-## Repository Layout & Runnable Demos
-
-```text
-meshcall/
-├── meshcall-py/     # Python runtime SDK, contract exporter, and pytest suite
-├── meshcall-ts/     # TypeScript runtime SDK and node:test suite
-├── meshcall-router/ # Standalone Go Router, meshcall CLI, codegen, and conformance suite
-├── best-practice/   # Reference app: Python streaming session server + TypeScript interactive CLI
-├── demo/            # Self-contained runnable examples
-│   ├── quickstart/  # Minimal unary + streaming in Python (uv run demo)
-│   ├── showcase/    # Full Python feature showcase (uv run demo)
-│   ├── router/      # Load balancing, sticky routing & Router features (uv run demo)
-│   ├── py2ts/       # Python service -> generated TypeScript client (uv run demo)
-│   └── ts2py/       # TypeScript service -> generated Python client (uv run demo)
-├── skills/meshcall/ # Official coding-agent skill installed by `meshcall init`
-└── docs/            # English & Simplified Chinese (docs/zh-CN/) documentation
-```
-
-Run any demo from the repository root:
+When a Router is running, you can inspect every registered service and invoke methods directly from your shell:
 
 ```bash
-uv run --project demo/quickstart demo
-uv run --project demo/showcase demo
-uv run --project demo/router demo
-uv run --project demo/py2ts demo
-uv run --project demo/ts2py demo
+# List services, online instances, health, and method signatures
+uv run meshcall router inspect
+
+# Call a unary or streaming method with JSON
+uv run meshcall call demo.v1.Greeter.greet '{"name": "Alice"}'
+uv run meshcall call demo.v1.Greeter.countdown '{"start": 3}'
 ```
 
-Or run the full CI check suite locally:
+If you pass a wrong field or type, `meshcall call` reads the service's live contract and prints an actionable fix hint.
+
+---
+
+### 4. First-Class AI Agent Integration
+
+If you use AI coding agents, run `meshcall init` once in your project root:
 
 ```bash
-scripts/check.sh                  # Router build, Go, Conformance, Python, TS, Demos, Drift
-scripts/check.sh py demos drift   # Run specific stages
-scripts/regenerate.sh             # Regenerate all checked-in demo clients and embedded skill
+# Default: installs .agents/skills/meshcall/SKILL.md + updates AGENTS.md
+# Works out of the box with OpenAI Codex, Google Antigravity, OpenCode, Amp, etc.
+uv run meshcall init
+
+# Or target a specific coding agent (claude | cursor | copilot | windsurf | all):
+uv run meshcall init --agent claude
+uv run meshcall init --agent cursor
+uv run meshcall init --agent all
+```
+
+With the skill installed, your AI agent knows how to discover live services via `meshcall router inspect`, test endpoints with `meshcall call`, and write strict-mode-compliant contracts without guessing.
+
+---
+
+### 5. Direct Mode vs. Router Mode
+
+Your service definition never changes when your deployment topology changes. Only the `driver` changes:
+
+```python
+# Point-to-point (1 client <-> 1 server, no Router process needed)
+driver = WebSocketDirectServerDriver(host="127.0.0.1", port=8765)
+
+# Multi-service / multi-instance mesh through the Go Router
+driver = WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="greeter-1")
 ```
 
 ---
 
-## Current Boundaries
+## Runnable Examples
 
-- **Wire format**: JSON over WebSocket (`ws://`, `wss://` via reverse proxy, or Unix sockets).
-- **Mid-stream migration**: Disconnecting terminates active streams on that connection; clients and Router-mode servers reconnect automatically with exponential backoff, and idempotent unary calls can be retried via `RetryPolicy`.
-- **Duplex streaming**: Supported experimentally at the protocol/runtime layer; unary, `server_stream`, and `client_stream` are the stable production shapes.
-- **Handler concurrency**: Python handlers run on a dedicated background worker loop so synchronous code cannot block RPC heartbeats/deadlines; TypeScript handlers run on Node's event loop and should stay async.
+Every directory under `demo/` and `best-practice/` is a self-contained runnable project:
+
+```bash
+uv run --project demo/quickstart demo   # Minimal unary & streaming in Python
+uv run --project demo/showcase demo     # Full Python feature walkthrough
+uv run --project demo/router demo       # Load balancing & Router capabilities
+uv run --project demo/py2ts demo        # Python service -> generated TypeScript client
+uv run --project demo/ts2py demo        # TypeScript service -> generated Python client
+```
+
+---
+
+## Documentation
+
+When you are ready for production features—load balancing, targeted stateful instances (`targeted=True`), retries and idempotency keys, graceful drain, Router authentication, or wire protocol details—follow the guides below:
+
+| Document | What It Covers | 中文版 |
+| --- | --- | --- |
+| **[User Guide & Cookbook](docs/guide.md)** | Practical recipes for streaming, load balancing, targeted workers, timeouts, retries, auth tokens, and interceptors | **[快速上手与实战指南](docs/zh-CN/guide.md)** |
+| **[Python SDK](meshcall-py/README.md)** | Python package API and usage | [Python SDK 指南](meshcall-py/README.zh-CN.md) |
+| **[TypeScript SDK](meshcall-ts/README.md)** | TypeScript package API and usage | [TypeScript SDK 指南](meshcall-ts/README.zh-CN.md) |
+| **[Go Router & CLI](meshcall-router/README.md)** | Router binary flags, auth setup, and Docker deployment | [Go Router 部署指南](meshcall-router/README.zh-CN.md) |
+| **[Router & Auth Guide](docs/router.md)** | Routing model, multi-Router failover, ACL accounts, and scoped tokens | [Router 架构与鉴权](docs/zh-CN/router.md) |
+| **[Runtime Architecture](docs/architecture.md)** | Worker-loop isolation, flow control, failure boundaries, and contract lint rules | [运行时架构设计](docs/zh-CN/architecture.md) |
+| **[Protocol Specification](docs/protocol.md)** | `meshcall/1` wire frames, handshake, timeout math, and error codes | [协议规范 (`meshcall/1`)](docs/zh-CN/protocol.md) |
+| **[Contributing](CONTRIBUTING.md)** | Local checks (`scripts/check.sh`), conformance suite, and release workflow | [贡献指南](CONTRIBUTING.zh-CN.md) |
+
+---
+
+## Philosophy in One Sentence
+
+MeshCall takes the ergonomics of ordinary typed async functions, extends them across Python and TypeScript with native streaming, and keeps all distributed routing complexity inside a stateless Go Router.
