@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/t4wefan/meshcall/meshcall-router/internal/router"
 )
 
 // Scenarios run in order; the last two restart the Router and drain the
@@ -18,6 +20,7 @@ var scenarios = []scenario{
 	{"unary: application errors pass through", applicationError},
 	{"targeted: instance_id routes, targeted services require it", targeted},
 	{"router: unknown method is method_not_found", unknownMethod},
+	{"peering: peer router syncs and routes calls", routerPeering},
 	{"server stream: item credit is respected", serverStreamCredit},
 	{"client stream: window, items, end, result", clientStream},
 	{"timeout: server enforces timeout_ms", serverTimeout},
@@ -241,6 +244,45 @@ func unknownMethod(h *harness) error {
 	return nil
 }
 
+func routerPeering(h *harness) error {
+	peer, err := router.Start(router.Config{
+		Peers:         []string{fmt.Sprintf("ws://127.0.0.1:%d", h.port)},
+		IdleTimeout:   1500 * time.Millisecond,
+		DeadlineGrace: 300 * time.Millisecond,
+	})
+	if err != nil {
+		return fmt.Errorf("start peer router: %w", err)
+	}
+	defer peer.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(peer.Snapshot().Instances[Service]) > 0 {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if len(peer.Snapshot().Instances[Service]) == 0 {
+		return fmt.Errorf("peer router did not receive router.sync for %s", Service)
+	}
+	c, err := h.clientAt(peer.Ready().Port)
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	result, err := c.unary("echo", frame{"value": 19, "text": "peered"}, nil)
+	if err != nil {
+		return err
+	}
+	if result["kind"] != "call.result" {
+		return fmt.Errorf("peered call failed: %v", result)
+	}
+	payload, _ := result["payload"].(map[string]any)
+	if number(payload["value"]) != 19 || payload["text"] != "peered" {
+		return fmt.Errorf("peered payload %v", payload)
+	}
+	return nil
+}
+
 func serverStreamCredit(h *harness) error {
 	c, err := h.client()
 	if err != nil {
@@ -323,10 +365,19 @@ func clientStream(h *harness) error {
 			return err
 		}
 	}
+	// Observe replenishment before closing the input stream so a slow worker
+	// thread does not see input_closed=true before consuming the first item.
+	replenish, err := c.receive()
+	if err != nil {
+		return err
+	}
+	if replenish["kind"] != "stream.window" || replenish["direction"] != "client" || number(replenish["credit"]) < 1 {
+		return fmt.Errorf("expected server to replenish input credit, got %v", replenish)
+	}
+	credits := int(number(replenish["credit"]))
 	if err := c.send(frame{"kind": "stream.end", "call_id": id, "direction": "client"}); err != nil {
 		return err
 	}
-	credits := 0
 	for {
 		f, err := c.receive()
 		if err != nil {

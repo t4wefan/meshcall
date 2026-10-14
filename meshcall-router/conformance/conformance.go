@@ -248,9 +248,13 @@ type client struct {
 }
 
 func (h *harness) client() (*client, error) {
+	return h.clientAt(h.port)
+}
+
+func (h *harness) clientAt(port int) (*client, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, h.opts.Timeout)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", h.port), nil)
+	conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", port), nil)
 	if err != nil {
 		return nil, fmt.Errorf("dial router: %w", err)
 	}
