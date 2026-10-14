@@ -323,10 +323,24 @@ func clientStream(h *harness) error {
 			return err
 		}
 	}
+	// Credit is replenished as items are consumed while the stream is open.
+	// Wait for the first grant before half-closing: a server that sees the
+	// end before it consumed anything has nothing left to grant for, so
+	// sending the end immediately would make this check timing-dependent.
+	credits := 0
+	for credits == 0 {
+		f, err := c.receive()
+		if err != nil {
+			return err
+		}
+		if f["kind"] != "stream.window" || f["direction"] != "client" || number(f["credit"]) < 1 {
+			return fmt.Errorf("expected the server to replenish input credit, got %v", f)
+		}
+		credits += int(number(f["credit"]))
+	}
 	if err := c.send(frame{"kind": "stream.end", "call_id": id, "direction": "client"}); err != nil {
 		return err
 	}
-	credits := 0
 	for {
 		f, err := c.receive()
 		if err != nil {
@@ -339,9 +353,6 @@ func clientStream(h *harness) error {
 			total := number(f["payload"].(map[string]any)["total"])
 			if total != 25 {
 				return fmt.Errorf("sum total %v, want 25", total)
-			}
-			if credits == 0 {
-				return fmt.Errorf("server never replenished input credit")
 			}
 			return nil
 		case "call.error":
