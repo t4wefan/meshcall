@@ -51,9 +51,14 @@ SIGINT/SIGTERM stop the process. SDKs additionally use
 Router running. Both launchers wait for readiness, bound startup/shutdown waits,
 reap failed children, and can restart after a failed bind.
 
-Use `--unix-socket /tmp/meshcall.sock` instead of `--host` / `--port` for Unix
-WebSocket transport. Existing paths are never replaced. Shutdown removes the
-socket only when it is still the file owned by this Router.
+Use `--unix-socket /tmp/meshcall.sock` instead of `--host` / `--port` for the
+local transport on Linux, macOS and FreeBSD. Existing paths are never replaced.
+Shutdown removes the socket only when it is still the file owned by this Router.
+On Windows the local transport is a named pipe instead: `--pipe meshcall`
+listens on `\\.\pipe\meshcall`, reachable only by the same user, SYSTEM and
+Administrators. Each flag is refused on the other platform with a hint, and
+`router.ready` reports `unix_path` or `pipe`. Clients and the CLI address
+them as `unix:///tmp/meshcall.sock` and `pipe://meshcall`.
 
 `--deadline-grace` (default `500ms`) is added to every call's `timeout_ms`
 before the Router enforces it, so the service's own `deadline_exceeded`

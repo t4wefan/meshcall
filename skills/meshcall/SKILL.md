@@ -20,7 +20,8 @@ meshcall router inspect chat.v1.Chat --json  # one service with its full contrac
 Each method line shows shape (`unary` / `server_stream` / `client_stream` /
 `duplex`), parameters, annotations (`read_only`, `idempotent`,
 `destructive`, `deprecated`), the description and, for duplex, its reason. `--router ws://host:port` or
-`MESHCALL_ROUTER_URL` selects the Router (default `ws://127.0.0.1:8765`);
+`MESHCALL_ROUTER_URL` selects the Router (default `ws://127.0.0.1:8765`;
+`unix:///path` for a Unix socket, `pipe://NAME` for a Windows named pipe);
 `--auth user:pass` / `--token T` when accounts are configured.
 
 ## Call
