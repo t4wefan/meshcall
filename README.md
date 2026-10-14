@@ -14,8 +14,8 @@ When building applications across processes or languages (such as pairing a Pyth
 
 MeshCall is an asynchronous streaming RPC framework for **Python** and **TypeScript**—**defining a remote service feels like writing a normal async function, and calling a remote endpoint feels like calling a local method:**
 
-- **No `.proto` files, no guessing dictionary keys** — declare inputs with function parameters and outputs with return models. Callers get real methods and typed response objects (like `reply.message`) with full IDE autocomplete, instead of digging through server source code to check what keys a JSON dictionary returns
-- **Catch breaking changes in your editor, validate automatically at runtime** — generate a TypeScript client from a Python service (or vice versa) in one command. When a server renames a field or changes a parameter type, your IDE and type checker flag every affected call site immediately; at runtime, the framework also validates requests and responses automatically so you don't have to write manual type checks
+- **Code is the contract—no `.proto` files or raw dictionaries** — declare inputs with function parameters and outputs with return models; generated clients provide full type signatures and IDE autocomplete so callers never have to hand-craft dictionaries or read server source code to check field names
+- **Catch contract changes at type-check time, validate at runtime** — generate a TypeScript client from a Python service (or vice versa) in one command. When a server changes a parameter or field, type checkers and compilers flag affected call sites immediately, while the runtime automatically validates requests and responses before handler code runs
 - **Stream as naturally as writing a loop** — `yield` items on the server and iterate with `async for` on the client, ideal for progress updates, live data feeds, and streaming AI outputs
 - **Focus on business logic** — the framework handles connection management, request routing, timeouts, cancellation, and flow control so your handlers stay free of networking code
 - **Transparent to both humans and AI** — running services carry their own interface descriptions, so you can inspect signatures and make test calls right from the terminal without reading source code or writing throwaway scripts
@@ -73,15 +73,13 @@ This snippet introduces the three foundational building blocks of MeshCall:
 
 ### 2. Generate Client Code from the Contract
 
-With raw JSON calls, callers have to pass string method names like `"greet"` and hand-craft dictionaries like `{"name": "Alice"}`—where a typo in a field name only fails at runtime.
-
-Instead, run one command in the directory containing `service.py` to generate a client file `greeter_client.py` with full type signatures from `Greeter`:
+Run one command in the directory containing `service.py` to generate `greeter_client.py` from `Greeter`, turning the service contract into typed Python methods and model classes:
 
 ```bash
 uv run meshcall generate service:Greeter --single-file --output greeter_client.py
 ```
 
-The generated client turns the service contract into regular Python methods and model classes, so your IDE and type checker (such as Pyright or mypy) can check parameter names, types, and return fields as you type.
+Instead of passing string method names or raw dictionaries, your editor and type checker can now verify parameters and return values statically.
 
 ### 3. Start and Register the Service Through the "Router"
 
@@ -147,7 +145,7 @@ if __name__ == "__main__":
 uv run python client.py
 ```
 
-Here both the arguments to `client.greet("Alice")` and the returned `reply` object are fully typed: typing `reply.` in your IDE autocompletes `.message`, and missing or mistyped arguments are caught right in your editor before running the code.
+Both the parameters and return value of `client.greet` are fully typed, so missing or mismatched arguments are caught directly by your editor and type checker.
 
 ---
 
@@ -187,7 +185,7 @@ class Greeter:
             yield Tick(step=n)
 ```
 
-Regenerate the client and restart `server.py`, then consume the stream in `client.py` with a standard `async for` loop—where every `tick` item in the loop is also a typed `Tick` instance (`tick.step`):
+Regenerate the client and restart `server.py`, then consume the stream of `Tick` items in `client.py` with a standard `async for` loop:
 
 ```bash
 uv run meshcall generate service:Greeter --single-file --output greeter_client.py
@@ -222,7 +220,7 @@ yarn --cwd ./greeter-ts install && yarn --cwd ./greeter-ts build
 yarn add file:./greeter-ts
 ```
 
-3. Keep `server.py` running and call the service from TypeScript (`reply.message` and `tick.step` have full TypeScript type inference and runtime response validation):
+3. Keep `server.py` running and call the service from TypeScript:
 
 ```typescript
 import { MeshCallClient } from "meshcall";

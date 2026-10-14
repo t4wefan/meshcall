@@ -14,8 +14,8 @@
 
 MeshCall 是一个面向 **Python** 与 **TypeScript** 的异步流式 RPC 框架——**写远程服务就像写普通异步函数，调远程接口就像调本地方法：**
 
-- **不用手写 `.proto`，也不用猜字典字段** —— 直接用函数参数声明输入、用返回模型声明输出；调用方拿到的是带完整类型提示的方法和返回对象（如 `reply.message`），敲下 `.` 就有 IDE 自动补全，不必再去翻服务端源码确认字典里有哪些 key
-- **接口改动在编码阶段就能发现，运行时双向校验** —— 一条命令即可从 Python 服务生成 TypeScript 客户端（反之亦然）。服务端一旦改了参数或字段名，调用方在 IDE 和编译阶段就会直接标红；运行时框架还会自动校验入参和返回值，无需在业务代码里手写一堆类型检查
+- **代码即契约，告别手写协议与裸传字典** —— 直接用函数参数声明输入、用返回模型声明输出，无需维护 `.proto` 文件；生成的客户端提供完整的类型签名与 IDE 补全，调用方无需手拼字典或翻阅服务端源码查字段
+- **接口变更在静态检查阶段暴露，运行时双向校验** —— 一条命令即可从 Python 服务生成 TypeScript 客户端（反之亦然）。服务端修改参数或字段后，调用方在静态检查与编译阶段即可发现不匹配；运行时还会自动校验入参和返回值，非法数据在进入业务函数前即被拦截
 - **像写循环一样写流式通信** —— 服务端流只需 `yield`，客户端消费只需 `async for`，天然契合进度推送、实时数据流与 AI 流式输出
 - **专注业务逻辑** —— 框架负责连接管理、请求路由、超时取消和流量控制，业务函数无需关心底层网络细节
 - **对人类与 AI 同样透明** —— 在线服务自带接口描述，无需翻阅源码或编写临时脚本，在终端即可直接查看签名并发起调试调用
@@ -73,15 +73,13 @@ class Greeter:
 
 ### 2. 从契约生成客户端代码
 
-如果直接用原始 JSON 调接口，调用方不得不手写字符串方法名 `"greet"`、手拼字典 `{"name": "Alice"}`，拼错了字段名也只有跑起来才会报错。
-
-在 `service.py` 所在目录执行一条命令，即可从 `Greeter` 类生成自带完整类型签名的客户端文件 `greeter_client.py`：
+在 `service.py` 所在目录执行一条命令，即可从 `Greeter` 类生成带完整类型签名的客户端文件 `greeter_client.py`，把服务契约还原为可直接调用的 Python 方法与模型类：
 
 ```bash
 uv run meshcall generate service:Greeter --single-file --output greeter_client.py
 ```
 
-生成的客户端把服务契约还原成了普通的 Python 方法和模型类，让你的编辑器与类型检查器（如 Pyright / mypy）能够直接为你检查参数名、参数类型和返回字段。
+这样调用方无需手写方法名字符串或拼装字典，编辑器与类型检查器可以直接对参数和返回值做静态检查。
 
 ### 3. 通过“Router”启动并注册服务
 
@@ -147,7 +145,7 @@ if __name__ == "__main__":
 uv run python client.py
 ```
 
-在这里，`client.greet("Alice")` 的入参和返回的 `reply` 都有明确类型：敲下 `reply.` 即可在 IDE 中自动补全 `.message`，如果漏传参数或传错类型，不用等程序运行就能在编辑器里看到提示。
+`client.greet` 的参数与返回值均具备完整类型提示，参数缺失或类型不匹配会在编辑阶段直接暴露。
 
 ---
 
@@ -187,7 +185,7 @@ class Greeter:
             yield Tick(step=n)
 ```
 
-重新生成客户端并重启 `server.py` 后，调用方即可直接用 `async for` 逐项接收结果，且循环中的每个 `tick` 同样带有完整的 `Tick` 类型提示（`tick.step`）：
+重新生成客户端并重启 `server.py` 后，调用方即可直接用 `async for` 逐项接收 `Tick` 结果：
 
 ```bash
 uv run meshcall generate service:Greeter --single-file --output greeter_client.py
@@ -222,7 +220,7 @@ yarn --cwd ./greeter-ts install && yarn --cwd ./greeter-ts build
 yarn add file:./greeter-ts
 ```
 
-3. 保持前面的 Python `server.py` 运行，在 TypeScript 中发起调用（`reply.message` 与 `tick.step` 均具备完整的 TypeScript 类型推导与运行时响应校验）：
+3. 保持前面的 Python `server.py` 运行，在 TypeScript 中发起调用：
 
 ```typescript
 import { MeshCallClient } from "meshcall";
