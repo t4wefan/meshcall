@@ -10,13 +10,13 @@
 
 **用写普通 Python / TypeScript 异步函数的方式，编写跨语言流式 RPC。**
 
-在构建跨进程或跨语言应用（例如 Python 算法/AI 后端与 TypeScript 业务应用协同）时，你不必在繁重的 `.proto` 编译工具链与脆弱的手写 WebSocket 胶水代码之间妥协。
+在构建跨进程或跨语言应用（例如 Python 算法/AI 后端与 TypeScript 业务应用协同）时，你不必在繁重的 `.proto` 编译工具链与脆弱的手写 WebSocket / JSON 胶水代码之间妥协。
 
-MeshCall 是一个面向 **Python** 与 **TypeScript** 的异步强类型流式 RPC 框架——**写远程服务就像写普通异步函数，调远程接口就像调本地方法。**
+MeshCall 是一个面向 **Python** 与 **TypeScript** 的异步流式 RPC 框架——**写远程服务就像写普通异步函数，调远程接口就像调本地方法：**
 
-- **代码即契约，零样板负担** —— 直接用函数参数声明输入、用返回模型声明输出，无需手写 `.proto` 或序列化逻辑
+- **不用手写 `.proto`，也不用猜字典字段** —— 直接用函数参数声明输入、用返回模型声明输出；调用方拿到的是带完整类型提示的方法和返回对象（如 `reply.message`），敲下 `.` 就有 IDE 自动补全，不必再去翻服务端源码确认字典里有哪些 key
+- **接口改动在编码阶段就能发现，运行时双向校验** —— 一条命令即可从 Python 服务生成 TypeScript 客户端（反之亦然）。服务端一旦改了参数或字段名，调用方在 IDE 和编译阶段就会直接标红；运行时框架还会自动校验入参和返回值，无需在业务代码里手写一堆类型检查
 - **像写循环一样写流式通信** —— 服务端流只需 `yield`，客户端消费只需 `async for`，天然契合进度推送、实时数据流与 AI 流式输出
-- **跨语言端到端强类型** —— 一条命令即可从 Python 服务生成带完整类型提示的 TypeScript 客户端（反之亦然），字段变更在编译期即可感知
 - **专注业务逻辑** —— 框架负责连接管理、请求路由、超时取消和流量控制，业务函数无需关心底层网络细节
 - **对人类与 AI 同样透明** —— 在线服务自带接口描述，无需翻阅源码或编写临时脚本，在终端即可直接查看签名并发起调试调用
 
@@ -40,7 +40,7 @@ yarn add meshcall
 
 ## 快速开始
 
-下面通过 4 个步骤，走完从**定义服务**到**发起强类型调用**的完整流程，并依次认识 MeshCall 中的核心概念。
+下面通过 4 个步骤，走完从**定义服务**到**发起调用**的完整流程，并依次认识 MeshCall 中的核心概念。
 
 ### 1. 定义“服务”与“方法”
 
@@ -69,15 +69,19 @@ class Greeter:
 
 - **服务（`@service("demo.v1.Greeter")`）**：将一组相关的远程能力组织在同一个服务名下（`v1` 为版本标识），作为注册和生成客户端的基本单元。
 - **方法（`@method(read_only=True)`）**：服务中对外暴露的可调用函数。`read_only=True` 声明该方法只读取数据、不修改业务状态。
-- **服务契约（Contract）**：方法的参数（`name: str`）与返回模型（`Reply`）共同描述了请求与响应的数据结构。框架会据此自动提取契约，并在运行时完成入参和返回值的类型校验。
+- **服务契约（Contract）**：方法的参数（`name: str`）与返回模型（`Reply`）共同描述了请求与响应的数据结构。框架会据此自动提取契约，并在每次调用时自动校验入参和返回值——不合法的数据在进入业务函数前就会被直接拦截。
 
-### 2. 从契约生成强类型客户端
+### 2. 从契约生成客户端代码
 
-有了服务定义后，无需手写字符串方法名或拼装字典。在 `service.py` 所在目录执行一条命令，即可从 `Greeter` 类生成带完整类型提示的客户端文件 `greeter_client.py`：
+如果直接用原始 JSON 调接口，调用方不得不手写字符串方法名 `"greet"`、手拼字典 `{"name": "Alice"}`，拼错了字段名也只有跑起来才会报错。
+
+在 `service.py` 所在目录执行一条命令，即可从 `Greeter` 类生成自带完整类型签名的客户端文件 `greeter_client.py`：
 
 ```bash
 uv run meshcall generate service:Greeter --single-file --output greeter_client.py
 ```
+
+生成的客户端把服务契约还原成了普通的 Python 方法和模型类，让你的编辑器与类型检查器（如 Pyright / mypy）能够直接为你检查参数名、参数类型和返回字段。
 
 ### 3. 通过“Router”启动并注册服务
 
@@ -121,7 +125,7 @@ uv run python server.py
 
 ### 4. 像调本地函数一样调用服务
 
-保持 `server.py` 运行，新建 `client.py` 并在另一个终端执行——调用远程方法与调用普通本地异步函数完全一致，并享有完整的 IDE 自动补全：
+保持 `server.py` 运行，新建 `client.py` 并在另一个终端执行：
 
 ```python
 import asyncio
@@ -142,6 +146,8 @@ if __name__ == "__main__":
 ```bash
 uv run python client.py
 ```
+
+在这里，`client.greet("Alice")` 的入参和返回的 `reply` 都有明确类型：敲下 `reply.` 即可在 IDE 中自动补全 `.message`，如果漏传参数或传错类型，不用等程序运行就能在编辑器里看到提示。
 
 ---
 
@@ -181,7 +187,7 @@ class Greeter:
             yield Tick(step=n)
 ```
 
-重新生成客户端并重启 `server.py` 后，调用方即可直接用 `async for` 逐项接收结果：
+重新生成客户端并重启 `server.py` 后，调用方即可直接用 `async for` 逐项接收结果，且循环中的每个 `tick` 同样带有完整的 `Tick` 类型提示（`tick.step`）：
 
 ```bash
 uv run meshcall generate service:Greeter --single-file --output greeter_client.py
@@ -199,7 +205,9 @@ async with GreeterClient(WebSocketClientDriver("ws://127.0.0.1:8765")) as client
 
 ## 跨语言协同：从 TypeScript 直接调用 Python 服务
 
-在“Python 写算法/AI 逻辑 + TypeScript 写业务/全栈应用”的架构中，你无需维护两套数据结构定义。同一个 `service.py` 可以直接生成原生的 TypeScript 客户端包。
+在“Python 写算法/AI 逻辑 + TypeScript 写业务/全栈应用”的项目中，最容易出问题的地方往往是：**两边各自手写一套数据结构，Python 改了字段名，TypeScript 代码却没同步，直到线上运行才报错。**
+
+通过 `meshcall generate`，同一个 `service.py` 可以直接生成原生的 TypeScript 客户端包。一旦 Python 服务修改了接口，重新生成后 TypeScript 编译器就会直接标红所有不匹配的调用点。
 
 1. 从 `service.py` 中的 `Greeter` 类生成 TypeScript 客户端目录 `./greeter-ts`（默认包名为 `meshcall-demo-v1-greeter-client`）：
 
@@ -214,7 +222,7 @@ yarn --cwd ./greeter-ts install && yarn --cwd ./greeter-ts build
 yarn add file:./greeter-ts
 ```
 
-3. 保持前面的 Python `server.py` 运行，在 TypeScript 中发起强类型调用与流式迭代：
+3. 保持前面的 Python `server.py` 运行，在 TypeScript 中发起调用（`reply.message` 与 `tick.step` 均具备完整的 TypeScript 类型推导与运行时响应校验）：
 
 ```typescript
 import { MeshCallClient } from "meshcall";
@@ -263,7 +271,7 @@ uv run meshcall call demo.v1.Greeter.countdown '{"start": 3}'
 uv run meshcall init
 ```
 
-这会安装供 AI 助手参考的开发说明（`.agents/skills/meshcall/SKILL.md` 并更新 `AGENTS.md`），让 AI 了解如何定义服务与方法、生成强类型客户端，以及通过 `meshcall router inspect` 和 `meshcall call` 探索与验证在线接口。针对 Claude Code、Cursor 等特定工具的配置方式详见[快速上手与实战指南](docs/zh-CN/guide.md)。
+这会安装供 AI 助手参考的开发说明（`.agents/skills/meshcall/SKILL.md` 并更新 `AGENTS.md`），让 AI 了解如何定义服务与方法、生成客户端，以及通过 `meshcall router inspect` 和 `meshcall call` 探索与验证在线接口。针对 Claude Code、Cursor 等特定工具的配置方式详见[快速上手与实战指南](docs/zh-CN/guide.md)。
 
 ---
 
@@ -303,4 +311,4 @@ uv run --project demo/ts2py demo        # TypeScript 服务 -> Python 客户端�
 
 ## 一句话设计哲学
 
-MeshCall 让跨语言流式 RPC 回归普通强类型异步函数的直觉体验，同时将连接管理、流量控制与服务路由安静地收敛在业务代码之外。
+MeshCall 让跨语言流式 RPC 回归普通异步函数的直觉体验：用类型签名代替手写协议与字典拼装，将连接管理、流量控制与服务路由安静地收敛在业务代码之外。
