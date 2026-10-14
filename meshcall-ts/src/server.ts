@@ -420,7 +420,9 @@ export class MeshCallServer {
 
   private async startRouterLink(router: RouterConnectionOptions, link: RouterLink): Promise<void> {
     const socket = createSocket(link.endpoint, this.maxFrameSize, this.handshakeTimeout, router.auth);
-    link.socket = socket;
+    // link.socket is set only once registered: a failed attempt is retried by
+    // the caller, and must neither start a second reconnect loop when it
+    // closes nor displace a registration another attempt already holds.
     const { session, liveness } = this.session(socket, "router");
     await new Promise<void>((resolve, reject) => {
       let state: "hello" | "register" | "ready" = "hello";
@@ -459,6 +461,11 @@ export class MeshCallServer {
             state = "ready";
             clearTimeout(timer);
             socket.off("error", fail);
+            if (this.stopping) {
+              fail(new UnavailableError("Server is stopping"));
+              return;
+            }
+            link.socket = socket;
             liveness.start();
             resolve();
           } else {
