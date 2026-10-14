@@ -1,0 +1,8 @@
+# LF everywhere: generated files are compared byte for byte with their
+# generators (CI drift check, codegen golden files) and the skill is embedded
+# into the binary, so a CRLF checkout on Windows must not change them.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gz binary
+*.whl binary
