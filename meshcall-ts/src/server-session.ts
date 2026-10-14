@@ -311,6 +311,7 @@ class ServerCall {
 
   public disconnect(): void {
     if (!this.cleanup()) return;
+    this.session.remove(this);
     this.controller.abort("connection_closed");
     this.closeIterator();
     this.session.logAccess(this.frame, "unavailable", this.started, this.context.logger);
@@ -398,6 +399,7 @@ class ServerCall {
     }
   }
 
+  /** Mark the call terminal and stop its timers and streams; idempotent. */
   private cleanup(): boolean {
     if (this.terminal) return false;
     this.terminal = true;
@@ -406,7 +408,6 @@ class ServerCall {
     const error = new CallCancelledError("Call is closed");
     this.credit.close(error);
     this.input.fail(error);
-    this.session.remove(this);
     return true;
   }
 
@@ -417,6 +418,10 @@ class ServerCall {
     } catch {
       this.session.close();
     } finally {
+      // Leave the in-flight set only once the terminal frame is written: a
+      // draining server closes its connections as soon as nothing is in
+      // flight, and must not drop a result that is still being sent.
+      this.session.remove(this);
       this.session.logAccess(this.frame, status, this.started, this.context.logger);
     }
   }
