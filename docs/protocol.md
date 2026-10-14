@@ -301,8 +301,8 @@ codes, but must still use the common error envelope.
 | `deadline_exceeded` | `timeout_ms` or `idle_timeout_ms` elapsed | server, Router, client |
 | `invalid_argument` | request payload or input stream item failed validation | server |
 | `method_not_found` | unknown service or method | server, Router |
-| `permission_denied` | authenticated but not authorised | Router |
-| `unauthenticated` | no or invalid credentials | Router |
+| `permission_denied` | the identity (including the anonymous user) may not make this call; identical whether or not the target exists | Router |
+| `unauthenticated` | credentials were presented but are invalid; refused at connect | Router |
 | `resource_exhausted` | a capacity limit was reached; usually retryable | Router, transport |
 | `unavailable` | no instance, or the connection was lost; usually retryable | Router, client |
 | `protocol_error` | a frame violated this document | any |

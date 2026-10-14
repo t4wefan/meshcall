@@ -17,8 +17,9 @@ from meshcall import (
     WebSocketRouter,
     get_service_contract,
 )
+from meshcall.context import ReconnectPolicy
 from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
-from meshcall.errors import MeshCallError
+from meshcall.errors import MeshCallError, PermissionDeniedError
 
 
 async def test_accounts_issue_scoped_tokens_and_revoke_active_calls(
@@ -176,3 +177,54 @@ async def test_expiry_closes_existing_connection_and_method_scope_is_enforced(
                 with pytest.raises(MeshCallError) as denied:
                     _ = [item async for item in client.download(NumberRequest(value=1))]
                 assert denied.value.code == "permission_denied"
+
+
+async def test_anonymous_callers_connect_and_are_authorised_per_call(
+    tmp_path: Path,
+) -> None:
+    name = get_service_contract(NumberService).name
+    auth_file = write_auth_file(
+        tmp_path / "auth.json", name, anonymous_call=[f"{name}/unary"]
+    )
+    async with WebSocketRouter(auth_file=auth_file) as router:
+        uri = f"ws://127.0.0.1:{router.bound_port}"
+        server = RpcServer(
+            services=[NumberService],
+            driver=WebSocketRouterServerDriver(
+                uri,
+                instance_id="numbers",
+                auth=RouterCredentials(username="issuer", password=PASSWORD),
+            ),
+        )
+        await server.start()
+        try:
+            # No credentials: the client connects as the anonymous user.
+            async with NumberServiceClient(WebSocketClientDriver(uri)) as client:
+                result = await client.call_unary(
+                    name, "unary", NumberRequest(value=4), NumberResult
+                )
+                assert result == NumberResult(total=4)
+                # A forbidden method and an unknown service fail the same way.
+                with pytest.raises(PermissionDeniedError) as forbidden:
+                    await client.call_unary(
+                        name, "add", NumberRequest(value=1), NumberResult
+                    )
+                with pytest.raises(PermissionDeniedError) as missing:
+                    await client.call_unary(
+                        "nothing.v1.Here", "x", NumberRequest(value=1), NumberResult
+                    )
+                assert forbidden.value.message == missing.value.message
+            # Wrong credentials are still refused at connect.
+            wrong = NumberServiceClient(
+                WebSocketClientDriver(
+                    uri, auth=RouterCredentials(username="reader", password="nope")
+                ),
+                reconnect=ReconnectPolicy(enabled=False),
+            )
+            with pytest.raises((InvalidStatus, MeshCallError)):
+                async with wrong:
+                    await wrong.call_unary(
+                        name, "unary", NumberRequest(value=1), NumberResult
+                    )
+        finally:
+            await server.stop()

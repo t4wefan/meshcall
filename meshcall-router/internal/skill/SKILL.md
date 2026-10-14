@@ -60,7 +60,7 @@ Every error has `code`, `message`, `details.source` (`client` | `router` |
 | `unavailable` | no instance (`no_instances`), instance lost, every breaker open (`circuit_open`), or the named instance is unknown / draining | `router inspect`; retry if `retryable` |
 | `resource_exhausted` | Router or every instance at capacity (`overloaded`) | back off and retry |
 | `deadline_exceeded` | `timeout_ms` elapsed (source says who noticed) | raise the timeout or make the handler faster |
-| `permission_denied` | account lacks `service/method` | fix the auth file or token scopes |
+| `permission_denied` | the caller (possibly the anonymous user: no credentials sent) may not make this call; the same error whether or not the method exists | send credentials, or add `service/method` to the account, key or token |
 | `internal` | the service failed; `reason: invalid_response` means its own handler broke its contract | read the service's log, fix the service |
 
 Never guess at parameters when `invalid_argument` tells you the path.
@@ -299,5 +299,8 @@ my_app/
 - Configure the Router with flags or `MESHCALL_ROUTER_<FLAG>` variables
   (`MESHCALL_ROUTER_PORT`, `MESHCALL_ROUTER_IDLE_TIMEOUT`, …); put accounts in
   `MESHCALL_ROUTER_AUTH` (the auth JSON itself) or `MESHCALL_ROUTER_AUTH_FILE`.
+  Callers without credentials are the `anonymous` user (grant it `call`
+  rules in the auth file for public methods); give machine callers API keys
+  (`meshcall-router new-api-key ID`, sent as `Authorization: Bearer mk_…`).
   `--max-connections` (default 10000) caps WebSocket connections (HTTP calls
   are not counted); over it new connections get a retryable `503`.

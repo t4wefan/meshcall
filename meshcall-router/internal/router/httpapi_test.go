@@ -315,12 +315,18 @@ func TestHTTPAuthUsesTheSameAccounts(t *testing.T) {
 		}
 		return resp
 	}
-	resp := post("")
+	// No credentials: the anonymous user, which testAuth grants nothing, so
+	// the call is refused exactly like any other forbidden call.
+	if status, e := httpError(t, post("")); status != 403 || e.Code != "permission_denied" {
+		t.Fatalf("anonymous: %d %+v", status, e)
+	}
+	// Wrong credentials are refused with a challenge, never made anonymous.
+	resp := post(basicHeader("reader", "wrong-password"))
 	if resp.Header.Get("WWW-Authenticate") == "" {
 		t.Fatal("missing Basic challenge")
 	}
 	if status, e := httpError(t, resp); status != 401 || e.Code != "unauthenticated" {
-		t.Fatalf("anonymous: %d %+v", status, e)
+		t.Fatalf("wrong password: %d %+v", status, e)
 	}
 	// reader may call echo; with nothing registered the Router says so.
 	if status, e := httpError(t, post(basicHeader("reader", "test-only-password"))); status != 503 || e.Code != "unavailable" {

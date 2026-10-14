@@ -16,11 +16,19 @@ def password_hash() -> str:
     return f"pbkdf2-sha256$600000${salt.hex()}${key.hex()}"
 
 
-def write_auth_file(path: Path, service: str) -> Path:
+def write_auth_file(
+    path: Path, service: str, *, anonymous_call: list[str] | None = None
+) -> Path:
+    anonymous = (
+        [{"username": "anonymous", "roles": ["client"], "call": anonymous_call}]
+        if anonymous_call is not None
+        else []
+    )
     path.write_text(
         json.dumps(
             {
                 "users": [
+                    *anonymous,
                     {
                         "username": "issuer",
                         "password_hash": password_hash(),

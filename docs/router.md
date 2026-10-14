@@ -190,13 +190,60 @@ on one service; `*` grants all entries in that permission list. Missing lists
 grant nothing. The two lists remain independent: permission to call a service
 does not imply permission to register an instance of it.
 
-Accounts use HTTP Basic authentication; temporary tokens use HTTP Bearer
-authentication. Credentials are sent in the `Authorization` header of the
-WebSocket upgrade, not in URL query strings or `hello` payloads. Authentication
-failures return HTTP 401 before upgrade. A disallowed role or registration closes
-the WebSocket with policy status 1008. Disallowed calls return the normal RPC
-`permission_denied` error. Every subsequent frame must belong to the original
-client/instance and have a direction appropriate for its role.
+Accounts use HTTP Basic authentication; temporary tokens (`mt_…`) and API keys
+(`mk_…`) use HTTP Bearer authentication. Credentials are sent in the
+`Authorization` header of the WebSocket upgrade or HTTP request, not in URL
+query strings or `hello` payloads.
+
+**Authenticate at connect, authorise at call.** A connection or HTTP request
+without any `Authorization` header is the reserved user `anonymous`; it is
+not refused. Credentials that are presented but invalid (wrong password,
+unknown or expired token, wrong key) are refused with HTTP 401 before the
+upgrade and are never downgraded to anonymous. A disallowed role or
+registration closes the WebSocket with policy status 1008. Every call the
+identity may not make is `permission_denied` (HTTP 403 over HTTP), whether
+or not the target exists and whether or not the caller is anonymous, so
+calls cannot be used to discover services. Every subsequent frame must
+belong to the original client/instance and have a direction appropriate for
+its role.
+
+**The `anonymous` user** is an ordinary entry with a reserved name. It takes
+no `password_hash`, its `roles` must be `["client"]`, it has no `register`
+list and it cannot issue tokens; anything else fails startup. Without the
+entry, anonymous callers may connect but every call is refused. Only the
+auth file decides what anonymous callers may do; services cannot declare
+themselves public.
+
+```json
+{ "users": [
+  { "username": "anonymous", "roles": ["client"], "call": ["status.v1.Health/*"] }
+] }
+```
+
+`--max-anonymous-connections` (default 1000) caps anonymous WebSocket
+connections inside `--max-connections`, so anonymous load cannot lock out
+credentialed clients and services.
+
+**API keys** are long-lived credentials for machine callers (webhooks,
+external services). `meshcall-router new-api-key ID` prints a key once and
+the entry to add under `api_keys` (fill in `call`):
+
+```json
+{ "api_keys": [
+  { "id": "ci-bot", "key_hash": "08bd…", "roles": ["client"], "call": ["build.v1.Jobs/*"] }
+] }
+```
+
+Keys are 256-bit random strings stored as SHA-256 digests, so checking one
+is a single hash lookup (unlike a password, which is verified with PBKDF2).
+They are configuration, so they survive Router restarts; rotate by adding a
+new key and removing the old one. Like temporary tokens, API keys cannot
+issue tokens.
+
+A successful Basic check is cached in memory for a minute (keyed by a digest
+of the credentials; failures are not cached), so repeated calls from the
+same account do not pay for PBKDF2 each time. The cache is lost harmlessly
+on restart. Frequent HTTP callers should still prefer API keys or tokens.
 
 Python requires websockets 16.1+ so cross-origin redirects strip authentication
 headers; see the [upstream changelog](https://websockets.readthedocs.io/en/stable/project/changelog.html).

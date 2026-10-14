@@ -40,6 +40,10 @@ type Config struct {
 	// BreakerCooldown; then one probe call is admitted. See breaker.go.
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
+	// MaxAnonymousConnections bounds WebSocket connections made without
+	// credentials, inside MaxConnections, so anonymous load cannot lock out
+	// credentialed clients and services. Zero means the default.
+	MaxAnonymousConnections int
 	// MaxConnections bounds open WebSocket connections; past it new upgrades
 	// are refused with 503. HTTP calls are not counted: their admission is a
 	// separate design (#8). Zero means the default.
@@ -47,9 +51,10 @@ type Config struct {
 }
 
 const (
-	DefaultDeadlineGrace  = 500 * time.Millisecond
-	DefaultIdleTimeout    = 45 * time.Second
-	DefaultMaxConnections = 10000
+	DefaultDeadlineGrace           = 500 * time.Millisecond
+	DefaultIdleTimeout             = 45 * time.Second
+	DefaultMaxConnections          = 10000
+	DefaultMaxAnonymousConnections = 1000
 )
 
 type Ready struct {
@@ -133,8 +138,10 @@ type Router struct {
 	deadlines    deadlineHeap
 	deadlineWake chan struct{}
 	dedup        map[string]*dedupEntry
-	// connections counts admitted WebSocket connections.
+	// connections counts admitted WebSocket connections; anonymous counts
+	// those among them made without credentials.
 	connections atomic.Int64
+	anonymous   atomic.Int64
 	dedupOrder  *list.List
 	wg          sync.WaitGroup
 	closeOnce   sync.Once
@@ -163,6 +170,12 @@ func Start(config Config) (*Router, error) {
 	}
 	if config.MaxConnections < 0 {
 		return nil, errors.New("max connections must be positive")
+	}
+	if config.MaxAnonymousConnections == 0 {
+		config.MaxAnonymousConnections = DefaultMaxAnonymousConnections
+	}
+	if config.MaxAnonymousConnections < 0 {
+		return nil, errors.New("max anonymous connections must be positive")
 	}
 	if config.BreakerThreshold == 0 {
 		config.BreakerThreshold = DefaultBreakerThreshold
@@ -346,6 +359,15 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	user, ok := r.config.Auth.authenticate(w, req)
 	if !ok {
 		return
+	}
+	if user != nil && user.kind == identityAnonymous {
+		if r.anonymous.Add(1) > int64(r.config.MaxAnonymousConnections) {
+			r.anonymous.Add(-1)
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "anonymous connection limit reached", http.StatusServiceUnavailable)
+			return
+		}
+		defer r.anonymous.Add(-1)
 	}
 	// Default origin checks protect browser-originated connections. Node/Python
 	// clients do not send Origin. Cross-origin browser auth is a separate concern.

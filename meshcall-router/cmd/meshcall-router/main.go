@@ -24,6 +24,24 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "new-api-key" {
+		if len(os.Args) != 3 {
+			return fmt.Errorf("usage: meshcall-router new-api-key ID")
+		}
+		key, keyHash, err := router.NewAPIKey(os.Args[2])
+		if err != nil {
+			return err
+		}
+		// The key goes to the caller once; only its digest goes in the auth file.
+		entry, _ := json.MarshalIndent(map[string]any{
+			"id": os.Args[2], "key_hash": keyHash, "roles": []string{"client"}, "call": []string{},
+		}, "", "  ")
+		fmt.Fprintln(os.Stderr, "API key (give it to the caller; it is not stored anywhere):")
+		fmt.Println(key)
+		fmt.Fprintln(os.Stderr, "Add to \"api_keys\" in the auth file, then fill in \"call\":")
+		fmt.Fprintln(os.Stderr, string(entry))
+		return nil
+	}
 	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
 		password, err := io.ReadAll(io.LimitReader(os.Stdin, 1027))
 		if err != nil {
@@ -48,6 +66,7 @@ func run() error {
 	flag.DurationVar(&config.IdleTimeout, "idle-timeout", router.DefaultIdleTimeout, "close connections that send nothing for this long")
 	flag.IntVar(&config.BreakerThreshold, "breaker-threshold", router.DefaultBreakerThreshold, "consecutive failures that open an instance's circuit")
 	flag.DurationVar(&config.BreakerCooldown, "breaker-cooldown", router.DefaultBreakerCooldown, "how long an open circuit excludes an instance before one probe call")
+	flag.IntVar(&config.MaxAnonymousConnections, "max-anonymous-connections", router.DefaultMaxAnonymousConnections, "WebSocket connections without credentials, within max-connections")
 	flag.IntVar(&config.MaxConnections, "max-connections", router.DefaultMaxConnections, "open WebSocket connections; more are refused with 503 (HTTP calls are not counted)")
 	flag.BoolVar(&parentStdin, "shutdown-on-stdin-close", false, "exit when the owning process closes stdin")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")

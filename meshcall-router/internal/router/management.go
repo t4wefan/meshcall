@@ -87,9 +87,11 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 	if _, err := rand.Read(secret); err != nil {
 		return result, err
 	}
-	token := base64.RawURLEncoding.EncodeToString(secret)
+	// The prefix keeps temporary tokens and API keys (mk_) apart by format.
+	token := "mt_" + base64.RawURLEncoding.EncodeToString(secret)
 	digest := sha256.Sum256([]byte(token))
 	user.tokenID = hex.EncodeToString(digest[:])
+	user.kind = identityToken
 	user.expires = time.Now().Add(time.Duration(request.TTLSeconds) * time.Second)
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -141,7 +143,7 @@ func (r *Router) management(p *peer, f frame) {
 			Expires  *int64   `json:"expires_at_unix_ms"`
 		}{p.user.Username, p.user.Roles, nonNil(p.user.Register), nonNil(p.user.Call), expires}
 	case "issue_token":
-		if p.user.tokenID != "" {
+		if !p.user.mayIssueTokens() {
 			fail("permission_denied", "Temporary tokens cannot issue tokens")
 			return
 		}
@@ -162,7 +164,7 @@ func (r *Router) management(p *peer, f frame) {
 		}
 		result = issued
 	case "revoke_token":
-		if p.user.tokenID != "" {
+		if !p.user.mayIssueTokens() {
 			fail("permission_denied", "Temporary tokens cannot revoke tokens")
 			return
 		}

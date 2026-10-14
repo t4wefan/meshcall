@@ -198,7 +198,9 @@ func TestRoutingOwnershipAndDisconnectCleanup(t *testing.T) {
 func TestAccountAndTokenScopesExpiryRevocation(t *testing.T) {
 	auth := testAuth(t)
 	r := runningRouter(t, auth)
-	for _, header := range []string{"", basicHeader("issuer", "wrong-password"), "Bearer invalid"} {
+	// Presented-but-invalid credentials are refused at connect; no
+	// credentials at all is the anonymous user (TestAnonymousUser).
+	for _, header := range []string{basicHeader("issuer", "wrong-password"), "Bearer invalid", "Bearer mk_nope_00"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		conn, response, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port),
 			&websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{header}}})

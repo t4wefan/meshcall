@@ -91,6 +91,11 @@ configuration format, scoped temporary tokens, and Python/TypeScript examples.
 Without an auth file, the listener is in development mode; AuthService cannot
 issue tokens. An invalid or empty supplied auth file fails startup.
 
+Without credentials a caller is the reserved `anonymous` user (configurable
+in the auth file, no permissions by default); `--max-anonymous-connections`
+(default `1000`) caps those connections. `new-api-key ID` prints a new API
+key once and the `api_keys` entry (its SHA-256 digest) for the auth file.
+
 `hash-password` reads a password from stdin and prints a salted
 PBKDF2-HMAC-SHA256 hash. For a hidden interactive password prompt:
 
