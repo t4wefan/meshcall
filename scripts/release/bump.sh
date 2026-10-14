@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
 # Set the release version everywhere it lives, then tell you how to ship it.
 #
-#   scripts/release/bump.sh 0.1.1          # or 0.2.0-rc.1
+#   scripts/release/bump.sh 0.2.0
 #
 # The three artifacts share one version: the Python package
 # (meshcall-py/pyproject.toml), the npm package (meshcall-ts/package.json) and
 # the Go binaries (stamped from the git tag by GoReleaser). The release
 # workflow refuses a tag that does not match the first two, so they must move
-# together. Lockfiles that pin the in-repo packages by version are refreshed
-# so `--locked` / `--frozen-lockfile` keep passing, and CHANGELOG.md's
-# Unreleased section becomes the new version.
+# together. uv lockfiles that record the in-repo package's version are
+# refreshed so `uv run --locked` keeps passing (yarn's frozen lockfile does
+# not pin a file: dependency's version, so those need nothing), and
+# CHANGELOG.md's Unreleased section becomes the new version.
+#
+# Only X.Y.Z: a pre-release such as 0.2.0-rc.1 is spelled 0.2.0rc1 by Python
+# (PEP 440), which the release workflow's tag check, the npm platform
+# package names and the Router download URL would all have to translate.
 #
 # Nothing is committed or tagged; the script prints those commands.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 NEW=${1:-}
-SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 if [[ ! $NEW =~ $SEMVER ]]; then
-  echo "usage: scripts/release/bump.sh X.Y.Z[-pre]" >&2
+  echo "usage: scripts/release/bump.sh X.Y.Z" >&2
   exit 2
 fi
 OLD=$(cd meshcall-py && uv version --short)
@@ -27,7 +32,6 @@ TS_OLD=$(node -p "require('./meshcall-ts/package.json').version")
 fail() { echo "bump: $*" >&2; exit 1; }
 [ "$OLD" = "$TS_OLD" ] || fail "Python ($OLD) and npm ($TS_OLD) versions already disagree; fix that first"
 [ "$NEW" != "$OLD" ] || fail "already at $NEW"
-# sort -V orders 0.2.0-rc.1 after 0.2.0; good enough to catch a typo going backwards.
 [ "$(printf '%s\n%s\n' "$OLD" "$NEW" | sort -V | tail -1)" = "$NEW" ] || fail "$NEW is not after $OLD"
 git rev-parse -q --verify "refs/tags/v$NEW" >/dev/null && fail "tag v$NEW already exists"
 [ -z "$(git status --porcelain)" ] || fail "working tree is not clean"
@@ -47,15 +51,6 @@ echo "==> $OLD -> $NEW"
 for lock in demo/*/uv.lock demo/*/*/uv.lock best-practice/uv.lock; do
   [ -f "$lock" ] || continue
   (cd "$(dirname "$lock")" && uv lock --quiet)
-done
-for lock in demo/*/*/yarn.lock best-practice/*/yarn.lock; do
-  [ -f "$lock" ] || continue
-  dir=$(dirname "$lock")
-  grep -q '^"meshcall@file:' "$lock" || continue
-  # yarn 1 keeps a stale copy of a file: dependency; drop it so the new
-  # version is resolved and written to the lockfile.
-  rm -rf "$dir/node_modules/meshcall"
-  (cd "$dir" && yarn -s install --check-files >/dev/null)
 done
 
 # CHANGELOG: Unreleased becomes the release; compare links follow.
