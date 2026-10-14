@@ -103,10 +103,16 @@ jobs:
       # secret (a granular token allowed to publish new packages). Once the
       # packages exist and have a trusted publisher, delete the secret: the
       # id-token permission above then authenticates on its own.
+      # Publishing is idempotent so a failed job can be re-run: a package
+      # whose version already exists on the registry is skipped.
       - name: Publish platform packages first so the main package's optional dependencies resolve
-        run: for pkg in ./dist-npm/*/; do npm publish "$pkg" --provenance --access public; done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: npm publish --provenance --access public
+        run: |
+          publish() {
+            name=$(node -p "require('$1/package.json').name"); version=$(node -p "require('$1/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then echo "$name@$version already published"; return; fi
+            npm publish "$1" --provenance --access public
+          }
+          for pkg in ./dist-npm/*/; do publish "$pkg"; done
+          publish .
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
