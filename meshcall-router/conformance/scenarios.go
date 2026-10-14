@@ -559,11 +559,10 @@ func keepalive(h *harness) error {
 }
 
 func routerRestart(h *harness) error {
-	port := h.port
 	h.router.Close()
 	time.Sleep(200 * time.Millisecond)
-	if err := h.startRouter(port); err != nil {
-		return fmt.Errorf("restart router on %d: %w", port, err)
+	if err := h.startRouter(); err != nil {
+		return fmt.Errorf("restart router at %s: %w", h.routerURL(), err)
 	}
 	if err := h.waitRegistered(10 * time.Second); err != nil {
 		return fmt.Errorf("instance did not re-register after router restart: %w", err)

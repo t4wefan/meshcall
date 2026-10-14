@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/t4wefan/meshcall/meshcall-router/internal/localsock"
 	"github.com/t4wefan/meshcall/meshcall-router/internal/wire"
 )
 
@@ -21,6 +22,11 @@ import (
 // doubles as a working reference for HTTP callers.
 
 func httpBase(router string) (string, error) {
+	if endpoint, err := localsock.Parse(router); err != nil {
+		return "", err
+	} else if endpoint.Dial != nil {
+		return "http://localhost", nil // the client's transport dials the socket or pipe
+	}
 	u, err := url.Parse(router)
 	if err != nil {
 		return "", err
@@ -31,7 +37,7 @@ func httpBase(router string) (string, error) {
 	case "wss", "https":
 		u.Scheme = "https"
 	default:
-		return "", fmt.Errorf("--http needs an http(s):// or ws(s):// Router URL, got %q", router)
+		return "", fmt.Errorf("--http needs an http(s)://, ws(s)://, unix:// or pipe:// Router URL, got %q", router)
 	}
 	u.Path, u.RawQuery = "", ""
 	return strings.TrimRight(u.String(), "/"), nil
@@ -55,7 +61,11 @@ func (o Options) httpDo(ctx context.Context, method, path, contentType string, b
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	return http.DefaultClient.Do(req)
+	endpoint, err := localsock.Parse(o.Router)
+	if err != nil {
+		return nil, err
+	}
+	return endpoint.HTTPClient().Do(req)
 }
 
 // httpFrame turns a terminal HTTP response into the frame emitTerminal reads.

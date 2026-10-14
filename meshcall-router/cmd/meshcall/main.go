@@ -4,7 +4,7 @@
 //	meshcall call svc.method ['{json}']       perform a call; streams print one JSON line per item
 //	meshcall version
 //
-// Global flags: --router URL (default $MESHCALL_ROUTER_URL or ws://127.0.0.1:8765),
+// Global flags: --router URL (ws://, unix:///path, pipe://NAME; default $MESHCALL_ROUTER_URL or ws://127.0.0.1:8765),
 // --auth user:password, --token BEARER, --json, --timeout DURATION.
 package main
 
@@ -49,7 +49,7 @@ func run(args []string) error {
 	global := flag.NewFlagSet("meshcall", flag.ContinueOnError)
 	var router, auth, token string
 	var timeout time.Duration
-	global.StringVar(&router, "router", envOr("MESHCALL_ROUTER_URL", "ws://127.0.0.1:8765"), "Router WebSocket URL")
+	global.StringVar(&router, "router", envOr("MESHCALL_ROUTER_URL", "ws://127.0.0.1:8765"), "Router URL: ws://host:port, unix:///path or pipe://NAME (Windows)")
 	global.StringVar(&auth, "auth", "", "user:password for Basic authentication")
 	global.StringVar(&token, "token", "", "temporary token for Bearer authentication")
 	global.BoolVar(&asJSON, "json", false, "machine-readable output")

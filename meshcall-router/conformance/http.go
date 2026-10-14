@@ -15,15 +15,19 @@ import (
 // over HTTP, so these check that the translation preserves each shape.
 
 func (h *harness) httpCall(ctx context.Context, method, body string, headers map[string]string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("http://127.0.0.1:%d/v1/call/%s/%s", h.port, Service, method), strings.NewReader(body))
+	base := fmt.Sprintf("http://127.0.0.1:%d", h.port)
+	endpoint := h.endpoint()
+	if endpoint.Dial != nil {
+		base = "http://localhost" // the transport dials the socket or pipe
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/call/"+Service+"/"+method, strings.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	return http.DefaultClient.Do(req)
+	return endpoint.HTTPClient().Do(req)
 }
 
 func readJSON(resp *http.Response) (map[string]any, error) {
