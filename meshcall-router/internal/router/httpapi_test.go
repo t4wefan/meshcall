@@ -334,3 +334,64 @@ func TestHTTPAuthUsesTheSameAccounts(t *testing.T) {
 		t.Fatalf("not permitted: %d %+v", status, e)
 	}
 }
+
+func TestConnectionLimitCountsWebSocketsOnly(t *testing.T) {
+	r, err := Start(Config{MaxConnections: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	a, b := dial(t, r, ""), dial(t, r, "")
+	hello(t, a, "client", "a")
+	hello(t, b, "client", "b")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port), nil)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("third WebSocket: err=%v resp=%v", err, resp)
+	}
+	// HTTP calls are not counted: with both slots taken, the call still
+	// reaches routing (and finds no instance).
+	httpResp, err := http.Post(httpURL(r, "/v1/call/"+testService+"/echo"), "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, e := httpError(t, httpResp); status != 503 || !strings.Contains(string(e.Details), "no_instances") {
+		t.Fatalf("HTTP should bypass the WebSocket limit: %d %+v", status, e)
+	}
+	// Closing a WebSocket frees its slot.
+	_ = a.CloseNow()
+	eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port), nil)
+		if err != nil {
+			return false
+		}
+		_ = conn.CloseNow()
+		return true
+	})
+}
+
+func TestHTTPBodyThatStopsIsCutOffByTheIdleTimeout(t *testing.T) {
+	r, err := Start(Config{IdleTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	bodyReader, bodyWriter := io.Pipe()
+	t.Cleanup(func() { _ = bodyWriter.Close() })
+	req, _ := http.NewRequest(http.MethodPost, httpURL(r, "/v1/call/"+testService+"/echo"), bodyReader)
+	go func() { _, _ = bodyWriter.Write([]byte(`{"partial":`)) }() // and then nothing
+	started := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		status, e := httpError(t, resp)
+		if status != 400 || e.Code != "invalid_argument" {
+			t.Fatalf("stalled body: %d %+v", status, e)
+		}
+	}
+	if elapsed := time.Since(started); elapsed > 4*time.Second {
+		t.Fatalf("a stalled body held the request for %v", elapsed)
+	}
+}

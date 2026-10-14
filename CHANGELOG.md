@@ -10,6 +10,14 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Router configuration from the environment: every flag has a
+  `MESHCALL_ROUTER_<FLAG>` variable (the command line wins), and
+  `MESHCALL_ROUTER_AUTH` carries the auth document inline as an alternative
+  to an auth file.
+- `--max-connections` (default 10000; launchers: `max_connections` /
+  `maxConnections`) caps open WebSocket connections, refusing more with
+  `503` and `Retry-After`; HTTP calls are not counted. HTTP request bodies
+  that stop arriving for `--idle-timeout` are cut off.
 - HTTP calls through the Router (`POST /v1/call/{service}/{method}` on the
   same listener): unary calls and server streams (NDJSON, or SSE with
   `Accept: text/event-stream`, plus a `MeshCall-Status` trailer), client

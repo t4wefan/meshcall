@@ -146,9 +146,13 @@ control frames take priority, and other calls rotate fairly.
 ## Accounts and permissions
 
 Pass `--auth-file /path/router-auth.json`, Python `auth_file=...`, or TypeScript
-`authFile: ...`. A configured file must contain at least one valid user; malformed
+`authFile: ...`; or set `MESHCALL_ROUTER_AUTH_FILE` to the path, or
+`MESHCALL_ROUTER_AUTH` to the document itself (one of the two; both is an
+error). A configured file must contain at least one valid user; malformed
 or empty configuration fails startup. Omitting the file enables development
-mode. Development mode does not expose token issuance.
+mode. Development mode does not expose token issuance. Every other flag has
+a `MESHCALL_ROUTER_<FLAG>` variable as well; see
+[the Router README](../meshcall-router/README.md#environment-variables).
 
 ```json
 {

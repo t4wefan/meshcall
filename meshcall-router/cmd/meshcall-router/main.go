@@ -48,9 +48,20 @@ func run() error {
 	flag.DurationVar(&config.IdleTimeout, "idle-timeout", router.DefaultIdleTimeout, "close connections that send nothing for this long")
 	flag.IntVar(&config.BreakerThreshold, "breaker-threshold", router.DefaultBreakerThreshold, "consecutive failures that open an instance's circuit")
 	flag.DurationVar(&config.BreakerCooldown, "breaker-cooldown", router.DefaultBreakerCooldown, "how long an open circuit excludes an instance before one probe call")
+	flag.IntVar(&config.MaxConnections, "max-connections", router.DefaultMaxConnections, "open WebSocket connections; more are refused with 503 (HTTP calls are not counted)")
 	flag.BoolVar(&parentStdin, "shutdown-on-stdin-close", false, "exit when the owning process closes stdin")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.Usage = func() {
+		out := flag.CommandLine.Output()
+		fmt.Fprintln(out, "usage: meshcall-router [flags]")
+		fmt.Fprintln(out, "Every flag can also be set as MESHCALL_ROUTER_<FLAG> (e.g. MESHCALL_ROUTER_IDLE_TIMEOUT=30s);")
+		fmt.Fprintln(out, "a flag on the command line wins. MESHCALL_ROUTER_AUTH holds an auth document inline instead of a file.")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
+	if err := applyEnvironment(); err != nil {
+		return err
+	}
 	if showVersion {
 		fmt.Println("meshcall-router " + version)
 		return nil
@@ -70,8 +81,7 @@ func run() error {
 		}
 	}
 	var err error
-	config.Auth, err = router.LoadAuth(authPath)
-	if err != nil {
+	if config.Auth, err = loadAuth(authPath); err != nil {
 		return err
 	}
 	r, err := router.Start(config)
@@ -97,4 +107,50 @@ func run() error {
 		return fmt.Errorf("router listener stopped unexpectedly")
 	}
 	return nil
+}
+
+const envPrefix = "MESHCALL_ROUTER_"
+
+// envName is the environment variable for a flag: auth-file → MESHCALL_ROUTER_AUTH_FILE.
+func envName(flagName string) string {
+	return envPrefix + strings.ToUpper(strings.ReplaceAll(flagName, "-", "_"))
+}
+
+// applyEnvironment fills every flag not given on the command line from its
+// environment variable, so containers can be configured without arguments.
+func applyEnvironment() error {
+	given := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	var err error
+	flag.VisitAll(func(f *flag.Flag) {
+		if err != nil || given[f.Name] || f.Name == "version" {
+			return
+		}
+		value, ok := os.LookupEnv(envName(f.Name))
+		if !ok {
+			return
+		}
+		if setErr := flag.Set(f.Name, value); setErr != nil {
+			err = fmt.Errorf("%s: %w", envName(f.Name), setErr)
+		}
+	})
+	return err
+}
+
+// loadAuth reads accounts from --auth-file / MESHCALL_ROUTER_AUTH_FILE or
+// from an inline document in MESHCALL_ROUTER_AUTH; giving both is an error
+// so it is never unclear which one is in force.
+func loadAuth(path string) (*router.Auth, error) {
+	inline, hasInline := os.LookupEnv(envPrefix + "AUTH")
+	if hasInline && path != "" {
+		return nil, fmt.Errorf("set either %sAUTH or an auth file, not both", envPrefix)
+	}
+	if hasInline {
+		auth, err := router.ParseAuth([]byte(inline))
+		if err != nil {
+			return nil, fmt.Errorf("%sAUTH: %w", envPrefix, err)
+		}
+		return auth, nil
+	}
+	return router.LoadAuth(path)
 }

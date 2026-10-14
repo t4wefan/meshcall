@@ -63,10 +63,29 @@ nothing for that long; clients and services keep healthy connections alive
 with protocol pings every 15 s. `--breaker-threshold` (default `5`) and
 `--breaker-cooldown` (default `10s`) configure the per-instance circuit
 breaker. See [the protocol](../docs/protocol.md#timeouts).
+`--max-connections` (default `10000`) bounds open WebSocket connections;
+past it new upgrades get `503` with `Retry-After`. HTTP calls are not
+counted (their admission control is still to be designed). HTTP
+request bodies must keep arriving within `--idle-timeout` while the Router
+is reading them.
+
+## Environment variables
+
+Every flag can be set as `MESHCALL_ROUTER_<FLAG>`: upper case, `-` becomes
+`_` (`--idle-timeout` → `MESHCALL_ROUTER_IDLE_TIMEOUT=30s`,
+`--auth-file` → `MESHCALL_ROUTER_AUTH_FILE`). A flag given on the command
+line wins over its variable; an invalid value fails startup and names the
+variable. `MESHCALL_ROUTER_AUTH` holds the auth document itself (the JSON an
+auth file would contain), for platforms that inject secrets as variables;
+setting it together with an auth file is an error. Routers started by the
+Python and TypeScript launchers inherit the launching process's
+environment, so these variables apply to them too.
 
 ## Authentication
 
-Use `--auth-file /path/to/router-auth.json` to enable account authentication.
+Use `--auth-file /path/to/router-auth.json` (or `MESHCALL_ROUTER_AUTH_FILE`,
+or the document inline in `MESHCALL_ROUTER_AUTH`) to enable account
+authentication.
 See [Router authentication and RPC management](../docs/router.md) for the
 configuration format, scoped temporary tokens, and Python/TypeScript examples.
 Without an auth file, the listener is in development mode; AuthService cannot
@@ -92,6 +111,15 @@ docker build -t meshcall-router ./meshcall-router
 docker run --rm -p 127.0.0.1:8765:8765 \
   --mount type=bind,src=/absolute/path/router-auth.json,dst=/config/auth.json,readonly \
   meshcall-router --host 0.0.0.0 --port 8765 --auth-file /config/auth.json
+```
+
+or, configured entirely through the environment:
+
+```bash
+docker run --rm -p 127.0.0.1:8765:8765 \
+  -e MESHCALL_ROUTER_HOST=0.0.0.0 -e MESHCALL_ROUTER_PORT=8765 \
+  -e MESHCALL_ROUTER_AUTH="$(cat router-auth.json)" \
+  meshcall-router
 ```
 
 The image contains only the static Go executable and runs as UID/GID 65532.

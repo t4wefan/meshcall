@@ -65,6 +65,12 @@ func LoadAuth(path string) (*Auth, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read auth file: %w", err)
 	}
+	return ParseAuth(data)
+}
+
+// ParseAuth reads an auth document (the contents of an auth file), for
+// deployments that pass it inline, e.g. through MESHCALL_ROUTER_AUTH.
+func ParseAuth(data []byte) (*Auth, error) {
 	var config struct {
 		Users []User `json:"users"`
 	}
@@ -109,6 +115,7 @@ func LoadAuth(path string) (*Auth, error) {
 		if len(parts) != 4 || parts[0] != "pbkdf2-sha256" || parts[1] != "600000" {
 			return nil, errors.New("unsupported password hash; use hash-password")
 		}
+		var err error
 		u.salt, err = hex.DecodeString(parts[2])
 		if err != nil || len(u.salt) != 16 {
 			return nil, errors.New("invalid password hash salt")

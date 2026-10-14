@@ -296,3 +296,8 @@ my_app/
   leaves the pool first, so no request fails.
 - Several Routers: give services and clients the list of endpoints; no
   coordination is needed because the Router keeps no state peers cannot rebuild.
+- Configure the Router with flags or `MESHCALL_ROUTER_<FLAG>` variables
+  (`MESHCALL_ROUTER_PORT`, `MESHCALL_ROUTER_IDLE_TIMEOUT`, …); put accounts in
+  `MESHCALL_ROUTER_AUTH` (the auth JSON itself) or `MESHCALL_ROUTER_AUTH_FILE`.
+  `--max-connections` (default 10000) caps WebSocket connections (HTTP calls
+  are not counted); over it new connections get a retryable `503`.

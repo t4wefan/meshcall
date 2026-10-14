@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -39,11 +40,16 @@ type Config struct {
 	// BreakerCooldown; then one probe call is admitted. See breaker.go.
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
+	// MaxConnections bounds open WebSocket connections; past it new upgrades
+	// are refused with 503. HTTP calls are not counted: their admission is a
+	// separate design (#8). Zero means the default.
+	MaxConnections int
 }
 
 const (
-	DefaultDeadlineGrace = 500 * time.Millisecond
-	DefaultIdleTimeout   = 45 * time.Second
+	DefaultDeadlineGrace  = 500 * time.Millisecond
+	DefaultIdleTimeout    = 45 * time.Second
+	DefaultMaxConnections = 10000
 )
 
 type Ready struct {
@@ -127,11 +133,13 @@ type Router struct {
 	deadlines    deadlineHeap
 	deadlineWake chan struct{}
 	dedup        map[string]*dedupEntry
-	dedupOrder   *list.List
-	wg           sync.WaitGroup
-	closeOnce    sync.Once
-	done         chan struct{}
-	ready        Ready
+	// connections counts admitted WebSocket connections.
+	connections atomic.Int64
+	dedupOrder  *list.List
+	wg          sync.WaitGroup
+	closeOnce   sync.Once
+	done        chan struct{}
+	ready       Ready
 }
 
 func Start(config Config) (*Router, error) {
@@ -149,6 +157,12 @@ func Start(config Config) (*Router, error) {
 	}
 	if config.DeadlineGrace < 0 || config.IdleTimeout < time.Second {
 		return nil, errors.New("deadline-grace must be non-negative and idle-timeout at least 1s")
+	}
+	if config.MaxConnections == 0 {
+		config.MaxConnections = DefaultMaxConnections
+	}
+	if config.MaxConnections < 0 {
+		return nil, errors.New("max connections must be positive")
 	}
 	if config.BreakerThreshold == 0 {
 		config.BreakerThreshold = DefaultBreakerThreshold
@@ -320,6 +334,15 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		r.serveHTTP(w, req)
 		return
 	}
+	// Admission before authentication, so a flood cannot even reach the
+	// password check. The slot is held for the connection's life.
+	if r.connections.Add(1) > int64(r.config.MaxConnections) {
+		r.connections.Add(-1)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "connection limit reached", http.StatusServiceUnavailable)
+		return
+	}
+	defer r.connections.Add(-1)
 	user, ok := r.config.Auth.authenticate(w, req)
 	if !ok {
 		return

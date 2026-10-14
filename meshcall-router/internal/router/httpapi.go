@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HTTP calls (docs/protocol.md → HTTP calls). Each request becomes a virtual
@@ -73,7 +74,9 @@ func writeHTTPErrorStatus(w http.ResponseWriter, status int, e *errorPayload) {
 // routerHTTPError is an error the Router itself raises for a malformed request.
 func routerHTTPError(code, message, reason string) *errorPayload {
 	details, _ := json.Marshal(map[string]string{"source": "router", "reason": reason})
-	return &errorPayload{Code: code, Message: message, Details: details}
+	// Capacity and availability are transient; a malformed request is not.
+	retryable := code == "unavailable" || code == "resource_exhausted"
+	return &errorPayload{Code: code, Message: message, Retryable: retryable, Details: details}
 }
 
 // serveHTTP answers every request under /v1/.
@@ -137,6 +140,7 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		body = bufio.NewReaderSize(req.Body, 64*1024)
+		r.readDeadline(w)
 		line, err := readLine(body, r.config.MaxFrameSize)
 		if err != nil && !errors.Is(err, io.EOF) {
 			writeHTTPError(w, routerHTTPError("invalid_argument", "the first line must be the request payload: "+err.Error(), "http_body"))
@@ -146,6 +150,7 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 	} else if payload == nil {
 		// The content type is not checked: the body must be JSON either way,
 		// and `curl -d` labels JSON as a form.
+		r.readDeadline(w)
 		data, err := io.ReadAll(io.LimitReader(req.Body, int64(r.config.MaxFrameSize)+1))
 		if err != nil || len(data) > r.config.MaxFrameSize {
 			writeHTTPError(w, routerHTTPError("invalid_argument", "the request body is unreadable or too large", "http_body"))
@@ -175,6 +180,7 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 	defer release()
 	r.forward(p, open)
 
+	_ = http.NewResponseController(w).SetReadDeadline(time.Time{}) // waiting for the instance is not the client's delay
 	c := &httpCall{r: r, p: p, id: open.CallID, w: w, req: req}
 	switch stream {
 	case "server_stream":
@@ -420,10 +426,14 @@ func (c *httpCall) clientStream(body *bufio.Reader) {
 	go func() {
 		defer close(lines)
 		for range want {
+			// The idle clock runs only while the Router wants a line: time
+			// spent waiting for credit is the instance's, not the sender's.
+			c.r.readDeadline(c.w)
 			data, err := readLine(body, c.r.config.MaxFrameSize)
 			for err == nil && len(bytes.TrimSpace(data)) == 0 {
 				data, err = readLine(body, c.r.config.MaxFrameSize) // blank lines carry nothing
 			}
+			_ = http.NewResponseController(c.w).SetReadDeadline(time.Time{})
 			select {
 			case lines <- line{data, err}:
 			case <-c.p.ctx.Done():
@@ -505,6 +515,12 @@ func (c *httpCall) clientStream(body *bufio.Reader) {
 			return
 		}
 	}
+}
+
+// readDeadline bounds the next body read by the idle timeout, so a sender
+// that stops mid-body cannot hold a connection slot forever.
+func (r *Router) readDeadline(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(r.config.IdleTimeout))
 }
 
 // readLine reads one newline-terminated line of at most limit bytes.

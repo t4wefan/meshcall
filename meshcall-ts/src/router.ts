@@ -19,6 +19,8 @@ export interface WebSocketRouterOptions {
   readonly maxFrameSize?: number;
   readonly binaryPath?: string;
   readonly authFile?: string;
+  /** Open WebSocket connections the Router accepts; omitted = Router default. */
+  readonly maxConnections?: number;
   readonly startupTimeoutMs?: number;
   readonly shutdownTimeoutMs?: number;
 }
@@ -220,6 +222,9 @@ export class WebSocketRouter {
     for (const timeout of [this.startupTimeout, this.shutdownTimeout]) {
       if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new RangeError("Process timeouts must be positive integers");
     }
+    if (options.maxConnections !== undefined && (!Number.isSafeInteger(options.maxConnections) || options.maxConnections < 1)) {
+      throw new RangeError("maxConnections must be a positive integer");
+    }
     this.unixPath = options.unixPath === undefined ? undefined : unixSocketPath(options.unixPath);
   }
 
@@ -242,6 +247,7 @@ export class WebSocketRouter {
       if (this.unixPath === undefined) args.push("--host", this.options.host ?? "127.0.0.1", "--port", String(this.options.port ?? 0));
       else args.push("--unix-socket", this.unixPath);
       if (this.options.authFile !== undefined) args.push("--auth-file", resolve(this.options.authFile));
+      if (this.options.maxConnections !== undefined) args.push("--max-connections", String(this.options.maxConnections));
       const child = spawn(findRouterBinary(this.options.binaryPath), args, { stdio: "pipe", windowsHide: true });
       this.child = child;
       child.stdin.on("error", () => undefined);
