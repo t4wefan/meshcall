@@ -5,9 +5,13 @@ is the first transport, but the rules in this document are transport-independent
 
 ## Connection handshake
 
-The first frame sent by a connection is `hello`. Its role is either `client` or
-`server`. A server connection to a Router follows a successful handshake with a
-`server.register` frame containing its immutable service registration.
+The first frame sent by a connection is `hello`. Its role is `client`,
+`server`, or `router`. A server connection to a Router follows a successful
+handshake with a `server.register` frame containing its immutable service
+registration. A `router` connection links two Routers (see Router links
+below): both ends may send caller and callee frames, and each end sends
+`server.register` for itself and re-sends it whenever what it can serve
+changes.
 
 The protocol version is `meshcall/1`. A peer must reject an unsupported version
 before accepting calls.
@@ -33,8 +37,8 @@ unique string chosen by the client. All time values are integer milliseconds.
 
 | Kind | Fields | Notes |
 | --- | --- | --- |
-| `hello` | `protocol`, `role`, `peer_id`, `instance_id?`, `capabilities?` | first frame from the connecting peer |
-| `hello.ack` | `protocol`, `connection_id` | reply from the accepting peer |
+| `hello` | `protocol`, `role`, `peer_id`, `instance_id?`, `capabilities?` | first frame from the connecting peer; for `role: "router"`, `peer_id` is the Router's id |
+| `hello.ack` | `protocol`, `connection_id`, `peer_id?` | reply from the accepting peer; a Router answers a `router` hello with its own `peer_id` |
 | `server.register` | `instance_id`, `services[{name, methods[], targeted?, contract?}]`, `max_inflight?` | Router mode only; one per connection |
 | `server.register.ack` | `instance_id` | |
 | `server.drain` | — | instance → Router: leave every pool, keep serving routed calls |
@@ -140,6 +144,36 @@ Each method has one of four shapes:
 | server_stream | no | yes | no |
 | client_stream | yes | no | yes |
 | duplex (experimental) | yes | yes | optional |
+
+## Router links
+
+Two Routers connect once; the dialling Router authenticates like any other
+connection (an account or token with the `router` role) and sends
+`hello{role: "router", peer_id}`; the acceptor answers `hello.ack` with its
+own `peer_id`. The link is then **one ordinary instance on each side**: each
+Router sends `server.register` with `instance_id` equal to its `peer_id` and
+`services` describing what it can serve (this version: the union of its
+local instances' methods per service, the widest contract it holds, and
+their summed `max_inflight`, unlimited if any is), and re-sends it whenever
+that set changes (`server.register.ack` is returned and otherwise ignored).
+Services the account may not register are dropped from the advertisement.
+A Router that has nothing to serve still registers, with an empty list.
+
+Calls cross a link exactly as they cross a client or instance connection:
+the Router that selected the link forwards `call.open` to it; the receiving
+Router routes the call among its own instances, never back over the link it
+arrived on, and all later frames of the call follow the same route. Balance
+policies, breakers, deadlines (each hop adds its own grace), drain and
+`instance_lost` apply to a link as to any instance. Both ends ping the link;
+the measured round trip is the link instance's `rtt` for `adaptive`
+balancing. An account's `call` list bounds what the Router behind it may
+forward *to* the acceptor; the dialler trusts the Router it chose to dial.
+
+Instance ids may be path-qualified across links: `peer/instance` names
+`instance` behind the Router `peer`. A Router whose `peer_id` is the first
+segment strips it and routes the remainder; any other first segment names a
+link to forward to unchanged. Only the `instance_id` field of `call.open` is
+rewritten; every other field is forwarded byte for byte.
 
 ## Targeted calls
 

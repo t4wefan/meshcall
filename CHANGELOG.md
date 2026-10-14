@@ -33,6 +33,15 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Router peering (`--peer URL`, `--peer-id`; `WebSocketRouter(peers=…)` /
+  `{ peers }`): two Routers link once and each becomes an ordinary instance
+  on the other, advertising its local instances' methods, contract and
+  summed capacity, re-advertised on every change and forgotten when the
+  link drops. The dialler authenticates with an account holding the new
+  `router` role, whose `register` / `call` lists bound the link. Links are
+  pinged from both ends and their RTT feeds `adaptive`. Instance ids may be
+  path-qualified (`peer/instance`) to target an instance behind a peer.
+  Direct, single-hop links in this version (#24).
 - `adaptive` balance policy, now the default for services that do not name
   one: the Router routes each call to the instance with the shortest expected
   completion time (EWMA service time per instance and method × queue depth +

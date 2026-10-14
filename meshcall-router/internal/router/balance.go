@@ -53,7 +53,7 @@ func (p *pool) rebuildMethods() {
 
 // selectInstance picks an instance for f. A non-nil avoid is skipped when any
 // other instance exists (redelivery after that instance lost the call).
-func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
+func (r *Router) selectInstance(caller *peer, f frame, avoid *peer) (*peer, *frame) {
 	fail := func(code, message string) (*peer, *frame) {
 		reason := ""
 		if code == "unavailable" {
@@ -71,7 +71,7 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		return fail("method_not_found", "Unknown method "+f.Service+"."+f.Method)
 	}
 	if f.InstanceID != "" {
-		return r.targetInstance(f)
+		return r.targetInstance(caller, f)
 	}
 	if p.targeted {
 		err := routerError(f.CallID, "invalid_argument", f.Service+" is a targeted service: call.open needs instance_id", false, "instance_required", "")
@@ -80,9 +80,10 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 	// Eligibility: registered this method, not avoided, not at its cap,
 	// breaker admits it.
 	now := time.Now()
+	// A call that arrived over a router link never goes back over it.
 	serving := make([]*peer, 0, len(p.instances))
 	for _, c := range p.instances {
-		if c.serves(f.Service, f.Method) {
+		if c != caller && c.serves(f.Service, f.Method) {
 			serving = append(serving, c)
 		}
 	}
@@ -164,9 +165,10 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 // targetInstance routes a call that names its instance. The caller chose the
 // instance, so the balance policy and the circuit breaker do not apply; only
 // existence, draining and the hard capacity cap do.
-func (r *Router) targetInstance(f frame) (*peer, *frame) {
-	target := r.instances[f.InstanceID]
-	if target == nil || !slices.ContainsFunc(target.services, func(s service) bool { return s.Name == f.Service }) {
+func (r *Router) targetInstance(caller *peer, f frame) (*peer, *frame) {
+	lookup, _ := r.resolveInstanceID(f.InstanceID)
+	target := r.instances[lookup]
+	if target == nil || target == caller || !slices.ContainsFunc(target.services, func(s service) bool { return s.Name == f.Service }) {
 		err := routerError(f.CallID, "unavailable", "Instance "+f.InstanceID+" is not registered for "+f.Service, false, "instance_unknown", f.InstanceID)
 		return nil, &err
 	}

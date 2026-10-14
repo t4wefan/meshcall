@@ -86,8 +86,8 @@ func LoadAuth(path string) (*Auth, error) {
 			return nil, errors.New("duplicate auth username")
 		}
 		for _, role := range u.Roles {
-			if role != "client" && role != "server" {
-				return nil, errors.New("auth role must be client or server")
+			if role != "client" && role != "server" && role != "router" {
+				return nil, errors.New("auth role must be client, server, or router")
 			}
 		}
 		for _, rule := range u.Register {

@@ -118,6 +118,7 @@ for you. When running tools directly:
 | CLI launchers | `launcher.py` | `launcher.ts` | `cmd/meshcall` |
 | Routing, balancing, deadlines | — | — | `router.go`, `balance.go`, `deadline.go` |
 | Registry RPC, dedup, breaker | — | — | `management.go`, `dedup.go`, `breaker.go` |
+| Adaptive balancing, Router peering | `router.py` (launcher options) | `router.ts` | `adaptive.go`, `peering.go` |
 | `meshcall` CLI (inspect, call) | — | — | `internal/cli`, `cmd/meshcall`; raw client in `internal/wire` |
 | `init` (agent skill installer) | — | — | `internal/skill`; source `skills/meshcall/SKILL.md` |
 | Conformance suite | `conformance/fixture.py` | `conformance/fixture.ts` | `conformance/` |

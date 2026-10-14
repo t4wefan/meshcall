@@ -324,3 +324,61 @@ async def test_multiple_routers_give_failover_without_coordination() -> None:
         await server.stop()
         for router in routers[1:]:
             await router.stop()
+
+
+async def test_peered_routers_serve_each_other_as_instances() -> None:
+    hub = WebSocketRouter(host="127.0.0.1", port=0, peer_id="hub")
+    await hub.start()
+    hub_uri = f"ws://127.0.0.1:{hub.bound_port}"
+    edge = WebSocketRouter(host="127.0.0.1", port=0, peers=[hub_uri], peer_id="edge")
+    await edge.start()
+    edge_uri = f"ws://127.0.0.1:{edge.bound_port}"
+    server = RpcServer(
+        services=[NumberService],
+        driver=WebSocketRouterServerDriver(edge_uri, instance_id="behind-edge"),
+    )
+    await server.start()
+    client = NumberServiceClient(WebSocketClientDriver(hub_uri))
+    try:
+        # The link advertises the edge's instance to the hub once it registers.
+        for _ in range(100):
+            try:
+                result = await client.call_unary(
+                    NumberServiceClient.service_name,
+                    "unary",
+                    NumberRequest(value=7),
+                    NumberResult,
+                    timeout=2,
+                )
+                break
+            except MeshCallError as exc:
+                if exc.code != ErrorCode.UNAVAILABLE:
+                    raise
+                await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("hub never learned the edge's service")
+        assert result == NumberResult(total=7)
+        # Streams cross the link, and a path-qualified id reaches the instance.
+        items = [
+            item.value
+            async for item in client.call_server_stream(
+                NumberServiceClient.service_name,
+                "download",
+                NumberRequest(value=5),
+                NumberItem,
+            )
+        ]
+        assert items == [0, 1, 2, 3, 4]
+        pinned = await client.call_unary(
+            NumberServiceClient.service_name,
+            "unary",
+            NumberRequest(value=3),
+            NumberResult,
+            instance="edge/behind-edge",
+        )
+        assert pinned == NumberResult(total=3)
+    finally:
+        await client.stop()
+        await server.stop()
+        await edge.stop()
+        await hub.stop()

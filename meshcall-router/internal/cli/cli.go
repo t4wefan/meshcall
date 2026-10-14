@@ -133,6 +133,9 @@ func FormatInspect(result map[string]any, w io.Writer) {
 			if d, _ := inst["draining"].(bool); d {
 				line += "  draining"
 			}
+			if isPeer, _ := inst["peer"].(bool); isPeer {
+				line += fmt.Sprintf("  peer rtt=%vms", number(inst["rtt_ms"]))
+			}
 			fmt.Fprintln(w, line)
 		}
 		methods, _ := svc["methods"].([]any)

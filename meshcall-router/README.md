@@ -56,6 +56,14 @@ with protocol pings every 15 s. `--breaker-threshold` (default `5`) and
 `--breaker-cooldown` (default `10s`) configure the per-instance circuit
 breaker. See [the protocol](../docs/protocol.md#timeouts).
 
+## Peering
+
+`--peer ws[s]://[user:pass@|:TOKEN@]host:port` (repeatable) links this
+Router with another one; `--peer-id NAME` names this Router towards peers
+and in `peer/instance` targets (generated when omitted). The account used on
+the dialled Router needs the `router` role. See
+[docs/router.md → Router peering](../docs/router.md#router-peering).
+
 ## Authentication
 
 Use `--auth-file /path/to/router-auth.json` to enable account authentication.

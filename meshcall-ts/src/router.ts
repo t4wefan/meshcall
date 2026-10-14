@@ -18,6 +18,9 @@ export interface WebSocketRouterOptions {
   readonly maxFrameSize?: number;
   readonly binaryPath?: string;
   readonly authFile?: string;
+  /** Routers this one links with (`ws://user:pass@host:port`); see docs/router.md → Router peering. */
+  readonly peers?: ReadonlyArray<string>;
+  readonly peerId?: string;
   readonly startupTimeoutMs?: number;
   readonly shutdownTimeoutMs?: number;
 }
@@ -197,6 +200,12 @@ export class WebSocketRouter {
     for (const timeout of [this.startupTimeout, this.shutdownTimeout]) {
       if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new RangeError("Process timeouts must be positive integers");
     }
+    for (const peer of options.peers ?? []) {
+      if (typeof peer !== "string" || peer.trim() === "") throw new TypeError("peers must be non-empty Router URLs");
+    }
+    if (options.peerId !== undefined && (options.peerId === "" || /[/ ]/u.test(options.peerId))) {
+      throw new TypeError("peerId must be non-empty without '/' or spaces");
+    }
     this.unixPath = options.unixPath === undefined ? undefined : unixSocketPath(options.unixPath);
   }
 
@@ -219,6 +228,8 @@ export class WebSocketRouter {
       if (this.unixPath === undefined) args.push("--host", this.options.host ?? "127.0.0.1", "--port", String(this.options.port ?? 0));
       else args.push("--unix-socket", this.unixPath);
       if (this.options.authFile !== undefined) args.push("--auth-file", resolve(this.options.authFile));
+      for (const peer of this.options.peers ?? []) args.push("--peer", peer);
+      if (this.options.peerId !== undefined) args.push("--peer-id", this.options.peerId);
       const child = spawn(findRouterBinary(this.options.binaryPath), args, { stdio: "pipe", windowsHide: true });
       this.child = child;
       child.stdin.on("error", () => undefined);
