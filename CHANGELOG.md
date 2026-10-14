@@ -10,6 +10,11 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Changed
 
+- **Binaries ship with the SDKs.** PyPI gets one platform wheel per
+  OS/architecture with `meshcall-router` and `meshcall` in `meshcall/bin/`
+  (plus the pure wheel and sdist); npm gets `meshcall-router-<os>-<cpu>`
+  packages that `meshcall` depends on optionally. The runtime looks there
+  first and downloads a release only on platforms without a bundle.
 - **One CLI.** Client generation moved from the Python package into the Go
   `meshcall` binary (`meshcall generate <contract.json | module:Class>`,
   `meshcall export module:Class`); output is byte-identical to the previous

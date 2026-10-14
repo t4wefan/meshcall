@@ -31,6 +31,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: router-dist
+          path: meshcall-router/dist/*.tar.gz
 
   python:
     name: PyPI
@@ -44,6 +48,10 @@ jobs:
         working-directory: meshcall-py
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: router-dist
+          path: ${{ github.workspace }}/router-dist
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
@@ -51,7 +59,8 @@ jobs:
         run: |
           version=$(uv version --short)
           [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$version"; exit 1; }
-      - run: uv build
+      - name: Platform wheels with the Go binaries, plus the pure wheel and sdist
+        run: ../scripts/release/bundle.sh "$GITHUB_WORKSPACE/router-dist" python
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: meshcall-py/dist
@@ -68,6 +77,13 @@ jobs:
         working-directory: meshcall-ts
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: router-dist
+          path: ${{ github.workspace }}/router-dist
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -80,4 +96,8 @@ jobs:
           [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$version"; exit 1; }
       - run: yarn install --frozen-lockfile
       - run: yarn build
+      - name: Platform packages with the Go binaries; main package depends on them optionally
+        run: ../scripts/release/bundle.sh "$GITHUB_WORKSPACE/router-dist" npm
+      - name: Publish platform packages first so the main package's optional dependencies resolve
+        run: for pkg in ./dist-npm/*/; do npm publish "$pkg" --provenance --access public; done
       - run: npm publish --provenance --access public

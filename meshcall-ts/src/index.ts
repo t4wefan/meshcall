@@ -69,7 +69,7 @@ export {
 } from "./server.js";
 
 export {
-  findCliBinary, findRouterBinary, installRouter, routerCacheDir, routerVersion, WebSocketRouter,
+  findCliBinary, findRouterBinary, installRouter, platformPackageName, routerCacheDir, routerVersion, WebSocketRouter,
   type InstallRouterOptions, type WebSocketRouterOptions,
 } from "./router.js";
 export {

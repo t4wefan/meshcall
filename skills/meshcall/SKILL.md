@@ -272,9 +272,10 @@ my_app/
 
 ## Operate
 
-- Router binary: `uv run meshcall router install` or `npx meshcall router install`
-  fetches the release matching the SDK (it also happens on first use);
-  `meshcall-router --port 8765` runs it.
+- Router binary: it ships inside the SDK packages (platform wheel / npm
+  platform package), so nothing to install; `meshcall-router --port 8765`
+  runs it. `uv run meshcall router install` only matters on a platform
+  without a bundled binary.
 - Rolling restart: `server.stop(drain=True)` / `server.close({ drain: true })`
   leaves the pool first, so no request fails.
 - Several Routers: give services and clients the list of endpoints; no

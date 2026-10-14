@@ -13,10 +13,14 @@ go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-rout
 ```
 
 Only building requires Go. Each tagged release publishes prebuilt binaries for
-Linux, macOS and Windows (amd64 and arm64) with a `checksums.txt`. The SDKs
-can fetch the release that matches their own version into the per-user cache
-(`~/.cache/meshcall/router/<version>/`, honouring `XDG_CACHE_HOME`), verifying
-the SHA-256 before installing:
+Linux, macOS and Windows (amd64 and arm64) with a `checksums.txt`, and the
+same binaries are bundled into the SDK packages (`scripts/release/bundle.sh`):
+a PyPI platform wheel per target and an npm `meshcall-router-<os>-<cpu>`
+package that `meshcall` lists as an optional dependency. Installing the SDK
+therefore installs the binaries. The download path remains as a fallback for
+platforms without a bundle; it fetches the release that matches the SDK
+version into the per-user cache (`~/.cache/meshcall/router/<version>/`,
+honouring `XDG_CACHE_HOME`), verifying the SHA-256 first:
 
 ```bash
 uv run meshcall router install      # Python
@@ -30,8 +34,8 @@ the CLI (installing it on first use); they answer only `router install` and
 `router path` themselves.
 
 Launchers resolve the binary in this order: `MESHCALL_ROUTER_BINARY` or an
-explicit `binary_path` / `binaryPath`; a package-local `bin/`; the per-user
-cache; `meshcall-router/bin` of the source checkout that contains the SDK;
+explicit `binary_path` / `binaryPath`; the bundled binary (the wheel's
+`meshcall/bin/`, or the npm platform package); the per-user cache; `meshcall-router/bin` of the source checkout that contains the SDK;
 `meshcall-router` on `PATH`. The working directory is never searched.
 `meshcall router path` prints the resolved binary. Launchers never build or
 fall back to a language-specific Router.

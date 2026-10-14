@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,8 +83,24 @@ export function findCliBinary(): string {
   return find(CLI_EXECUTABLE, "meshcall CLI");
 }
 
+/** The npm package that carries this platform's binaries (an optional dependency of `meshcall`). */
+export function platformPackageName(): string {
+  return "meshcall-router-" + process.platform + "-" + process.arch;
+}
+
+function platformPackageBinary(name: string): string | undefined {
+  try {
+    const manifest = createRequire(import.meta.url).resolve(platformPackageName() + "/package.json");
+    return resolve(dirname(manifest), "bin", name);
+  } catch {
+    return undefined;
+  }
+}
+
 function find(name: string, what: string): string {
   const candidates = [resolve(PACKAGE_DIR, "bin", name), resolve(routerCacheDir(), name)];
+  const bundled = platformPackageBinary(name);
+  if (bundled !== undefined) candidates.unshift(bundled);
   let root = PACKAGE_DIR;
   while (true) {
     if (existsSync(resolve(root, "meshcall-router/go.mod"))) {

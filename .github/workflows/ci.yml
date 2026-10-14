@@ -187,26 +187,43 @@ jobs:
         run: scripts/check.sh conformance
 
   packaging:
+    needs: router
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: ${{ github.workspace }}/meshcall-router/bin
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Python wheel and sdist
+      - name: Bundle the binaries the way a release does (one platform)
+        run: |
+          chmod +x meshcall-router/bin/meshcall-router meshcall-router/bin/meshcall
+          version=$(cd meshcall-py && uv version --short)
+          mkdir -p router-dist
+          tar -czf "router-dist/meshcall-router_${version}_linux_amd64.tar.gz" -C meshcall-router/bin meshcall-router meshcall
+          (cd meshcall-ts && yarn install --frozen-lockfile && yarn build)
+          scripts/release/bundle.sh "$PWD/router-dist"
+      - name: The platform wheel runs its bundled binaries without a download
         working-directory: meshcall-py
         run: |
-          uv build
-          uv run --isolated --no-project --with dist/*.whl python -c "import meshcall, importlib.resources as r; assert r.files('meshcall').joinpath('py.typed').is_file(); print(meshcall.__name__, 'ok')"
-      - name: npm tarball
+          ls dist
+          wheel=$(ls dist/meshcall-*-manylinux*.whl)
+          uv run --isolated --no-project --with "$wheel" -- env -u MESHCALL_ROUTER_BINARY meshcall router path | grep -q "site-packages/meshcall/bin/meshcall-router"
+          uv run --isolated --no-project --with "$wheel" -- env -u MESHCALL_ROUTER_BINARY meshcall version
+          uv run --isolated --no-project --with dist/meshcall-*-py3-none-any.whl python -c "import meshcall, importlib.resources as r; assert r.files('meshcall').joinpath('py.typed').is_file(); print('pure wheel ok')"
+      - name: npm tarballs
         working-directory: meshcall-ts
         run: |
-          yarn install --frozen-lockfile
           npm pack --dry-run 2>&1 | tee pack.log
           grep -q "dist/src/index.js" pack.log && grep -q "dist/src/launcher.js" pack.log
+          grep -q '"meshcall-router-linux-x64"' package.json
+          npm pack --dry-run ./dist-npm/meshcall-router-linux-x64 2>&1 | grep -q "bin/meshcall-router"
       - name: GoReleaser config
         uses: goreleaser/goreleaser-action@v6
         with:

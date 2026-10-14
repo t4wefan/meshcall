@@ -11,3 +11,4 @@ node_modules/
 generated/
 meshcall-router/bin/
 .conformance-*.log
+dist-npm/

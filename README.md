@@ -68,10 +68,14 @@ npm install meshcall       # TypeScript runtime
 ```
 
 There is one `meshcall` command, written in Go and released together with the
-Router. `uv run meshcall …` and `npx meshcall …` run that same binary (they
-download the release matching the SDK on first use, verified against the
-release checksums, into the per-user cache; `uv run meshcall router install`
-does it explicitly). `meshcall generate` produces typed clients for every
+Router. Both binaries ship inside the SDK packages: PyPI publishes a platform
+wheel per OS/architecture and npm installs a matching
+`meshcall-router-<os>-<cpu>` package as an optional dependency, so
+`uv run meshcall …` and `npx meshcall …` run the bundled binary with no
+download. On a platform without a prebuilt binary they fall back to fetching
+the release matching the SDK (verified against the release checksums) into
+the per-user cache; `uv run meshcall router install` does that explicitly.
+`meshcall generate` produces typed clients for every
 language, `meshcall router inspect` shows what is registered and
 `meshcall call svc.method '{...}'` calls it — no generated code needed.
 
