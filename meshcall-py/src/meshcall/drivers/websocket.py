@@ -20,6 +20,12 @@ from meshcall.context import (
     ReconnectPolicy,
 )
 from meshcall.driver import ClientDriver, DriverBinding, ServerDriver
+from meshcall.drivers.local import (
+    check_unix_supported,
+    pipe_address,
+    pipe_connect,
+    pipe_serve,
+)
 from meshcall.errors import DriverStateError, MeshCallError, ProtocolError
 from meshcall.protocol import (
     PROTOCOL_VERSION,
@@ -38,6 +44,20 @@ if TYPE_CHECKING:
 MAX_UNIX_SOCKET_PATH_BYTES = 103
 
 
+def _local_endpoint(
+    uri: object, unix_path: str | Path | None, pipe: str | None
+) -> tuple[Path | None, str | None]:
+    """Validate the choice of exactly one endpoint; return (unix path, pipe address)."""
+    if sum(value is not None for value in (uri, unix_path, pipe)) != 1:
+        raise ValueError("Set exactly one of uri, unix_path or pipe")
+    if unix_path is not None:
+        check_unix_supported()
+    return (
+        Path(unix_path) if unix_path is not None else None,
+        pipe_address(pipe) if pipe is not None else None,
+    )
+
+
 class WebSocketClientDriver(ClientDriver):
     """Connect to a direct server or a Router.
 
@@ -51,21 +71,20 @@ class WebSocketClientDriver(ClientDriver):
         uri: str | Sequence[str] | None = None,
         *,
         unix_path: str | Path | None = None,
+        pipe: str | None = None,
         peer_id: str | None = None,
         max_frame_size: int = 1024 * 1024,
         auth: RouterCredentials | None = None,
         ping_interval: float | None = DEFAULT_PING_INTERVAL,
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
     ) -> None:
-        if (uri is None) == (unix_path is None):
-            raise ValueError("Set exactly one of uri or unix_path")
+        self.unix_path, self.pipe = _local_endpoint(uri, unix_path, pipe)
         self.uris: tuple[str, ...] = (
             () if uri is None else ((uri,) if isinstance(uri, str) else tuple(uri))
         )
         if uri is not None and not self.uris:
             raise ValueError("uri list must not be empty")
         self.uri = self.uris[0] if self.uris else None
-        self.unix_path = Path(unix_path) if unix_path is not None else None
         self._cursor = 0
         self.peer_id = peer_id or uuid.uuid4().hex
         self.max_frame_size = max_frame_size
@@ -82,7 +101,7 @@ class WebSocketClientDriver(ClientDriver):
     async def connect(self) -> FrameConnection:
         if self._connection is not None:
             return self._connection
-        if self.unix_path is not None:
+        if not self.uris:  # a Unix socket or a named pipe
             self._connection = await self._connect_one(None)
             return self._connection
         # One pass over the endpoints, starting from the last good one.
@@ -104,6 +123,7 @@ class WebSocketClientDriver(ClientDriver):
         websocket = await _connect_endpoint(
             uri=uri,
             unix_path=self.unix_path,
+            pipe=self.pipe,
             max_frame_size=self.max_frame_size,
             auth=self.auth,
         )
@@ -142,16 +162,24 @@ class WebSocketDirectServerDriver(ServerDriver):
         port: int | None = None,
         *,
         unix_path: str | Path | None = None,
+        pipe: str | None = None,
         max_frame_size: int = 1024 * 1024,
         idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT,
         instance_id: str | None = None,
     ) -> None:
         super().__init__(instance_id=instance_id)
-        if unix_path is not None and (host is not None or port is not None):
-            raise ValueError("Unix socket cannot be combined with host or port")
+        if (unix_path is not None or pipe is not None) and (
+            host is not None or port is not None
+        ):
+            raise ValueError(
+                "A Unix socket or named pipe cannot be combined with host or port"
+            )
         self.host = host or "127.0.0.1"
         self.port = 0 if port is None else port
-        self.unix_path = Path(unix_path) if unix_path is not None else None
+        if unix_path is not None or pipe is not None:
+            self.unix_path, self.pipe = _local_endpoint(None, unix_path, pipe)
+        else:
+            self.unix_path, self.pipe = None, None
         self.max_frame_size = max_frame_size
         self.idle_timeout = idle_timeout
         self._server: Server | None = None
@@ -159,8 +187,8 @@ class WebSocketDirectServerDriver(ServerDriver):
 
     @property
     def bound_port(self) -> int:
-        if self.unix_path is not None:
-            raise DriverStateError("Unix socket listener does not have a TCP port")
+        if self.unix_path is not None or self.pipe is not None:
+            raise DriverStateError("A local listener does not have a TCP port")
         if self._server is None or not self._server.sockets:
             raise DriverStateError("WebSocket server is not running")
         return int(self._server.sockets[0].getsockname()[1])
@@ -191,7 +219,11 @@ class WebSocketDirectServerDriver(ServerDriver):
                 self._connections.discard(connection)
                 await connection.close()
 
-        if self.unix_path is not None:
+        if self.pipe is not None:
+            self._server = await pipe_serve(
+                handler, self.pipe, max_size=self.max_frame_size
+            )
+        elif self.unix_path is not None:
             if len(str(self.unix_path).encode()) > MAX_UNIX_SOCKET_PATH_BYTES:
                 raise DriverStateError(
                     "Unix socket path exceeds the portable 103-byte limit"
@@ -262,6 +294,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         uri: str | Sequence[str] | None = None,
         *,
         unix_path: str | Path | None = None,
+        pipe: str | None = None,
         instance_id: str | None = None,
         max_frame_size: int = 1024 * 1024,
         auth: RouterCredentials | None = None,
@@ -270,13 +303,11 @@ class WebSocketRouterServerDriver(ServerDriver):
         reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
     ) -> None:
         super().__init__(instance_id=instance_id)
-        if (uri is None) == (unix_path is None):
-            raise ValueError("Set exactly one of uri or unix_path")
+        self.unix_path, self.pipe = _local_endpoint(uri, unix_path, pipe)
         uris = () if uri is None else ((uri,) if isinstance(uri, str) else tuple(uri))
         if uri is not None and not uris:
             raise ValueError("uri list must not be empty")
         self.uri = uris[0] if uris else None
-        self.unix_path = Path(unix_path) if unix_path is not None else None
         self.max_frame_size = max_frame_size
         self.auth = auth
         self.ping_interval = ping_interval
@@ -367,6 +398,7 @@ class _RouterLink:
         websocket = await _connect_endpoint(
             uri=self.endpoint,
             unix_path=driver.unix_path,
+            pipe=driver.pipe,
             max_frame_size=driver.max_frame_size,
             auth=driver.auth,
         )
@@ -418,7 +450,10 @@ class _RouterLink:
     async def supervise(self, runtime: ServerRuntime, *, initial_failure: bool) -> None:
         """Serve this Router's connection and re-register after it drops."""
         driver = self.driver
-        where = f"instance {driver.instance_id} at {self.endpoint or driver.unix_path}"
+        where = (
+            f"instance {driver.instance_id} at "
+            f"{self.endpoint or driver.unix_path or driver.pipe}"
+        )
         while True:
             if self.connection is None:
                 if driver._draining or not driver.reconnect.enabled:
@@ -473,12 +508,17 @@ async def _connect_endpoint(
     *,
     uri: str | None,
     unix_path: Path | None,
+    pipe: str | None = None,
     max_frame_size: int,
     auth: RouterCredentials | None = None,
 ) -> ClientConnection:
     headers = (
         {"Authorization": auth.authorization_header()} if auth is not None else None
     )
+    if pipe is not None:
+        return await pipe_connect(
+            pipe, max_size=max_frame_size, additional_headers=headers
+        )
     if unix_path is not None:
         return await unix_connect(
             str(unix_path),

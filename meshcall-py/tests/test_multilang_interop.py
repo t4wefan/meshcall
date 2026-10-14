@@ -15,6 +15,7 @@ import pytest
 from interop_service import PythonInteropService
 from router_fixtures import PASSWORD, write_auth_file
 from test_direct import NumberRequest, NumberResult, NumberService, NumberServiceClient
+from test_local_transport import WINDOWS, local_endpoint
 
 from meshcall import (
     RouterAuthClient,
@@ -231,31 +232,33 @@ def generated_typescript_client(contract_path: Path, root: Path):
 
 
 @pytest.mark.parametrize("routed", [False, True])
-@pytest.mark.parametrize("unix", [False, True])
+@pytest.mark.parametrize("local", [False, True])
 async def test_generated_python_streams_to_typescript_over_direct_and_router(
     tmp_path: Path,
     routed: bool,
-    unix: bool,
+    local: bool,
 ) -> None:
-    socket = Path("/tmp") / f"meshcall-interop-{uuid.uuid4().hex}.sock"
-    router = WebSocketRouter(unix_path=socket) if unix else WebSocketRouter(port=0)
+    # The local transport is a Unix socket, or a named pipe on Windows.
+    py_local = local_endpoint()
+    socket = Path(py_local.get("unix_path", "/nonexistent"))
+    pipe = py_local.get("pipe")
+    ts_local = {"pipe": pipe} if pipe is not None else {"unixPath": str(socket)}
+    router = WebSocketRouter(**py_local) if local else WebSocketRouter(port=0)
     options: dict = {}
     if routed:
         await router.start()
-        endpoint = (
-            {"unixPath": str(socket)} if unix else f"ws://127.0.0.1:{router.bound_port}"
-        )
+        endpoint = ts_local if local else f"ws://127.0.0.1:{router.bound_port}"
         options = {"router": {"endpoint": endpoint}}
-    elif unix:
-        options = {"unixPath": str(socket)}
+    elif local:
+        options = ts_local
     try:
         async with (
             asyncio.timeout(15),
             running_typescript(tmp_path, options) as (_, contract, ready),
         ):
             driver = (
-                WebSocketClientDriver(unix_path=socket)
-                if unix
+                WebSocketClientDriver(**py_local)
+                if local
                 else WebSocketClientDriver(
                     f"ws://127.0.0.1:{router.bound_port if routed else ready['port']}"
                 )
@@ -286,7 +289,7 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
                         assert [item async for item in exchange] == []
     finally:
         await router.stop()
-    if unix:
+    if local and not WINDOWS:
         assert not socket.exists()
 
 

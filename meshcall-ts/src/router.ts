@@ -9,13 +9,16 @@ import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
-import { unixSocketPath } from "./endpoint.js";
+import { namedPipePath, unixSocketPath } from "./endpoint.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
 
 export interface WebSocketRouterOptions {
   readonly host?: string;
   readonly port?: number;
+  /** Unix socket to listen on (not on Windows: use `pipe`). */
   readonly unixPath?: string;
+  /** Named pipe `\\.\pipe\NAME` to listen on (Windows only). */
+  readonly pipe?: string;
   readonly maxFrameSize?: number;
   readonly binaryPath?: string;
   readonly authFile?: string;
@@ -203,12 +206,14 @@ export class WebSocketRouter {
   private port: number | undefined;
   private diagnostic = "";
   private readonly unixPath: string | undefined;
+  /** The bare pipe name, as the Router reports it. */
+  private readonly pipe: string | undefined;
   private readonly startupTimeout: number;
   private readonly shutdownTimeout: number;
 
   public constructor(private readonly options: WebSocketRouterOptions = {}) {
-    if (options.unixPath !== undefined && (options.host !== undefined || options.port !== undefined)) {
-      throw new TypeError("Unix socket cannot be combined with host or port");
+    if ([options.unixPath, options.pipe, options.host ?? options.port].filter((v) => v !== undefined).length > 1) {
+      throw new TypeError("Choose one of host/port, unixPath (not on Windows) or pipe (Windows)");
     }
     if (options.port !== undefined && (!Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65535)) {
       throw new RangeError("Port must be between 0 and 65535");
@@ -226,6 +231,7 @@ export class WebSocketRouter {
       throw new RangeError("maxConnections must be a positive integer");
     }
     this.unixPath = options.unixPath === undefined ? undefined : unixSocketPath(options.unixPath);
+    this.pipe = options.pipe === undefined ? undefined : namedPipePath(options.pipe).slice("\\\\.\\pipe\\".length);
   }
 
   public get isRunning(): boolean {
@@ -233,7 +239,7 @@ export class WebSocketRouter {
   }
   public get pid(): number | undefined { return this.isRunning ? this.child?.pid : undefined; }
   public get boundPort(): number {
-    if (this.unixPath !== undefined) throw new Error("Unix socket listener does not have a TCP port");
+    if (this.unixPath !== undefined || this.pipe !== undefined) throw new Error("A local listener does not have a TCP port");
     if (!this.isRunning || this.port === undefined) throw new Error("Go Router is not running");
     return this.port;
   }
@@ -244,8 +250,9 @@ export class WebSocketRouter {
       await this.stopProcess();
       this.diagnostic = "";
       const args = ["--shutdown-on-stdin-close", "--max-frame-size", String(this.options.maxFrameSize ?? 1024 * 1024)];
-      if (this.unixPath === undefined) args.push("--host", this.options.host ?? "127.0.0.1", "--port", String(this.options.port ?? 0));
-      else args.push("--unix-socket", this.unixPath);
+      if (this.pipe !== undefined) args.push("--pipe", this.pipe);
+      else if (this.unixPath !== undefined) args.push("--unix-socket", this.unixPath);
+      else args.push("--host", this.options.host ?? "127.0.0.1", "--port", String(this.options.port ?? 0));
       if (this.options.authFile !== undefined) args.push("--auth-file", resolve(this.options.authFile));
       if (this.options.maxConnections !== undefined) args.push("--max-connections", String(this.options.maxConnections));
       const child = spawn(findRouterBinary(this.options.binaryPath), args, { stdio: "pipe", windowsHide: true });
@@ -280,12 +287,16 @@ export class WebSocketRouter {
               if (ready.kind !== "router.ready" || ready.protocol !== PROTOCOL_VERSION || ready.pid !== child.pid) {
                 throw new Error("Invalid Go Router readiness message");
               }
-              if (this.unixPath === undefined) {
+              if (this.pipe !== undefined) {
+                if (ready.pipe !== this.pipe) throw new Error("Invalid Go Router pipe name");
+              } else if (this.unixPath !== undefined) {
+                if (ready.unix_path !== this.unixPath) throw new Error("Invalid Go Router Unix socket path");
+              } else {
                 if (typeof ready.port !== "number" || !Number.isSafeInteger(ready.port) || ready.port < 1 || ready.port > 65535) {
                   throw new Error("Invalid Go Router bound port");
                 }
                 this.port = ready.port;
-              } else if (ready.unix_path !== this.unixPath) throw new Error("Invalid Go Router Unix socket path");
+              }
               resolve();
             } catch (error) { reject(error); }
           });

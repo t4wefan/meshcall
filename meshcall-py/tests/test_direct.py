@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
@@ -289,6 +290,9 @@ async def test_all_call_shapes_over_tcp_websocket() -> None:
         await server.stop()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix sockets are not used on Windows"
+)
 async def test_unary_over_unix_websocket() -> None:
     socket_path = Path("/tmp") / f"meshcall-{uuid.uuid4().hex}.sock"
     driver = WebSocketDirectServerDriver(unix_path=socket_path)
