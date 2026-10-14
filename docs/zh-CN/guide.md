@@ -451,3 +451,23 @@ except DeadlineExceededError as err:
 except UnavailableError as err:
     print(f"服务暂不可用 (原因={err.reason}, 是否可重试={err.retryable})")
 ```
+
+---
+
+## 10. AI 编程助手集成（`meshcall init`）
+
+将 MeshCall 的开发说明安装到当前项目中，供 AI 编程助手在编写服务、生成客户端和命令行调试时参考：
+
+```bash
+# 默认：写入 .agents/skills/meshcall/SKILL.md 并更新 AGENTS.md
+# 适用于 OpenAI Codex、Google Antigravity、OpenCode、Amp 等支持开放标准的工具
+uv run meshcall init
+
+# 定向生成特定工具的配置（claude | cursor | copilot | windsurf | all）：
+uv run meshcall init --agent claude     # 额外写入 .claude/skills/meshcall/SKILL.md 与 CLAUDE.md
+uv run meshcall init --agent cursor     # 额外写入 .cursor/rules/meshcall.mdc
+uv run meshcall init --agent copilot    # 额外更新 .github/copilot-instructions.md
+uv run meshcall init --agent windsurf   # 额外更新 .windsurfrules
+uv run meshcall init --agent all        # 同时生成以上全部配置
+```
+

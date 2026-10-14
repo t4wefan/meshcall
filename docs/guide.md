@@ -452,3 +452,23 @@ except DeadlineExceededError as err:
 except UnavailableError as err:
     print(f"Service unavailable (reason={err.reason}, retryable={err.retryable})")
 ```
+
+---
+
+## 10. AI Coding Assistant Integration (`meshcall init`)
+
+Install MeshCall development instructions into your repository so AI coding assistants know how to define services, generate clients, and inspect or call running services from the CLI:
+
+```bash
+# Default: writes .agents/skills/meshcall/SKILL.md and updates AGENTS.md
+# Works with OpenAI Codex, Google Antigravity, OpenCode, Amp, and other AGENTS.md-aware tools
+uv run meshcall init
+
+# Target a specific coding assistant (claude | cursor | copilot | windsurf | all):
+uv run meshcall init --agent claude     # Also writes .claude/skills/meshcall/SKILL.md + CLAUDE.md
+uv run meshcall init --agent cursor     # Also writes .cursor/rules/meshcall.mdc
+uv run meshcall init --agent copilot    # Also updates .github/copilot-instructions.md
+uv run meshcall init --agent windsurf   # Also updates .windsurfrules
+uv run meshcall init --agent all        # Installs all targets above
+```
+
