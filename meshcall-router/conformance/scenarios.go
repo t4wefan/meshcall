@@ -25,7 +25,7 @@ var scenarios = []scenario{
 	{"cancel: handler observes call.cancel", cancelObserved},
 	{"metadata: request metadata and trailers", metadataAndTrailers},
 	{"http: unary calls, metadata, errors and deadlines", httpUnary},
-	{"http: server stream as NDJSON and SSE", httpServerStream},
+	{"http: server stream as typed NDJSON envelopes", httpServerStream},
 	{"http: client stream from an NDJSON body", httpClientStream},
 	{"http: closing the request cancels the call", httpCancelOnDisconnect},
 	{"idempotency: duplicate keys join once and replay", idempotency},

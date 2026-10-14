@@ -44,6 +44,15 @@ type Config struct {
 	// credentials, inside MaxConnections, so anonymous load cannot lock out
 	// credentialed clients and services. Zero means the default.
 	MaxAnonymousConnections int
+	// HTTP calls (httpapi.go). HTTPDefaultTimeout applies to unary and
+	// client-stream calls that send no MeshCall-Timeout-Ms; HTTPMaxTimeout,
+	// when set, refuses longer requested or default timeouts; HTTPMaxInflight
+	// caps concurrent HTTP calls (429 beyond); HTTPCORSOrigins lists browser
+	// origins allowed to call (exact match, or "*").
+	HTTPDefaultTimeout time.Duration
+	HTTPMaxTimeout     time.Duration
+	HTTPMaxInflight    int
+	HTTPCORSOrigins    []string
 	// MaxConnections bounds open WebSocket connections; past it new upgrades
 	// are refused with 503. HTTP calls are not counted: their admission is a
 	// separate design (#8). Zero means the default.
@@ -55,6 +64,8 @@ const (
 	DefaultIdleTimeout             = 45 * time.Second
 	DefaultMaxConnections          = 10000
 	DefaultMaxAnonymousConnections = 1000
+	DefaultHTTPDefaultTimeout      = 30 * time.Second
+	DefaultHTTPMaxInflight         = 10000
 )
 
 type Ready struct {
@@ -140,13 +151,14 @@ type Router struct {
 	dedup        map[string]*dedupEntry
 	// connections counts admitted WebSocket connections; anonymous counts
 	// those among them made without credentials.
-	connections atomic.Int64
-	anonymous   atomic.Int64
-	dedupOrder  *list.List
-	wg          sync.WaitGroup
-	closeOnce   sync.Once
-	done        chan struct{}
-	ready       Ready
+	connections  atomic.Int64
+	anonymous    atomic.Int64
+	httpInflight atomic.Int64
+	dedupOrder   *list.List
+	wg           sync.WaitGroup
+	closeOnce    sync.Once
+	done         chan struct{}
+	ready        Ready
 }
 
 func Start(config Config) (*Router, error) {
@@ -170,6 +182,18 @@ func Start(config Config) (*Router, error) {
 	}
 	if config.MaxConnections < 0 {
 		return nil, errors.New("max connections must be positive")
+	}
+	if config.HTTPDefaultTimeout == 0 {
+		config.HTTPDefaultTimeout = DefaultHTTPDefaultTimeout
+	}
+	if config.HTTPMaxInflight == 0 {
+		config.HTTPMaxInflight = DefaultHTTPMaxInflight
+	}
+	if config.HTTPDefaultTimeout < 0 || config.HTTPMaxTimeout < 0 || config.HTTPMaxInflight < 0 {
+		return nil, errors.New("HTTP timeouts and limits must be positive")
+	}
+	if config.HTTPMaxTimeout > 0 && config.HTTPDefaultTimeout > config.HTTPMaxTimeout {
+		config.HTTPDefaultTimeout = config.HTTPMaxTimeout
 	}
 	if config.MaxAnonymousConnections == 0 {
 		config.MaxAnonymousConnections = DefaultMaxAnonymousConnections
@@ -343,6 +367,10 @@ func (r *Router) Close() {
 }
 
 func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Path == "/healthz" || req.URL.Path == "/readyz" {
+		r.serveHealth(w, req)
+		return
+	}
 	if strings.HasPrefix(req.URL.Path, httpPrefix) && !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
 		r.serveHTTP(w, req)
 		return

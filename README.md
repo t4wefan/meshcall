@@ -267,11 +267,12 @@ The Router also accepts calls over HTTP on the same port, so anything that speak
 # Unary: JSON in, JSON out
 curl http://127.0.0.1:8765/v1/call/demo.v1.Greeter/greet -d '{"name": "Alice"}'
 
-# Server stream: one JSON item per line (or Server-Sent Events with -H 'Accept: text/event-stream')
+# Server stream: one {"item": …} line per item, then {"end": …}
 curl -N http://127.0.0.1:8765/v1/call/demo.v1.Greeter/countdown -d '{"start": 3}'
 
-# Discover services and their contracts
+# Discover services: the Registry, or an OpenAPI 3.1 document for Swagger UI and client generators
 curl http://127.0.0.1:8765/v1/services
+curl http://127.0.0.1:8765/v1/openapi.json
 ```
 
 Unary calls and server streams work fully, client streams take an NDJSON body, and duplex calls stay WebSocket-only. Accounts, tokens, timeouts (`MeshCall-Timeout-Ms`), idempotency keys (`Idempotency-Key`) and metadata (`MeshCall-Meta-*`) work as headers; see [HTTP calls](docs/protocol.md#http-calls).

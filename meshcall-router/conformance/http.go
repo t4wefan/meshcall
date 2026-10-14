@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -102,27 +101,31 @@ func httpServerStream(h *harness) error {
 	}
 	// More items than one credit window: the Router must keep granting.
 	scanner := bufio.NewScanner(resp.Body)
-	n := 0
+	n, ended := 0, false
 	for scanner.Scan() {
-		var item map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &item); err != nil || number(item["index"]) != float64(n) {
-			return fmt.Errorf("line %d: %q", n, scanner.Text())
+		var line struct {
+			Item *struct {
+				Index float64 `json:"index"`
+			} `json:"item"`
+			End *json.RawMessage `json:"end"`
 		}
-		n++
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+			return fmt.Errorf("line %d is not an envelope: %q", n, scanner.Text())
+		}
+		switch {
+		case line.Item != nil:
+			if ended || line.Item.Index != float64(n) {
+				return fmt.Errorf("line %d: %q", n, scanner.Text())
+			}
+			n++
+		case line.End != nil:
+			ended = true
+		default:
+			return fmt.Errorf("unexpected line %q", scanner.Text())
+		}
 	}
-	if n != 300 {
-		return fmt.Errorf("got %d items, want 300", n)
-	}
-	// SSE when asked for.
-	resp, err = h.httpCall(h.ctx, "count", `{"n": 2}`, map[string]string{"Accept": "text/event-stream"})
-	if err != nil {
-		return err
-	}
-	data, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	want := "event: item\ndata: {\"index\":0}\n\nevent: item\ndata: {\"index\":1}\n\nevent: end\ndata: {}\n\n"
-	if string(data) != want {
-		return fmt.Errorf("SSE body %q", data)
+	if n != 300 || !ended {
+		return fmt.Errorf("got %d items, end=%v; want 300 and an end line", n, ended)
 	}
 	return nil
 }

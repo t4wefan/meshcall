@@ -66,6 +66,17 @@ func run() error {
 	flag.DurationVar(&config.IdleTimeout, "idle-timeout", router.DefaultIdleTimeout, "close connections that send nothing for this long")
 	flag.IntVar(&config.BreakerThreshold, "breaker-threshold", router.DefaultBreakerThreshold, "consecutive failures that open an instance's circuit")
 	flag.DurationVar(&config.BreakerCooldown, "breaker-cooldown", router.DefaultBreakerCooldown, "how long an open circuit excludes an instance before one probe call")
+	flag.DurationVar(&config.HTTPDefaultTimeout, "http-default-timeout", router.DefaultHTTPDefaultTimeout, "timeout for HTTP unary and client-stream calls that send none")
+	flag.DurationVar(&config.HTTPMaxTimeout, "http-max-timeout", 0, "refuse HTTP calls asking for a longer timeout (0: no maximum)")
+	flag.IntVar(&config.HTTPMaxInflight, "http-max-inflight", router.DefaultHTTPMaxInflight, "concurrent HTTP calls; more get 429")
+	flag.Func("http-cors-origin", "browser origin allowed to call over HTTP (repeatable or comma-separated; * for any)", func(v string) error {
+		for _, origin := range strings.Split(v, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				config.HTTPCORSOrigins = append(config.HTTPCORSOrigins, origin)
+			}
+		}
+		return nil
+	})
 	flag.IntVar(&config.MaxAnonymousConnections, "max-anonymous-connections", router.DefaultMaxAnonymousConnections, "WebSocket connections without credentials, within max-connections")
 	flag.IntVar(&config.MaxConnections, "max-connections", router.DefaultMaxConnections, "open WebSocket connections; more are refused with 503 (HTTP calls are not counted)")
 	flag.BoolVar(&parentStdin, "shutdown-on-stdin-close", false, "exit when the owning process closes stdin")

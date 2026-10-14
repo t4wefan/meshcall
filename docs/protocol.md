@@ -363,7 +363,10 @@ checks, balancing, deadlines, breakers, deduplication and targeting behave
 exactly as for a WebSocket caller. HTTP carries **unary calls and server
 streams fully, client streams with the limits below, and no duplex calls**.
 Requests whose path does not start with `/v1/` are WebSocket upgrades as
-before.
+before, except `/healthz` and `/readyz`.
+
+This mapping is **experimental** until v0.2.0 is released; after that it is
+stable under `/v1`, and breaking changes need a new prefix.
 
 ### Requests
 
@@ -371,12 +374,16 @@ before.
 
 | Header | Meaning |
 | --- | --- |
-| `Authorization` | `Basic …` (account) or `Bearer …` (token), as for WebSocket connections; the identity needs the `client` role |
-| `MeshCall-Timeout-Ms` | `timeout_ms` |
+| `Authorization` | `Basic …` (account), `Bearer mk_…` (API key) or `Bearer mt_…` (token), as for WebSocket connections; none means the `anonymous` user |
+| `MeshCall-Timeout-Ms` | `timeout_ms`; at most the Router's `--http-max-timeout` |
 | `MeshCall-Idle-Timeout-Ms` | `idle_timeout_ms` |
 | `Idempotency-Key` | `idempotency_key` |
 | `MeshCall-Instance` | `instance_id` (targeted call) |
 | `MeshCall-Meta-<key>` | one metadata entry; `<key>` is lower-cased |
+
+Without `MeshCall-Timeout-Ms`, unary and client-stream calls get the
+Router's `--http-default-timeout` (30 s by default); server streams get no
+default, since a stream of updates may run indefinitely.
 
 The body depends on the method's shape:
 
@@ -387,7 +394,9 @@ The body depends on the method's shape:
   Router reads a line only when the instance has granted credit for it, so
   a slow instance slows the sender through TCP backpressure rather than
   buffering in the Router; a client that cannot stream a request body
-  simply sends it whole. The input stream ends with the body.
+  simply sends it whole. The input stream ends with the body. A body that
+  stops arriving for the Router's idle timeout while it is reading is cut
+  off.
 - **duplex**: refused with `405` and `method_not_found`,
   `details.reason = "duplex_over_http"`.
 
@@ -397,19 +406,20 @@ Closing the request (the HTTP client disconnects) sends `call.cancel`.
 
 - **unary**: `200`, `Content-Type: application/json`, the result payload.
   Each trailer is a `MeshCall-Trailer-<key>` response header.
-- **server stream**: `200`, then one item at a time:
-  - `application/x-ndjson` (default): one JSON item per line;
-  - `text/event-stream` when the request's `Accept` asks for it:
-    `event: item` with the item as `data`, and a final `event: end`.
+- **server stream**: `200`, `Content-Type: application/x-ndjson`, one JSON
+  envelope per line:
 
-  The end of the body is the end of the stream. Trailers are HTTP trailers
-  named `MeshCall-Trailer-<key>`. An error after the `200` was sent arrives
-  as a final line `{"error": {…}}` (NDJSON) or an `event: error` (SSE).
-  Every streamed response also ends with the HTTP trailer `MeshCall-Status`:
-  `ok`, or the error code. An NDJSON consumer whose items may themselves
-  have a top-level `error` key reads that trailer to tell the two apart; a
-  client that cannot read trailers (a browser's `fetch`) uses SSE, whose
-  event names are unambiguous.
+  ```text
+  {"item": {...}}
+  {"item": {...}}
+  {"end": {"trailers": {"key": "value"}}}
+  ```
+
+  An error after the `200` replaces the end line with
+  `{"error": {...}, "trailers": {...}}`. Exactly one `end` or `error` line
+  closes every complete stream; a body that ends without one was cut off.
+  Typed lines leave no ambiguity between an item and the end of the stream
+  and need no HTTP trailers, so browser `fetch` can read every part.
 - **client stream**: as unary, once the instance answers.
 
 Errors before any item use the error envelope as the body,
@@ -427,14 +437,28 @@ Errors before any item use the error envelope as the body,
 | `unavailable` | 503 |
 | `deadline_exceeded` | 504 |
 
-A body that is not valid JSON / NDJSON is `400`, and a client stream sent
-without `Content-Type: application/x-ndjson` is `415`, both with
-`invalid_argument` and `details.source = "router"`.
+A body that is not valid JSON / NDJSON, or a timeout above the maximum, is
+`400`, and a client stream sent without `Content-Type: application/x-ndjson`
+is `415`, all with `invalid_argument` and `details.source = "router"`. More
+than `--http-max-inflight` concurrent HTTP calls are refused with `429`,
+`resource_exhausted`, `reason: "overloaded"` and `Retry-After`; WebSocket
+connections are counted separately.
 
-### Discovery
+### Discovery and health
 
 `GET /v1/services` is `meshcall.router.v1.Registry/list` and
-`GET /v1/services/{service}` is `describe`, with the same permissions.
+`GET /v1/services/{service}` is `describe`. `GET /v1/openapi.json` is an
+OpenAPI 3.1 document generated from the registered contracts. All three need
+the Registry permission and show only the services and methods the caller
+may call. `GET /healthz` (the process is up) and `GET /readyz` (it accepts
+calls; `503` while stopping) need no credentials and reveal no services.
+
+### Browsers
+
+Cross-origin calls are allowed only for origins listed with
+`--http-cors-origin` (exact origins, or `*`); preflight requests from other
+origins are refused. Cookies are never used, so credentials are always the
+`Authorization` header.
 
 ### Deployment
 

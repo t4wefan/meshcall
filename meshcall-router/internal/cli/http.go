@@ -159,31 +159,29 @@ func callHTTP(ctx context.Context, opts Options, c CallOptions, w io.Writer) err
 		data, _ := io.ReadAll(resp.Body)
 		return emitTerminal(httpFrame(resp, data), c, w, hints)
 	}
-	// Server stream: one item per line. The last line is an error only when
-	// the MeshCall-Status trailer says so (an item may have an "error" key).
+	// Server stream: one typed envelope per line, {"item"}, then {"end"} or {"error"}.
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
-	var pending []byte
-	flush := func() {
-		if pending != nil {
-			fmt.Fprintln(w, string(pending))
-		}
-	}
 	for scanner.Scan() {
-		flush()
-		pending = append([]byte(nil), scanner.Bytes()...)
+		var envelope struct {
+			Item  json.RawMessage `json:"item"`
+			End   json.RawMessage `json:"end"`
+			Error map[string]any  `json:"error"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &envelope); err != nil {
+			return fmt.Errorf("stream line is not an envelope: %q", scanner.Text())
+		}
+		switch {
+		case envelope.Item != nil:
+			fmt.Fprintln(w, string(envelope.Item))
+		case envelope.Error != nil:
+			return emitTerminal(wire.Frame{"kind": "call.error", "error": envelope.Error}, c, w, hints)
+		case envelope.End != nil:
+			return nil
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("stream broke: %w", err)
 	}
-	status := resp.Trailer.Get("MeshCall-Status")
-	if status != "" && status != "ok" && pending != nil {
-		var line map[string]any
-		_ = json.Unmarshal(pending, &line)
-		if e, ok := line["error"].(map[string]any); ok {
-			return emitTerminal(wire.Frame{"kind": "call.error", "error": e}, c, w, hints)
-		}
-	}
-	flush()
-	return nil
+	return fmt.Errorf("stream ended without an end or error line")
 }

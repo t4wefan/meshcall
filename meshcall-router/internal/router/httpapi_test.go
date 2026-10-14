@@ -2,11 +2,13 @@ package router
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -183,12 +185,11 @@ func TestHTTPUnaryCallsAndErrors(t *testing.T) {
 	}
 }
 
-func TestHTTPServerStreamAsNDJSONAndSSE(t *testing.T) {
+func TestHTTPServerStreamWritesTypedEnvelopes(t *testing.T) {
 	r := runningRouter(t, nil)
 	inst := fakeInstance(t, r)
-	run := func(accept string) (*http.Response, string) {
+	open := func() (frame, chan *http.Response) {
 		req, _ := http.NewRequest(http.MethodPost, httpURL(r, "/v1/call/"+testService+"/download"), strings.NewReader(`{"n":2}`))
-		req.Header.Set("Accept", accept)
 		done := make(chan *http.Response)
 		go func() {
 			resp, err := http.DefaultClient.Do(req)
@@ -197,48 +198,49 @@ func TestHTTPServerStreamAsNDJSONAndSSE(t *testing.T) {
 			}
 			done <- resp
 		}()
-		open := receive(t, inst)
+		f := receive(t, inst)
 		if w := receive(t, inst); w.Kind != "stream.window" || *w.Credit != streamCredit {
 			t.Fatalf("expected an initial window of %d, got %+v", streamCredit, w)
 		}
-		for i := range 2 {
-			seq := int64(i)
-			send(t, inst, frame{Kind: "stream.item", CallID: open.CallID, Direction: "server", Sequence: &seq,
-				Payload: json.RawMessage(fmt.Sprintf(`{ "i": %d }`, i))})
-		}
-		send(t, inst, frame{Kind: "stream.end", CallID: open.CallID, Direction: "server"})
-		send(t, inst, frame{Kind: "call.result", CallID: open.CallID, Metadata: json.RawMessage(`{"count":"2"}`)})
-		resp := <-done
-		body, _ := io.ReadAll(resp.Body)
+		return f, done
+	}
+	body := func(resp *http.Response) string {
+		data, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return resp, string(body)
-	}
-	resp, body := run("")
-	if resp.Header.Get("Content-Type") != ndjson || body != "{\"i\":0}\n{\"i\":1}\n" || resp.Trailer.Get("MeshCall-Trailer-count") != "2" ||
-		resp.Trailer.Get("MeshCall-Status") != "ok" {
-		t.Fatalf("ndjson: %q %q trailer=%v", resp.Header.Get("Content-Type"), body, resp.Trailer)
-	}
-	resp, body = run(eventStream)
-	want := "event: item\ndata: {\"i\":0}\n\nevent: item\ndata: {\"i\":1}\n\nevent: end\ndata: {}\n\n"
-	if resp.Header.Get("Content-Type") != eventStream || body != want {
-		t.Fatalf("sse: %q %q", resp.Header.Get("Content-Type"), body)
+		return string(data)
 	}
 
-	// An error after items arrives as a final line.
-	req, _ := http.NewRequest(http.MethodPost, httpURL(r, "/v1/call/"+testService+"/download"), strings.NewReader(`{}`))
-	done := make(chan *http.Response)
-	go func() { resp, _ := http.DefaultClient.Do(req); done <- resp }()
-	open := receive(t, inst)
-	receive(t, inst) // window
+	call, done := open()
+	for i := range 2 {
+		seq := int64(i)
+		// An item whose own top-level key is "error" stays unambiguous.
+		send(t, inst, frame{Kind: "stream.item", CallID: call.CallID, Direction: "server", Sequence: &seq,
+			Payload: json.RawMessage(fmt.Sprintf(`{ "error": %d }`, i))})
+	}
+	send(t, inst, frame{Kind: "stream.end", CallID: call.CallID, Direction: "server"})
+	send(t, inst, frame{Kind: "call.result", CallID: call.CallID, Metadata: json.RawMessage(`{"count":"2"}`)})
+	resp := <-done
+	want := "{\"item\":{\"error\":0}}\n{\"item\":{\"error\":1}}\n{\"end\":{\"trailers\":{\"count\":\"2\"}}}\n"
+	if got := body(resp); resp.Header.Get("Content-Type") != ndjson || got != want {
+		t.Fatalf("stream: %q %q", resp.Header.Get("Content-Type"), got)
+	}
+
+	// An error after items is the final line; the status is already 200.
+	call, done = open()
 	seq := int64(0)
-	send(t, inst, frame{Kind: "stream.item", CallID: open.CallID, Direction: "server", Sequence: &seq, Payload: json.RawMessage(`1`)})
-	send(t, inst, frame{Kind: "call.error", CallID: open.CallID, Error: &errorPayload{Code: "internal", Message: "boom"}})
+	send(t, inst, frame{Kind: "stream.item", CallID: call.CallID, Direction: "server", Sequence: &seq, Payload: json.RawMessage(`1`)})
+	send(t, inst, frame{Kind: "call.error", CallID: call.CallID, Error: &errorPayload{Code: "internal", Message: "boom"}})
 	resp = <-done
-	lines, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != 200 || !strings.HasSuffix(string(lines), "\"code\":\"internal\",\"message\":\"boom\",\"retryable\":false}}\n") ||
-		resp.Trailer.Get("MeshCall-Status") != "internal" {
-		t.Fatalf("mid-stream error: %d %q", resp.StatusCode, lines)
+	want = "{\"item\":1}\n{\"error\":{\"code\":\"internal\",\"message\":\"boom\",\"retryable\":false},\"trailers\":{}}\n"
+	if got := body(resp); resp.StatusCode != 200 || got != want {
+		t.Fatalf("mid-stream error: %d %q", resp.StatusCode, got)
+	}
+
+	// An error before any item is an ordinary error response.
+	call, done = open()
+	send(t, inst, frame{Kind: "call.error", CallID: call.CallID, Error: &errorPayload{Code: "invalid_argument", Message: "bad"}})
+	if status, e := httpError(t, <-done); status != 400 || e.Code != "invalid_argument" {
+		t.Fatalf("early error: %d %+v", status, e)
 	}
 }
 
@@ -399,5 +401,171 @@ func TestHTTPBodyThatStopsIsCutOffByTheIdleTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 4*time.Second {
 		t.Fatalf("a stalled body held the request for %v", elapsed)
+	}
+}
+
+func TestHTTPTimeoutsLimitsCORSAndHealth(t *testing.T) {
+	r, err := Start(Config{HTTPDefaultTimeout: 2 * time.Second, HTTPMaxTimeout: 5 * time.Second, HTTPMaxInflight: 1,
+		HTTPCORSOrigins: []string{"https://app.example"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	inst := fakeInstance(t, r)
+	frames := pump(t, inst)
+
+	// The default timeout is applied to unary calls, not to server streams.
+	done := make(chan *http.Response, 2)
+	go func() {
+		resp, _ := http.Post(httpURL(r, "/v1/call/"+testService+"/echo"), "application/json", strings.NewReader(`{}`))
+		done <- resp
+	}()
+	open := next(t, frames)
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(open.raw, &fields)
+	if string(fields["timeout_ms"]) != "2000" {
+		t.Fatalf("default timeout not applied: %s", open.raw)
+	}
+	// While that call holds the only HTTP slot, the next one is refused.
+	resp, _ := http.Post(httpURL(r, "/v1/call/"+testService+"/echo"), "application/json", strings.NewReader(`{}`))
+	if status, e := httpError(t, resp); status != 429 || e.Code != "resource_exhausted" || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("over the HTTP limit: %d %+v", status, e)
+	}
+	send(t, inst, frame{Kind: "call.result", CallID: open.CallID, Payload: json.RawMessage(`{}`)})
+	(<-done).Body.Close()
+
+	go func() {
+		resp, _ := http.Post(httpURL(r, "/v1/call/"+testService+"/download"), "application/json", strings.NewReader(`{}`))
+		done <- resp
+	}()
+	open = next(t, frames)
+	fields = nil
+	_ = json.Unmarshal(open.raw, &fields)
+	if _, has := fields["timeout_ms"]; has {
+		t.Fatalf("server streams get no default timeout: %s", open.raw)
+	}
+	next(t, frames) // window
+	send(t, inst, frame{Kind: "call.result", CallID: open.CallID})
+	(<-done).Body.Close()
+
+	// Asking for more than the maximum is refused, not silently shortened.
+	req, _ := http.NewRequest(http.MethodPost, httpURL(r, "/v1/call/"+testService+"/echo"), strings.NewReader(`{}`))
+	req.Header.Set("MeshCall-Timeout-Ms", "60000")
+	resp, _ = http.DefaultClient.Do(req)
+	if status, e := httpError(t, resp); status != 400 || !strings.Contains(e.Message, "maximum") {
+		t.Fatalf("over the maximum timeout: %d %+v", status, e)
+	}
+
+	// CORS: the listed origin gets a preflight and headers; others do not.
+	preflight := func(origin string) *http.Response {
+		req, _ := http.NewRequest(http.MethodOptions, httpURL(r, "/v1/call/"+testService+"/echo"), nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		req.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	ok := preflight("https://app.example")
+	if ok.StatusCode != 204 || ok.Header.Get("Access-Control-Allow-Origin") != "https://app.example" ||
+		!strings.Contains(ok.Header.Get("Access-Control-Allow-Headers"), "Authorization") {
+		t.Fatalf("allowed preflight: %d %v", ok.StatusCode, ok.Header)
+	}
+	if bad := preflight("https://evil.example"); bad.StatusCode != 403 || bad.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("refused preflight: %d %v", bad.StatusCode, bad.Header)
+	}
+
+	// Health needs no credentials and reveals nothing.
+	for path, want := range map[string]string{"/healthz": `{"status":"ok"}`, "/readyz": `{"status":"ready"}`} {
+		resp, err := http.Get(httpURL(r, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || strings.TrimSpace(string(body)) != want {
+			t.Fatalf("%s: %d %q", path, resp.StatusCode, body)
+		}
+	}
+}
+
+func TestOpenAPIIsGeneratedFromVisibleContracts(t *testing.T) {
+	doc, err := os.ReadFile("../codegen/testdata/showcase/contract.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Services []json.RawMessage `json:"services"`
+	}
+	_ = json.Unmarshal(doc, &parsed)
+	entry := parsed.Services[0]
+	var meta struct {
+		Name    string `json:"name"`
+		Methods []struct {
+			Name   string `json:"name"`
+			Stream string `json:"stream"`
+		} `json:"methods"`
+	}
+	_ = json.Unmarshal(entry, &meta)
+
+	r := runningRouter(t, nil)
+	conn := dial(t, r, "")
+	hello(t, conn, "server", "showcase")
+	methods := make([]method, 0, len(meta.Methods))
+	for _, m := range meta.Methods {
+		methods = append(methods, method{Name: m.Name, Stream: m.Stream, Balance: balance{Kind: "round_robin"}})
+	}
+	send(t, conn, frame{Kind: "server.register", InstanceID: "showcase", Services: []service{{Name: meta.Name, Methods: methods, Contract: entry}}})
+	receive(t, conn)
+
+	resp, err := http.Get(httpURL(r, "/v1/openapi.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var api map[string]any
+	if err := json.Unmarshal(body, &api); err != nil || api["openapi"] != "3.1.0" {
+		t.Fatalf("not an OpenAPI document: %v %.200s", err, body)
+	}
+	paths, _ := api["paths"].(map[string]any)
+	if len(paths) != len(meta.Methods) {
+		t.Fatalf("%d paths for %d methods", len(paths), len(meta.Methods))
+	}
+	// Every $ref resolves inside the document; none still points at $defs.
+	schemas, _ := api["components"].(map[string]any)["schemas"].(map[string]any)
+	refs := 0
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			if ref, ok := x["$ref"].(string); ok {
+				refs++
+				name, found := strings.CutPrefix(ref, "#/components/schemas/")
+				if !found || schemas[name] == nil {
+					t.Fatalf("dangling $ref %q", ref)
+				}
+			}
+			if _, ok := x["$defs"]; ok {
+				t.Fatalf("$defs left in place: %v", x)
+			}
+			for _, child := range x {
+				walk(child)
+			}
+		case []any:
+			for _, child := range x {
+				walk(child)
+			}
+		}
+	}
+	walk(api)
+	if refs == 0 {
+		t.Fatal("expected the showcase's nested types to produce $refs")
+	}
+	if !bytes.Contains(body, []byte(`"x-meshcall-stream":"server_stream"`)) || !bytes.Contains(body, []byte(`application/x-ndjson`)) {
+		t.Fatalf("streams are not described: %.300s", body)
 	}
 }

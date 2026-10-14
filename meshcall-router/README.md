@@ -69,6 +69,12 @@ counted (their admission control is still to be designed). HTTP
 request bodies must keep arriving within `--idle-timeout` while the Router
 is reading them.
 
+HTTP calls (`/v1/…`, see [the protocol](../docs/protocol.md#http-calls))
+have `--http-default-timeout` (default `30s`), `--http-max-timeout` (no
+maximum by default), `--http-max-inflight` (default `10000`) and
+`--http-cors-origin` (repeatable or comma-separated). `/healthz` and
+`/readyz` are liveness and readiness probes.
+
 ## Environment variables
 
 Every flag can be set as `MESHCALL_ROUTER_<FLAG>`: upper case, `-` becomes

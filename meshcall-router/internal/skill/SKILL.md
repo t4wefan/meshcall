@@ -39,14 +39,16 @@ object whose keys are the method's parameters. Do not write throwaway
 scripts to probe a service; use these two commands.
 
 Over plain HTTP (same port, no client needed): `curl
-http://HOST:8765/v1/call/svc.v1.Name/method -d '{json}'`; server streams
-come back as NDJSON (`-N`, or SSE with `Accept: text/event-stream`), client
-streams take an NDJSON body (first line the request), duplex is
-WebSocket-only. Headers: `Authorization`, `MeshCall-Timeout-Ms`,
-`Idempotency-Key`, `MeshCall-Instance`, `MeshCall-Meta-<key>`. Errors are the
-same JSON envelope with an HTTP status (400, 401, 403, 404, 429, 503, 504…);
-`GET /v1/services` lists contracts. `meshcall call … --http` does the same
-from the CLI.
+http://HOST:8765/v1/call/svc.v1.Name/method -d '{json}'`. Server streams
+come back as NDJSON envelopes: `{"item": …}` per item, then `{"end":
+{"trailers": …}}` or `{"error": …}` (read `.item` with `jq`); client streams
+take an NDJSON body (first line the request); duplex is WebSocket-only.
+Headers: `Authorization`, `MeshCall-Timeout-Ms` (unary calls default to 30
+s), `Idempotency-Key`, `MeshCall-Instance`, `MeshCall-Meta-<key>`. Errors are
+the same JSON envelope with an HTTP status (400, 401, 403, 404, 429, 503,
+504…). `GET /v1/openapi.json` describes every method you may call (feed it to
+Swagger UI or a client generator); `GET /v1/services` is the Registry.
+`meshcall call … --http` does the same from the CLI.
 
 ## Read errors
 

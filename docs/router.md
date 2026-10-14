@@ -265,7 +265,8 @@ ends; closing the request cancels the call.
 
 ```bash
 curl http://127.0.0.1:8765/v1/call/demo.v1.Counter/add -d '{"a": 1, "b": 2}'
-curl -N -H 'Accept: text/event-stream' http://127.0.0.1:8765/v1/call/demo.v1.Counter/count -d '{"n": 5}'
+curl -N http://127.0.0.1:8765/v1/call/demo.v1.Counter/count -d '{"n": 5}'   # {"item":…} lines, then {"end":…}
+curl http://127.0.0.1:8765/v1/openapi.json                                    # OpenAPI 3.1 for what you may call
 printf '{"offset":0}\n{"value":1}\n{"value":2}\n' | \
   curl http://127.0.0.1:8765/v1/call/demo.v1.Sum/sum -H 'Content-Type: application/x-ndjson' --data-binary @-
 meshcall call demo.v1.Counter.add '{"a": 1, "b": 2}' --http   # the CLI over HTTP
@@ -279,8 +280,12 @@ get `503`), while a token is a single hash lookup. Duplex methods answer
 `405`. Behind a reverse proxy, turn off request buffering for client streams
 and response buffering for server streams (nginx: `proxy_request_buffering
 off`, `proxy_buffering off`); the Router sends `X-Accel-Buffering: no` on
-streaming responses. Browsers can call the API from the same origin;
-cross-origin requests (CORS) are not supported yet.
+streaming responses. HTTP calls have their own limits:
+`--http-default-timeout` (30 s, unary and client streams without a
+`MeshCall-Timeout-Ms`), `--http-max-timeout` (no maximum by default) and
+`--http-max-inflight` (10000; more get `429`). Browsers on other origins
+need `--http-cors-origin https://app.example` (repeatable). `/healthz` and
+`/readyz` serve liveness and readiness probes.
 
 ## Registry and the `meshcall` CLI
 
