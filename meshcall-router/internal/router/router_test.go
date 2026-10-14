@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/t4wefan/meshcall/meshcall-router/internal/localsock"
 )
 
 const testService = "test.v1.Echo"
@@ -777,6 +779,12 @@ func TestCanonicalStickyJSON(t *testing.T) {
 }
 
 func TestUnixSocketOwnershipAndConfigValidation(t *testing.T) {
+	if !localsock.UnixSupported() {
+		if _, err := Start(Config{UnixPath: "x.sock"}); err != localsock.ErrUnixOnWindows {
+			t.Fatalf("a Unix socket on Windows: %v", err)
+		}
+		t.Skip("the local transport here is a named pipe; see TestNamedPipe")
+	}
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("meshcall-go-%d.sock", time.Now().UnixNano()))
 	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
@@ -997,5 +1005,31 @@ func TestDuplexRefusesIdempotencyKeys(t *testing.T) {
 	send(t, client, frame{Kind: "call.open", CallID: "d2", Service: testService, Method: "chat", Payload: json.RawMessage(`{}`)})
 	if got := receive(t, server); got.Kind != "call.open" || got.CallID != "d2" {
 		t.Fatalf("d2 not routed: %+v", got)
+	}
+}
+
+func TestNamedPipe(t *testing.T) {
+	name := fmt.Sprintf("meshcall-router-test-%d", time.Now().UnixNano())
+	if localsock.UnixSupported() {
+		if _, err := Start(Config{Pipe: name}); err == nil {
+			t.Fatal("a named pipe off Windows was accepted")
+		}
+		t.Skip("named pipes are Windows-only")
+	}
+	if _, err := Start(Config{Pipe: name, Port: 1}); err == nil {
+		t.Fatal("pipe combined with a port")
+	}
+	r, err := Start(Config{Pipe: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.Ready().Pipe != name || r.Ready().Port != 0 {
+		t.Fatalf("ready: %+v", r.Ready())
+	}
+	// A second Router cannot take over a pipe name in use.
+	if other, err := Start(Config{Pipe: name}); err == nil {
+		other.Close()
+		t.Fatal("a second Router listened on the same pipe")
 	}
 }
