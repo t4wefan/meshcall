@@ -1,5 +1,7 @@
 # meshcall (TypeScript SDK)
 
+**English** | [简体中文](https://github.com/t4wefan/meshcall/blob/main/meshcall-ts/README.zh-CN.md)
+
 Asynchronous, typed streaming RPC for TypeScript and Python over WebSocket.
 Both the client and service runtimes support unary, server-streaming, and
 client-streaming calls over Direct WebSocket or the shared Go Router (TCP and
@@ -158,7 +160,8 @@ issuing account.
 
 ## Documentation
 
-- [Monorepo overview & tutorials](https://github.com/t4wefan/meshcall#readme)
-- [Protocol specification](https://github.com/t4wefan/meshcall/blob/main/docs/protocol.md)
-- [Runtime architecture](https://github.com/t4wefan/meshcall/blob/main/docs/architecture.md)
-- [Router authentication & management](https://github.com/t4wefan/meshcall/blob/main/docs/router.md)
+- [Monorepo overview & quickstart](https://github.com/t4wefan/meshcall#readme) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/README.zh-CN.md))
+- [User Guide & Cookbook](https://github.com/t4wefan/meshcall/blob/main/docs/guide.md) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/docs/zh-CN/guide.md))
+- [Protocol specification](https://github.com/t4wefan/meshcall/blob/main/docs/protocol.md) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/docs/zh-CN/protocol.md))
+- [Runtime architecture](https://github.com/t4wefan/meshcall/blob/main/docs/architecture.md) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/docs/zh-CN/architecture.md))
+- [Router authentication & management](https://github.com/t4wefan/meshcall/blob/main/docs/router.md) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/docs/zh-CN/router.md))

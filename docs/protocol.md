@@ -1,5 +1,7 @@
 # MeshCall Logical Protocol v1
 
+**English** | [简体中文](zh-CN/protocol.md)
+
 MeshCall transports JSON frames over an ordered, reliable connection. WebSocket
 is the first transport, but the rules in this document are transport-independent.
 

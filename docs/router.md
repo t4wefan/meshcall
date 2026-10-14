@@ -1,5 +1,7 @@
 # Router architecture
 
+**English** | [简体中文](zh-CN/router.md)
+
 MeshCall has one Router implementation: the standalone `meshcall-router` Go
 executable. Python and TypeScript `WebSocketRouter` APIs launch, supervise, and
 stop that same executable. They do not maintain routing tables or run Go through

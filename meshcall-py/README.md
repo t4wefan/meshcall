@@ -1,5 +1,7 @@
 # meshcall (Python SDK)
 
+**English** | [简体中文](https://github.com/t4wefan/meshcall/blob/main/meshcall-py/README.zh-CN.md)
+
 Asynchronous, typed streaming RPC for Python and TypeScript over WebSocket.
 Services define contracts with Pydantic v2 models, register with the standalone
 Go Router (or listen directly), and expose unary, server-streaming, and
@@ -135,7 +137,8 @@ Pass `RouterCredentials(username=..., password=...)` or
 
 ## Documentation
 
-- [Monorepo overview & tutorials](https://github.com/t4wefan/meshcall#readme)
-- [Protocol specification](https://github.com/t4wefan/meshcall/blob/main/docs/protocol.md)
-- [Runtime architecture](https://github.com/t4wefan/meshcall/blob/main/docs/architecture.md)
-- [Router authentication & management](https://github.com/t4wefan/meshcall/blob/main/docs/router.md)
+- [Monorepo overview & quickstart](https://github.com/t4wefan/meshcall#readme) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/README.zh-CN.md))
+- [User Guide & Cookbook](https://github.com/t4wefan/meshcall/blob/main/docs/guide.md) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/docs/zh-CN/guide.md))
+- [Protocol specification](https://github.com/t4wefan/meshcall/blob/main/docs/protocol.md) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/docs/zh-CN/protocol.md))
+- [Runtime architecture](https://github.com/t4wefan/meshcall/blob/main/docs/architecture.md) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/docs/zh-CN/architecture.md))
+- [Router authentication & management](https://github.com/t4wefan/meshcall/blob/main/docs/router.md) ([简体中文](https://github.com/t4wefan/meshcall/blob/main/docs/zh-CN/router.md))

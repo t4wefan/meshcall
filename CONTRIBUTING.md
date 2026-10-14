@@ -1,5 +1,7 @@
 # Contributing
 
+**English** | [简体中文](./CONTRIBUTING.zh-CN.md)
+
 ## Layout
 
 | Directory | What | Toolchain |

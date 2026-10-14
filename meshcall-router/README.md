@@ -1,5 +1,7 @@
 # meshcall-router
 
+**English** | [简体中文](./README.zh-CN.md)
+
 The standalone Go implementation of MeshCall's Router. Python and TypeScript
 start this executable as a child process; they do not implement routing.
 
