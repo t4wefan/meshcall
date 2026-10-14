@@ -1,63 +1,52 @@
-# meshcall-ts
+# meshcall (TypeScript SDK)
 
-The TypeScript runtime package for the MeshCall monorepo. Its package name is
-`meshcall`.
+Asynchronous, typed streaming RPC for TypeScript and Python over WebSocket.
+Both the client and service runtimes support unary, server-streaming, and
+client-streaming calls over Direct WebSocket or the shared Go Router (TCP and
+Unix sockets).
+
+## Install
 
 ```bash
-go -C ../meshcall-router build -o bin/meshcall-router ./cmd/meshcall-router
-yarn install --frozen-lockfile
-yarn run check
-yarn test
+yarn add meshcall
+# or: npm install meshcall
 ```
 
-Both the client and service runtimes support unary, server-streaming, and
-client-streaming calls over Direct WebSocket or the shared Go Router.
-TCP and Unix sockets use the same runtime. Duplex remains experimental and is
-not exposed by the TypeScript service API.
+Installing `meshcall` automatically pulls the matching
+`meshcall-router-<os>-<cpu>` optional dependency containing the prebuilt Go
+Router (`meshcall-router`) and `meshcall` CLI binaries—no Go compiler or Python
+runtime is needed. On platforms without a prebuilt package,
+`npx meshcall router install` downloads and verifies the matching release into
+the per-user cache.
+
+If coding agents work on your project, install the first-party agent skill once:
+
+```bash
+npx meshcall init
+```
+
+## Define and run a service
 
 Service names carry one version segment and are normalised (`chat` → `chat.v0`;
 `chat.v1`, `demo.v1.Greeting`, `chat.v1.2.0` are valid). Every method builder
 accepts `description`, `idempotent`, `readOnly`, `destructive` and
 `deprecated`; the service accepts `description`. These reach the contract and
-the generated clients.
+the generated clients. Set `MESHCALL_STRICT=1` during development and CI so
+advisory contract warnings fail fast at `defineService`.
 
 Define methods with `unaryMethod`, `serverStreamMethod`, or `clientStreamMethod`.
 Each builder takes a `request` type contract; unary and client-streaming methods
 declare `response`, server-streaming methods declare `outputItem`, and
 client-streaming methods declare `inputItem`. JSON Schema draft 2020-12 contracts
 validate requests, responses, and stream items through Ajv. Defaults are applied,
-but values are not coerced between JSON types. Legacy method definitions without
-type contracts remain supported without payload validation.
-
-Handlers receive an `RpcContext` containing `signal`, `deadlineMs` and
-`remainingMs()`, `callId`, `service`, `method`, the caller's `metadata`,
-`setTrailer(key, value)` for response trailers, and a bound `logger`.
-Client-streaming handlers take `(request, items, context)`; the other handlers
-take `(request, context)`. Observe `context.signal` during asynchronous work to
-release resources on cancellation. Handlers still run on Node's event loop.
-
-Callers pass `CallOptions`: `timeoutMs` (the whole call, including connecting),
-`idleTimeoutMs` (longest gap between stream items), `metadata`, and `signal`.
-The client fails a call locally at `timeoutMs` plus a grace
-(`deadlineGraceMs`, default `max(1s, 10%)`) so the server's or Router's own
-`deadline_exceeded` normally arrives first; a locally raised one carries
-`details.source === "client"`. Clients ping every `pingIntervalMs` (15 s) and
-treat a missing `pong` after `pingTimeoutMs` (10 s) as a lost connection. Direct
-servers close clients silent for `idleTimeoutMs` (45 s); Router-mode servers
-ping the Router instead.
-
-Interceptors wrap every call on either side. A server interceptor is
-`(ctx, request, next) => result` passed as `interceptors` to `MeshCallServer`;
-a client interceptor is `(info, next) => result` passed in `MeshCallClient`
-options, where `info.options` can be replaced to add metadata or change
-timeouts and `next(info)` may be called again to retry. See
-[architecture](../docs/architecture.md#interceptors).
-
-## Streaming service
+but values are not coerced between JSON types.
 
 ```typescript
 import {
-  defineService, defineType, MeshCallServer, serverStreamMethod,
+  defineService,
+  defineType,
+  MeshCallServer,
+  serverStreamMethod,
 } from "meshcall";
 
 const request = defineType<{ count: number }>("CountRequest", {
@@ -70,13 +59,18 @@ const item = defineType<{ value: number }>("CountItem", {
   properties: { value: { type: "integer" } },
   required: ["value"],
 });
+
 const counter = defineService({
   name: "example.v1.Counter",
+  description: "Stream sequential integer counts.",
   sourceModule: "counter",
   sourceQualname: "Counter",
   methods: {
     count: serverStreamMethod({
-      request, outputItem: item,
+      description: "Yield integers from 0 up to count - 1.",
+      readOnly: true,
+      request,
+      outputItem: item,
       handler: async function* ({ count }, { signal, logger }) {
         logger.info("counting to %d", count);
         for (let value = 0; value < count; value += 1) {
@@ -87,39 +81,70 @@ const counter = defineService({
     }),
   },
 });
-const server = new MeshCallServer({ services: [counter], port: 8765 });
+
+const server = new MeshCallServer({
+  services: [counter],
+  router: { endpoint: "ws://127.0.0.1:8765", instanceId: "counter-ts-1" },
+});
 await server.start();
-// Await server.close() when the application shuts down.
+// Await server.close({ drain: true }) when the application shuts down.
 ```
 
-For Router mode, replace `port` with
-`router: { endpoint: "ws://127.0.0.1:8765", instanceId: "counter-ts-1" }`.
-Services register before `start()` resolves. A disconnect terminates active
-calls; the server then re-registers with exponential backoff (`reconnect`
-option, a `ReconnectPolicy`) while `isRunning` stays true, and
-`routerConnected` reports the current state. Clients reconnect the same way
-on their next call, bounded by that call's `timeoutMs`. The runtime does not
-replay calls.
+For Direct mode (without a Router), pass `port: 8765` (or
+`unixPath: "/tmp/meshcall.sock"`) instead of `router`. In Router mode, services
+register before `start()` resolves; a disconnect terminates active calls and
+re-registers with exponential backoff (`reconnect` option, a `ReconnectPolicy`)
+while `isRunning` stays true.
 
-For local IPC use `unixPath: "/tmp/meshcall.sock"` on a Direct server, or
-`router: { endpoint: { unixPath: "/tmp/router.sock" } }` for Router mode.
-Clients accept either a URL or `{ unixPath: "/tmp/meshcall.sock" }`.
+## Explore, call, and generate clients with the CLI
 
-`accessLog` defaults to true. `logLevel`, `colorize`, and a compatible `logger`
-configure terminal access entries; the default logger writes to stderr.
-`maxFrameSize` defaults to 1 MiB and `handshakeTimeoutMs` to 10 seconds.
-The client accepts these two limits in its optional third constructor argument.
-Stream cancellation and failed calls clean up timers and credit waiters.
-Exiting a TypeScript `for await` loop also cancels its server stream.
+```bash
+# Inspect registered services, instances, health, and method signatures
+npx meshcall router inspect --router ws://127.0.0.1:8765
 
-See [Router architecture](../docs/router.md) for balancing and deployment boundaries.
+# Call a method from the terminal
+npx meshcall call example.v1.Counter.count '{"count": 5}'
+
+# Generate a TypeScript or Python client from a portable contract file
+npx meshcall generate service.meshcall.json --language typescript --output generated/client-ts
+npx meshcall generate service.meshcall.json --language python --output generated/client-py
+```
+
+Export a TypeScript service's portable contract with
+`await writeContract([counter], "service.meshcall.json")`.
+
+## Context, options, keepalive, and interceptors
+
+Handlers receive an `RpcContext` containing `signal`, `deadlineMs` and
+`remainingMs()`, `callId`, `service`, `method`, `instanceId`, the caller's
+`metadata`, `setTrailer(key, value)` for response trailers, and a bound `logger`.
+Client-streaming handlers take `(request, items, context)`; the other handlers
+take `(request, context)`. Observe `context.signal` during asynchronous work to
+release resources on cancellation.
+
+Callers pass `CallOptions`: `timeoutMs` (the whole call, including connecting),
+`idleTimeoutMs` (longest gap between stream items), `metadata`, `idempotencyKey`,
+`instance`, and `signal`. The client fails a call locally at `timeoutMs` plus a
+grace (`deadlineGraceMs`, default `max(1s, 10%)`) so the server's or Router's
+own `deadline_exceeded` normally arrives first; a locally raised one carries
+`details.source === "client"`. Clients ping every `pingIntervalMs` (15 s) and
+treat a missing `pong` after `pingTimeoutMs` (10 s) as a lost connection. Direct
+servers close clients silent for `idleTimeoutMs` (45 s); Router-mode servers
+ping the Router instead. Exiting a TypeScript `for await` loop cancels its
+server stream automatically.
+
+Interceptors wrap every call on either side. A server interceptor is
+`(ctx, request, next) => result` passed as `interceptors` to `MeshCallServer`;
+a client interceptor is `(info, next) => result` passed in `MeshCallClient`
+options, where `info.options` can be replaced to add metadata or change
+timeouts and `next(info)` may be called again to retry.
 
 ## Start the Go Router and authenticate
 
 `new WebSocketRouter({ port: 8765, authFile: "/path/router-auth.json" })`
-starts the standalone Go executable when `start()` is awaited; `stop()` or
-`close()` reaps it. Set `binaryPath` or `MESHCALL_ROUTER_BINARY` for a prebuilt
-binary. Neither a Go compiler nor a Python runtime is needed to run it.
+starts the bundled Go executable when `start()` is awaited; `stop()` or
+`close()` reaps it. Set `binaryPath` or `MESHCALL_ROUTER_BINARY` to override
+the bundled binary.
 
 Client credentials use the third constructor option:
 `new MeshCallClient(uri, undefined, { auth: { username, password } })`, or
@@ -129,4 +154,11 @@ Client credentials use the third constructor option:
 `issueToken({ ttl_seconds, scopes })`, and `revokeToken(tokenId)`.
 Each scope has `service`, optional `methods` (`["*"]` for every method on that
 service), and optional `register`. The Router prevents delegation beyond the
-issuing account. See [configuration and token examples](../docs/router.md).
+issuing account.
+
+## Documentation
+
+- [Monorepo overview & tutorials](https://github.com/t4wefan/meshcall#readme)
+- [Protocol specification](https://github.com/t4wefan/meshcall/blob/main/docs/protocol.md)
+- [Runtime architecture](https://github.com/t4wefan/meshcall/blob/main/docs/architecture.md)
+- [Router authentication & management](https://github.com/t4wefan/meshcall/blob/main/docs/router.md)

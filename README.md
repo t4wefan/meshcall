@@ -9,24 +9,25 @@ This repository is a monorepo. The Python runtime package lives in
 `meshcall-py`, the TypeScript runtime package lives in `meshcall-ts`, the
 standalone real-world example lives in `best-practice`, runnable examples live
 in `demo`, and design/protocol documentation lives in `docs`. The shared Go
-Router lives in `meshcall-router`.
+Router and `meshcall` CLI live in `meshcall-router`.
 
 ## Repository layout
 
 ```text
 meshcall/
-├── meshcall-py/   # Python package, uv project, and Python tests
-├── meshcall-ts/   # TypeScript package, Yarn project, and TypeScript tests
-├── meshcall-router/ # Standalone Go Router, account auth, and management RPC
-├── best-practice/ # Standalone Python server + TypeScript interactive CLI
-├── demo/          # Independent demo projects
-│   ├── quickstart/ # uv project: uv run demo
-│   ├── py2ts/      # uv + Yarn: Python service -> TypeScript client
-│   ├── router/    # uv project: uv run demo
-│   ├── showcase/  # uv project: uv run demo
-│   └── ts2py/      # uv + Yarn: TypeScript service -> Python client
-├── docs/          # Architecture and protocol documentation
-└── README.md      # Monorepo overview
+├── meshcall-py/     # Python runtime package, uv project, and Python tests
+├── meshcall-ts/     # TypeScript runtime package, Yarn project, and TS tests
+├── meshcall-router/ # Standalone Go Router, meshcall CLI, and conformance suite
+├── best-practice/   # Standalone Python server + TypeScript interactive CLI
+├── demo/            # Independent demo projects
+│   ├── quickstart/  # uv project: uv run demo
+│   ├── py2ts/       # uv + Yarn: Python service -> TypeScript client
+│   ├── router/      # uv project: uv run demo
+│   ├── showcase/    # uv project: uv run demo
+│   └── ts2py/       # uv + Yarn: TypeScript service -> Python client
+├── skills/meshcall/ # First-party agent skill installed by `meshcall init`
+├── docs/            # Architecture, Router, and protocol documentation
+└── README.md        # Monorepo overview
 ```
 
 The current implementation includes:
@@ -40,16 +41,19 @@ The current implementation includes:
 - WebSocket Direct and WebSocket Router drivers over TCP or Unix sockets;
 - cancellation, deadlines, half-close, per-direction flow control, and fair
   per-call sending;
-- round-robin, least-inflight, random, sticky, and disabled balancing;
-- immutable `call_id` to service-instance routing and disconnect cleanup;
+- round-robin, least-inflight, random, sticky, and disabled balancing, plus
+  instance-targeted calls (`targeted=True` / `instance=`);
+- immutable `call_id` to service-instance routing, graceful draining, circuit
+  breaking, idempotency deduplication, and disconnect cleanup;
 - a dedicated Python service worker loop, isolated from RPC transport and
-  deadline handling.
+  deadline handling;
 - built-in Python server access logs with method, status, duration, and
-  Loguru-style service logger injection.
+  Loguru-style service logger injection;
 - TypeScript JSON Schema payload validation, call-bound loggers, and terminal access logs;
 - Python and TypeScript launchers for one standalone Go Router;
-- Router account authentication and built-in RPC for issuing/revoking temporary
-  tokens restricted by service, method and registration scope;
+- Router account authentication, built-in Registry inspection RPC, and built-in
+  AuthService RPC for issuing/revoking temporary tokens restricted by service,
+  method and registration scope;
 - relative call timeouts enforced by server, Router and client, stream idle
   timeouts, call metadata and response trailers, protocol keepalive, and
   automatic reconnection with backoff (clients and Router-mode servers);
@@ -63,8 +67,8 @@ DSL remain future milestones.
 ## Install
 
 ```bash
-uv add meshcall            # Python runtime
-npm install meshcall       # TypeScript runtime
+uv add meshcall            # Python runtime + bundled Go Router & CLI
+yarn add meshcall          # TypeScript runtime + bundled Go Router & CLI (or: npm install meshcall)
 ```
 
 There is one `meshcall` command, written in Go and released together with the
@@ -89,39 +93,6 @@ to `AGENTS.md`, so agents explore with `inspect`, call with `call`, read
 three packages are released together from one `vX.Y.Z` tag; see
 [CHANGELOG.md](CHANGELOG.md).
 
-## Development
-
-`scripts/check.sh` runs everything CI runs (see `AGENTS.md` and
-`CONTRIBUTING.md`). The individual steps:
-
-```bash
-go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
-go -C meshcall-router test -race ./...
-
-uv sync --directory meshcall-py --project .
-uv run --directory meshcall-py --project . ruff check src tests ../demo
-uv run --directory meshcall-py --project . pyright src tests ../demo
-uv run --directory meshcall-py --project . pytest -q
-
-uv run --project demo/quickstart demo
-uv run --project demo/py2ts demo
-uv run --project demo/showcase demo
-uv run --project demo/router demo
-uv run --project demo/ts2py demo
-
-yarn --cwd meshcall-ts install --frozen-lockfile
-yarn --cwd meshcall-ts run check
-yarn --cwd meshcall-ts test
-
-MESHCALL_RUN_INTEROP=1 uv run --directory meshcall-py --project . \
-  pytest -q tests/test_multilang_interop.py
-```
-
-Run these commands from the monorepo root. The normal test suite is headless
-and doesn't require an external service. Cross-language tests start short-lived
-local Go, Python and Node processes and are opt-in through
-`MESHCALL_RUN_INTEROP=1`.
-
 ## Define a service
 
 ```python
@@ -136,14 +107,17 @@ class CountItem(BaseModel):
     value: int
 
 
-@service(name="example.v1.CounterService")
+@service("example.v1.CounterService")
 class CounterService:
-    @method.server_stream()
+    """Stream sequential integer counts."""
+
+    @method.server_stream(read_only=True)
     async def count(
         self,
         stop: int,
         logger: RpcLogger,
     ) -> AsyncIterator[CountItem]:
+        """Yield integers from 0 up to stop - 1."""
         logger.debug("counting to {}", stop)
         for value in range(stop):
             yield CountItem(value=value)
@@ -172,7 +146,9 @@ registers `chat.v0`; `chat.v1`, `demo.v1.Greeting` and `chat.v1.2.0` are all
 valid and routed by exact name. Class and method docstrings become the
 contract's `description`; `@method(read_only=True)`, `idempotent=True`,
 `destructive=True` and `deprecated="replacement"` record method semantics that
-tooling, retry policies and LLM tool exposure rely on.
+tooling, retry policies and LLM tool exposure rely on. Set `MESHCALL_STRICT=1`
+during development or CI to turn advisory contract warnings into errors with
+actionable hints.
 
 Every service instance has an id (`instance_id=` on the server driver, or
 generated). Any call can address one instance with `instance="worker-3"`;
@@ -180,6 +156,271 @@ generated). Any call can address one instance with `instance="worker-3"`;
 (instances hold distinct state: a session, a loaded model, an actor), and
 generated clients then make `instance` a required keyword, so forgetting it
 is a type error rather than a runtime `instance_required`.
+
+## Explore and call from the CLI
+
+When services are registered with a Router, you can inspect the live mesh and
+invoke methods directly from the terminal (`uv run meshcall …` in a Python
+project, `npx meshcall …` in a Node project, or `meshcall …` if on `PATH`):
+
+```bash
+# List registered services, live instances, health, and method signatures
+uv run meshcall router inspect --router ws://127.0.0.1:8765
+
+# Print the full portable contract for one service as JSON
+uv run meshcall router inspect example.v1.CounterService --json
+
+# Call a unary or server-streaming method (streams print one JSON line per item)
+uv run meshcall call example.v1.CounterService.count '{"stop": 5}'
+
+# Pipe JSON lines into a client-streaming method
+printf '{"value":1}\n{"value":2}\n' | uv run meshcall call demo.v1.Sum.sum '{"offset":10}' --stdin
+```
+
+`meshcall call` supports `--json`, `--timeout 10s`, `--idle-timeout 5s`,
+`--metadata k=v`, `--idempotency-key K`, `--instance ID`, and `--auth user:pass`
+/ `--token T`. If a call fails validation or targets an unknown method/instance,
+the CLI queries the Router's Registry and prints a contract-aware hint.
+
+## Generate a complete client package
+
+Package generation is the default. `--output` names a directory.
+
+```bash
+uv run --project demo/quickstart meshcall generate \
+  quickstart_demo.service:CounterService \
+  --output generated/counter-client
+```
+
+The Python output is an installable uv package:
+
+```text
+generated/counter-client/
+├── pyproject.toml
+├── README.md
+└── src/meshcall_example_v1_counterservice_client/
+    ├── __init__.py
+    ├── client.py
+    ├── models.py
+    └── py.typed
+```
+
+It supports the recommended unary and streaming RPC shapes and can be checked
+with `uv build`. Every generated method accepts optional `timeout=`,
+`idle_timeout=` (seconds), `metadata=`, `idempotency_key=`, and `instance=`
+keywords. Service methods can declare a `ctx: RpcContext` parameter to read the
+caller's metadata, check `ctx.remaining()`, and attach trailers with
+`ctx.set_trailer()`.
+
+For a Python service using the recommended call shapes, generate a TypeScript Yarn package with:
+
+```bash
+uv run --project meshcall-py meshcall generate \
+  your_app.service:GreetingService \
+  --language typescript \
+  --output generated/greeting-client
+```
+
+The output contains `package.json`, `tsconfig.json`, and separate
+`src/models.ts`, `src/client.ts`, and `src/index.ts` modules.
+
+## Generate one self-contained file
+
+Single-file output is opt-in:
+
+```bash
+uv run --project demo/quickstart meshcall generate \
+  quickstart_demo.service:CounterService \
+  --output generated/counter_client.py \
+  --single-file
+```
+
+The Python file contains its Pydantic model classes at module scope as well as
+the generated client. TypeScript single files similarly contain all generated
+interfaces, schemas, and the client. Their header comments list the external
+packages to install (`meshcall` plus `pydantic` for Python, or `meshcall` for
+TypeScript).
+
+## Portable contracts and cross-language generation
+
+Export a Python contract and generate a package in either language from it
+(`meshcall generate` accepts a contract document wherever it accepts a
+`module:Class`; `--service` picks one service of a multi-service document):
+
+```bash
+uv run --project meshcall-py meshcall export \
+  your_app.service:GreetingService \
+  --output generated/greeting.meshcall.json
+
+meshcall generate \
+  generated/greeting.meshcall.json \
+  --language typescript \
+  --output generated/greeting-ts-client
+```
+
+TypeScript cannot reflect interfaces after compilation, so a TypeScript service
+attaches JSON Schema explicitly and exports the same portable contract:
+
+```typescript
+import {
+  defineService,
+  defineType,
+  unaryMethod,
+  writeContract,
+} from "meshcall";
+
+interface AddRequest { left: number; right: number }
+interface AddResult { total: number }
+
+const request = defineType<AddRequest>("AddRequest", {
+  type: "object",
+  properties: {
+    left: { type: "number" },
+    right: { type: "number" },
+  },
+  required: ["left", "right"],
+});
+
+const result = defineType<AddResult>("AddResult", {
+  type: "object",
+  properties: { total: { type: "number" } },
+  required: ["total"],
+});
+
+const service = defineService({
+  name: "example.v1.MathService",
+  description: "Arithmetic operations.",
+  sourceModule: "math-service",
+  sourceQualname: "MathService",
+  methods: {
+    add: unaryMethod({
+      description: "Return the sum of left and right.",
+      readOnly: true,
+      request,
+      response: result,
+      handler: ({ left, right }) => ({ total: left + right }),
+    }),
+  },
+});
+
+await writeContract([service], "generated/math.meshcall.json");
+```
+
+Then generate the Python uv package:
+
+```bash
+npx meshcall generate \
+  generated/math.meshcall.json \
+  --language python \
+  --output generated/math-py-client
+```
+
+## WebSocket Router
+
+The Go Router binary (`meshcall-router`) is bundled inside the Python and
+TypeScript SDK packages, so starting a Router from either language requires no Go
+compiler or separate download. Set `MESHCALL_ROUTER_BINARY` only when you want
+to override the bundled binary with one you built or deployed yourself. Account
+auth, per-service scopes and the built-in AuthService are explained in
+[Router architecture](docs/router.md).
+
+Run a Router listener from Python (or `new WebSocketRouter({ port: 8765 })` in TypeScript):
+
+```python
+router = WebSocketRouter(host="127.0.0.1", port=8765)
+await router.start()
+```
+
+Connect one or more service instances:
+
+```python
+driver = WebSocketRouterServerDriver(
+    "ws://127.0.0.1:8765",
+    instance_id="counter-1",
+)
+server = RpcServer(services=[CounterService], driver=driver)
+await server.start()
+```
+
+Clients use the normal `WebSocketClientDriver` and connect to the Router URI. A
+stream is balanced only at `call.open`; all later items, windows, half-closes,
+errors, and cancellation frames remain pinned to the selected instance.
+
+Router listeners and service/client connections also accept `unix_path=`.
+
+## WebSocket Direct
+
+TCP server:
+
+```python
+driver = WebSocketDirectServerDriver(host="127.0.0.1", port=8765)
+server = RpcServer(
+    services=[CounterService],
+    driver=driver,
+    access_log=True,
+    log_level="INFO",
+    colorize=False,
+)
+await server.start()
+```
+
+`access_log` is enabled by default. After each call reaches a terminal result
+or error, the server emits a Loguru-style access entry containing
+`service.method`, `status`, `duration_ms`, and `call_id`. Set
+`access_log=False` to turn off these per-call entries while keeping other
+application and exception logs. `log_level` chooses the level used for access
+entries, and `colorize` enables the Loguru color tags for that entry. The
+default logger is Loguru's global logger; a compatible logger can be supplied
+with `RpcServer(..., logger=my_logger)`.
+
+RPC methods may reserve a parameter named `logger` (typed as `RpcLogger`) for
+server-side logging. It is injected per call, is not part of the wire request,
+and therefore does not appear in the generated client method:
+
+```python
+@method(read_only=True)
+async def greet(self, name: str, logger: RpcLogger) -> Greeting:
+    """Return a greeting for name."""
+    logger.info("greeting {}", name)
+    return Greeting(...)
+```
+
+The injected logger is bound with the service, method, and `call_id`, and its
+usage follows Loguru's normal `debug`, `info`, `warning`, `error`, and
+`exception` methods.
+
+Passing a service class constructs one instance with no arguments when the
+server starts. For constructor arguments or dependency injection, pass an
+already constructed instance instead: `services=[CounterService(...)]`. The
+server reuses that service instance across calls.
+
+TCP client:
+
+```python
+client = CounterServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
+async with client:
+    async for item in client.count(10, timeout=5):
+        print(item.value)
+```
+
+For local IPC, configure both sides with the same short Unix socket path:
+
+```python
+WebSocketDirectServerDriver(unix_path="/tmp/meshcall.sock")
+WebSocketClientDriver(unix_path="/tmp/meshcall.sock")
+```
+
+## Stream API
+
+- A return type of `AsyncIterator[T]` creates a server stream.
+- An `RpcInputStream[T]` parameter creates a client stream.
+- `close_send()` half-closes the local sending direction.
+- `cancel()` cancels the complete call.
+- Breaking out of a custom stream iterator does not implicitly cancel it; call
+  `await stream.cancel()` or use the stream as an async context manager.
+
+The last rule applies to Python streams. TypeScript server streams implement
+iterator cleanup, so leaving a `for await` loop cancels the call automatically.
 
 ## Complete runnable showcase
 
@@ -273,239 +514,38 @@ The TypeScript Yarn service is in `ts-server/`, its portable contract is
 `ts-server/service.meshcall.json`, and the generated Python uv package is in
 `py-client/`.
 
-## Generate a complete client package
+## Development
 
-Package generation is the default. `--output` names a directory.
-
-```bash
-uv run --project demo/quickstart meshcall generate \
-  quickstart_demo.service:CounterService \
-  --output generated/counter-client
-```
-
-The Python output is an installable uv package:
-
-```text
-generated/counter-client/
-├── pyproject.toml
-├── README.md
-└── src/meshcall_example_v1_counterservice_client/
-    ├── __init__.py
-    ├── client.py
-    ├── models.py
-    └── py.typed
-```
-
-It supports the recommended unary and streaming RPC shapes and can be checked
-with `uv build`. Every generated method accepts optional `timeout=`,
-`idle_timeout=` (seconds) and `metadata=` keywords. Service methods can declare
-a `ctx: RpcContext` parameter to read the caller's metadata, check
-`ctx.remaining()`, and attach trailers with `ctx.set_trailer()`.
-
-For a Python service using the recommended call shapes, generate a TypeScript Yarn package with:
+`scripts/check.sh` runs everything CI runs (see `AGENTS.md` and
+`CONTRIBUTING.md`). The individual steps:
 
 ```bash
-uv run --project meshcall-py meshcall generate \
-  your_app.service:GreetingService \
-  --language typescript \
-  --output generated/greeting-client
+go -C meshcall-router build -trimpath -o bin/meshcall-router ./cmd/meshcall-router
+go -C meshcall-router test -race ./...
+
+uv sync --directory meshcall-py --project .
+uv run --directory meshcall-py --project . ruff check src tests ../demo
+uv run --directory meshcall-py --project . pyright src tests ../demo
+uv run --directory meshcall-py --project . pytest -q
+
+uv run --project demo/quickstart demo
+uv run --project demo/py2ts demo
+uv run --project demo/showcase demo
+uv run --project demo/router demo
+uv run --project demo/ts2py demo
+
+yarn --cwd meshcall-ts install --frozen-lockfile
+yarn --cwd meshcall-ts run check
+yarn --cwd meshcall-ts test
+
+MESHCALL_RUN_INTEROP=1 uv run --directory meshcall-py --project . \
+  pytest -q tests/test_multilang_interop.py
 ```
 
-The output contains `package.json`, `tsconfig.json`, and separate
-`src/models.ts`, `src/client.ts`, and `src/index.ts` modules.
-
-## Generate one self-contained file
-
-Single-file output is opt-in:
-
-```bash
-uv run --project demo/quickstart meshcall generate \
-  quickstart_demo.service:CounterService \
-  --output generated/counter_client.py \
-  --single-file
-```
-
-The Python file contains its Pydantic model classes at module scope as well as
-the generated client. TypeScript single files similarly contain all generated
-interfaces and the client. Their header comments list the external packages to
-install (`meshcall` plus `pydantic` for Python, or `meshcall` for
-TypeScript).
-
-## Portable contracts and cross-language generation
-
-Export a Python contract and generate a package in either language from it
-(`meshcall generate` accepts a contract document wherever it accepts a
-`module:Class`; `--service` picks one service of a multi-service document):
-
-```bash
-uv run --project meshcall-py meshcall export \
-  your_app.service:GreetingService \
-  --output generated/greeting.meshcall.json
-
-meshcall generate \
-  generated/greeting.meshcall.json \
-  --language typescript \
-  --output generated/greeting-ts-client
-```
-
-TypeScript cannot reflect interfaces after compilation, so a TypeScript service
-attaches JSON Schema explicitly and exports the same portable contract:
-
-```typescript
-import {
-  defineService,
-  defineType,
-  unaryMethod,
-  writeContract,
-} from "meshcall";
-
-interface AddRequest { left: number; right: number }
-interface AddResult { total: number }
-
-const request = defineType<AddRequest>("AddRequest", {
-  type: "object",
-  properties: {
-    left: { type: "number" },
-    right: { type: "number" },
-  },
-  required: ["left", "right"],
-});
-
-const result = defineType<AddResult>("AddResult", {
-  type: "object",
-  properties: { total: { type: "number" } },
-  required: ["total"],
-});
-
-const service = defineService({
-  name: "example.v1.MathService",
-  sourceModule: "math-service",
-  sourceQualname: "MathService",
-  methods: {
-    add: unaryMethod({
-      request,
-      response: result,
-      handler: ({ left, right }) => ({ total: left + right }),
-    }),
-  },
-});
-
-await writeContract([service], "generated/math.meshcall.json");
-```
-
-Then generate the Python uv package:
-
-```bash
-meshcall generate \
-  generated/math.meshcall.json \
-  --language python \
-  --output generated/math-py-client
-```
-
-## WebSocket Direct
-
-TCP server:
-
-```python
-driver = WebSocketDirectServerDriver(host="127.0.0.1", port=8765)
-server = RpcServer(
-    services=[CounterService],
-    driver=driver,
-    access_log=True,
-    log_level="INFO",
-    colorize=False,
-)
-await server.start()
-```
-
-`access_log` is enabled by default. After each call reaches a terminal result
-or error, the server emits a Loguru-style access entry containing
-`service.method`, `status`, `duration_ms`, and `call_id`. Set
-`access_log=False` to turn off these per-call entries while keeping other
-application and exception logs. `log_level` chooses the level used for access
-entries, and `colorize` enables the Loguru color tags for that entry. The
-default logger is Loguru's global logger; a compatible logger can be supplied
-with `RpcServer(..., logger=my_logger)`.
-
-RPC methods may reserve a parameter named `logger` (typed as `RpcLogger`) for
-server-side logging. It is injected per call, is not part of the wire request,
-and therefore does not appear in the generated client method:
-
-```python
-@method()
-async def greet(self, name: str, logger: RpcLogger) -> Greeting:
-    logger.info("greeting {}", name)
-    return Greeting(...)
-```
-
-The injected logger is bound with the service, method, and `call_id`, and its
-usage follows Loguru's normal `debug`, `info`, `warning`, `error`, and
-`exception` methods.
-
-Passing a service class constructs one instance with no arguments when the
-server starts. For constructor arguments or dependency injection, pass an
-already constructed instance instead: `services=[CounterService(...)]`. The
-server reuses that service instance across calls.
-
-TCP client:
-
-```python
-client = CounterServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
-async with client:
-    async for item in client.count(10, timeout=5):
-        print(item.value)
-```
-
-For local IPC, configure both sides with the same short Unix socket path:
-
-```python
-WebSocketDirectServerDriver(unix_path="/tmp/meshcall.sock")
-WebSocketClientDriver(unix_path="/tmp/meshcall.sock")
-```
-
-## WebSocket Router
-
-Build the Go executable once as shown above (Go 1.26+). Python and TypeScript
-launchers use this same program; deploying a prebuilt binary requires no Go
-compiler. Set `MESHCALL_ROUTER_BINARY` when the executable is outside the source
-checkout. Account auth, per-service scopes and the built-in AuthService are
-explained in [Router architecture](docs/router.md).
-
-Run a Router listener:
-
-```python
-router = WebSocketRouter(host="127.0.0.1", port=8765)
-await router.start()
-```
-
-Connect one or more service instances:
-
-```python
-driver = WebSocketRouterServerDriver(
-    "ws://127.0.0.1:8765",
-    instance_id="counter-1",
-)
-server = RpcServer(services=[CounterService], driver=driver)
-await server.start()
-```
-
-Clients use the normal `WebSocketClientDriver` and connect to the Router URI. A
-stream is balanced only at `call.open`; all later items, windows, half-closes,
-errors, and cancellation frames remain pinned to the selected instance.
-
-Router listeners and service/client connections also accept `unix_path=`.
-
-## Stream API
-
-- A return type of `AsyncIterator[T]` creates a server stream.
-- An `RpcInputStream[T]` parameter creates a client stream.
-- `close_send()` half-closes the local sending direction.
-- `cancel()` cancels the complete call.
-- Breaking out of a custom stream iterator does not implicitly cancel it; call
-  `await stream.cancel()` or use the stream as an async context manager.
-
-The last rule applies to Python streams. TypeScript server streams implement
-iterator cleanup, so leaving a `for await` loop cancels the call automatically.
+Run these commands from the monorepo root. The normal test suite is headless
+and doesn't require an external service. Cross-language tests start short-lived
+local Go, Python and Node processes and are opt-in through
+`MESHCALL_RUN_INTEROP=1`.
 
 ## Current limits
 
