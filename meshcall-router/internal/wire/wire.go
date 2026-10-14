@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/t4wefan/meshcall/meshcall-router/internal/localsock"
 )
 
 const Protocol = "meshcall/1"
@@ -60,9 +62,13 @@ func Dial(ctx context.Context, url string, opts Options) (*Conn, error) {
 	if opts.Authorization != "" {
 		header.Set("Authorization", opts.Authorization)
 	}
+	endpoint, err := localsock.Parse(url)
+	if err != nil {
+		return nil, err
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
-	ws, _, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{HTTPHeader: header})
+	ws, _, err := websocket.Dial(dialCtx, endpoint.URL, &websocket.DialOptions{HTTPHeader: header, HTTPClient: endpoint.HTTPClient()})
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", url, err)
 	}

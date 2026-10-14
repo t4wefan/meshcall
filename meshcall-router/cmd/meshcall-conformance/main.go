@@ -25,7 +25,13 @@ func main() {
 	flag.BoolVar(&verbose, "verbose", false, "print fixture output even on success")
 	flag.BoolVar(&asJSON, "json", false, "print results as JSON instead of text")
 	flag.DurationVar(&timeout, "timeout", 5*time.Second, "maximum wait for any single frame")
+	var transport string
+	flag.StringVar(&transport, "transport", "tcp", "tcp, or local: a Unix socket (a named pipe on Windows)")
 	flag.Parse()
+	if transport != "tcp" && transport != "local" {
+		fmt.Fprintln(os.Stderr, "--transport is tcp or local")
+		os.Exit(2)
+	}
 	if fixture == "" {
 		fmt.Fprintln(os.Stderr, "usage: meshcall-conformance --fixture \"<command>\" [--only text] [--json]")
 		os.Exit(2)
@@ -37,7 +43,7 @@ func main() {
 		out = os.Stderr
 	}
 	results, err := conformance.Run(ctx, conformance.Options{
-		Fixture: strings.Fields(fixture), Only: only, Verbose: verbose, Timeout: timeout,
+		Fixture: strings.Fields(fixture), Only: only, Verbose: verbose, Timeout: timeout, Local: transport == "local",
 	}, out)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "conformance:", err)
