@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -117,6 +118,34 @@ func TestPythonLiterals(t *testing.T) {
 		value, _ := contract.DecodeOrdered([]byte(input))
 		if got := jsonDumps(value); got != want {
 			t.Errorf("dumps(%s) = %s, want %s", input, got, want)
+		}
+	}
+}
+
+// Every model a TypeScript client module mentions must be imported; the
+// golden files would happily pin a module that does not compile.
+func TestTypeScriptClientImportsEveryModelItUses(t *testing.T) {
+	exported := regexp.MustCompile(`export (?:interface|type|const) (\w+)`)
+	imports := regexp.MustCompile(`import (?:type )?\{([^}]*)\}`)
+	identifiers := regexp.MustCompile(`\b[A-Z]\w*\b`)
+	cases, _ := filepath.Glob("testdata/*/ts-package/src/client.ts")
+	for _, path := range cases {
+		client, _ := os.ReadFile(path)
+		models, _ := os.ReadFile(filepath.Join(filepath.Dir(path), "models.ts"))
+		imported := map[string]bool{}
+		for _, m := range imports.FindAllStringSubmatch(string(client), -1) {
+			for _, name := range strings.Split(m[1], ",") {
+				imported[strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(name), "type "))] = true
+			}
+		}
+		modelNames := map[string]bool{}
+		for _, m := range exported.FindAllStringSubmatch(string(models), -1) {
+			modelNames[m[1]] = true
+		}
+		for _, name := range identifiers.FindAllString(string(client), -1) {
+			if modelNames[name] && !imported[name] {
+				t.Errorf("%s uses %s without importing it", path, name)
+			}
 		}
 	}
 }
