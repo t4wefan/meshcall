@@ -160,7 +160,9 @@ meshcall generate service.meshcall.json --language python --output generated/cli
 project environment (a `module:Class` source needs the project's Python).
 
 Generated methods take the same parameters as the handler plus `timeout=`,
-`idle_timeout=`, `metadata=`, `idempotency_key=`. Generated clients validate
+`idle_timeout=`, `metadata=` and `instance=` (required for targeted
+services); an idempotency key is set per call through `ClientBase.call_*`
+/ TypeScript `CallOptions.idempotencyKey`. Generated clients validate
 every response and stream item against their own copy of the contract, so a
 service that drifted from the contract you generated against fails as
 `protocol_error` (`reason: invalid_response`) instead of handing you a wrong
