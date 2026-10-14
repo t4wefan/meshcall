@@ -7,7 +7,7 @@
       "source_module": "ts2py_service",
       "source_qualname": "TypeScriptGreetingService",
       "balance": {
-        "kind": "adaptive",
+        "kind": "round_robin",
         "key": null
       },
       "description": "A TypeScript service consumed by the generated Python client.",
@@ -56,7 +56,7 @@
             }
           },
           "balance": {
-            "kind": "adaptive",
+            "kind": "round_robin",
             "key": null
           },
           "description": "Stream the integers from 0 up to, but not including, count.",
@@ -121,7 +121,7 @@
           },
           "output_item": null,
           "balance": {
-            "kind": "adaptive",
+            "kind": "round_robin",
             "key": null
           },
           "description": "Add every streamed value to offset and return the total.",
@@ -184,7 +184,7 @@
           "input_item": null,
           "output_item": null,
           "balance": {
-            "kind": "adaptive",
+            "kind": "round_robin",
             "key": null
           },
           "description": "Greet name repeat times and say which runtime answered.",

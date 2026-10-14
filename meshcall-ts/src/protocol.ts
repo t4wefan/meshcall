@@ -10,7 +10,6 @@ export type StreamKind =
   | "duplex";
 
 export type BalanceKind =
-  | "adaptive"
   | "round_robin"
   | "least_inflight"
   | "random"
@@ -226,7 +225,7 @@ const metadata = {
 const balance = {
   type: "object",
   properties: {
-    kind: { enum: ["adaptive", "round_robin", "least_inflight", "random", "sticky", "disabled"] },
+    kind: { enum: ["round_robin", "least_inflight", "random", "sticky", "disabled"] },
     key: nullableString,
   },
   required: ["kind"],

@@ -58,12 +58,8 @@ keeps the first one registered per service and serves it through the
 is readable without an account in development mode and needs a call
 permission like any other service otherwise.
 `stream` is one of `unary`, `server_stream`, `client_stream`, `duplex`;
-`balance.kind` is one of `adaptive` (the default when a contract does not
-say), `round_robin`, `least_inflight`, `random`, `sticky`, `disabled`. Routers
-decide how to realise each policy; `adaptive` promises only to minimise the
-expected completion time from what the Router has observed (service times per
-instance and method, queue depth, path round trip), and it never pins traffic
-to one idle instance.
+`balance.kind` is one of `round_robin`, `least_inflight`, `random`, `sticky`,
+`disabled`.
 
 ### Metadata
 

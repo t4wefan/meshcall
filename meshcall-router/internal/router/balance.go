@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"slices"
 	"strconv"
 	"strings"
@@ -114,8 +115,6 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		p = &pool{targeted: p.targeted, methods: p.methods, cursors: p.cursors, instances: eligible}
 	}
 	switch selected.Balance.Kind {
-	case "adaptive":
-		return pickAdaptive(p.instances, f.Method, r.pick), nil
 	case "round_robin":
 		cursor := p.cursors[f.Method] % len(p.instances)
 		p.cursors[f.Method] = (cursor + 1) % len(p.instances)
@@ -129,7 +128,7 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		}
 		return best, nil
 	case "random":
-		return p.instances[r.pick(len(p.instances))], nil
+		return p.instances[rand.IntN(len(p.instances))], nil
 	case "sticky":
 		var value any
 		d := json.NewDecoder(bytes.NewReader(f.Payload))

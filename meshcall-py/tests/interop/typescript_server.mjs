@@ -56,8 +56,6 @@ const service = defineService({
   name: "test.v1.TypeScriptInteropService",
   sourceModule: "typescript_interop_service",
   sourceQualname: "TypeScriptInteropService",
-  // The interop test asserts the exact alternation between two instances.
-  balance: { kind: "round_robin" },
   methods: {
     multiply: unaryMethod({
       request,

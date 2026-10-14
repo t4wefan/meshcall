@@ -134,7 +134,7 @@ export class MeshCallServer {
         methods: Object.entries(service.methods).map(([name, method]) => ({
           name, stream: method.stream,
           balance: {
-            kind: (method.balance ?? service.balance)?.kind ?? "adaptive",
+            kind: (method.balance ?? service.balance)?.kind ?? "round_robin",
             key: (method.balance ?? service.balance)?.key ?? null,
           },
         })),

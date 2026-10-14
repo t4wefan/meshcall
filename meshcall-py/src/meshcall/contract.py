@@ -95,14 +95,6 @@ def normalize_service_name(name: str) -> tuple[str, str]:
 
 
 class Balance:
-    """Balance policies; ``adaptive`` is the default and needs no tuning."""
-
-    @staticmethod
-    def adaptive() -> BalancePolicy:
-        """Shortest expected completion time from observed service times,
-        queue depth and path RTT; the default."""
-        return BalancePolicy(kind=BalanceKind.ADAPTIVE)
-
     @staticmethod
     def round_robin() -> BalancePolicy:
         return BalancePolicy(kind=BalanceKind.ROUND_ROBIN)
@@ -402,7 +394,7 @@ def service(
             cls,
             name=full_name,
             version=version,
-            balance=balance or Balance.adaptive(),
+            balance=balance or Balance.round_robin(),
             description=description if description is not None else _docstring(cls),
             targeted=targeted,
         )
