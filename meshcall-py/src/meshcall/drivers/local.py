@@ -59,6 +59,11 @@ class pipe_connect(connect):
         _, connection = await create(
             lambda: self.factory(self.ws_uri), self.pipe_address
         )
+        # Unlike create_connection, create_pipe_connection returns before the
+        # transport calls connection_made (it is scheduled with call_soon), and
+        # the handshake that follows needs the transport attached.
+        while not hasattr(connection, "transport"):
+            await asyncio.sleep(0)
         return connection
 
 
