@@ -96,6 +96,12 @@ credit when application code consumes an item. A producer waits for credit befor
 sending the next item; an input pump may hold one prefetched item to discover
 iterator exhaustion without another window grant.
 
+The Router counts each call's credit as it forwards windows and items, and fails
+a call whose producer overruns it (`flow_control_violation`) instead of
+buffering the excess. Its per-connection queues are therefore bounded by bytes
+alone: concurrent streams add up to what the receiving peer granted, not to a
+fixed frame count.
+
 The connection sender prioritizes cancellation, window, and Ping/Pong frames.
 Other frames are scheduled round-robin by `call_id`, preventing a large stream
 from monopolizing a WebSocket connection.

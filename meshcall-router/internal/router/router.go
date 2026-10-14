@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -131,6 +132,33 @@ type route struct {
 	deadline time.Time
 	index    int         // position in Router.deadlines, or -1
 	dedup    *dedupEntry // set when the call carries an idempotency key
+	// Item credit outstanding in each direction: granted by the consumer's
+	// stream.window frames, spent by the producer's stream.item frames.
+	clientCredit, serverCredit int64
+}
+
+// credit applies a stream.window or stream.item to the route's credit and
+// reports whether the frame may be forwarded: false for an item beyond it.
+// allowedFrame has already matched each direction to the role that sends it.
+func (rt *route) credit(f frame) bool {
+	counter := &rt.clientCredit
+	if f.Direction == "server" {
+		counter = &rt.serverCredit
+	}
+	switch f.Kind {
+	case "stream.window":
+		if *counter > math.MaxInt64-*f.Credit {
+			*counter = math.MaxInt64
+		} else {
+			*counter += *f.Credit
+		}
+	case "stream.item":
+		if *counter == 0 {
+			return false
+		}
+		*counter--
+	}
+	return true
 }
 
 type Router struct {
@@ -688,6 +716,10 @@ func (r *Router) forward(p *peer, f frame) {
 		return
 	}
 	if p.role == "client" && rt.client == p {
+		if !rt.credit(f) {
+			r.flowViolation(rt, false)
+			return
+		}
 		rt.instance.send(f)
 		if f.Kind == "call.cancel" {
 			// The client has given up; forget the route now so a service that
@@ -695,6 +727,10 @@ func (r *Router) forward(p *peer, f frame) {
 			r.endRoute(f.CallID, rt)
 		}
 	} else if p.role == "server" && rt.instance == p {
+		if !rt.credit(f) {
+			r.flowViolation(rt, true)
+			return
+		}
 		rt.client.send(f)
 		if f.Kind == "call.result" || f.Kind == "call.error" {
 			r.observe(p, !instanceFailed(f))
@@ -704,6 +740,25 @@ func (r *Router) forward(p *peer, f frame) {
 			r.endRoute(f.CallID, rt)
 		}
 	}
+}
+
+// flowViolation fails a call whose producer sent a stream item beyond the
+// consumer's credit. The item is not forwarded: the producer is at fault, so
+// the receiver's buffer never holds what it did not ask for, and only this
+// call ends; both connections stay up. Called under r.mu.
+func (r *Router) flowViolation(rt *route, byInstance bool) {
+	message, instance := "Client sent a stream item beyond granted credit", ""
+	if byInstance {
+		message, instance = "Service instance sent a stream item beyond granted credit", rt.instance.instanceID
+		r.observe(rt.instance, false)
+	}
+	violation := routerError(rt.id, "protocol_error", message, false, "flow_control_violation", instance)
+	if rt.dedup != nil && rt.dedup.route == rt {
+		r.dedupFail(rt.dedup, violation, nil)
+	}
+	r.endRoute(rt.id, rt)
+	rt.client.send(violation)
+	rt.instance.send(frame{Kind: "call.cancel", CallID: rt.id, Reason: "flow_control_violation"})
 }
 
 // methodStream returns the registered stream kind of a method, or "".

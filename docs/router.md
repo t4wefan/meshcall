@@ -137,9 +137,15 @@ per Router: a duplicate idempotent call sent to two different Routers may
 execute twice, which handlers that honour the key tolerate.
 
 The Router is a single process responsible for registration, authorization and
-forwarding. Each peer has a queue bounded by both frame count (256) and bytes
-(at least 8 MiB, or twice the configured maximum frame size). A slow peer is
-disconnected rather than allowed to accumulate unlimited buffered data. Per-call
+forwarding. Each peer has a queue bounded by bytes: at least 8 MiB, or twice
+the configured maximum frame size, counting every frame's encoded size plus a
+fixed per-frame overhead. There is no frame-count limit: the Router forwards a
+stream item only within the credit its consumer granted on that call (an item
+beyond it fails the call with `protocol_error`, reason
+`flow_control_violation`), so many concurrent streams to one peer are bounded
+by that peer's own grants. A peer that stops reading while what it asked for
+exceeds the budget is disconnected rather than allowed to accumulate
+unlimited buffered data. Per-call
 FIFO ordering prevents control frames from overtaking `call.open`; eligible
 control frames take priority, and other calls rotate fairly.
 
