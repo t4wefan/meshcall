@@ -87,3 +87,4 @@ export {
   type RouterIdentity, type IssuedToken,
 } from "./router-auth.js";
 export { Topic, type TopicOptions } from "./topic.js";
+export type { MeshCallRpc, RpcStream } from "./rpc.js";

@@ -18,6 +18,9 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Changed
 
+- Generated TypeScript clients declare server streams as `RpcStream<T>`
+  (implemented by `MeshCallServerStream`) and import runtime types with
+  `import type`. `scripts/regenerate.sh` builds the CLI before generating.
 - Sticky balancing uses rendezvous hashing: an instance joining or leaving
   moves only its own keys instead of remapping every key.
 - **Duplex is a supported, restricted shape** (#26). It must be declared
@@ -40,6 +43,14 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Web client (#12): `meshcall/web` exports `MeshCallHttpClient`, a client
+  over HTTP v1 with `fetch` and no Node imports (browsers, Deno, Bun, edge
+  runtimes, Node 18+), with the same options, errors, local validation,
+  unary retry and subscription resume as `MeshCallClient`. Generated
+  TypeScript clients take the `MeshCallRpc` interface both clients
+  implement (services with duplex methods still take `MeshCallClient`) and
+  import only types from `meshcall`, so they bundle for browsers; CI
+  bundles both for the browser platform.
 - Subscriptions (#14): `@method.subscription(cursor=, resume=)` /
   `subscriptionMethod({ cursor, resume })` declare a server stream that
   clients resubscribe to after a retryable failure or dropped connection,
