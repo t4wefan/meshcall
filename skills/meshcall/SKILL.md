@@ -346,3 +346,7 @@ my_app/
   (`meshcall-router new-api-key ID`, sent as `Authorization: Bearer mk_…`).
   `--max-connections` (default 10000) caps WebSocket connections (HTTP calls
   are not counted); over it new connections get a retryable `503`.
+  One payload or stream item must fit in a frame: `--max-frame-size`
+  (default and maximum 64 MiB); send larger data as a stream.
+  `--outbox-size` (default 256 MiB, at least the frame size) is how much a
+  peer that stops reading may be owed before the Router disconnects it.

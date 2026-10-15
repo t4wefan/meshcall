@@ -43,7 +43,7 @@ const service = defineService({
 const isError = (code: string) => (error: unknown) => error instanceof MeshCallError && error.code === code;
 
 test("TypeScript owns a Go process, retries a failed bind and handles Unix cleanup", { timeout: 10000, skip: routerMissing }, async (t) => {
-  const router = new WebSocketRouter();
+  const router = new WebSocketRouter({ outboxSize: 64 * 1024 * 1024 });
   t.after(() => router.close());
   await Promise.all([router.start(), router.start()]);
   assert.notEqual(router.pid, process.pid);
@@ -135,4 +135,7 @@ test("launcher rejects missing binaries and malformed auth before becoming ready
   await assert.rejects(missing.start(), /read auth file/u);
   assert.equal(missing.isRunning, false);
   await missing.stop();
+  assert.throws(() => new WebSocketRouter({ maxFrameSize: 64 * 1024 * 1024 + 1 }), /maxFrameSize/u);
+  assert.throws(() => new WebSocketRouter({ maxFrameSize: 2048, outboxSize: 1024 }), /outboxSize/u);
+  assert.throws(() => new WebSocketRouter({ outboxSize: 32 * 1024 * 1024 }), /outboxSize/u);
 });

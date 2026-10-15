@@ -108,8 +108,17 @@ class RouteServiceClient(ClientBase):
         )
 
 
+def test_frame_and_outbox_size_limits() -> None:
+    with pytest.raises(ValueError, match="max_frame_size"):
+        WebSocketRouter(max_frame_size=64 * 1024 * 1024 + 1)
+    with pytest.raises(ValueError, match="outbox_size"):
+        WebSocketRouter(max_frame_size=2048, outbox_size=1024)
+    with pytest.raises(ValueError, match="outbox_size"):
+        WebSocketRouter(outbox_size=32 * 1024 * 1024)
+
+
 async def test_router_balancing_and_stream_forwarding_over_tcp() -> None:
-    router = WebSocketRouter(host="127.0.0.1", port=0)
+    router = WebSocketRouter(host="127.0.0.1", port=0, outbox_size=64 * 1024 * 1024)
     await router.start()
     uri = f"ws://127.0.0.1:{router.bound_port}"
     server_a = RpcServer(

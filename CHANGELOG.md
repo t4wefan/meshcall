@@ -18,6 +18,13 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Changed
 
+- **Frames may be up to 64 MiB by default** (was 1 MiB), which is also the
+  ceiling; `--max-frame-size` / `max_frame_size` / `maxFrameSize` /
+  `MaxFrameSize` still lower it. The Router's per-peer queue is configurable
+  with `--outbox-size` (Python `outbox_size`, TypeScript `outboxSize`),
+  default 256 MiB and at least the maximum frame size; it replaces the fixed
+  "8 MiB or twice the frame size". The limits are documented in
+  [docs/protocol.md](docs/protocol.md#frame-size).
 - Generated TypeScript clients declare server streams as `RpcStream<T>`
   (implemented by `MeshCallServerStream`) and import runtime types with
   `import type`. `scripts/regenerate.sh` builds the CLI before generating.

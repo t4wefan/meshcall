@@ -3,7 +3,8 @@ import WebSocket from "ws";
 import { CallCancelledError, ResourceExhaustedError, UnavailableError } from "./errors.js";
 import { encodeFrame, type Frame } from "./protocol.js";
 
-export const DEFAULT_MAX_FRAME_SIZE = 1024 * 1024;
+/** Largest encoded frame, sent or received, unless configured smaller; also the Router's ceiling. */
+export const DEFAULT_MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
 interface PendingFrame {
   kind: Frame["kind"];

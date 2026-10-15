@@ -36,7 +36,7 @@ from meshcall.protocol import (
     ServerRegisterFrame,
 )
 from meshcall.router_auth import RouterCredentials
-from meshcall.transport import FrameConnection
+from meshcall.transport import DEFAULT_MAX_FRAME_SIZE, FrameConnection
 
 if TYPE_CHECKING:
     from meshcall.server import ServerRuntime
@@ -73,7 +73,7 @@ class WebSocketClientDriver(ClientDriver):
         unix_path: str | Path | None = None,
         pipe: str | None = None,
         peer_id: str | None = None,
-        max_frame_size: int = 1024 * 1024,
+        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
         auth: RouterCredentials | None = None,
         ping_interval: float | None = DEFAULT_PING_INTERVAL,
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
@@ -163,7 +163,7 @@ class WebSocketDirectServerDriver(ServerDriver):
         *,
         unix_path: str | Path | None = None,
         pipe: str | None = None,
-        max_frame_size: int = 1024 * 1024,
+        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
         idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT,
         instance_id: str | None = None,
     ) -> None:
@@ -296,7 +296,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         unix_path: str | Path | None = None,
         pipe: str | None = None,
         instance_id: str | None = None,
-        max_frame_size: int = 1024 * 1024,
+        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
         auth: RouterCredentials | None = None,
         ping_interval: float | None = DEFAULT_PING_INTERVAL,
         ping_timeout: float = DEFAULT_PING_TIMEOUT,

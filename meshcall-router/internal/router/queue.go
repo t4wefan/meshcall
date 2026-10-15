@@ -34,7 +34,9 @@ func (q *outbox) push(f frame) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	size := len(data) + frameOverhead
-	if q.closed || q.bytes+size > q.limit {
+	// An empty outbox takes any frame, so a limit equal to the maximum frame
+	// size still admits a maximum-size frame despite frameOverhead.
+	if q.closed || (q.bytes > 0 && q.bytes+size > q.limit) {
 		return false
 	}
 	if len(q.calls[f.CallID]) == 0 {
