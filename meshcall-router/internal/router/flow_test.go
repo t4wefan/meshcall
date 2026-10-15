@@ -26,13 +26,17 @@ func (q *outbox) frames() int {
 }
 
 // dialSlowReader connects with a small receive buffer, so frames the client
-// does not read back up into the Router's outbox instead of the kernel's.
-func dialSlowReader(t *testing.T, r *Router) *websocket.Conn {
+// does not read back up into the Router's outbox instead of the kernel's. It
+// also returns the TCP connection, so the test can restore a normal buffer
+// before reading: a tiny window makes loopback reads crawl on Linux.
+func dialSlowReader(t *testing.T, r *Router) (*websocket.Conn, *net.TCPConn) {
 	t.Helper()
+	var tcp *net.TCPConn
 	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
 		if err == nil {
-			_ = conn.(*net.TCPConn).SetReadBuffer(4096)
+			tcp = conn.(*net.TCPConn)
+			_ = tcp.SetReadBuffer(4096)
 		}
 		return conn, err
 	}}
@@ -45,7 +49,7 @@ func dialSlowReader(t *testing.T, r *Router) *websocket.Conn {
 	}
 	conn.SetReadLimit(1 << 20)
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	return conn
+	return conn, tcp
 }
 
 func clientPeer(r *Router) *peer {
@@ -66,7 +70,7 @@ func TestConcurrentStreamsToASlowReaderStayConnected(t *testing.T) {
 	r := runningRouter(t, nil)
 	instance := dial(t, r, "")
 	registerPeer(t, instance, "a")
-	client := dialSlowReader(t, r)
+	client, tcp := dialSlowReader(t, r)
 	hello(t, client, "client", "client")
 	const streams, credit = 128, 16
 	window := int64(credit)
@@ -95,6 +99,10 @@ func TestConcurrentStreamsToASlowReaderStayConnected(t *testing.T) {
 	if backlog := p.out.frames(); backlog <= 256 {
 		t.Fatalf("only %d frames backed up; the test did not reproduce a slow reader", backlog)
 	}
+	if err := tcp.SetReadBuffer(4 << 20); err != nil {
+		t.Fatal(err)
+	}
+	send(t, client, frame{Kind: "ping", Nonce: "reading"}) // restart the Router's idle clock
 	items := make(map[string]int64, streams)
 	for done := 0; done < streams; {
 		f := receive(t, client)
@@ -104,7 +112,7 @@ func TestConcurrentStreamsToASlowReaderStayConnected(t *testing.T) {
 				t.Fatalf("%s: item %d out of order", f.CallID, *f.Sequence)
 			}
 			items[f.CallID]++
-		case "stream.end":
+		case "stream.end", "pong":
 		case "call.result":
 			if items[f.CallID] != credit {
 				t.Fatalf("%s ended after %d items", f.CallID, items[f.CallID])
