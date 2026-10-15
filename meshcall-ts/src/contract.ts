@@ -37,10 +37,22 @@ export interface ContractUnaryMethod<Request, Response>
   readonly response: TypeContract<Response>;
 }
 
+/**
+ * How a subscription resumes (docs/protocol.md → Subscriptions): `cursor` is
+ * the item property holding each item's position, `resume` the optional
+ * request property that continues after it. Both or neither.
+ */
+export interface SubscriptionSpec {
+  readonly cursor?: string;
+  readonly resume?: string;
+}
+
 export interface ContractServerStreamMethod<Request, Item>
   extends ServerStreamMethod<Request, Item>, MethodSemantics {
   readonly request: TypeContract<Request>;
   readonly outputItem: TypeContract<Item>;
+  /** Set by `subscriptionMethod`. */
+  readonly subscription?: SubscriptionSpec;
 }
 
 export interface ContractClientStreamMethod<Request, Item, Response>
@@ -170,6 +182,42 @@ export function serverStreamMethod<Request, Item>(
   return { ...definition, stream: "server_stream" };
 }
 
+/**
+ * A subscription: a server stream meant to stay open, which clients reopen
+ * after a retryable failure, passing the last item's `cursor` as `resume`.
+ */
+export function subscriptionMethod<Request, Item>(
+  definition: Omit<ContractServerStreamMethod<Request, Item>, "stream" | "subscription"> & SubscriptionSpec
+    & { readonly description: string },
+): ContractServerStreamMethod<Request, Item>;
+/**
+ * @deprecated W001: add `description` — it becomes the contract's description
+ * and the text LLM callers see. Pass `description: ""` to declare none on purpose.
+ */
+export function subscriptionMethod<Request, Item>(
+  definition: Omit<ContractServerStreamMethod<Request, Item>, "stream" | "subscription"> & SubscriptionSpec,
+): ContractServerStreamMethod<Request, Item>;
+export function subscriptionMethod<Request, Item>(
+  definition: Omit<ContractServerStreamMethod<Request, Item>, "stream" | "subscription"> & SubscriptionSpec,
+): ContractServerStreamMethod<Request, Item> {
+  const { cursor, resume, ...rest } = definition;
+  if ((cursor === undefined) !== (resume === undefined)) {
+    throw new Error("subscriptionMethod takes cursor and resume together (or neither)");
+  }
+  if (cursor !== undefined && resume !== undefined) {
+    const items = (definition.outputItem.schema.properties ?? {}) as Record<string, unknown>;
+    const request = (definition.request.schema.properties ?? {}) as Record<string, unknown>;
+    const required = (definition.request.schema.required ?? []) as string[];
+    if (!(cursor in items)) throw new Error(`subscription cursor ${JSON.stringify(cursor)} is not a property of ${definition.outputItem.qualname}`);
+    if (!(resume in request)) throw new Error(`subscription resume ${JSON.stringify(resume)} is not a request property`);
+    if (required.includes(resume)) {
+      throw new Error(`subscription resume ${JSON.stringify(resume)} must be optional: the first call has no cursor yet`);
+    }
+  }
+  const subscription: SubscriptionSpec = cursor !== undefined && resume !== undefined ? { cursor, resume } : {};
+  return { ...rest, stream: "server_stream", subscription };
+}
+
 export function clientStreamMethod<Request, Item, Response>(
   definition: Omit<ContractClientStreamMethod<Request, Item, Response>, "stream"> & { readonly description: string },
 ): ContractClientStreamMethod<Request, Item, Response>;
@@ -269,6 +317,9 @@ export function contractEntry(service: ExportableServiceDefinition): Record<stri
         },
         deprecated: method.deprecated ?? null,
         duplex_reason: method.stream === "duplex" ? method.reason : null,
+        subscription: method.stream === "server_stream" && method.subscription !== undefined
+          ? { cursor: method.subscription.cursor ?? null, resume: method.subscription.resume ?? null }
+          : null,
       };
     }),
   };

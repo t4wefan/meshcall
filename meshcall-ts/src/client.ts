@@ -18,6 +18,7 @@ import {
   type RetryPolicy,
   validateMetadata,
 } from "./liveness.js";
+import { ConsoleRpcLogger, safelyLog, type RpcLogger } from "./logging.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import { checkReceived } from "./validation.js";
 import {
@@ -71,6 +72,15 @@ export interface CallOptions {
  */
 export type DuplexCallOptions = Omit<CallOptions, "idempotencyKey" | "idempotent" | "responseSchema">;
 
+/**
+ * Options for a subscription (docs/protocol.md → Subscriptions): `cursor` and
+ * `resume` come from the contract; generated clients fill them in.
+ */
+export type SubscriptionOptions = Omit<CallOptions, "idempotent" | "responseSchema"> & {
+  readonly cursor?: string;
+  readonly resume?: string;
+};
+
 export interface MeshCallClientOptions {
   readonly auth?: RouterCredentials;
   readonly maxFrameSize?: number;
@@ -93,6 +103,8 @@ export interface MeshCallClientOptions {
   readonly interceptors?: ReadonlyArray<ClientInterceptor>;
   /** Built-in retry for unary calls; `false` disables. */
   readonly retry?: RetryPolicy | false;
+  /** Where the client reports what callers cannot see, such as a resubscription. */
+  readonly logger?: RpcLogger;
 }
 
 /**
@@ -187,6 +199,99 @@ export class MeshCallDuplexCall<Input, Output> extends MeshCallServerStream<Outp
   /** Half-close the input; the server's iteration of it then ends. */
   public async closeSend(): Promise<void> {
     await (await this.opened).closeInput();
+  }
+}
+
+const RESUMABLE = new Set(["unavailable", "resource_exhausted"]);
+const NO_CURSOR = Symbol("no cursor");
+
+/**
+ * Successive server-stream calls presented as one iterator: after a retryable
+ * failure the call is reopened with the reconnect backoff, resuming after the
+ * last item's cursor. A non-retryable error, `cancel()` / `break`, or the
+ * server ending the stream ends it.
+ */
+export class MeshCallSubscription<Item> implements AsyncIterableIterator<Item> {
+  private stream: MeshCallServerStream<Item> | undefined;
+  private last: unknown = NO_CURSOR;
+  private delays: Iterator<number> | undefined;
+  private done = false;
+  private lastTrailers: Readonly<Metadata> = {};
+
+  /** @internal */
+  public constructor(
+    private readonly open: (request: Record<string, unknown>) => MeshCallServerStream<Item>,
+    private readonly request: Record<string, unknown>,
+    private readonly spec: { readonly cursor?: string; readonly resume?: string },
+    private readonly reconnect: ReconnectPolicy,
+    private readonly logger: RpcLogger,
+    private readonly name: string,
+  ) {}
+
+  public [Symbol.asyncIterator](): AsyncIterableIterator<Item> {
+    return this;
+  }
+
+  public async next(): Promise<IteratorResult<Item>> {
+    for (;;) {
+      if (this.done) return { done: true, value: undefined };
+      if (this.stream === undefined) {
+        const resume = this.spec.resume !== undefined && this.last !== NO_CURSOR
+          ? { [this.spec.resume]: this.last } : {};
+        this.stream = this.open({ ...this.request, ...resume });
+      }
+      const stream = this.stream;
+      let result: IteratorResult<Item>;
+      try {
+        result = await stream.next();
+      } catch (error) {
+        this.lastTrailers = stream.trailers;
+        this.stream = undefined;
+        if (!(error instanceof MeshCallError) || !error.retryable || !RESUMABLE.has(error.code)) {
+          this.done = true;
+          throw error;
+        }
+        await this.backoff(error);
+        continue;
+      }
+      if (result.done === true) {
+        this.lastTrailers = stream.trailers;
+        this.done = true;
+        return result;
+      }
+      this.delays = undefined; // an item arrived: the next failure starts over
+      if (this.spec.cursor !== undefined) this.last = (result.value as Record<string, unknown>)[this.spec.cursor];
+      return result;
+    }
+  }
+
+  private async backoff(error: MeshCallError): Promise<void> {
+    this.delays ??= reconnectDelays(this.reconnect);
+    const next = this.reconnect.enabled === false ? undefined : this.delays.next();
+    if (next === undefined || next.done === true) {
+      this.done = true;
+      throw error;
+    }
+    safelyLog(() => this.logger.warning("Subscription %s interrupted (%s); resubscribing in %dms%s", this.name,
+      error.message, Math.round(next.value), this.last === NO_CURSOR ? "" : " after " + JSON.stringify(this.last)));
+    await new Promise((resolve) => setTimeout(resolve, next.value));
+  }
+
+  /** Trailers of the latest call; populated once it has terminated. */
+  public get trailers(): Readonly<Metadata> {
+    return this.stream?.trailers ?? this.lastTrailers;
+  }
+
+  public async cancel(reason = "client_closed"): Promise<void> {
+    this.done = true;
+    const stream = this.stream;
+    this.stream = undefined;
+    await stream?.cancel(reason);
+  }
+
+  public async return(): Promise<IteratorResult<Item>> {
+    await this.cancel("iterator_closed");
+    return { done: true, value: undefined };
   }
 }
 
@@ -409,6 +514,29 @@ export class MeshCallClient {
       }
       return (stream as MeshCallServerStream<Item>).opened;
     }));
+  }
+
+  /**
+   * Opens a subscription (docs/protocol.md → Subscriptions): a server stream
+   * reopened after retryable failures, resuming after the last item's
+   * `cursor` via the `resume` request property. No default timeouts.
+   */
+  public subscribe<Request extends object, Item>(
+    service: string,
+    method: string,
+    request: Request,
+    options: SubscriptionOptions = {},
+  ): MeshCallSubscription<Item> {
+    const { cursor, resume, ...callOptions } = options;
+    this.validateOptions(callOptions);
+    return new MeshCallSubscription<Item>(
+      (payload) => this.serverStream<Record<string, unknown>, Item>(service, method, payload, callOptions),
+      request as Record<string, unknown>,
+      { ...(cursor === undefined ? {} : { cursor }), ...(resume === undefined ? {} : { resume }) },
+      this.options.reconnect ?? {},
+      this.options.logger ?? new ConsoleRpcLogger(),
+      service + "." + method,
+    );
   }
 
   /**

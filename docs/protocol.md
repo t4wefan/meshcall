@@ -61,7 +61,8 @@ unique string chosen by the client. All time values are integer milliseconds.
 `services[]` entries are `{name, methods[{name, stream, balance{kind, key?}}], contract?}`.
 `contract` is the service's portable contract entry (the same object a
 `*.meshcall.json` document holds: version, description, methods with
-schemas, parameters, annotations and, for duplex methods, `duplex_reason`). It is opaque to routing; the Router
+schemas, parameters, annotations and, for duplex methods, `duplex_reason`; for
+subscriptions, `subscription`). It is opaque to routing; the Router
 keeps the first one registered per service and serves it through the
 `meshcall.router.v1.Registry` service (`list`, `describe {service}`), which
 is readable without an account in development mode and needs a call
@@ -326,6 +327,42 @@ contract (`duplex_reason`, required). A duplex method:
 
 Prefer a server stream plus unary calls, or a client stream, whenever the
 two directions do not truly interleave.
+
+## Subscriptions
+
+A subscription is a server stream that is meant to stay open (events,
+notifications, a live feed) and to be resumed after interruptions. It adds
+nothing to the wire: the call, credit, cancellation and errors are those of a
+server stream. What it adds is a contract entry the clients act on:
+
+```json
+"subscription": {"cursor": "seq", "resume": "since"}
+```
+
+- `cursor` names a property of the output item that identifies its position
+  (a sequence number, an event id, a timestamp); `resume` names an optional
+  request parameter that asks the server to continue *after* that position.
+  Both are given or neither (`{}`): a subscription without a cursor can only
+  be restarted from "now".
+- The method's `stream` is `server_stream`; tools and the Registry show it as a
+  subscription.
+
+Client runtimes treat a subscription call differently from other streams:
+
+- it has no default `timeout_ms` or `idle_timeout_ms`;
+- after a **retryable** failure (`unavailable`, `resource_exhausted`, or the
+  connection being lost) it reopens the call with the reconnect backoff and,
+  when a cursor is declared and an item has been seen, sets `resume` to the
+  last item's cursor; items keep flowing to the caller as one iterator;
+- a non-retryable error, cancellation by the caller, or the server ending the
+  stream ends it.
+
+Each reopened call is an ordinary `call.open`: it may reach a different
+instance, interceptors see it, and the server is responsible for honouring
+`resume`. A server that cannot (its history no longer covers the cursor)
+should fail the call with a non-retryable error rather than skip events
+silently. Over HTTP a subscription is a server stream; callers resume by
+sending the cursor themselves.
 
 ## Liveness
 

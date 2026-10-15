@@ -125,6 +125,17 @@ type genError string
 
 func (e genError) Error() string { return string(e) }
 
+// hasSubscription reports whether any method is a subscription; with plain
+// reports whether any server stream is not.
+func hasSubscription(service *contract.Service, plain bool) bool {
+	for _, m := range service.Methods {
+		if m.Stream == "server_stream" && (m.Subscription == nil) == plain {
+			return true
+		}
+	}
+	return false
+}
+
 func hasStream(service *contract.Service, kind string) bool {
 	for _, m := range service.Methods {
 		if m.Stream == kind {

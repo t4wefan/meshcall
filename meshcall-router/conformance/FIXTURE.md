@@ -20,6 +20,7 @@ annotation; duplex methods need a reason.
 | `sum` | client stream | `offset: int = 0`, items `{value}` | `{total}` | `offset + Σ value` |
 | `metadata_echo` | unary | — | `{metadata: {str: str}}` | returns the call metadata; sets trailers `echoed="yes"` and `count=<number of metadata keys>` |
 | `drain_self` | unary | `delay_ms: int = 0` | `{ok: true}` | schedules `stop(drain=True)` after `delay_ms`, then exits the process |
+| `ticks` | server stream, subscription (`cursor: "seq"`, `resume: "since"`) | `count: int`, `since: int \| null = null` | items `{seq}` | yields `seq` from `since + 1` (or 0) to `count - 1` |
 | `chat` | duplex | `prefix: str = ""`, items `{text}` | items `{text}` | sends `{text: prefix + text}` for each input as it arrives; when the input ends, sends `{text: "done:<inputs>"}` and returns |
 | `announce` | duplex | — , items `{text}` | items `{text}` | sends `{text: "hello"}`, closes its output, then reads the input to its end and returns |
 

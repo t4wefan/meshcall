@@ -65,12 +65,13 @@ validation happens at the service and applicable client runtimes.
 | `round_robin` | Advances a cursor per service method through sorted instance IDs |
 | `least_inflight` | Chooses the instance with the fewest active calls; instance ID breaks ties |
 | `random` | Chooses a random registered instance |
-| `sticky` | Hashes a declared request field, such as `request.session_id`, into the instance list |
+| `sticky` | Hashes a declared request field, such as `request.session_id`, to an instance (rendezvous hashing) |
 | `disabled` | Requires exactly one registered instance |
 
 Streams balance only when they open. An active stream never switches instances.
-Sticky selection is ordinary hashing modulo the current pool size, so changing
-the pool can change where future calls for the same key go. Inflight counts are
+Sticky selection uses rendezvous (highest-random-weight) hashing over the
+instance ids: when an instance joins or leaves, only the keys it wins or held
+move, and every other key keeps its instance. Inflight counts are
 per instance, across its registered services.
 
 A `call.open` that carries `instance_id` bypasses the policy and goes to that

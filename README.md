@@ -151,7 +151,7 @@ Both the parameters and return value of `client.greet` carry full type signature
 
 ## Streaming Methods: Replace `return` with `yield`
 
-Beyond request-response methods (`@method`), MeshCall natively supports **streaming methods**. When a method needs to return multiple results over time (such as streaming AI tokens, live task progress, or log feeds), decorate an async generator with `@method.server_stream` (or use `@method.client_stream` when the client streams input items to the server).
+Beyond request-response methods (`@method`), MeshCall natively supports **streaming methods**. When a method needs to return multiple results over time (such as streaming AI tokens, live task progress, or log feeds), decorate an async generator with `@method.server_stream` (or use `@method.client_stream` when the client streams input items to the server). For events and notifications that should survive dropped connections, `@method.subscription(cursor=…, resume=…)` declares a server stream that clients resume automatically after the last item they saw; `Topic[T]` fans events out to every subscriber in the process (see [Subscriptions](docs/protocol.md#subscriptions)).
 
 Update `service.py` to add the streaming method `countdown`:
 
