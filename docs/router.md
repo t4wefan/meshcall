@@ -290,6 +290,34 @@ streaming responses. HTTP calls have their own limits:
 need `--http-cors-origin https://app.example` (repeatable). `/healthz` and
 `/readyz` serve liveness and readiness probes.
 
+## Metrics
+
+`--metrics-listen ADDR` (`MESHCALL_ROUTER_METRICS_LISTEN`) serves Prometheus
+text at `http://ADDR/metrics`. It is off by default and always a separate
+listener: the labels name services, methods and instances, which the public
+port does not reveal to callers without Registry access. `router.ready`
+reports the bound address as `metrics`.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `meshcall_router_calls_total` | counter | `service`, `method`, `code` (`ok` or the error code) |
+| `meshcall_router_call_duration_seconds` | histogram | `service`, `method` |
+| `meshcall_router_connections` | gauge | `role` (`client`, `server`) |
+| `meshcall_router_anonymous_connections` | gauge | |
+| `meshcall_router_http_inflight` | gauge | |
+| `meshcall_router_routes` | gauge | |
+| `meshcall_router_instance_inflight` | gauge | `service`, `instance` |
+| `meshcall_router_instance_breaker_open` | gauge | `service`, `instance` |
+| `meshcall_router_outbox_drops_total` | counter | |
+
+Calls are counted when they end: answered by the instance, cancelled by the
+client, cut by the Router's deadline, or lost with their instance; calls the
+Router refuses at `call.open` are counted with the refusal's code. A call to
+a service or method nobody registered is counted with empty `service` and
+`method`, so callers cannot create label values. Durations run from the
+Router seeing `call.open` to the terminal frame. Everything resets with the
+process.
+
 ## Registry and the `meshcall` CLI
 
 The Router keeps the contract each instance registers and serves it through

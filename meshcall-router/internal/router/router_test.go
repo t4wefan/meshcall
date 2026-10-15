@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1055,5 +1056,57 @@ func TestStickyRendezvousMovesOnlyTheLeavingInstancesKeys(t *testing.T) {
 		if owner != "c" && after != owner {
 			t.Fatalf("key %s moved from %s to %s although %s did not leave", key, owner, after, owner)
 		}
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	r, err := Start(Config{MetricsListen: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.Ready().Metrics == "" {
+		t.Fatal("ready does not report the metrics address")
+	}
+	inst := dial(t, r, "")
+	hello(t, inst, "server", "m1")
+	send(t, inst, frame{Kind: "server.register", InstanceID: "m1", Services: []service{
+		{Name: testService, Methods: []method{{Name: "echo", Stream: "unary", Balance: balance{Kind: "round_robin"}}}},
+	}})
+	receive(t, inst)
+	client := dial(t, r, "")
+	hello(t, client, "client", "c")
+	send(t, client, frame{Kind: "call.open", CallID: "m-ok", Service: testService, Method: "echo", Payload: json.RawMessage(`{}`)})
+	receive(t, inst)
+	send(t, inst, frame{Kind: "call.result", CallID: "m-ok", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+	// A call to nothing registered is counted without its (caller-chosen) names.
+	send(t, client, frame{Kind: "call.open", CallID: "m-x", Service: "made.up.v1.Name", Method: "x", Payload: json.RawMessage(`{}`)})
+	receive(t, client)
+
+	resp, err := http.Get("http://" + r.Ready().Metrics + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+	for _, want := range []string{
+		`meshcall_router_calls_total{service="` + testService + `",method="echo",code="ok"} 1`,
+		`meshcall_router_calls_total{service="",method="",code="unavailable"} 1`,
+		`meshcall_router_call_duration_seconds_count{service="` + testService + `",method="echo"} 1`,
+		`meshcall_router_connections{role="server"} 1`,
+		`meshcall_router_instance_breaker_open{service="` + testService + `",instance="m1"} 0`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics lack %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "made.up") {
+		t.Fatal("an unregistered service name became a label")
+	}
+	// The public listener does not serve metrics.
+	if resp, err := http.Get(httpURL(r, "/metrics")); err == nil && resp.StatusCode == http.StatusOK {
+		t.Fatal("metrics served on the public port")
 	}
 }
