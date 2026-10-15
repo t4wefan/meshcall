@@ -60,7 +60,7 @@ func run(args []string) error {
 		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; with --stdin, client streams and duplex calls read JSON lines from stdin")
 		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D   --instance ID")
 		fmt.Fprintln(os.Stderr, "    --stdin  input items as JSON lines (a duplex call sends each line as it is read)   --http  through the Router's HTTP entry point (not for duplex)")
-		fmt.Fprintln(os.Stderr, "  generate <contract.json|module:Class> --output PATH [--language python|typescript] [--single-file]")
+		fmt.Fprintln(os.Stderr, "  generate <contract.json|module:Class> --output PATH [--language python|typescript|go] [--single-file]")
 		fmt.Fprintln(os.Stderr, "    [--service NAME] [--class-name N] [--package-name N] [--package-version V]")
 		fmt.Fprintln(os.Stderr, "    [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]")
 		fmt.Fprintln(os.Stderr, "  export module:Class --output contract.json   write a Python service's portable contract")

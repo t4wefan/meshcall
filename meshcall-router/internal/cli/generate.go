@@ -19,7 +19,7 @@ type GenerateOptions struct {
 	// in module:Class form, which is exported through the Python SDK first.
 	Source   string
 	Service  string // selects one service of a multi-service document
-	Language string // python | typescript
+	Language string // python | typescript | go
 	Output   string // directory, or a file path with SingleFile
 
 	SingleFile          bool
@@ -39,9 +39,9 @@ func Generate(ctx context.Context, opts GenerateOptions) ([]string, error) {
 	switch opts.Language {
 	case "", "python":
 		opts.Language = "python"
-	case "typescript":
+	case "typescript", "go":
 	default:
-		return nil, fmt.Errorf("unknown language %q (python | typescript)", opts.Language)
+		return nil, fmt.Errorf("unknown language %q (python | typescript | go)", opts.Language)
 	}
 	service, err := loadService(ctx, opts.Source, opts.Service)
 	if err != nil {
@@ -58,6 +58,18 @@ func Generate(ctx context.Context, opts GenerateOptions) ([]string, error) {
 			panic(r)
 		}
 	}()
+	if opts.Language == "go" {
+		// One file: <output> if it names a .go file, else <output>/client.go.
+		path := opts.Output
+		if !strings.HasSuffix(path, ".go") {
+			path = filepath.Join(path, "client.go")
+		}
+		content := codegen.RenderGoClient(service, codegen.GoOptions{PackageName: opts.PackageName, RuntimeImport: opts.RuntimeImport})
+		if err := codegen.WriteFile(path, content); err != nil {
+			return nil, err
+		}
+		return []string{path}, nil
+	}
 	if opts.SingleFile {
 		var content string
 		if opts.Language == "python" {
