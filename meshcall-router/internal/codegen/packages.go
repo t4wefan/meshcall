@@ -11,16 +11,20 @@ import (
 	"github.com/t4wefan/meshcall/meshcall-router/internal/contract"
 )
 
+// RuntimeRelease is the meshcall release generated clients require by
+// default: they use that release's API. scripts/release/bump.sh sets it.
+const RuntimeRelease = "0.1.0"
+
 // PackageOptions configures a generated client package.
 type PackageOptions struct {
 	PackageName    string
 	PackageVersion string // default "0.1.0"
 	ClassName      string
 	// Python
-	MeshcallRequirement string // default "meshcall>=0.1.0"
+	MeshcallRequirement string // default "meshcall>=" + RuntimeRelease
 	// TypeScript
 	RuntimeImport  string // default "meshcall"
-	RuntimeVersion string // default "^0.1.0"
+	RuntimeVersion string // default "^" + RuntimeRelease
 }
 
 // PythonPackage renders every file of an installable uv package, keyed by
@@ -30,7 +34,7 @@ func PythonPackage(service *contract.Service, opts PackageOptions) map[string]st
 		opts.PackageVersion = "0.1.0"
 	}
 	if opts.MeshcallRequirement == "" {
-		opts.MeshcallRequirement = "meshcall>=0.1.0"
+		opts.MeshcallRequirement = "meshcall>=" + RuntimeRelease
 	}
 	distribution := opts.PackageName
 	if distribution == "" {
@@ -62,7 +66,7 @@ func TypeScriptPackage(service *contract.Service, opts PackageOptions) (map[stri
 		opts.RuntimeImport = "meshcall"
 	}
 	if opts.RuntimeVersion == "" {
-		opts.RuntimeVersion = "^0.1.0"
+		opts.RuntimeVersion = "^" + RuntimeRelease
 	}
 	name := opts.PackageName
 	if name == "" {

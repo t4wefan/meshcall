@@ -12,7 +12,7 @@ import (
 type TypeScriptOptions struct {
 	ClassName      string
 	RuntimeImport  string // default "meshcall"
-	RuntimeVersion string // default "^0.1.0"
+	RuntimeVersion string // default "^" + RuntimeRelease
 	ModelsImport   string // package module only; default "./models.js"
 }
 
@@ -21,7 +21,7 @@ func (o TypeScriptOptions) withDefaults() TypeScriptOptions {
 		o.RuntimeImport = "meshcall"
 	}
 	if o.RuntimeVersion == "" {
-		o.RuntimeVersion = "^0.1.0"
+		o.RuntimeVersion = "^" + RuntimeRelease
 	}
 	if o.ModelsImport == "" {
 		o.ModelsImport = "./models.js"
