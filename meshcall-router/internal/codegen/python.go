@@ -10,14 +10,14 @@ import (
 // PythonOptions configures Python client generation.
 type PythonOptions struct {
 	ClassName           string
-	MeshcallRequirement string // default "meshcall>=0.1.0"
+	MeshcallRequirement string // default "meshcall>=" + RuntimeRelease
 	PydanticRequirement string // default "pydantic>=2.11"
 	ModelsImport        string // package module only; default ".models"
 }
 
 func (o PythonOptions) withDefaults() PythonOptions {
 	if o.MeshcallRequirement == "" {
-		o.MeshcallRequirement = "meshcall>=0.1.0"
+		o.MeshcallRequirement = "meshcall>=" + RuntimeRelease
 	}
 	if o.PydanticRequirement == "" {
 		o.PydanticRequirement = "pydantic>=2.11"

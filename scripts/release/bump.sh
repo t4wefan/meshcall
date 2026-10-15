@@ -46,6 +46,11 @@ echo "==> $OLD -> $NEW"
 # npm: version field only; this repo uses yarn, so no package-lock to touch.
 (cd meshcall-ts && npm version "$NEW" --no-git-tag-version --allow-same-version >/dev/null)
 
+# Generated clients require the release whose API they use.
+sed -i.bak -E "s/^const RuntimeRelease = \"[^\"]*\"/const RuntimeRelease = \"$NEW\"/" meshcall-router/internal/codegen/packages.go
+rm meshcall-router/internal/codegen/packages.go.bak
+grep -q "^const RuntimeRelease = \"$NEW\"" meshcall-router/internal/codegen/packages.go || fail "could not set codegen.RuntimeRelease"
+
 # Demos depend on the in-repo packages by path; their locks record the
 # version, so a stale lock would fail `uv run --locked` / `--frozen-lockfile`.
 for lock in demo/*/uv.lock demo/*/*/uv.lock best-practice/uv.lock; do
@@ -76,11 +81,15 @@ git status --short
 cat <<EOF
 
 Review the CHANGELOG entry for $NEW (move anything still under Unreleased),
-run the checks, then ship:
+regenerate the clients (they now require meshcall $NEW), run the checks,
+then ship:
 
+  go -C meshcall-router test ./internal/codegen -update
+  scripts/regenerate.sh
   scripts/check.sh
   git commit -am "build: release v$NEW"
   git push origin main
   git tag v$NEW
-  git push origin v$NEW
+  git tag meshcall-go/v$NEW   # the Go module's version (a subdirectory module)
+  git push origin v$NEW meshcall-go/v$NEW
 EOF
