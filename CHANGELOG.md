@@ -51,6 +51,15 @@ and are released together from a `vX.Y.Z` tag.
   implement (services with duplex methods still take `MeshCallClient`) and
   import only types from `meshcall`, so they bundle for browsers; CI
   bundles both for the browser platform.
+- Observability (#7): opt-in OpenTelemetry interceptors —
+  `meshcall.otel.client_interceptor()` / `server_interceptor()`
+  (`meshcall[otel]`) and `otelClientInterceptor()` /
+  `otelServerInterceptor()` from `meshcall/otel` — with a span per call,
+  `meshcall.calls` / `meshcall.call.duration` metrics, and W3C trace context
+  carried in call metadata, so one trace spans Python, TypeScript and the
+  Router. The Router serves Prometheus metrics (calls by code, durations,
+  connections, routes, per-instance in-flight and breaker state, outbox
+  drops) on a separate opt-in listener, `--metrics-listen`.
 - Subscriptions (#14): `@method.subscription(cursor=, resume=)` /
   `subscriptionMethod({ cursor, resume })` declare a server stream that
   clients resubscribe to after a retryable failure or dropped connection,
