@@ -153,7 +153,9 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		return rendezvous(p.instances, canonical.String()), nil
 	default: // disabled
 		if len(p.instances) != 1 {
-			return fail("unavailable", "Balance is disabled for "+f.Service+"."+f.Method)
+			// Retryable: during a handover the old and new instance overlap.
+			err := routerError(f.CallID, "unavailable", "Balance is disabled for "+f.Service+"."+f.Method+" and several instances are registered", true, "balance_disabled", "")
+			return nil, &err
 		}
 		return p.instances[0], nil
 	}

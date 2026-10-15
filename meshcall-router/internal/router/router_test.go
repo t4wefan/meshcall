@@ -1121,3 +1121,34 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatal("metrics served on the public port")
 	}
 }
+
+func TestDisabledBalanceNeedsExactlyOneInstance(t *testing.T) {
+	r := runningRouter(t, nil)
+	register := func(id string) *websocket.Conn {
+		conn := dial(t, r, "")
+		hello(t, conn, "server", id)
+		send(t, conn, frame{Kind: "server.register", InstanceID: id, Services: []service{
+			{Name: testService, Methods: []method{{Name: "only", Stream: "unary", Balance: balance{Kind: "disabled"}}}},
+		}})
+		if got := receive(t, conn); got.Kind != "server.register.ack" {
+			t.Fatalf("registration: %+v", got)
+		}
+		return conn
+	}
+	a := register("a")
+	b := register("b")
+	client := dial(t, r, "")
+	hello(t, client, "client", "client")
+	send(t, client, frame{Kind: "call.open", CallID: "c1", Service: testService, Method: "only", Payload: json.RawMessage(`{}`)})
+	got := receive(t, client)
+	if got.Kind != "call.error" || got.Error.Code != "unavailable" || !got.Error.Retryable ||
+		!bytes.Contains(got.Error.Details, []byte(`"reason":"balance_disabled"`)) {
+		t.Fatalf("two instances: %+v", got)
+	}
+	_ = b.CloseNow()
+	eventually(t, func() bool { return len(r.Snapshot().Instances[testService]) == 1 })
+	send(t, client, frame{Kind: "call.open", CallID: "c2", Service: testService, Method: "only", Payload: json.RawMessage(`{}`)})
+	if got := receive(t, a); got.CallID != "c2" {
+		t.Fatalf("one instance: %+v", got)
+	}
+}
