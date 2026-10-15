@@ -55,6 +55,9 @@ exclude = ["src/meshcall/bin"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# A test stuck this long dumps every thread's stack, so a hang in CI names
+# its test instead of sitting silent until the job is cancelled.
+faulthandler_timeout = 120
 testpaths = ["tests"]
 # Test fixtures are deliberately terse; test_diagnostics asserts the warnings.
 filterwarnings = ["ignore::meshcall.diagnostics.MeshCallWarning"]
