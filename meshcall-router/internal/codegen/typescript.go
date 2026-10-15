@@ -190,6 +190,10 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 			output := registry.Name(requiredRef(m.OutputItem, "server stream item"))
 			resultType = "MeshCallServerStream<" + output + ">"
 			rpcCall = "serverStream<" + request + ", " + output + ">"
+			if m.Subscription != nil {
+				resultType = "MeshCallSubscription<" + output + ">"
+				rpcCall = "subscribe<" + request + ", " + output + ">"
+			}
 		case "client_stream":
 			input := registry.Name(requiredRef(m.InputItem, "client stream item"))
 			response := registry.Name(requiredRef(m.Response, "response"))
@@ -206,6 +210,9 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 		optionsType := "CallOptions"
 		if m.Stream == "duplex" {
 			optionsType = "DuplexCallOptions" // no idempotency key: never replayed
+		}
+		if m.Subscription != nil {
+			optionsType = "SubscriptionOptions"
 		}
 		lines = append(lines, "")
 		lines = append(lines, tsDocLines(m.Description, "  ")...)
@@ -230,10 +237,14 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 		lines = append(lines, tsPayload(m)...)
 		lines = append(lines, extraArgs...)
 		var fields []string
-		if m.Annotations.Idempotent {
+		// Subscriptions are never retried as calls; they resubscribe instead.
+		if m.Annotations.Idempotent && m.Subscription == nil {
 			fields = append(fields, "idempotent: true")
 		}
 		fields = append(fields, "...options")
+		if s := m.Subscription; s != nil && s.Cursor != nil {
+			fields = append(fields, "cursor: "+jsonDumps(*s.Cursor), "resume: "+jsonDumps(*s.Resume))
+		}
 		switch m.Stream {
 		case "server_stream", "duplex":
 			fields = append(fields, "itemSchema: "+registry.Name(m.OutputItem)+"Schema")
@@ -408,8 +419,11 @@ func tsIdentifier(value, fallback string) string {
 
 func tsRuntimeTypes(service *contract.Service) string {
 	names := []string{"MeshCallClient", "type CallOptions"}
-	if hasStream(service, "server_stream") {
+	if hasSubscription(service, true) {
 		names = append(names, "type MeshCallServerStream")
+	}
+	if hasSubscription(service, false) {
+		names = append(names, "type MeshCallSubscription", "type SubscriptionOptions")
 	}
 	if hasStream(service, "duplex") {
 		names = append(names, "type MeshCallDuplexCall", "type DuplexCallOptions")

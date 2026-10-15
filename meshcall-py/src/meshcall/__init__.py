@@ -42,6 +42,7 @@ from meshcall.ir import (
     BindingKind,
     MethodAnnotations,
     StreamKind,
+    SubscriptionSpec,
 )
 from meshcall.logging import RpcLogger
 from meshcall.router import WebSocketRouter
@@ -54,6 +55,7 @@ from meshcall.router_auth import (
 )
 from meshcall.server import RpcServer
 from meshcall.streams import RpcDuplex, RpcDuplexClient, RpcInputStream, RpcServerStream
+from meshcall.topic import Topic
 
 __all__ = [
     "Balance",
@@ -96,6 +98,8 @@ __all__ = [
     "ServerCallNext",
     "ServerInterceptor",
     "StreamKind",
+    "SubscriptionSpec",
+    "Topic",
     "UnauthenticatedError",
     "UnavailableError",
     "Violation",

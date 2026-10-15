@@ -4,9 +4,10 @@ import asyncio
 import contextlib
 import time
 import uuid
-from collections.abc import AsyncIterable, Mapping, Sequence
+from collections.abc import AsyncIterable, Iterator, Mapping, Sequence
 from typing import Any, Self
 
+from loguru import logger as default_logger
 from pydantic import BaseModel, ValidationError
 
 from meshcall.context import (
@@ -217,6 +218,42 @@ class ClientBase:
             return await _stream_open_task(stream)
 
         return _ClientServerStream(_observed(asyncio.create_task(open())))
+
+    def call_subscription(
+        self,
+        service: str,
+        method: str,
+        request: BaseModel,
+        item_type: type[BaseModel],
+        *,
+        cursor: str | None = None,
+        resume: str | None = None,
+        timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
+        instance: str | None = None,
+    ) -> RpcServerStream[Any]:
+        """Open a subscription (docs/protocol.md → Subscriptions).
+
+        A server stream that is reopened after a retryable failure with the
+        reconnect backoff, asking to resume after the last item's ``cursor``
+        through the ``resume`` request parameter. It has no default timeouts.
+        """
+        return _Subscription(
+            self,
+            service,
+            method,
+            request,
+            item_type,
+            cursor=cursor,
+            resume=resume,
+            options={
+                "timeout": timeout,
+                "idle_timeout": idle_timeout,
+                "metadata": metadata,
+                "instance": instance,
+            },
+        )
 
     async def call_client_stream(
         self,
@@ -858,3 +895,113 @@ class _ClientDuplex(_ClientServerStream, RpcDuplexClient[BaseModel, BaseModel]):
     async def close_send(self) -> None:
         call = await self._open_task
         await call.close_send()
+
+
+_RESUMABLE = frozenset({"unavailable", "resource_exhausted"})
+_NO_CURSOR = object()
+
+
+class _Subscription(RpcServerStream[BaseModel]):
+    """Successive server-stream calls presented as one iterator."""
+
+    def __init__(
+        self,
+        client: ClientBase,
+        service: str,
+        method: str,
+        request: BaseModel,
+        item_type: type[BaseModel],
+        *,
+        cursor: str | None,
+        resume: str | None,
+        options: dict[str, Any],
+    ) -> None:
+        self._client = client
+        self._service = service
+        self._method = method
+        self._request = request
+        self._item_type = item_type
+        self._resume = resume
+        self._options = options
+        # The cursor names a JSON property; read it through the field it maps to.
+        self._cursor_field = next(
+            (
+                name
+                for name, field in item_type.model_fields.items()
+                if cursor in (name, field.alias)
+            ),
+            None,
+        )
+        self._last: Any = _NO_CURSOR
+        self._stream: RpcServerStream[BaseModel] | None = None
+        self._delays: Iterator[float] | None = None
+        self._done = False
+        self._trailers: Mapping[str, str] = {}
+
+    def __aiter__(self) -> _Subscription:
+        return self
+
+    async def __anext__(self) -> BaseModel:
+        while True:
+            if self._done:
+                raise StopAsyncIteration
+            stream = self._stream
+            if stream is None:
+                request = self._request
+                if self._resume is not None and self._last is not _NO_CURSOR:
+                    request = request.model_copy(update={self._resume: self._last})
+                stream = self._stream = self._client.call_server_stream(
+                    self._service,
+                    self._method,
+                    request,
+                    self._item_type,
+                    **self._options,
+                )
+            try:
+                item = await anext(stream)
+            except StopAsyncIteration:
+                self._trailers = stream.trailers
+                self._done = True
+                raise
+            except (MeshCallError, OSError, ConnectionError) as exc:
+                self._trailers = stream.trailers
+                self._stream = None
+                if isinstance(exc, MeshCallError) and not (
+                    exc.retryable and exc.code in _RESUMABLE
+                ):
+                    self._done = True
+                    raise
+                await self._backoff(exc)
+                continue
+            self._delays = None  # an item arrived: the next failure starts over
+            if self._cursor_field is not None:
+                self._last = getattr(item, self._cursor_field)
+            return item
+
+    async def _backoff(self, error: BaseException) -> None:
+        policy = self._client.reconnect
+        if self._delays is None:
+            self._delays = policy.delays()
+        delay = next(self._delays, None) if policy.enabled else None
+        if delay is None:
+            self._done = True
+            raise error
+        default_logger.warning(
+            "Subscription {}.{} interrupted ({}); resubscribing in {:.2f}s{}",
+            self._service,
+            self._method,
+            error,
+            delay,
+            "" if self._last is _NO_CURSOR else f" after {self._last!r}",
+        )
+        await asyncio.sleep(delay)
+
+    @property
+    def trailers(self) -> Mapping[str, str]:
+        return self._stream.trailers if self._stream is not None else self._trailers
+
+    async def cancel(self, reason: str = "client_closed") -> None:
+        self._done = True
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            await stream.cancel(reason)

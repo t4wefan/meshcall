@@ -36,6 +36,9 @@ try {
   await exchange.closeSend();
   assert.equal((await exchange.next()).done, true);
   assert.deepEqual(echoed, [101, 102, 103]);
+  const seqs = async (events) => { const out = []; for await (const e of events) out.push(e.seq); return out; };
+  assert.deepEqual(await seqs(client.events()), [0, 1, 2, 3, 4]);
+  assert.deepEqual(await seqs(client.events(2)), [3, 4]);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally {
   await rpc.close();

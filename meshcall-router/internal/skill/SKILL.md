@@ -236,6 +236,16 @@ my_app/
   Credit-based flow control is automatic, so a slow consumer slows the
   producer rather than exhausting memory. Streams are never retried: make
   the caller able to restart from a known point.
+- Events / notifications / live feeds: a subscription,
+  `@method.subscription(cursor="seq", resume="since")` on a server stream
+  whose item has an ordered `seq` and whose request has an optional
+  `since`. Generated clients then resubscribe on their own after a dropped
+  connection or retryable error, passing the last `seq` as `since`; the
+  handler must yield only items after `since`. Fan out inside one process
+  with `Topic[T]` (`Topic(history=1000, cursor=lambda e: e.seq)`,
+  `topic.publish(e)`, handler `async for e in topic.subscribe(after=since):
+  yield e`). Across instances, make the producing service `targeted` or
+  bridge a broker into each instance's Topic; the Router is no broker.
 - Duplex (`@method.duplex(reason="…")`, handler takes `channel:
   RpcDuplex[In, Out]`, returns `None`) only when output must interleave
   with input that keeps arriving *in one call* (a voice or chat turn that
