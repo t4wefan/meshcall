@@ -162,6 +162,9 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ### Fixed
 
+- A method with balance kind `disabled` and several live instances failed
+  with reason `no_instances`; it now reports `balance_disabled`, as
+  documented (still retryable: instances overlap during a handover).
 - TypeScript: a draining server no longer drops a result that is still
   being sent (the caller saw `instance_lost`).
 - TypeScript: one reconnect loop per Router link; two could run at once,

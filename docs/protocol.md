@@ -462,7 +462,8 @@ these reasons: `no_instances` (nothing registered for the service),
 `instance_lost` (the serving instance disconnected; `instance_id` names it),
 `overloaded` (a capacity limit: the Router's own, or every instance at its
 `max_inflight`), `circuit_open` (every instance is excluded by the Router's
-circuit breaker), `balance_disabled`, `cancelled` (a joined idempotent call
+circuit breaker), `balance_disabled` (a method whose balancing is `disabled` has several
+instances), `cancelled` (a joined idempotent call
 was cancelled by its first caller), `instance_unknown` / `instance_draining`
 (a targeted call named an instance that is not registered or is leaving) and
 `instance_required` (an `invalid_argument` for a targeted service called
