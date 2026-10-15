@@ -80,6 +80,7 @@ func run() error {
 	})
 	flag.IntVar(&config.MaxAnonymousConnections, "max-anonymous-connections", router.DefaultMaxAnonymousConnections, "WebSocket connections without credentials, within max-connections")
 	flag.IntVar(&config.MaxConnections, "max-connections", router.DefaultMaxConnections, "open WebSocket connections; more are refused with 503 (HTTP calls are not counted)")
+	flag.StringVar(&config.MetricsListen, "metrics-listen", "", "serve Prometheus /metrics on this TCP address (e.g. 127.0.0.1:9464); off by default, never on the public port")
 	flag.BoolVar(&parentStdin, "shutdown-on-stdin-close", false, "exit when the owning process closes stdin")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Usage = func() {
