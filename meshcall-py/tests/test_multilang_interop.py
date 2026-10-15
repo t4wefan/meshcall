@@ -511,6 +511,65 @@ async def test_go_router_launchers_and_service_scoped_tokens_interoperate(
                 await node.wait()
 
 
+async def test_one_trace_from_a_python_client_to_a_typescript_service(
+    tmp_path: Path,
+) -> None:
+    """W3C trace context crosses languages and the Router as call metadata."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+    from opentelemetry.trace import SpanKind
+    from pydantic import BaseModel
+
+    from meshcall.client import ClientBase
+    from meshcall.otel import client_interceptor
+
+    class Empty(BaseModel):
+        pass
+
+    class Where(BaseModel):
+        trace_id: str
+        parent_span_id: str
+
+    spans = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(spans))
+    router = WebSocketRouter(port=0)
+    await router.start()
+    process = await asyncio.create_subprocess_exec(
+        _tool("node"),
+        str(INTEROP_ROOT / "typescript_traced_server.mjs"),
+        str(RUNTIME_INDEX),
+        f"ws://127.0.0.1:{router.bound_port}",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    client = ClientBase(
+        WebSocketClientDriver(f"ws://127.0.0.1:{router.bound_port}"),
+        interceptors=[client_interceptor(tracer_provider=provider)],
+    )
+    try:
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=10)
+        if not line:
+            raise AssertionError(await _process_failure(process))
+        where = await client.call_unary("test.v1.Traced", "whereami", Empty(), Where)
+    finally:
+        await client.stop()
+        await _stop_server_process(process)
+        await router.stop()
+    (client_span,) = [
+        s for s in spans.get_finished_spans() if s.kind == SpanKind.CLIENT
+    ]
+    context = client_span.context
+    assert context is not None
+    assert where.trace_id == format(context.trace_id, "032x")
+    assert where.parent_span_id == format(context.span_id, "016x")
+
+
 def _go_required() -> None:
     if shutil.which("go") is None:
         pytest.fail("go is required for cross-language tests with the Go runtime")

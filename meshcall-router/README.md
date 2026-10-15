@@ -51,6 +51,9 @@ SIGINT/SIGTERM stop the process. SDKs additionally use
 Router running. Both launchers wait for readiness, bound startup/shutdown waits,
 reap failed children, and can restart after a failed bind.
 
+`--metrics-listen 127.0.0.1:9464` serves Prometheus metrics on a separate
+listener (off by default); see [Router metrics](../docs/router.md#metrics).
+
 Use `--unix-socket /tmp/meshcall.sock` instead of `--host` / `--port` for the
 local transport on Linux, macOS and FreeBSD. Existing paths are never replaced.
 Shutdown removes the socket only when it is still the file owned by this Router.
