@@ -50,7 +50,10 @@ s), `Idempotency-Key`, `MeshCall-Instance`, `MeshCall-Meta-<key>`. Errors are
 the same JSON envelope with an HTTP status (400, 401, 403, 404, 429, 503,
 504…). `GET /v1/openapi.json` describes every method you may call (feed it to
 Swagger UI or a client generator); `GET /v1/services` is the Registry.
-`meshcall call … --http` does the same from the CLI.
+`meshcall call … --http` does the same from the CLI. In a browser or edge
+runtime, pass `new MeshCallHttpClient(url, { token })` from `meshcall/web`
+to the generated TypeScript client instead of `MeshCallClient` (no duplex;
+add `--http-cors-origin` for other origins).
 
 ## Read errors
 
