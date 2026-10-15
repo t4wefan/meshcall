@@ -32,11 +32,11 @@ func fakeInstance(t *testing.T, routerURL string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
+	// Write errors are not test failures: the fake keeps answering from its
+	// own goroutine after a test has closed the connection or finished.
 	send := func(v any) {
 		data, _ := json.Marshal(v)
-		if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
-			t.Error(err)
-		}
+		_ = conn.Write(ctx, websocket.MessageText, data)
 	}
 	recv := func() map[string]any {
 		_, data, err := conn.Read(ctx)
