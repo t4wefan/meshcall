@@ -34,8 +34,14 @@ Issues = "https://github.com/t4wefan/meshcall/issues"
 [project.scripts]
 meshcall = "meshcall.launcher:main"
 
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.27",
+]
+
 [dependency-groups]
 dev = [
+    "opentelemetry-sdk>=1.27",
     "pyright>=1.1.411",
     "pytest>=8.3",
     "pytest-asyncio>=0.26",

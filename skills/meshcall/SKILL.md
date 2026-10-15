@@ -262,7 +262,11 @@ my_app/
   expensive step; in Python an `asyncio.CancelledError` means the caller
   left, clean up and re-raise. TypeScript handlers get `ctx.signal`.
 - Log with the injected `logger` (it already carries service, method,
-  `call_id`); never `print`. Put request-scoped facts in trailers
+  `call_id`); never `print`. For tracing, add the OpenTelemetry interceptors
+  on both sides (`meshcall.otel.client_interceptor()` /
+  `server_interceptor()`, `meshcall/otel` in TypeScript): trace context
+  rides in call metadata across languages and the Router. Router metrics:
+  `--metrics-listen 127.0.0.1:9464`. Put request-scoped facts in trailers
   (`ctx.set_trailer("cache", "hit")`) when callers should see them.
 
 **Calling a service**
