@@ -8,10 +8,12 @@
 Python/Pydantic service ---- contract extraction ---+
                                                     |
 TypeScript schema service ---- contract export -----+--> portable contract
-                                                            |
-                                                            +--> Python uv package
+                                                    |       |
+Go struct-tagged service ---- WriteContract --------+       +--> Python uv package
                                                             |
                                                             +--> TypeScript Yarn package
+                                                            |
+                                                            +--> Go client file
 
 Python RPC event loop <---- thread-safe bridge ----> service worker event loop
         |
@@ -56,9 +58,10 @@ iteration run on the service worker loop.
 Cross-loop operations use thread-safe future submission. A synchronously
 blocking handler can delay other work assigned to the current service worker,
 but it cannot prevent the RPC loop from enforcing a deadline or maintaining
-other connections. The TypeScript client consumes unary, server-streaming, and
-client-streaming calls; TypeScript service handlers are still not worker-thread
-isolated and must avoid synchronously blocking Node's event loop.
+other connections. The TypeScript client consumes unary, server-streaming,
+client-streaming, subscription and duplex calls; TypeScript service handlers
+are still not worker-thread isolated and must avoid synchronously blocking
+Node's event loop.
 
 Access logging is also owned by the RPC loop. It is emitted at the single
 terminal-frame arbitration point, after a result or error status is known, so a
@@ -74,10 +77,13 @@ logger and abort signal. Declared schemas validate requests, responses, and
 stream items; raw legacy handlers without schemas remain unchecked.
 
 TypeScript supports TCP and the local transport (`unixPath`, or `pipe` on
-Windows) for clients, Direct servers, and Router service connections. Both languages use the same Go Router; its
-process is launched by thin Python/TypeScript wrappers. Its registry, account
-authentication, scoped token RPC and failure boundaries are described in
-[Router architecture](router.md).
+Windows) for clients, Direct servers, and Router service connections. The Go
+runtime (`meshcall-go`) takes the same endpoints as `ws://`, `unix:///path`
+and `pipe://NAME` strings; each handler runs in its own goroutine with a
+`context.Context` that ends with the call. All three runtimes use the same Go
+Router; its process is launched by thin Python/TypeScript wrappers (Go has no
+launcher). Its registry, account authentication, scoped token RPC and failure
+boundaries are described in [Router architecture](router.md).
 
 ## Call ownership
 
@@ -155,7 +161,9 @@ task can't operate through a newly acquired generation.
   re-sends failed unary calls when the error is retryable, the code is in the
   policy's set, and the method is idempotent per the contract or the call has
   an `idempotency_key`; attempts share the call's timeout and the final error
-  reports `details.attempts`. Streams are never retried.
+  reports `details.attempts`. Streams are never retried; a subscription is
+  reopened from its last cursor instead (see
+  [Subscriptions](protocol.md#subscriptions)).
 - `stop(drain=True)` / `close({ drain: true })` first stops taking new calls
   (`server.drain` to the Router, or closing the listener) and waits up to the
   drain timeout for in-flight calls, then stops; nothing in flight fails.
@@ -167,7 +175,8 @@ task can't operate through a newly acquired generation.
   (`ReconnectPolicy`), waiting at most that call's timeout. Router-mode
   servers re-register with the same backoff while staying `RUNNING`; calls
   that arrive in between fail at the Router with retryable `unavailable`.
-  Calls are never replayed automatically.
+  Calls are never replayed automatically; a subscription is reopened from its
+  last cursor instead (see [Subscriptions](protocol.md#subscriptions)).
 - A malformed frame that still names a call fails only that call with
   `protocol_error`; a frame that cannot be attributed closes the connection.
   Oversize frames fail the sending call with `resource_exhausted`.
@@ -187,10 +196,12 @@ reaching the handler, metadata and trailers, keepalive within the Router idle
 window, re-registration after a Router restart, and drain.
 
 The fixture contract is in `meshcall-router/conformance/FIXTURE.md`; the
-reference fixtures are `meshcall-py/conformance/fixture.py` and
-`meshcall-ts/conformance/fixture.ts`. A new language runtime is conformant
-when `meshcall-conformance --fixture "<its fixture command>"` passes.
-`scripts/check.sh conformance` runs both reference fixtures; CI does too.
+reference fixtures are `meshcall-py/conformance/fixture.py`,
+`meshcall-ts/conformance/fixture.ts` and `meshcall-go/conformance/fixture`.
+A new language runtime is conformant when `meshcall-conformance --fixture
+"<its fixture command>"` passes. `scripts/check.sh conformance` runs all
+three fixtures over TCP and over the local transport (`--transport tcp` /
+`local`); CI does too.
 Client-side conformance (a scripted fixture *client* driven by the suite
 acting as the Router) is a planned second phase.
 
@@ -222,10 +233,12 @@ Where they surface, by language and moment:
 - **Python, import time**: `warnings.warn(MeshCallWarning)` for each finding
   when the `@service` decorator runs; pytest collects them, and
   `python -W error::meshcall.MeshCallWarning` makes them fatal.
-- **Both, server start**: one summarised log line per start.
-- **Strict mode**: `MESHCALL_STRICT=1` (both), `MeshCallServer({ strictContracts: true })`
-  (TS) turn warnings into errors. `AGENTS.md` tells agents to run in strict
-  mode; CI may opt in.
+- **All three, server start**: one summarised log line per start (Go: in
+  `NewServer`; `meshcall.LintService` lists the findings).
+- **Strict mode**: `MESHCALL_STRICT=1` (all three runtimes),
+  `MeshCallServer({ strictContracts: true })` (TS) and
+  `ServerOptions{Strict: true}` (Go) turn warnings into errors. `AGENTS.md`
+  tells agents to run in strict mode; CI may opt in.
 - **Project-wide ignore**: `MESHCALL_IGNORE_WARNINGS=W001,W002`.
 
 `lint_contract(contract)` / `lintService(definition)` return the findings
@@ -233,8 +246,9 @@ without side effects, for tooling such as `meshcall check`.
 
 ## Interceptors
 
-Both runtimes expose one interception point per side, shaped the same way in
-Python and TypeScript.
+All three runtimes expose one interception point per side, shaped the same
+way in Python, TypeScript and Go (`ServerOptions.Interceptors` /
+`ClientOptions.Interceptors`).
 
 - **Server**: `RpcServer(interceptors=[...])` / `MeshCallServer({ interceptors })`.
   Each interceptor is `(ctx, request, call_next) -> result`. It runs after
@@ -258,7 +272,8 @@ individual stream items; that remains a future extension.
 
 ## Observability
 
-OpenTelemetry is an opt-in pair of interceptors per language: Python
+OpenTelemetry is an opt-in pair of interceptors in Python and TypeScript:
+Python
 `meshcall.otel.client_interceptor()` / `server_interceptor()` (install
 `meshcall[otel]`), TypeScript `otelClientInterceptor()` /
 `otelServerInterceptor()` from `meshcall/otel` (`@opentelemetry/api` is an
@@ -266,7 +281,8 @@ optional peer dependency; Node needs a context manager, which the
 OpenTelemetry Node SDK registers). Trace context travels as call metadata
 (`traceparent` / `tracestate`), so a trace continues across languages and
 through the Router, which forwards metadata untouched and has no OpenTelemetry
-dependency. Each call gets a span named `service/method` (`rpc.system =
+dependency. Go has no OpenTelemetry package; a Go interceptor can carry
+`traceparent` the same way. Each call gets a span named `service/method` (`rpc.system =
 "meshcall"`, `rpc.service`, `rpc.method`, `rpc.meshcall.error_code`) and is
 counted in `meshcall.calls` and `meshcall.call.duration` by service, method,
 code and side. A server span covers the whole call; a client span covers a

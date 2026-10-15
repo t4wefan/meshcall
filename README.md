@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python & TypeScript" width="300">
+  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python, TypeScript & Go" width="300">
 </p>
 
 <p align="center">
@@ -8,16 +8,17 @@
 
 # MeshCall
 
-**Write cross-language streaming RPC the way you write ordinary Python and TypeScript functions.**
+**Write cross-language streaming RPC the way you write ordinary Python, TypeScript and Go functions.**
 
 When building applications across processes or languages (such as pairing a Python AI/compute backend with a TypeScript application), you shouldn't have to choose between heavy `.proto` toolchains and fragile hand-rolled WebSocket / JSON glue.
 
-MeshCall is an asynchronous streaming RPC framework for **Python** and **TypeScript**—**defining a remote service feels like writing a normal async function, and calling a remote endpoint feels like calling a local method:**
+MeshCall is an asynchronous streaming RPC framework for **Python**, **TypeScript** and **Go**—**defining a remote service feels like writing a normal async function, and calling a remote endpoint feels like calling a local method:**
 
 - **Code is the contract—no `.proto` files or raw dictionaries** — declare inputs with function parameters and outputs with return models; generated clients provide full type signatures and IDE autocomplete so callers never have to hand-craft dictionaries or read server source code to check field names
 - **Catch contract changes at type-check time, validate at runtime** — generate a TypeScript client from a Python service (or vice versa) in one command. When a server changes a parameter or field, type checkers and compilers flag affected call sites immediately, while the runtime automatically validates requests and responses before handler code runs
 - **Stream as naturally as writing a loop** — `yield` items on the server and iterate with `async for` on the client, ideal for progress updates, live data feeds, and streaming AI outputs
 - **Focus on business logic** — the framework handles connection management, request routing, timeouts, cancellation, and flow control so your handlers stay free of networking code
+- **Observable when you need it** — opt-in OpenTelemetry interceptors (`meshcall[otel]` in Python, `meshcall/otel` in TypeScript) carry W3C trace context across languages and through the Router, and the Router serves Prometheus metrics on `--metrics-listen`
 - **Transparent to both humans and AI** — running services carry their own interface descriptions, so you can inspect signatures and make test calls right from the terminal without reading source code or writing throwaway scripts
 
 ---
@@ -281,9 +282,11 @@ Unary calls and server streams work fully, client streams take an NDJSON body, a
 
 ---
 
-### Go
+## Go
 
 Go services and clients use the Go runtime, [`meshcall-go`](meshcall-go/README.md): the same calls, errors, deadlines, streams, subscriptions and Router features, checked by the same conformance suite. `meshcall generate service.meshcall.json --language go --output internal/chatclient` writes a typed Go client for a service written in any of the three languages, and `meshcall.WriteContract` exports a Go service's contract for Python and TypeScript clients.
+
+---
 
 ## Teach Your AI Coding Assistant
 
@@ -323,6 +326,7 @@ When you are ready to explore production capabilities, follow the guides below:
 | **[User Guide & Cookbook](docs/guide.md)** | Handle streaming, timeouts and retries, context/logger injection, load balancing, and auth | **[快速上手与实战指南](docs/zh-CN/guide.md)** |
 | **[Python SDK](meshcall-py/README.md)** | Install and use the Python package API | [Python SDK 指南](meshcall-py/README.zh-CN.md) |
 | **[TypeScript SDK](meshcall-ts/README.md)** | Install and use the TypeScript package API | [TypeScript SDK 指南](meshcall-ts/README.zh-CN.md) |
+| **[Go SDK](meshcall-go/README.md)** | Use the Go runtime and generated Go clients | — |
 | **[Router & CLI](meshcall-router/README.md)** | Deploy the standalone Router binary, configure CLI flags, and run with Docker | [Router 与 CLI 部署指南](meshcall-router/README.zh-CN.md) |
 | **[Router & Auth Guide](docs/router.md)** | Configure multi-instance routing, accounts, and access tokens | [Router 架构与鉴权](docs/zh-CN/router.md) |
 | **[Runtime Architecture](docs/architecture.md)** | Understand the internal design of the client and server runtimes | [运行时架构设计](docs/zh-CN/architecture.md) |

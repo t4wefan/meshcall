@@ -1,6 +1,6 @@
 ---
 name: meshcall
-description: Explore, call and build MeshCall services (typed streaming RPC between Python, TypeScript and the Go Router). Use when a project depends on the meshcall package, when asked to call or inspect a mesh service, or when writing or changing an @service / defineService.
+description: Explore, call and build MeshCall services (typed streaming RPC between Python, TypeScript and Go through the MeshCall Router). Use when a project depends on the meshcall package or meshcall-go module, when asked to call or inspect a mesh service, or when writing or changing an @service / defineService / meshcall.NewService.
 ---
 
 # MeshCall
@@ -19,7 +19,8 @@ meshcall router inspect chat.v1.Chat --json  # one service with its full contrac
 
 Each method line shows shape (`unary` / `server_stream` / `client_stream` /
 `duplex`), parameters, annotations (`read_only`, `idempotent`,
-`destructive`, `deprecated`), the description and, for duplex, its reason. `--router ws://host:port` or
+`destructive`, `deprecated`, `subscription` where declared), the description
+and, for duplex, its reason. `--router ws://host:port` or
 `MESHCALL_ROUTER_URL` selects the Router (default `ws://127.0.0.1:8765`;
 `unix:///path` for a Unix socket, `pipe://NAME` for a Windows named pipe);
 `--auth user:pass` / `--token T` when accounts are configured.
@@ -62,10 +63,11 @@ Every error has `code`, `message`, `details.source` (`client` | `router` |
 
 | code | meaning | what to do |
 | --- | --- | --- |
-| `invalid_argument` | your request failed validation; `details.violations` lists `{path, code, message}` per field. `reason: instance_required` means the service is targeted | fix the named fields; pass `--instance` / `instance=` for targeted services |
+| `invalid_argument` | your request failed validation; `details.violations` lists `{path, code, message}` per field. `reason: instance_required` means the service is targeted; `idempotency_key_on_duplex` that duplex calls take no key; `cursor_expired` that a subscription's resume cursor is older than the server's history | fix the named fields; pass `--instance` / `instance=` for targeted services; drop the key; resubscribe without a cursor |
 | `method_not_found` | wrong service or method | the hint lists available methods |
-| `unavailable` | no instance (`no_instances`), instance lost, every breaker open (`circuit_open`), or the named instance is unknown / draining | `router inspect`; retry if `retryable` |
-| `resource_exhausted` | Router or every instance at capacity (`overloaded`) | back off and retry |
+| `unavailable` | no instance (`no_instances`), instance lost, every breaker open (`circuit_open`), the named instance is unknown / draining, or the Router is stopping (`router_draining`, `router_shutdown`) | `router inspect`; retry if `retryable` (another Router if you have several) |
+| `resource_exhausted` | Router, connection or every instance at capacity (`overloaded`); a subscriber fell behind (`slow_subscriber`) | back off and retry; a subscription resumes by itself |
+| `protocol_error` | a stream item beyond the consumer's credit (`flow_control_violation`) or another frame that broke the protocol | fix the producer; regenerate a hand-patched client |
 | `deadline_exceeded` | `timeout_ms` elapsed (source says who noticed) | raise the timeout or make the handler faster |
 | `permission_denied` | the caller (possibly the anonymous user: no credentials sent) may not make this call; the same error whether or not the method exists | send credentials, or add `service/method` to the account, key or token |
 | `internal` | the service failed; `reason: invalid_response` means its own handler broke its contract | read the service's log, fix the service |
@@ -276,7 +278,8 @@ my_app/
 - Log with the injected `logger` (it already carries service, method,
   `call_id`); never `print`. For tracing, add the OpenTelemetry interceptors
   on both sides (`meshcall.otel.client_interceptor()` /
-  `server_interceptor()`, `meshcall/otel` in TypeScript): trace context
+  `server_interceptor()` with `pip install "meshcall[otel]"`, `meshcall/otel`
+  in TypeScript): trace context
   rides in call metadata across languages and the Router. Router metrics:
   `--metrics-listen 127.0.0.1:9464`. Put request-scoped facts in trailers
   (`ctx.set_trailer("cache", "hit")`) when callers should see them.

@@ -46,7 +46,12 @@ fall back to a language-specific Router.
 
 The CLI defaults to `127.0.0.1` and an automatically selected port. It prints one
 `router.ready` JSON line on stdout after binding. Diagnostics go to stderr.
-SIGINT/SIGTERM stop the process. SDKs additionally use
+SIGINT/SIGTERM drain the Router first: new calls fail with retryable
+`unavailable` (`reason: "router_draining"`) and idle connections close with
+1001; calls still in flight after `--shutdown-timeout` (default `10s`; `0`
+ends them at once) end with retryable `unavailable`
+(`reason: "router_shutdown"`). A second signal skips the
+wait. See [Router shutdown](../docs/protocol.md#router-shutdown). SDKs additionally use
 `--shutdown-on-stdin-close` so an abruptly terminated parent does not leave a
 Router running. Both launchers wait for readiness, bound startup/shutdown waits,
 reap failed children, and can restart after a failed bind.
@@ -73,7 +78,13 @@ with protocol pings every 15 s. `--breaker-threshold` (default `5`) and
 breaker. See [the protocol](../docs/protocol.md#timeouts).
 `--max-connections` (default `10000`) bounds open WebSocket connections;
 past it new upgrades get `503` with `Retry-After`. HTTP calls are not
-counted (their admission control is still to be designed). HTTP
+counted; `--http-max-inflight` bounds them. `--max-calls-per-connection`
+(default `1000`, `0` for no limit) bounds the calls one connection has in
+flight; past it a call fails with retryable `resource_exhausted`
+(`reason: "overloaded"`). `--max-frame-size` (default and maximum 64 MiB)
+bounds a frame, and `--outbox-size` (default 256 MiB, at least the frame
+size; launchers `outbox_size` / `outboxSize`) bounds the bytes queued for a
+peer that is not reading before it is disconnected. HTTP
 request bodies must keep arriving within `--idle-timeout` while the Router
 is reading them.
 

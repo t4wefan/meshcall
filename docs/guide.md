@@ -2,21 +2,29 @@
 
 **English** | [简体中文](zh-CN/guide.md)
 
-This guide is designed for both **human engineers** and **AI coding agents**. Each section explains **when and why** to use a MeshCall capability, followed by complete, copy-pasteable recipes in **Python** and **TypeScript**.
+This guide is designed for both **human engineers** and **AI coding agents**. Each section explains **when and why** to use a MeshCall capability, followed by complete, copy-pasteable recipes in **Python** and **TypeScript**, and in **Go** (`meshcall-go`) where the Go runtime differs.
 
 ---
 
 ## Table of Contents
 
 1. [Router-First Architecture: Why Every Node Connects Through the Router](#1-router-first-architecture-why-every-node-connects-through-the-router)
+   - [Local Transports: Unix Sockets and Named Pipes](#local-transports-unix-sockets-and-named-pipes)
 2. [Service Contracts & Strict Mode (`MESHCALL_STRICT=1`)](#2-service-contracts--strict-mode-meshcall_strict1)
 3. [The Three Call Shapes: Unary, Server Stream, Client Stream](#3-the-three-call-shapes-unary-server-stream-client-stream)
+   - [Subscriptions: Streams That Resume](#subscriptions-streams-that-resume)
+   - [Duplex: The Shape of Last Resort](#duplex-the-shape-of-last-resort)
 4. [Generating & Using Typed Clients](#4-generating--using-typed-clients)
+   - [Calling from a Browser, an Edge Runtime or curl](#calling-from-a-browser-an-edge-runtime-or-curl)
 5. [Exploring & Debugging Live Services from the CLI](#5-exploring--debugging-live-services-from-the-cli)
 6. [Load Balancing vs. Targeted Stateful Instances](#6-load-balancing-vs-targeted-stateful-instances)
 7. [Production Reliability: Timeouts, Retries, Idempotency & Drain](#7-production-reliability-timeouts-retries-idempotency--drain)
+   - [Router Shutdown, Limits & Metrics](#6-router-shutdown-limits--metrics)
 8. [Authentication & Temporary Scoped Tokens](#8-authentication--temporary-scoped-tokens)
+   - [Anonymous Callers & API Keys](#3-anonymous-callers--api-keys)
 9. [Interceptors, Metadata & Structured Errors](#9-interceptors-metadata--structured-errors)
+   - [OpenTelemetry Tracing](#opentelemetry-tracing)
+10. [AI Coding Assistant Integration (`meshcall init`)](#10-ai-coding-assistant-integration-meshcall-init)
 
 ---
 
@@ -68,6 +76,33 @@ const server = new MeshCallServer({
 });
 await server.start();
 ```
+
+### Go: Serving and Calling Through the Router
+
+The Go runtime has no Router launcher: run `meshcall-router --port 8765` (or use a deployed Router) and connect to it.
+
+```go
+chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
+// meshcall.HandleUnary(chat, "send", handler, meshcall.Doc("…"), meshcall.Idempotent())
+
+server, err := meshcall.NewServer(meshcall.ServerOptions{Services: []*meshcall.Service{chat}, InstanceID: "worker-go-1"})
+err = server.ConnectRouter(ctx, "ws://127.0.0.1:8765")
+
+rpc, err := meshcall.NewClient(meshcall.ClientOptions{}, "ws://127.0.0.1:8765")
+```
+
+### Local Transports: Unix Sockets and Named Pipes
+
+When every node runs on one machine, skip TCP: the Router listens on a Unix socket (Linux, macOS, FreeBSD) or a named pipe (Windows), reachable only by the Router's own user (and, for a pipe, SYSTEM and Administrators). Frames and behaviour are identical.
+
+```bash
+meshcall-router --unix-socket /tmp/mesh.sock               # Windows: --pipe mesh
+meshcall --router unix:///tmp/mesh.sock router inspect     # Windows: pipe://mesh
+```
+
+- **Python**: `WebSocketRouter(unix_path="/tmp/mesh.sock")`, `WebSocketClientDriver(unix_path=...)`, `WebSocketRouterServerDriver(unix_path=...)`; on Windows `pipe="mesh"`.
+- **TypeScript**: `new WebSocketRouter({ unixPath })`, `new MeshCallClient({ unixPath: "/tmp/mesh.sock" })`, `router: { endpoint: { unixPath } }`; on Windows `{ pipe: "mesh" }`.
+- **Go** and the CLI: the endpoint strings `unix:///tmp/mesh.sock` and `pipe://mesh`.
 
 > **Note on Direct Mode (`WebSocketDirectServerDriver` / `MeshCallServer({ port })`):** Point-to-point direct mode is retained only as an early evolutionary artifact and low-level compatibility fallback. It is **not recommended** for application use, as it requires manual port management, prevents symmetric peer-to-peer service/client sharing through a single mesh endpoint, and disables `meshcall router inspect`.
 
@@ -168,11 +203,72 @@ async with TextProcessorClient(driver) as client:
     print(summary.combined)  # "a-b"
 ```
 
+### Subscriptions: Streams That Resume
+
+For events, notifications and live feeds, declare a **subscription**: a server stream whose item carries an ordered cursor (`seq`) and whose request takes an optional resume parameter (`since`). Generated clients reopen it on their own after a dropped connection or a retryable error, passing the last `seq` as `since`, and keep yielding items as one iterator; subscriptions have no default timeouts. The handler must yield only items after `since`.
+
+`Topic` (Python and TypeScript) fans items out to every subscriber in one process and keeps a bounded history to replay from. A subscriber that falls too far behind is cut off with retryable `resource_exhausted` (`reason: "slow_subscriber"`) and resubscribes; a cursor older than the history fails with `invalid_argument` (`reason: "cursor_expired"`) instead of silently skipping events. Across instances, make the producing service `targeted` or bridge a broker into each instance's Topic: the Router is not a broker.
+
+```python
+from meshcall import Topic
+
+
+class Event(BaseModel):
+    seq: int
+    text: str
+
+
+@service("feed.v1.Feed")
+class Feed:
+    """Live events."""
+
+    def __init__(self) -> None:
+        self.topic: Topic[Event] = Topic(history=1000, cursor=lambda e: e.seq)
+
+    @method.subscription(cursor="seq", resume="since", read_only=True)
+    async def events(self, since: int | None = None) -> AsyncIterator[Event]:
+        """Every event after ``since``."""
+        async for event in self.topic.subscribe(after=since):
+            yield event
+
+# Publish from anywhere (any thread): feed.topic.publish(Event(seq=n, text="..."))
+# Consume: async for event in client.events(): ...
+```
+
+```typescript
+import { defineType, subscriptionMethod, Topic } from "meshcall";
+
+interface Event { seq: number; text: string }
+const EventType = defineType<Event>("Event", {
+  type: "object", properties: { seq: { type: "integer" }, text: { type: "string" } }, required: ["seq", "text"],
+});
+const Since = defineType<{ since?: number | null }>("Since", {
+  type: "object", properties: { since: { type: ["integer", "null"], default: null } },
+});
+const topic = new Topic<Event>({ history: 1000, cursor: (e) => e.seq });
+
+// inside defineService({ methods: { ... } }):
+events: subscriptionMethod({
+  description: "Every event after since.", readOnly: true, cursor: "seq", resume: "since",
+  request: Since, outputItem: EventType,
+  handler: async function* ({ since }) {
+    for await (const event of topic.subscribe(since)) yield event;
+  },
+}),
+// Consume: for await (const event of client.events()) { ... }
+```
+
+In Go, `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` declares the same contract (Go has no `Topic`); generated Go clients return a `*meshcall.Subscription` that resubscribes the same way.
+
+### Duplex: The Shape of Last Resort
+
+A duplex method (`@method.duplex(reason="…")` with a `channel: RpcDuplex[In, Out]` parameter, TypeScript `duplexMethod({ reason, … })`, Go `meshcall.HandleDuplex(svc, name, reason, handler)`) streams input and output at the same time. Use it only when output must interleave with input that keeps arriving within one call, such as a voice turn answered while the user is still speaking. It is never retried or deduplicated, takes no idempotency key, cannot be `idempotent` / `read_only`, is unreachable over HTTP and pins one instance for its whole life; the `reason` goes into the contract. A side that only sends stalls once the other side's credit runs out, so read output concurrently with sending. Try a server stream plus unary calls, or a client stream, first.
+
 ---
 
 ## 4. Generating & Using Typed Clients
 
-**Benefit:** One Go CLI (`meshcall generate`) generates both Python and TypeScript clients from either a Python `module:Class` or a portable `.meshcall.json` file. Generated clients validate both requests **and** responses against the contract schema.
+**Benefit:** One Go CLI (`meshcall generate`) generates Python, TypeScript and Go clients from either a Python `module:Class` or a portable `.meshcall.json` file. Generated clients validate both requests **and** responses against the contract schema.
 
 ```bash
 # From a Python service -> Python uv package
@@ -188,10 +284,37 @@ uv run meshcall generate my_app.service:TextProcessor \
   --language typescript \
   --output generated/text-ts
 
-# From a portable .meshcall.json contract (exported by TS `writeContract` or `meshcall export`)
+# From a portable .meshcall.json contract (exported by TS `writeContract`,
+# Go `meshcall.WriteContract(path, svc)` or `meshcall export`)
 npx meshcall generate contract.meshcall.json \
   --language python \
   --output generated/py-client
+
+# Go client: one file, <output>/client.go (or the .go path you name)
+meshcall generate contract.meshcall.json \
+  --language go \
+  --package-name textclient \
+  --output internal/textclient
+```
+
+### Calling from a Browser, an Edge Runtime or curl
+
+Browsers cannot set the `Authorization` header on a WebSocket, so web and edge code calls the Router's HTTP API (same port, under `/v1/`). Generated TypeScript clients accept `MeshCallHttpClient` from `meshcall/web` (no Node dependency) in place of `MeshCallClient`; unary calls, streams and subscriptions work, duplex does not.
+
+```typescript
+import { MeshCallHttpClient } from "meshcall/web";
+import { TextProcessorClient } from "./generated/text-ts/src/index.js";
+
+const client = new TextProcessorClient(new MeshCallHttpClient("https://router.example", { token }));
+const chunk = await client.echo("hello", { timeoutMs: 5_000 });
+```
+
+Pass a short-lived token (`mt_…`) or an API key (`mk_…`) as `token`, and start the Router with `--http-cors-origin https://app.example` for other origins. Any HTTP client works the same way:
+
+```bash
+curl http://127.0.0.1:8765/v1/call/text.v1.TextProcessor/echo -d '{"text": "hi"}'
+curl -N http://127.0.0.1:8765/v1/call/text.v1.TextProcessor/tokenize -d '{"sentence": "a b"}'  # {"item":…} lines, then {"end":…}
+curl http://127.0.0.1:8765/v1/openapi.json    # OpenAPI 3.1 for every method you may call
 ```
 
 ---
@@ -345,6 +468,21 @@ await server.stop(drain=True, drain_timeout=30.0)
 await server.close({ drain: true, drainTimeoutMs: 30_000 });
 ```
 
+Go: `server.Drain(ctx)`, then `server.Close()`.
+
+### 6. Router Shutdown, Limits & Metrics
+
+Restart a Router with SIGTERM (or SIGINT): it drains first. `/readyz` answers 503, new calls get retryable `unavailable` (`reason: "router_draining"`), idle connections close with 1001 so clients and services move to another Router, and calls still in flight after `--shutdown-timeout` (default 10 s) end with retryable `unavailable` (`reason: "router_shutdown"`). A second signal skips the wait. A Router owned by the Python or TypeScript launcher is stopped by closing its stdin, which ends calls in flight at once.
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--max-calls-per-connection` | 1000 (`0`: no limit) | a further call on that connection fails with retryable `resource_exhausted` / `overloaded`; the connection stays open |
+| `--max-frame-size` | 64 MiB (also the maximum) | one payload or stream item must fit in a frame; send larger data as a stream |
+| `--outbox-size` | 256 MiB | how much the Router may owe a peer that stops reading before disconnecting it |
+| `--metrics-listen` | off | Prometheus text at `http://ADDR/metrics` on a separate listener, e.g. `127.0.0.1:9464` |
+
+Every flag also has a `MESHCALL_ROUTER_<FLAG>` environment variable; the launchers take `max_frame_size` / `maxFrameSize` and `outbox_size` / `outboxSize`.
+
 ---
 
 ## 8. Authentication & Temporary Scoped Tokens
@@ -409,6 +547,22 @@ scoped_driver = WebSocketClientDriver(
 )
 ```
 
+### 3. Anonymous Callers & API Keys
+
+A caller that sends no `Authorization` header is the reserved user `anonymous`. It may connect, but every call is `permission_denied` unless the auth file grants it `call` rules; only the auth file can make a method public.
+
+```json
+{ "username": "anonymous", "roles": ["client"], "call": ["status.v1.Health/*"] }
+```
+
+Give machine callers (webhooks, CI, external services) long-lived **API keys** instead of passwords:
+
+```bash
+meshcall-router new-api-key ci-bot   # prints the key once, and the entry to add under "api_keys"
+```
+
+Fill in the entry's `call` list and restart the Router. Callers send the key as `Authorization: Bearer mk_…`: `RouterCredentials(token="mk_…")` in Python, `{ auth: { token: "mk_…" } }` in TypeScript, `ClientOptions{Authorization: "Bearer mk_…"}` in Go, `-H 'Authorization: Bearer mk_…'` with curl. A key is checked with one hash lookup; rotate it by adding a new key and removing the old one.
+
 ---
 
 ## 9. Interceptors, Metadata & Structured Errors
@@ -433,6 +587,28 @@ async def audit_server_interceptor(ctx: RpcContext, request: object, call_next: 
     ctx.set_trailer("echo-trace-id", trace_id)
     return await call_next(ctx, request)
 ```
+
+### OpenTelemetry Tracing
+
+Add the OpenTelemetry interceptors on both sides. Trace context travels as W3C `traceparent` / `tracestate` call metadata, so one trace continues through the Router and across languages; each call gets a `service/method` span and `meshcall.calls` / `meshcall.call.duration` metrics. With no OpenTelemetry SDK configured they do nothing.
+
+```python
+# pip install "meshcall[otel]"
+from meshcall.otel import client_interceptor, server_interceptor
+
+client = TextProcessorClient(driver, interceptors=[client_interceptor()])
+server = RpcServer(services=[TextProcessor()], driver=server_driver, interceptors=[server_interceptor()])
+```
+
+```typescript
+// needs the optional peer dependency @opentelemetry/api
+import { otelClientInterceptor, otelServerInterceptor } from "meshcall/otel";
+
+const client = new MeshCallClient(url, undefined, { interceptors: [otelClientInterceptor()] });
+const server = new MeshCallServer({ services, router: { endpoint: url }, interceptors: [otelServerInterceptor()] });
+```
+
+Go has no OpenTelemetry package; a `ClientInterceptor` / `ServerInterceptor` can set or read the `traceparent` metadata key itself.
 
 ### Handling Typed Errors
 
@@ -464,11 +640,13 @@ Install MeshCall development instructions into your repository so AI coding assi
 # Works with OpenAI Codex, Google Antigravity, OpenCode, Amp, and other AGENTS.md-aware tools
 uv run meshcall init
 
-# Target a specific coding assistant (claude | cursor | copilot | windsurf | all):
-uv run meshcall init --agent claude     # Also writes .claude/skills/meshcall/SKILL.md + CLAUDE.md
-uv run meshcall init --agent cursor     # Also writes .cursor/rules/meshcall.mdc
-uv run meshcall init --agent copilot    # Also updates .github/copilot-instructions.md
-uv run meshcall init --agent windsurf   # Also updates .windsurfrules
-uv run meshcall init --agent all        # Installs all targets above
+# Target specific assistants instead of the default (repeatable, or comma-separated):
+uv run meshcall init --agent claude     # .claude/skills/meshcall/SKILL.md + CLAUDE.md
+uv run meshcall init --agent cursor     # .cursor/rules/meshcall.mdc + AGENTS.md
+uv run meshcall init --agent copilot    # .github/skills/meshcall/SKILL.md + .github/copilot-instructions.md
+uv run meshcall init --agent windsurf   # .windsurf/rules/meshcall.md + AGENTS.md
+uv run meshcall init --agent all        # every target above, plus the default (universal)
 ```
+
+With `--agent`, only the named targets are written; add `universal` to keep the `.agents/` default as well. Re-running is idempotent, and an edited skill file is kept unless you pass `--force`.
 

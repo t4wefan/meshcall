@@ -2,9 +2,10 @@
 
 **English** | [简体中文](https://github.com/t4wefan/meshcall/blob/main/meshcall-py/README.zh-CN.md)
 
-Asynchronous, typed streaming RPC for Python and TypeScript over WebSocket.
+Asynchronous, typed streaming RPC for Python, TypeScript and Go over WebSocket.
 Services define contracts with Pydantic v2 models, register with the standalone
-Go Router, and expose unary, server-streaming, and client-streaming methods.
+Go Router, and expose unary, server-streaming, client-streaming and subscription
+methods (and, as a last resort, restricted duplex methods).
 
 ## Install
 
@@ -92,6 +93,26 @@ which allows any node to simultaneously register its own services and act as a
 client calling other services in the mesh (`WebSocketDirectServerDriver` is only
 retained for legacy compatibility and is not recommended).
 
+## Subscriptions
+
+`@method.subscription(cursor="seq", resume="since")` declares a server stream
+that clients reopen after a retryable failure, passing the last item's
+`cursor` field as the `resume` parameter. `Topic[T]` fans published items out
+to every subscriber in the process:
+
+```python
+topic: Topic[Event] = Topic(history=100, cursor=lambda e: e.seq)
+
+@method.subscription(cursor="seq", resume="since", read_only=True)
+async def events(self, since: int | None = None) -> AsyncIterator[Event]:
+    """Stream events after since."""
+    async for event in topic.subscribe(after=since):
+        yield event
+```
+
+`topic.publish(event)` may be called from any thread or loop. See
+[Subscriptions](https://github.com/t4wefan/meshcall/blob/main/docs/protocol.md#subscriptions).
+
 ## Explore and call from the CLI
 
 ```bash
@@ -108,8 +129,9 @@ uv run meshcall call chat.v1.Chat.send '{"session_id": "s1", "text": "hello"}'
 # Generate an installable Python uv package (or add --single-file for a single .py file)
 uv run meshcall generate my_app.service:Chat --output generated/chat-client
 
-# Generate a TypeScript package from the same Python service
+# Generate a TypeScript package or a Go package from the same Python service
 uv run meshcall generate my_app.service:Chat --language typescript --output generated/chat-ts
+uv run meshcall generate my_app.service:Chat --language go --output internal/chatclient
 ```
 
 Call the service through the generated client:
@@ -123,11 +145,21 @@ async with ChatClient(WebSocketClientDriver("ws://127.0.0.1:8765")) as client:
     print(reply.text)
 ```
 
-## Router authentication
+## Router and local transport
 
-`WebSocketRouter` supports `binary_path`, `auth_file`, readiness timeouts,
-`pid`, `is_running`, `bound_port`, `wait_closed()`, and async context management.
-Override the bundled binary with `MESHCALL_ROUTER_BINARY` when needed.
+`WebSocketRouter` takes `host` / `port`, or `unix_path` (Linux, macOS, FreeBSD)
+or `pipe` (Windows named pipe) for the local transport; `max_frame_size`
+(default and maximum 64 MiB), `outbox_size` (bytes queued for a peer that is
+not reading; default the Router's 256 MiB, at least `max_frame_size`),
+`max_connections`, `binary_path`, `auth_file` and readiness timeouts. It
+exposes `pid`, `is_running`, `bound_port`, `wait_closed()` and async context
+management. Override the bundled binary with `MESHCALL_ROUTER_BINARY` when needed.
+
+`WebSocketClientDriver` and `WebSocketRouterServerDriver` connect to a local
+Router with `unix_path=` or `pipe=` instead of a URI; the CLI addresses the
+same listeners as `unix:///path` and `pipe://NAME`.
+
+## Router authentication
 
 Pass `RouterCredentials(username=..., password=...)` or
 `RouterCredentials(token=...)` as `auth` to `WebSocketClientDriver` or
@@ -135,6 +167,24 @@ Pass `RouterCredentials(username=..., password=...)` or
 `issue_token(scopes=..., ...)`, and `revoke_token(...)`. Use
 `RouterScope(service=..., methods=[...])` to limit a token, or
 `register_service=True` for temporary service instances.
+
+## OpenTelemetry
+
+```bash
+pip install "meshcall[otel]"
+```
+
+```python
+from meshcall.otel import client_interceptor, server_interceptor
+
+client = ChatClient(driver, interceptors=[client_interceptor()])
+server = RpcServer(services=[Chat()], driver=driver, interceptors=[server_interceptor()])
+```
+
+Each call gets a span and `meshcall.calls` / `meshcall.call.duration` metrics;
+the W3C trace context travels as call metadata, so a trace continues through
+the Router and across languages (TypeScript: `meshcall/otel`). With no
+OpenTelemetry SDK configured the interceptors are no-ops.
 
 ## Documentation
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python & TypeScript" width="300">
+  <img src="docs/assets/wordmark.svg" alt="MeshCall — Typed Streaming RPC for Python, TypeScript & Go" width="300">
 </p>
 
 <p align="center">
@@ -8,16 +8,17 @@
 
 # MeshCall
 
-**用写普通 Python / TypeScript 异步函数的方式，编写跨语言流式 RPC。**
+**用写普通 Python / TypeScript / Go 函数的方式，编写跨语言流式 RPC。**
 
 在构建跨进程或跨语言应用（例如 Python 算法/AI 后端与 TypeScript 业务应用协同）时，你不必在繁重的 `.proto` 编译工具链与脆弱的手写 WebSocket / JSON 胶水代码之间妥协。
 
-MeshCall 是一个面向 **Python** 与 **TypeScript** 的异步流式 RPC 框架——**写远程服务就像写普通异步函数，调远程接口就像调本地方法：**
+MeshCall 是一个面向 **Python**、**TypeScript** 与 **Go** 的异步流式 RPC 框架——**写远程服务就像写普通异步函数，调远程接口就像调本地方法：**
 
 - **代码即契约，告别手写协议与裸传字典** —— 直接用函数参数声明输入、用返回模型声明输出，无需维护 `.proto` 文件；生成的客户端提供完整的类型签名与 IDE 自动补全，调用方无需手拼字典或翻阅服务端源码查字段
 - **接口变更在静态检查阶段暴露，运行时双向校验** —— 一条命令即可从 Python 服务生成 TypeScript 客户端（反之亦然）。服务端修改参数或字段后，调用方在静态检查与编译阶段即可发现不匹配；运行时还会自动校验入参和返回值，非法数据在进入业务函数前即被拦截
 - **像写循环一样写流式通信** —— 服务端流只需 `yield`，客户端消费只需 `async for`，天然契合进度推送、实时数据流与 AI 流式输出
 - **专注业务逻辑** —— 框架负责连接管理、请求路由、超时取消和流量控制，业务函数无需关心底层网络细节
+- **需要时即可观测** —— 可选的 OpenTelemetry 拦截器（Python `meshcall[otel]`、TypeScript `meshcall/otel`）跨语言、穿过 Router 传递 W3C trace context；Router 通过 `--metrics-listen` 提供 Prometheus 指标
 - **对人类与 AI 同样透明** —— 在线服务自带接口描述，无需翻阅源码或编写临时脚本，在终端即可直接查看签名并发起调试调用
 
 ---
@@ -151,7 +152,7 @@ uv run python client.py
 
 ## 流式方法：把 `return` 换成 `yield`
 
-除了一问一答的普通方法（`@method`），MeshCall 还原生支持**流式方法**。当一个方法需要持续返回多条结果（例如 AI Token 流式生成、实时任务进度或日志流）时，只需用 `@method.server_stream` 装饰异步生成器（若需由客户端流式上传数据，则使用 `@method.client_stream`）。
+除了一问一答的普通方法（`@method`），MeshCall 还原生支持**流式方法**。当一个方法需要持续返回多条结果（例如 AI Token 流式生成、实时任务进度或日志流）时，只需用 `@method.server_stream` 装饰异步生成器（若需由客户端流式上传数据，则使用 `@method.client_stream`）。对于需要在断线后继续的事件与通知，`@method.subscription(cursor=…, resume=…)` 声明一个服务端流，客户端会自动从最后收到的条目之后恢复；`Topic[T]` 把事件分发给进程内的每个订阅者（见[订阅](docs/zh-CN/protocol.md#订阅subscriptions)）。
 
 修改 `service.py`，新增流式方法 `countdown`：
 
@@ -259,6 +260,32 @@ uv run meshcall call demo.v1.Greeter.countdown '{"start": 3}'
 
 如果传错了字段名或类型，`meshcall call` 会自动对照服务契约给出精确到字段路径的修复提示。
 
+### 普通 HTTP 调用
+
+Router 在同一端口上也接受 HTTP 调用，任何能发 HTTP 请求的程序都无需 MeshCall 客户端即可调用你的服务：
+
+```bash
+# 一元调用：JSON 进，JSON 出
+curl http://127.0.0.1:8765/v1/call/demo.v1.Greeter/greet -d '{"name": "Alice"}'
+
+# 服务端流：每个条目一行 {"item": …}，最后一行 {"end": …}
+curl -N http://127.0.0.1:8765/v1/call/demo.v1.Greeter/countdown -d '{"start": 3}'
+
+# 发现服务：Registry，或供 Swagger UI 与客户端生成器使用的 OpenAPI 3.1 文档
+curl http://127.0.0.1:8765/v1/services
+curl http://127.0.0.1:8765/v1/openapi.json
+```
+
+在浏览器（或 Deno、Bun、边缘运行时）中，使用 TypeScript 包的 `meshcall/web` 入口：`new ChatClient(new MeshCallHttpClient("https://router.example", { token }))` 让生成的客户端通过 `fetch` 获得同样的类型化调用、错误、本地校验与订阅恢复（跨域时 Router 需要以 `--http-cors-origin https://app.example` 启动）。
+
+一元调用与服务端流完整可用，客户端流使用 NDJSON 请求体，duplex 调用（作为最后手段的受限形状，见[双向流调用](docs/zh-CN/protocol.md#双向流调用duplex-calls)）只能走 WebSocket。账号、令牌、超时（`MeshCall-Timeout-Ms`）、幂等键（`Idempotency-Key`）与元数据（`MeshCall-Meta-*`）都通过请求头传递，详见 [HTTP 调用](docs/zh-CN/protocol.md#http-调用http-calls)。
+
+---
+
+## Go
+
+Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)：同样的调用、错误、超时、流、订阅与 Router 特性，并通过同一套一致性测试（conformance suite）验证。`meshcall generate service.meshcall.json --language go --output internal/chatclient` 可为任一语言编写的服务生成类型化的 Go 客户端，`meshcall.WriteContract` 则导出 Go 服务的契约，供 Python 与 TypeScript 客户端使用。
+
 ---
 
 ## 让 AI 编程助手看懂你的服务
@@ -299,6 +326,7 @@ uv run --project demo/ts2py demo        # TypeScript 服务 -> Python 客户端�
 | **[快速上手与实战指南](docs/zh-CN/guide.md)** | 处理流式调用、超时与重试、上下文与日志注入、负载均衡及鉴权配置 | **[User Guide & Cookbook](docs/guide.md)** |
 | **[Python SDK 指南](meshcall-py/README.zh-CN.md)** | 查阅 Python 包安装与 API 用法 | [Python SDK](meshcall-py/README.md) |
 | **[TypeScript SDK 指南](meshcall-ts/README.zh-CN.md)** | 查阅 TypeScript 包安装与 API 用法 | [TypeScript SDK](meshcall-ts/README.md) |
+| **Go SDK**（暂无中文版） | 使用 Go 运行时与生成的 Go 客户端 | [Go SDK](meshcall-go/README.md) |
 | **[Router 与 CLI 部署指南](meshcall-router/README.zh-CN.md)** | 独立部署 Router 进程、配置命令行参数与 Docker 运行 | [Router & CLI](meshcall-router/README.md) |
 | **[Router 架构与鉴权](docs/zh-CN/router.md)** | 配置多实例路由、账号权限与访问令牌 | [Router & Auth Guide](docs/router.md) |
 | **[运行时架构设计](docs/zh-CN/architecture.md)** | 了解客户端与服务端运行时的内部设计 | [Runtime Architecture](docs/architecture.md) |
