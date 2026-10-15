@@ -2,9 +2,9 @@
 
 **English** | [简体中文](https://github.com/t4wefan/meshcall/blob/main/meshcall-ts/README.zh-CN.md)
 
-**Write cross-language streaming RPC the way you write ordinary TypeScript and Python functions.**
+**Write cross-language streaming RPC the way you write ordinary TypeScript, Python and Go functions.**
 
-MeshCall is an asynchronous, typed streaming RPC framework for TypeScript and Python over WebSocket, supporting unary, server-streaming, and client-streaming calls routed through the standalone Go Router.
+MeshCall is an asynchronous, typed streaming RPC framework for TypeScript, Python and Go over WebSocket, supporting unary, server-streaming, client-streaming and subscription calls (and, as a last resort, restricted duplex calls) routed through the standalone Go Router.
 
 ## Install
 
@@ -77,8 +77,10 @@ await server.start();
 What happens here:
 
 - `defineType` binds a TypeScript type to a JSON Schema for runtime validation
-- `defineService` declares the service contract (`unaryMethod`, `serverStreamMethod`, or `clientStreamMethod`)
+- `defineService` declares the service contract (`unaryMethod`, `serverStreamMethod`, `clientStreamMethod`, `subscriptionMethod` with `cursor` / `resume`, or `duplexMethod`, the restricted shape of last resort)
 - `MeshCallServer` registers the service with the Go Router, allowing the same node to both expose services and act as a client calling other services in the mesh
+
+`WebSocketRouter` starts the bundled Router from Node: besides `host` / `port` it takes `unixPath` (Linux, macOS, FreeBSD) or `pipe` (Windows) for the local transport, `maxFrameSize` (default and maximum 64 MiB), `outboxSize` (bytes queued for a peer that is not reading; default the Router's 256 MiB, at least `maxFrameSize`), `maxConnections`, `binaryPath` and `authFile`.
 
 ## Explore, Call, and Generate Clients with the CLI
 
@@ -89,12 +91,18 @@ npx meshcall router inspect --router ws://127.0.0.1:8765
 # Call a method from the terminal
 npx meshcall call example.v1.Counter.count '{"count": 5}'
 
-# Generate a TypeScript or Python client from a contract or Python service
+# Generate a TypeScript, Python or Go client from a contract or Python service
 npx meshcall generate service.meshcall.json --language typescript --output generated/client-ts
 npx meshcall generate service.meshcall.json --language python --output generated/client-py
+npx meshcall generate service.meshcall.json --language go --output internal/client
 ```
 
 Export a TypeScript service's portable contract with `await writeContract([counter], "service.meshcall.json")`.
+
+## Subpath Exports
+
+- `meshcall/web` exports `MeshCallHttpClient`, which calls the Router's HTTP v1 API over `fetch` (browsers, Deno, Bun, edge runtimes). Generated clients take the `MeshCallRpc` interface, so pass either a `MeshCallHttpClient` or a `MeshCallClient`: `new ChatClient(new MeshCallHttpClient("https://router.example", { token }))`. Duplex calls stay WebSocket-only; another origin needs `--http-cors-origin` on the Router.
+- `meshcall/otel` exports `otelClientInterceptor()` and `otelServerInterceptor()` for the `interceptors` option of `MeshCallClient` and `MeshCallServer`. They need the optional peer dependency `@opentelemetry/api` and carry W3C trace context as call metadata, matching the Python `meshcall.otel` spans and metrics, so a trace continues across languages and through the Router.
 
 ## Documentation
 

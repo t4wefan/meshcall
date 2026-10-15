@@ -5,7 +5,10 @@
 MeshCall has one Router implementation: the standalone `meshcall-router` Go
 executable. Python and TypeScript `WebSocketRouter` APIs launch, supervise, and
 stop that same executable. They do not maintain routing tables or run Go through
-an FFI layer. A deployed Router can also run independently of either language.
+an FFI layer. A deployed Router can also run independently of any language.
+Go services and clients (`meshcall-go`) connect to it the same way; the Go
+runtime has no launcher, so a Go program runs `meshcall-router` itself or
+connects to a deployed one.
 
 ```mermaid
 flowchart LR
@@ -13,8 +16,10 @@ flowchart LR
   TL[TypeScript launcher] -. owns process .-> R
   PC[Python client] <-->|meshcall/1| R
   TC[TypeScript client] <-->|meshcall/1| R
+  GC[Go client] <-->|meshcall/1| R
   R <-->|registered connection| PS[Python services]
   R <-->|registered connection| TS[TypeScript services]
+  R <-->|registered connection| GS[Go services]
   R --> A[Built-in AuthService]
 ```
 
@@ -97,11 +102,12 @@ and `meshcall call … --instance ID` addresses one.
   consecutive failures; `--breaker-cooldown`, default 10 s) excludes an
   instance that keeps timing out or answering `internal`/`unavailable`, then
   admits one probe call. `Snapshot()` reports in-flight, cap and breaker state.
-- Unary calls carrying an `idempotency_key` are deduplicated per
-  `(service, method, key)`: concurrent duplicates join the in-flight call,
-  later duplicates replay the cached terminal frame for 60 s (bounded to
-  4,096 entries; the cache is lost on restart, which is safe). After
-  `instance_lost`, the next call with the same key prefers another instance.
+- Unary calls carrying an `idempotency_key` are deduplicated per `(service,
+  method, key, instance_id)` (the last empty for an untargeted call):
+  concurrent duplicates join the in-flight call, later duplicates replay the
+  cached terminal frame for 60 s (bounded to 4,096 entries; the cache is lost
+  on restart, which is safe). After `instance_lost`, the next call with the
+  same key prefers another instance.
 - A disconnected client causes the Router to cancel its active service calls.
 - A disconnected service instance causes its active client calls to fail with
   retryable `unavailable`; the caller decides whether a new call is appropriate.
@@ -154,16 +160,17 @@ execute twice, which handlers that honour the key tolerate.
 
 The Router is a single process responsible for registration, authorization and
 forwarding. Each peer has a queue bounded by bytes: `--outbox-size` (default
-256 MiB; it must be at least `--max-frame-size`, default and maximum 64 MiB),
-counting every frame's encoded size plus a fixed per-frame overhead. There is no frame-count limit: the Router forwards a
-stream item only within the credit its consumer granted on that call (an item
-beyond it fails the call with `protocol_error`, reason
+256 MiB; launcher option `outbox_size` / `outboxSize`; it must be at least
+`--max-frame-size`, default and maximum 64 MiB), counting every frame's
+encoded size plus a fixed per-frame overhead. There is no frame-count limit:
+the Router forwards a stream item only within the credit its consumer granted
+on that call (an item beyond it fails the call with `protocol_error`, reason
 `flow_control_violation`), so many concurrent streams to one peer are bounded
 by that peer's own grants. A peer that stops reading while what it asked for
-exceeds the budget is disconnected rather than allowed to accumulate
-unlimited buffered data. Per-call
-FIFO ordering prevents control frames from overtaking `call.open`; eligible
-control frames take priority, and other calls rotate fairly.
+exceeds the budget is disconnected rather than allowed to accumulate unlimited
+buffered data. Per-call FIFO ordering prevents control frames from overtaking
+`call.open`; eligible control frames take priority, and other calls rotate
+fairly.
 
 ## Accounts and permissions
 
@@ -274,9 +281,11 @@ Node clients do not follow redirects by default.
 Use `wss://` through a TLS reverse proxy across a network. The Go listener does
 not terminate TLS itself. The same checks apply to Unix sockets and named
 pipes; a named pipe admits only the Router's own user, SYSTEM and
-Administrators, as a Unix socket's file mode does. Browser-native
-WebSocket credential transport, JWT, and an external login system are outside
-this version; the current launchers and clients run in Python or Node.
+Administrators, as a Unix socket's file mode does. Browsers cannot set the
+`Authorization` header on a WebSocket, so they call over HTTP with
+`meshcall/web` (`MeshCallHttpClient`, see [HTTP calls](#http-calls)). JWT and
+an external login system are outside this version. WebSocket clients run in
+Python, Node and Go; launchers in Python and Node.
 
 ## HTTP calls
 
@@ -298,10 +307,10 @@ meshcall call demo.v1.Counter.add '{"a": 1, "b": 2}' --http   # the CLI over HTT
 
 Authentication is the account or token mechanism above, sent with every
 request (`Authorization: Basic …` or `Bearer …`); failures are JSON errors.
-Prefer tokens for frequent HTTP callers: a Basic password is verified with
-PBKDF2 on every request and at most 8 verifications run at once (the rest
-get `503`), while a token is a single hash lookup. Duplex methods answer
-`405`. Behind a reverse proxy, turn off request buffering for client streams
+Prefer API keys or tokens for frequent HTTP callers: a token is a single
+hash lookup, while a Basic password is verified with PBKDF2 whenever the
+one-minute success cache above misses, and at most 8 such verifications run
+at once (the rest get `503`). Duplex methods answer `405`. Behind a reverse proxy, turn off request buffering for client streams
 and response buffering for server streams (nginx: `proxy_request_buffering
 off`, `proxy_buffering off`); the Router sends `X-Accel-Buffering: no` on
 streaming responses. HTTP calls have their own limits:
@@ -365,19 +374,29 @@ meshcall call demo.v1.Counter.count '{"n":5}'                    # server stream
 printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 ```
 
-`meshcall init [dir] [--force]` (also `uv run meshcall init`,
-`npx meshcall init`) installs the first-party skill at
-`.claude/skills/meshcall/SKILL.md` and a marked MeshCall section in
-`AGENTS.md`, so coding agents in that project use these commands. Re-running
-is idempotent; an edited skill file is kept unless `--force`.
+`meshcall init [dir] [--agent universal|claude|cursor|copilot|windsurf|all]
+[--force]` (also `uv run meshcall init`, `npx meshcall init`) installs the
+first-party skill so coding agents in that project use these commands. By
+default (`universal`) it writes `.agents/skills/meshcall/SKILL.md` and a
+marked MeshCall section in `AGENTS.md`. `--agent` (repeatable or
+comma-separated) writes the named agents' files instead: `claude`
+`.claude/skills/meshcall/SKILL.md` + `CLAUDE.md`; `cursor`
+`.cursor/rules/meshcall.mdc` + `AGENTS.md`; `copilot`
+`.github/skills/meshcall/SKILL.md` + `.github/copilot-instructions.md`;
+`windsurf` `.windsurf/rules/meshcall.md` + `AGENTS.md`; `all` every one.
+Re-running is idempotent; an edited skill file is kept unless `--force`.
 
 `meshcall generate <contract.json | module:Class> --output PATH
-[--language python|typescript] [--single-file] [--service NAME]
+[--language python|typescript|go] [--single-file] [--service NAME]
 [--package-name N] [--package-version V] [--class-name N]
 [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]`
-writes a typed client package (or one file); `meshcall export module:Class
---output contract.json` writes a Python service's contract. A `module:Class`
-source is exported through the interpreter in `MESHCALL_PYTHON`, which
+writes a typed client package (or one file). Go output is always one file,
+`PATH` if it ends in `.go`, else `PATH/client.go`, in package
+`--package-name` (default: the last name segment, lower-cased, plus
+`client`: `demo.v1.Greeting` → `greetingclient`);
+`meshcall export module:Class --output contract.json` writes a Python
+service's contract (Go services write theirs with `meshcall.WriteContract`,
+TypeScript ones with `writeContract`). A `module:Class` source is exported through the interpreter in `MESHCALL_PYTHON`, which
 `uv run meshcall` sets to the project's own.
 
 Errors print the code, message, `details` and a hint: an unknown method
@@ -509,26 +528,41 @@ const server = new MeshCallServer({
 await server.start();
 ```
 
+Go, against a Router started separately:
+
+```go
+server, err := meshcall.NewServer(meshcall.ServerOptions{Services: []*meshcall.Service{svc}, InstanceID: "go-1"})
+err = server.ConnectRouter(ctx, "ws://127.0.0.1:8765")
+```
+
 For an authenticated Router, add `auth=RouterCredentials(...)` to Python
 `WebSocketRouterServerDriver` and `WebSocketClientDriver`. In TypeScript, add
 `auth` inside `MeshCallServer`'s `router` options, and in the third options
-argument of `MeshCallClient`. Either form accepts an account or a token.
+argument of `MeshCallClient`; in Go, set `Authorization` in `ServerOptions` /
+`ClientOptions`. Each form accepts an account, an API key or a token.
 Call `await router.stop()` in both languages when the owning application exits.
 
-Both clients connect to the Router's normal WebSocket address. They do not
-implement balancing or need to know the individual service addresses.
+Clients in every language connect to the Router's normal WebSocket address.
+They do not implement balancing or need to know the individual service
+addresses.
 
 ## Verification
 
 The headless cross-language suite verifies all three recommended call shapes
 through generated clients, Direct TCP/local endpoints, Router TCP/local endpoints,
 multiple TypeScript instances, stream pinning, instance-disconnect cleanup, both
-launchers, and tokens issued and consumed across languages:
+launchers, tokens issued and consumed across languages, a Go service called
+through a generated Python client, and a generated Go client calling Python
+and TypeScript services:
 
 ```bash
 MESHCALL_RUN_INTEROP=1 uv run --directory meshcall-py \
   pytest -q tests/test_multilang_interop.py
 ```
 
-Build the Go Router and install the TypeScript runtime dependencies first. Tests use temporary sockets
-and short-lived child processes; the CI `interop` job runs this suite.
+Build the Go Router and install the TypeScript runtime dependencies first;
+the Go cases need a `go` toolchain. Tests use temporary sockets and
+short-lived child processes; the CI `interop` job runs this suite.
+`scripts/check.sh conformance` runs the Python, TypeScript and Go fixtures
+against the conformance suite over TCP and the local transport (see
+[the architecture](architecture.md#conformance-suite)).

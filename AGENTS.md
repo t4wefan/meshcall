@@ -128,6 +128,9 @@ validation, `diagnostics.go`, `transport.go`, `conformance/fixture`).
 | `init` (agent skill installer) | — | — | `internal/skill`; source `skills/meshcall/SKILL.md` |
 | Conformance suite | `conformance/fixture.py` | `conformance/fixture.ts` | `conformance/` |
 | Auth, tokens | `router_auth.py` | `router-auth.ts` | `auth.go`, `management.go` |
+| Subscriptions, `Topic` | `topic.py` (`client.py` resubscribes) | `topic.ts`, `subscription.ts` | — |
+| OpenTelemetry, metrics | `otel.py` | `otel.ts` | `metrics.go` (Prometheus) |
+| HTTP client / API | — | `web.ts` (`MeshCallHttpClient`) | `httpapi.go`, `openapi.go` |
 
 Tests: `meshcall-py/tests/test_*.py` (one topic per file; `test_timing.py`,
 `test_interceptors.py` are good templates), `meshcall-ts/tests/*.test.ts`,

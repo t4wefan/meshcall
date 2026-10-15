@@ -2,21 +2,29 @@
 
 [English](../guide.md) | **简体中文**
 
-本指南同时面向**人类工程师**与 **AI 编程助手**。每一节都会先讲清楚**为什么要这样用、适用什么业务场景**，随后提供可直接复制使用的 **Python** 与 **TypeScript** 完整代码范例。
+本指南同时面向**人类工程师**与 **AI 编程助手**。每一节都会先讲清楚**为什么要这样用、适用什么业务场景**，随后提供可直接复制使用的 **Python** 与 **TypeScript** 完整代码范例；Go 运行时（`meshcall-go`）写法不同之处也会给出 **Go** 示例。
 
 ---
 
 ## 目录
 
 1. [Router 优先架构：为什么推荐始终通过 Router 通信](#1-router-优先架构为什么推荐始终通过-router-通信)
+   - [本地传输：Unix 套接字与命名管道](#本地传输unix-套接字与命名管道)
 2. [服务契约编写规范与严格模式 (`MESHCALL_STRICT=1`)](#2-服务契约编写规范与严格模式-meshcall_strict1)
 3. [三种核心调用模式：Unary、Server Stream、Client Stream](#3-三种核心调用模式unaryserver-streamclient-stream)
+   - [订阅：可恢复的流](#订阅可恢复的流)
+   - [双向流（duplex）：最后的选择](#双向流duplex最后的选择)
 4. [生成与使用跨语言强类型客户端](#4-生成与使用跨语言强类型客户端)
+   - [从浏览器、边缘运行时或 curl 调用](#从浏览器边缘运行时或-curl-调用)
 5. [使用 CLI 实时探测与调试在线服务](#5-使用-cli-实时探测与调试在线服务)
 6. [无状态负载均衡 vs. 有状态实例定向调用 (`targeted`)](#6-无状态负载均衡-vs-有状态实例定向调用-targeted)
 7. [生产环境高可用：三层超时、自动重试、幂等去重与优雅停机](#7-生产环境高可用三层超时自动重试幂等去重与优雅停机)
+   - [Router 停机、容量限制与指标](#6-router-停机容量限制与指标)
 8. [安全鉴权、ACL 权限控制与临时范围 Token](#8-安全鉴权acl-权限控制与临时范围-token)
+   - [匿名调用方与 API Key](#3-匿名调用方与-api-key)
 9. [拦截器（Interceptors）、元数据（Metadata）与结构化错误处理](#9-拦截器interceptors元数据metadata与结构化错误处理)
+   - [OpenTelemetry 链路追踪](#opentelemetry-链路追踪)
+10. [AI 编程助手集成（`meshcall init`）](#10-ai-编程助手集成meshcall-init)
 
 ---
 
@@ -69,6 +77,33 @@ const server = new MeshCallServer({
 await server.start();
 ```
 
+### Go：同一节点兼具服务端与客户端
+
+Go 运行时没有 Router 启动器：先运行 `meshcall-router --port 8765`（或使用已部署的 Router），再连接它。
+
+```go
+chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
+// meshcall.HandleUnary(chat, "send", handler, meshcall.Doc("…"), meshcall.Idempotent())
+
+server, err := meshcall.NewServer(meshcall.ServerOptions{Services: []*meshcall.Service{chat}, InstanceID: "worker-go-1"})
+err = server.ConnectRouter(ctx, "ws://127.0.0.1:8765")
+
+rpc, err := meshcall.NewClient(meshcall.ClientOptions{}, "ws://127.0.0.1:8765")
+```
+
+### 本地传输：Unix 套接字与命名管道
+
+所有节点都在同一台机器上时可以不走 TCP：Router 监听 Unix 套接字（Linux、macOS、FreeBSD）或命名管道（Windows），只有 Router 自身的用户（命名管道另加 SYSTEM 与 Administrators）可以访问。帧与行为完全一致。
+
+```bash
+meshcall-router --unix-socket /tmp/mesh.sock               # Windows：--pipe mesh
+meshcall --router unix:///tmp/mesh.sock router inspect     # Windows：pipe://mesh
+```
+
+- **Python**：`WebSocketRouter(unix_path="/tmp/mesh.sock")`、`WebSocketClientDriver(unix_path=...)`、`WebSocketRouterServerDriver(unix_path=...)`；Windows 上用 `pipe="mesh"`。
+- **TypeScript**：`new WebSocketRouter({ unixPath })`、`new MeshCallClient({ unixPath: "/tmp/mesh.sock" })`、`router: { endpoint: { unixPath } }`；Windows 上用 `{ pipe: "mesh" }`。
+- **Go** 与 CLI：端点字符串 `unix:///tmp/mesh.sock` 与 `pipe://mesh`。
+
 > **关于直连模式（`WebSocketDirectServerDriver` / `MeshCallServer({ port })`）的说明：** 点对点直连模式仅作为架构早期演进的痕迹与底层兼容性方法保留，**不推荐在实际项目中使用**。直连模式需要手动管理服务端监听端口，无法让节点在统一网格中对等地兼具服务端与客户端身份，且无法使用 `meshcall router inspect` 等路由与可观测能力。
 
 ---
@@ -82,7 +117,7 @@ await server.start();
 1. **服务名必须包含版本段**：推荐格式为 `<命名空间>.v<主版本>.<服务名>`（例如 `billing.v1.InvoiceService`）。未写版本号的名称（如 `chat`）会被自动规范化为 `chat.v0`。
 2. **函数参数即请求体（Parameters are the request）**：不要把所有参数包进一个 `Request` 类里。直接按自然习惯写多个函数参数（如 `session_id: str, limit: int = 20`），MeshCall 会自动合成请求模型。
 3. **返回值必须是结构化模型**：始终返回 Pydantic `BaseModel`（Python）或对象 `TypeContract`（TypeScript），不要直接返回裸的 `str` / `int` / `dict`，以便未来平滑扩展字段。
-4. **开发与 CI 阶段开启 `MESHCALL_STRICT=1`**：开启后，缺少 docstring/description（`W001`）、修改状态的方法未标注副作用属性（`W002`）或注解自相矛盾（`W003`）时会在导入阶段立即报错，并给出精确到行的修复提示（`hint`）。
+4. **开发与 CI 阶段开启 `MESHCALL_STRICT=1`**：开启后，缺少 docstring/description（`W001`）、修改状态的方法未标注副作用属性（`W002`）、注解自相矛盾（`W003`）等契约告警（`W001`–`W006`）会在导入或启动阶段立即报错，并给出精确到行的修复提示（`hint`）。
 
 | 语义注解 | 业务含义 | `RetryPolicy` 是否自动重试？ |
 | --- | --- | --- |
@@ -168,11 +203,49 @@ async with TextProcessorClient(driver) as client:
     print(summary.combined)  # "a-b"
 ```
 
+### 订阅：可恢复的流
+
+事件、通知与实时数据适合声明为**订阅**：一个服务端流，其条目带有有序的 cursor（如 `seq`），请求带一个可选的恢复参数（如 `since`）。连接断开或遇到可重试错误后，生成的客户端会自动重新打开调用，把最后的 `seq` 作为 `since` 传回，对调用方而言仍是同一个迭代器；订阅没有默认超时。Handler 必须只产出 `since` 之后的条目。
+
+`Topic`（Python 与 TypeScript）把条目分发给同一进程内的每个订阅者，并保留有限的历史用于重放。落后太多的订阅者以可重试的 `resource_exhausted`（`reason: "slow_subscriber"`）被断开并重新订阅；早于历史的 cursor 以 `invalid_argument`（`reason: "cursor_expired"`）失败，而不是悄悄跳过事件。跨实例时，请把产生事件的服务设为 `targeted`，或把消息中间件桥接到每个实例的 Topic：Router 不是消息中间件。
+
+```python
+from meshcall import Topic
+
+
+class Event(BaseModel):
+    seq: int
+    text: str
+
+
+@service("feed.v1.Feed")
+class Feed:
+    """实时事件。"""
+
+    def __init__(self) -> None:
+        self.topic: Topic[Event] = Topic(history=1000, cursor=lambda e: e.seq)
+
+    @method.subscription(cursor="seq", resume="since", read_only=True)
+    async def events(self, since: int | None = None) -> AsyncIterator[Event]:
+        """推送 since 之后的每个事件。"""
+        async for event in self.topic.subscribe(after=since):
+            yield event
+
+# 在任意位置（任意线程）发布：feed.topic.publish(Event(seq=n, text="..."))
+# 消费：async for event in client.events(): ...
+```
+
+TypeScript 使用 `subscriptionMethod({ cursor: "seq", resume: "since", … })` 与 `new Topic<Event>({ history: 1000, cursor: (e) => e.seq })`，Handler 中 `for await (const event of topic.subscribe(since)) yield event;`。Go 用 `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` 声明同样的契约（Go 没有 `Topic`），生成的 Go 客户端返回以同样方式自动重新订阅的 `*meshcall.Subscription`。完整规则见[协议规范：订阅](protocol.md#订阅subscriptions)。
+
+### 双向流（duplex）：最后的选择
+
+duplex 方法（Python `@method.duplex(reason="…")` 加一个 `channel: RpcDuplex[In, Out]` 参数，TypeScript `duplexMethod({ reason, … })`，Go `meshcall.HandleDuplex(svc, name, reason, handler)`）同时流式传输输入与输出。只有当输出必须与仍在不断到达的输入在同一调用内交错时才使用它，例如用户还在说话时就回应的语音轮次。它从不重试、不去重，不接受幂等键，不能标注 `idempotent` / `read_only`，不能通过 HTTP 调用，并在整个生命周期内固定在一个实例上；`reason` 会写入契约。只发送不读取的一方会在对方信用耗尽后卡住，因此请在发送的同时并发读取输出。请先尝试"服务端流 + 一元调用"或客户端流。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
+
 ---
 
 ## 4. 生成与使用跨语言强类型客户端
 
-**核心优势：** 统一的 Go CLI（`meshcall generate`）既可以直接读取 Python `module:Class`，也可以读取通用的 `.meshcall.json` 契约文件，一键生成 Python 或 TypeScript 客户端。**生成的客户端不仅校验入参，还会自动校验服务端返回的响应与流条目**，第一时间拦截服务端与客户端契约版本不一致的问题。
+**核心优势：** 统一的 Go CLI（`meshcall generate`）既可以直接读取 Python `module:Class`，也可以读取通用的 `.meshcall.json` 契约文件，一键生成 Python、TypeScript 或 Go 客户端。**生成的客户端不仅校验入参，还会自动校验服务端返回的响应与流条目**，第一时间拦截服务端与客户端契约版本不一致的问题。
 
 ```bash
 # 1. 从 Python 服务 -> 生成可安装的 Python uv 客户端包
@@ -188,11 +261,40 @@ uv run meshcall generate my_app.service:TextProcessor \
   --language typescript \
   --output generated/text-ts
 
-# 4. 从通用 .meshcall.json 契约文件（由 TS `writeContract` 或 `meshcall export` 导出）生成客户端
+# 4. 从通用 .meshcall.json 契约文件（由 TS `writeContract`、Go `meshcall.WriteContract(path, svc)`
+#    或 `meshcall export` 导出）生成客户端
 npx meshcall generate contract.meshcall.json \
   --language python \
   --output generated/py-client
+
+# 5. 生成 Go 客户端：单个文件 <output>/client.go（或你指定的 .go 路径）
+meshcall generate contract.meshcall.json \
+  --language go \
+  --package-name textclient \
+  --output internal/textclient
 ```
+
+### 从浏览器、边缘运行时或 curl 调用
+
+浏览器无法在 WebSocket 上设置 `Authorization` 头，因此 Web 与边缘代码调用 Router 的 HTTP API（同一端口，`/v1/` 路径下）。生成的 TypeScript 客户端可以用 `meshcall/web` 的 `MeshCallHttpClient`（不依赖 Node）代替 `MeshCallClient`；一元调用、流与订阅均可用，duplex 不可用。
+
+```typescript
+import { MeshCallHttpClient } from "meshcall/web";
+import { TextProcessorClient } from "./generated/text-ts/src/index.js";
+
+const client = new TextProcessorClient(new MeshCallHttpClient("https://router.example", { token }));
+const chunk = await client.echo("hello", { timeoutMs: 5_000 });
+```
+
+`token` 传入短期 Token（`mt_…`）或 API Key（`mk_…`）；其他源的页面需要 Router 以 `--http-cors-origin https://app.example` 启动。任何 HTTP 客户端都可以这样调用：
+
+```bash
+curl http://127.0.0.1:8765/v1/call/text.v1.TextProcessor/echo -d '{"text": "hi"}'
+curl -N http://127.0.0.1:8765/v1/call/text.v1.TextProcessor/tokenize -d '{"sentence": "a b"}'  # 若干 {"item":…} 行，最后 {"end":…}
+curl http://127.0.0.1:8765/v1/openapi.json    # 你有权调用的所有方法的 OpenAPI 3.1 文档
+```
+
+完整映射见[协议规范：HTTP 调用](protocol.md#http-调用http-calls)。
 
 ---
 
@@ -344,6 +446,21 @@ await server.stop(drain=True, drain_timeout=30.0)
 await server.close({ drain: true, drainTimeoutMs: 30_000 });
 ```
 
+Go：`server.Drain(ctx)`，然后 `server.Close()`。
+
+### 6. Router 停机、容量限制与指标
+
+用 SIGTERM（或 SIGINT）重启 Router 时，它会先排空：`/readyz` 返回 503，新调用收到可重试的 `unavailable`（`reason: "router_draining"`），空闲连接以 1001 关闭，客户端与服务随之转到其他 Router；超过 `--shutdown-timeout`（默认 10 秒）仍在进行的调用以可重试的 `unavailable`（`reason: "router_shutdown"`）结束。第二次信号跳过等待。由 Python 或 TypeScript 启动器托管的 Router 通过关闭 stdin 停止，会立即结束进行中的调用。
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--max-calls-per-connection` | 1000（`0` 表示不限） | 该连接上超出的调用以可重试的 `resource_exhausted` / `overloaded` 失败，连接保持打开 |
+| `--max-frame-size` | 64 MiB（也是最大值） | 单个负载或流条目必须放进一帧；更大的数据请用流发送 |
+| `--outbox-size` | 256 MiB | Router 对停止读取的对端最多可欠多少数据，超出即断开 |
+| `--metrics-listen` | 关闭 | 在独立监听地址（如 `127.0.0.1:9464`）的 `http://ADDR/metrics` 提供 Prometheus 指标 |
+
+每个参数都有对应的 `MESHCALL_ROUTER_<FLAG>` 环境变量；启动器接受 `max_frame_size` / `maxFrameSize` 与 `outbox_size` / `outboxSize`。
+
 ---
 
 ## 8. 安全鉴权、ACL 权限控制与临时范围 Token
@@ -408,6 +525,22 @@ scoped_driver = WebSocketClientDriver(
 )
 ```
 
+### 3. 匿名调用方与 API Key
+
+不发送 `Authorization` 头的调用方是保留用户 `anonymous`。它可以连接，但除非鉴权文件为它授予 `call` 规则，否则每个调用都返回 `permission_denied`；只有鉴权文件能让某个方法公开。
+
+```json
+{ "username": "anonymous", "roles": ["client"], "call": ["status.v1.Health/*"] }
+```
+
+为机器调用方（Webhook、CI、外部服务）发放长期 **API Key**，而不是密码：
+
+```bash
+meshcall-router new-api-key ci-bot   # 只打印一次 Key，以及应加入 "api_keys" 的条目
+```
+
+填好条目的 `call` 列表后重启 Router。调用方以 `Authorization: Bearer mk_…` 发送 Key：Python 为 `RouterCredentials(token="mk_…")`，TypeScript 为 `{ auth: { token: "mk_…" } }`，Go 为 `ClientOptions{Authorization: "Bearer mk_…"}`，curl 为 `-H 'Authorization: Bearer mk_…'`。校验 Key 只需一次哈希查找；轮换方式是先加新 Key 再删旧 Key。详见 [Router 架构与鉴权](router.md#连接时认证调用时授权)。
+
 ---
 
 ## 9. 拦截器（Interceptors）、元数据（Metadata）与结构化错误处理
@@ -432,6 +565,28 @@ async def audit_server_interceptor(ctx: RpcContext, request: object, call_next: 
     ctx.set_trailer("echo-trace-id", trace_id)
     return await call_next(ctx, request)
 ```
+
+### OpenTelemetry 链路追踪
+
+在两端都加上 OpenTelemetry 拦截器。Trace context 作为 W3C `traceparent` / `tracestate` 调用元数据传递，因此同一条链路可以穿过 Router、跨语言延续；每个调用生成一个 `service/method` span 与 `meshcall.calls` / `meshcall.call.duration` 指标。未配置 OpenTelemetry SDK 时它们什么也不做。
+
+```python
+# pip install "meshcall[otel]"
+from meshcall.otel import client_interceptor, server_interceptor
+
+client = TextProcessorClient(driver, interceptors=[client_interceptor()])
+server = RpcServer(services=[TextProcessor()], driver=server_driver, interceptors=[server_interceptor()])
+```
+
+```typescript
+// 需要可选的 peer dependency @opentelemetry/api
+import { otelClientInterceptor, otelServerInterceptor } from "meshcall/otel";
+
+const client = new MeshCallClient(url, undefined, { interceptors: [otelClientInterceptor()] });
+const server = new MeshCallServer({ services, router: { endpoint: url }, interceptors: [otelServerInterceptor()] });
+```
+
+Go 没有 OpenTelemetry 包；`ClientInterceptor` / `ServerInterceptor` 可以自行读写 `traceparent` 元数据键。
 
 ### 捕获结构化错误
 
@@ -463,11 +618,13 @@ except UnavailableError as err:
 # 适用于 OpenAI Codex、Google Antigravity、OpenCode、Amp 等支持开放标准的工具
 uv run meshcall init
 
-# 定向生成特定工具的配置（claude | cursor | copilot | windsurf | all）：
-uv run meshcall init --agent claude     # 额外写入 .claude/skills/meshcall/SKILL.md 与 CLAUDE.md
-uv run meshcall init --agent cursor     # 额外写入 .cursor/rules/meshcall.mdc
-uv run meshcall init --agent copilot    # 额外更新 .github/copilot-instructions.md
-uv run meshcall init --agent windsurf   # 额外更新 .windsurfrules
-uv run meshcall init --agent all        # 同时生成以上全部配置
+# 改为面向特定工具生成（可重复传入，或用逗号分隔）：
+uv run meshcall init --agent claude     # .claude/skills/meshcall/SKILL.md + CLAUDE.md
+uv run meshcall init --agent cursor     # .cursor/rules/meshcall.mdc + AGENTS.md
+uv run meshcall init --agent copilot    # .github/skills/meshcall/SKILL.md + .github/copilot-instructions.md
+uv run meshcall init --agent windsurf   # .windsurf/rules/meshcall.md + AGENTS.md
+uv run meshcall init --agent all        # 以上全部目标，外加默认的 universal 目标
 ```
+
+指定 `--agent` 时只写入所列目标；若还想保留 `.agents/` 默认位置，请同时加上 `universal`。重复执行是幂等的；被修改过的技能文件会保留，除非传入 `--force`。
 

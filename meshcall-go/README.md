@@ -12,6 +12,10 @@ Windows).
 go get github.com/t4wefan/meshcall/meshcall-go
 ```
 
+A release is pinned with `go get github.com/t4wefan/meshcall/meshcall-go@vX.Y.Z`
+once a `meshcall-go/vX.Y.Z` tag exists: Go tags for a module in a
+subdirectory carry the directory as a prefix.
+
 ## A service
 
 Request, response and item types are structs; their JSON Schema (the
@@ -82,3 +86,23 @@ retryable errors, validate what they receive against their own types, and
 take call options `WithTimeout`, `WithIdleTimeout`, `WithMetadata` and
 `WithInstance` (required for targeted services). Streams are read with
 `Recv()` (`io.EOF` at the end) or `for item, err := range stream.All()`.
+
+## Credentials, interceptors and draining
+
+`ClientOptions.Authorization` and `ServerOptions.Authorization` are sent
+with the WebSocket upgrade (`"Basic …"` or `"Bearer mk_…"`; see
+[Router authentication](../docs/router.md)). `ClientOptions.Interceptors`
+(`[]meshcall.ClientInterceptor`) and `ServerOptions.Interceptors`
+(`[]meshcall.ServerInterceptor`) wrap every call, the first one outermost;
+call metadata carries what they add, such as a W3C `traceparent`.
+
+For a rolling restart call `server.Drain(ctx)`: in Router mode the instance
+leaves every pool, in direct mode the listener closes, and it waits for the
+calls in flight to finish or `ctx` to end. Call `server.Close()` afterwards.
+
+## Documentation
+
+- [MeshCall overview](../README.md)
+- [Protocol specification](../docs/protocol.md)
+- [Router, authentication and management](../docs/router.md)
+- [Runtime architecture](../docs/architecture.md)

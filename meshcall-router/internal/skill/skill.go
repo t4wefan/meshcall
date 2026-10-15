@@ -132,7 +132,7 @@ func ResolveTargets(agents []string) ([]Target, error) {
 // frontmatter while keeping the markdown body intact.
 func cursorMDC(raw string) string {
 	body := raw
-	description := "Explore, call and build MeshCall services (typed streaming RPC between Python, TypeScript and the Go Router)."
+	description := "Explore, call and build MeshCall services (typed streaming RPC between Python, TypeScript and Go through the MeshCall Router)."
 	if strings.HasPrefix(raw, "---\n") {
 		if end := strings.Index(raw[4:], "\n---\n"); end >= 0 {
 			front := raw[4 : 4+end]

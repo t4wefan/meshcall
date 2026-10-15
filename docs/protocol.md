@@ -335,7 +335,9 @@ Router drops. Because the client has already given up on the call, it is also
 free to fail the call locally as `cancelled` as soon as it sends the cancel.
 
 A connection loss terminates every active call on that connection. Version 1
-does not resume streams or migrate them between service instances.
+does not resume streams or migrate them between service instances; a
+subscription's client reopens it as a new call (see
+[Subscriptions](#subscriptions)).
 
 ## Duplex calls
 
@@ -403,6 +405,17 @@ should fail the call with a non-retryable error rather than skip events
 silently. Over HTTP a subscription is a server stream; callers resume by
 sending the cursor themselves.
 
+The Python and TypeScript runtimes ship a `Topic` helper that fans items out
+to the subscribers in one process and fails them with these reasons
+(`source: "server"`):
+
+- a subscriber that falls more than its queue behind fails with retryable
+  `resource_exhausted` (`reason: "slow_subscriber"`), so one slow client
+  cannot hold memory for everyone; its client resubscribes after its cursor;
+- a `resume` cursor older than the kept history fails with non-retryable
+  `invalid_argument` (`reason: "cursor_expired"`) instead of skipping the
+  missing items.
+
 ## Liveness
 
 Connections are kept alive with protocol-level `ping`/`pong` frames rather than
@@ -433,11 +446,11 @@ codes, but must still use the common error envelope.
 | --- | --- | --- |
 | `cancelled` | the caller or a peer cancelled the call | client, server |
 | `deadline_exceeded` | `timeout_ms` or `idle_timeout_ms` elapsed | server, Router, client |
-| `invalid_argument` | request payload or input stream item failed validation | server |
+| `invalid_argument` | request payload or input stream item failed validation, or the call cannot be routed as sent | server, Router |
 | `method_not_found` | unknown service or method | server, Router |
 | `permission_denied` | the identity (including the anonymous user) may not make this call; identical whether or not the target exists | Router |
 | `unauthenticated` | credentials were presented but are invalid; refused at connect | Router |
-| `resource_exhausted` | a capacity limit was reached; usually retryable | Router, transport |
+| `resource_exhausted` | a capacity limit was reached; usually retryable | Router, server, transport |
 | `unavailable` | no instance, or the connection was lost; usually retryable | Router, client |
 | `protocol_error` | a frame violated this document | any |
 | `internal` | an unexpected failure the server does not describe further, including a response or output item that failed the service's own validation | server |
@@ -460,7 +473,11 @@ consumer's credit, see [Flow control](#flow-control)), `router_draining` and
 `router_shutdown` (an `unavailable` from a Router that is stopping, see
 [Router shutdown](#router-shutdown)). A direct server uses the same reasons with
 `source: "server"`. A server enforcing its own `max_inflight`
-answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`. Client retry policies add
+answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`.
+Servers using the `Topic` helper add `slow_subscriber` (a retryable
+`resource_exhausted`) and `cursor_expired` (a non-retryable
+`invalid_argument`), both with `source: "server"`; see
+[Subscriptions](#subscriptions). Client retry policies add
 `attempts` to the final error when more than one attempt was made.
 
 ### Validation failures
@@ -504,8 +521,7 @@ streams fully, client streams with the limits below, and no duplex calls**.
 Requests whose path does not start with `/v1/` are WebSocket upgrades as
 before, except `/healthz` and `/readyz`.
 
-This mapping is **experimental** until v0.2.0 is released; after that it is
-stable under `/v1`, and breaking changes need a new prefix.
+This mapping is stable under `/v1`; breaking changes need a new prefix.
 
 ### Requests
 
