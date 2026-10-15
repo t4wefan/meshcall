@@ -136,16 +136,21 @@ func TestOutboxSizeDisconnectsAPeerThatStopsReading(t *testing.T) {
 	registerPeer(t, instance, "a")
 	client, _ := dialSlowReader(t, r)
 	hello(t, client, "client", "client")
-	window := int64(512) // 4 MiB: more than the kernel buffers absorb
+	window := int64(8192)
 	send(t, client, frame{Kind: "call.open", CallID: "s", Service: testService, Method: "download", Payload: json.RawMessage(`{}`)})
 	send(t, client, frame{Kind: "stream.window", CallID: "s", Direction: "server", Credit: &window})
 	receive(t, instance)
 	receive(t, instance)
+	// Kernel buffers absorb an unknown amount first (several MiB on Windows
+	// loopback), so keep producing until the outbox overflows.
 	payload := json.RawMessage(`"` + strings.Repeat("x", 8<<10) + `"`)
-	for seq := range window {
+	for seq := int64(0); r.metrics.outboxDrops.Load() == 0; seq++ {
+		if seq == window {
+			eventually(t, func() bool { return r.metrics.outboxDrops.Load() == 1 })
+			break
+		}
 		send(t, instance, frame{Kind: "stream.item", CallID: "s", Direction: "server", Sequence: &seq, Payload: payload})
 	}
-	eventually(t, func() bool { return r.metrics.outboxDrops.Load() == 1 })
 }
 
 // An item beyond the consumer's credit is the producer's violation: only that
