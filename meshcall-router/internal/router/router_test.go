@@ -528,14 +528,16 @@ func TestIdempotencyJoinsReplaysAndRedelivers(t *testing.T) {
 	send(t, c1, frame{Kind: "ping", Nonce: "ordered"})
 	receive(t, c1)
 	open(c2, "x2", "k1")
+	// The pong proves x2 was processed: frames on one connection are handled
+	// in order, so x2 has joined x1 rather than racing its result.
+	send(t, c2, frame{Kind: "ping", Nonce: "joined"})
+	receive(t, c2)
 	first := receive(t, a)
 	if first.CallID != "x1" || first.Idempotency != "k1" {
 		t.Fatalf("first open: %+v", first)
 	}
-	send(t, b, frame{Kind: "ping", Nonce: "barrier"})
-	receive(t, b)
 	r.mu.Lock()
-	joined := len(r.dedup) == 1 && len(r.routes) == 1
+	joined := len(r.dedup) == 1 && len(r.routes) == 1 && len(r.routes["x1"].dedup.waiters) == 1
 	r.mu.Unlock()
 	if !joined {
 		t.Fatal("duplicate key was not joined")
@@ -562,6 +564,10 @@ func TestIdempotencyJoinsReplaysAndRedelivers(t *testing.T) {
 	send(t, c1, frame{Kind: "ping", Nonce: "ordered"})
 	receive(t, c1)
 	open(c2, "y2", "k2")
+	// Without this barrier y2 can arrive after b is lost; it is then a retry,
+	// correctly executed on a, and c2 never sees instance_lost.
+	send(t, c2, frame{Kind: "ping", Nonce: "joined"})
+	receive(t, c2)
 	target := receive(t, b) // round robin moved on to b
 	if target.CallID != "y1" {
 		t.Fatalf("expected y1 on b, got %+v", target)
