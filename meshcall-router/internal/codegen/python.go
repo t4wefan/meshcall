@@ -133,7 +133,8 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 		params := pyParameters(m, registry)
 		lines = append(lines, "")
 		var idempotent []string
-		if m.Annotations.Idempotent {
+		// Subscriptions are never retried as calls; they resubscribe instead.
+		if m.Annotations.Idempotent && m.Subscription == nil {
 			idempotent = []string{"            idempotent=True,"}
 		}
 		// Only unary calls are deduplicated and retried on their key, so only
@@ -193,7 +194,15 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 			lines = append(lines, "    ) -> RpcServerStream["+output+"]:")
 			lines = append(lines, pyDocstringLines(m.Description, "        ")...)
 			lines = append(lines, pyRequestLines(m, request)...)
-			lines = append(lines, tail("        return self.call_server_stream(", output)...)
+			if s := m.Subscription; s != nil {
+				args := []string{output}
+				if s.Cursor != nil {
+					args = append(args, "cursor="+pyStringRepr(*s.Cursor), "resume="+pyStringRepr(*s.Resume))
+				}
+				lines = append(lines, tail("        return self.call_subscription(", args...)...)
+			} else {
+				lines = append(lines, tail("        return self.call_server_stream(", output)...)
+			}
 		case "client_stream":
 			input := registry.Name(requiredRef(m.InputItem, m.Name+" input item"))
 			response := registry.Name(requiredRef(m.Response, m.Name+" response"))

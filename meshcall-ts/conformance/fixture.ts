@@ -2,7 +2,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
-  clientStreamMethod, defineService, defineType, duplexMethod, MeshCallError, MeshCallServer, serverStreamMethod, unaryMethod,
+  clientStreamMethod, defineService, defineType, duplexMethod, MeshCallError, MeshCallServer, serverStreamMethod,
+  subscriptionMethod, unaryMethod,
   type WebSocketEndpoint,
 } from "../src/index.js";
 
@@ -25,6 +26,8 @@ const metadataType = defineType<{ metadata: Record<string, string> }>("Metadata"
 const instanceType = defineType<{ instance: string }>("Instance", object({ instance: { type: "string" } }, ["instance"]));
 const chatType = defineType<{ prefix?: string }>("Chat", object({ prefix: { type: "string", default: "" } }));
 const textType = defineType<{ text: string }>("Text", object({ text: { type: "string" } }, ["text"]));
+const ticksType = defineType<{ count: number; since?: number | null }>("Ticks", object({ count: { type: "integer" }, since: { type: ["integer", "null"], default: null } }, ["count"]));
+const seqType = defineType<{ seq: number }>("Seq", object({ seq: { type: "integer" } }, ["seq"]));
 const drainType = defineType<{ delay_ms?: number }>("Drain", object({ delay_ms: { type: "integer", default: 0 } }));
 
 /** unix:///path and pipe://NAME select the local transport. */
@@ -83,6 +86,13 @@ const fixture = defineService({
     metadata_echo: unaryMethod({
       description: "Return the call metadata and set trailers describing it.", readOnly: true, request: emptyType, response: metadataType,
       handler: (_, ctx) => { ctx.setTrailer("echoed", "yes"); ctx.setTrailer("count", String(Object.keys(ctx.metadata).length)); return { metadata: { ...ctx.metadata } }; },
+    }),
+    ticks: subscriptionMethod({
+      description: "Yield seq 0..count-1, or only those after since.", readOnly: true, cursor: "seq", resume: "since",
+      request: ticksType, outputItem: seqType,
+      handler: async function* ({ count, since }) {
+        for (let seq = since === null || since === undefined ? 0 : since + 1; seq < count; seq += 1) yield { seq };
+      },
     }),
     chat: duplexMethod({
       description: "Echo each input with prefix; send done:<inputs> when input ends.",

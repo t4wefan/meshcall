@@ -66,7 +66,8 @@
             "destructive": false
           },
           "deprecated": null,
-          "duplex_reason": null
+          "duplex_reason": null,
+          "subscription": null
         },
         {
           "name": "sum",
@@ -132,7 +133,8 @@
             "destructive": false
           },
           "deprecated": null,
-          "duplex_reason": null
+          "duplex_reason": null,
+          "subscription": null
         },
         {
           "name": "greet",
@@ -196,7 +198,8 @@
             "destructive": false
           },
           "deprecated": null,
-          "duplex_reason": null
+          "duplex_reason": null,
+          "subscription": null
         }
       ]
     }

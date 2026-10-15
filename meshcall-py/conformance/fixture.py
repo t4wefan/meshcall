@@ -56,6 +56,10 @@ class Text(BaseModel):
     text: str
 
 
+class Seq(BaseModel):
+    seq: int
+
+
 @service("conformance.v1.Targeted", targeted=True)
 class Targeted:
     """A targeted service: every call must name the instance it is for."""
@@ -135,6 +139,12 @@ class Fixture:
         ctx.set_trailer("echoed", "yes")
         ctx.set_trailer("count", str(len(ctx.metadata)))
         return Metadata(metadata=dict(ctx.metadata))
+
+    @method.subscription(cursor="seq", resume="since", read_only=True)
+    async def ticks(self, count: int, since: int | None = None) -> AsyncIterator[Seq]:
+        """Yield seq 0..count-1, or only those after ``since``."""
+        for seq in range(0 if since is None else since + 1, count):
+            yield Seq(seq=seq)
 
     @method.duplex(reason="conformance: answers interleave with input")
     async def chat(self, channel: RpcDuplex[Text, Text], prefix: str = "") -> None:

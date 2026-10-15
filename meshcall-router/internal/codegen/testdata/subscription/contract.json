@@ -1,0 +1,134 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.Feed",
+      "version": "1",
+      "source_module": "test_subscription",
+      "source_qualname": "Feed",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "Subscription fixtures.",
+      "targeted": false,
+      "methods": [
+        {
+          "name": "ticks",
+          "stream": "server_stream",
+          "request": {
+            "module": "test_subscription",
+            "qualname": "FeedTicksRequest",
+            "schema": {
+              "properties": {
+                "since": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Since"
+                }
+              },
+              "title": "FeedTicksRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "since"
+          ],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "test_subscription",
+            "qualname": "Tick",
+            "schema": {
+              "properties": {
+                "seq": {
+                  "title": "Seq",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "seq"
+              ],
+              "title": "Tick",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Every tick after ``since``.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null,
+          "subscription": {
+            "cursor": "seq",
+            "resume": "since"
+          }
+        },
+        {
+          "name": "broken",
+          "stream": "server_stream",
+          "request": {
+            "module": "test_subscription",
+            "qualname": "FeedBrokenRequest",
+            "schema": {
+              "properties": {},
+              "title": "FeedBrokenRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "test_subscription",
+            "qualname": "Tick",
+            "schema": {
+              "properties": {
+                "seq": {
+                  "title": "Seq",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "seq"
+              ],
+              "title": "Tick",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Fails for good after one item.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null,
+          "subscription": {
+            "cursor": null,
+            "resume": null
+          }
+        }
+      ]
+    }
+  ]
+}

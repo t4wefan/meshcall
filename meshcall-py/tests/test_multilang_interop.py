@@ -293,6 +293,9 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
                             assert (await anext(exchange)).value == value * 3
                         await exchange.close_send()
                         assert [item async for item in exchange] == []
+
+                    assert [t.seq async for t in client.ticks()] == list(range(5))
+                    assert [t.seq async for t in client.ticks(2)] == [3, 4]
     finally:
         await router.stop()
     if local and not WINDOWS:

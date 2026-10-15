@@ -3,8 +3,10 @@ export {
   MeshCallClient,
   MeshCallDuplexCall,
   MeshCallServerStream,
+  MeshCallSubscription,
   type CallOptions,
   type DuplexCallOptions,
+  type SubscriptionOptions,
   type ClientCallInfo,
   type ClientCallNext,
   type ClientInterceptor,
@@ -18,6 +20,8 @@ export {
   type ContractMethod,
   clientStreamMethod,
   duplexMethod,
+  subscriptionMethod,
+  type SubscriptionSpec,
   defineService,
   defineType,
   type ExportableServiceDefinition,
@@ -82,3 +86,4 @@ export {
   RouterAuthClient, ROUTER_AUTH_SERVICE, type RouterCredentials, type RouterScope,
   type RouterIdentity, type IssuedToken,
 } from "./router-auth.js";
+export { Topic, type TopicOptions } from "./topic.js";

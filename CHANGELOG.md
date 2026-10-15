@@ -18,6 +18,8 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Changed
 
+- Sticky balancing uses rendezvous hashing: an instance joining or leaving
+  moves only its own keys instead of remapping every key.
 - **Duplex is a supported, restricted shape** (#26). It must be declared
   with a reason (`@method.duplex(reason=…)` / `duplexMethod({ reason })`),
   which goes into the contract as `duplex_reason` and shows in `router
@@ -38,6 +40,16 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Subscriptions (#14): `@method.subscription(cursor=, resume=)` /
+  `subscriptionMethod({ cursor, resume })` declare a server stream that
+  clients resubscribe to after a retryable failure or dropped connection,
+  resuming after the last item's cursor, with no default timeouts
+  (`call_subscription` / `MeshCallClient.subscribe`, generated clients
+  included). The contract gains `subscription`; `router inspect` tags it.
+  `Topic[T]` / `Topic<T>` fan out events in process, with a bounded queue
+  per subscriber (`slow_subscriber`) and optional replay history
+  (`cursor_expired` when a cursor is older than it); Python's `publish` is
+  safe from any thread or loop.
 - Windows named pipes (#29), Windows' local transport in place of Unix
   sockets: `meshcall-router --pipe NAME` (`MESHCALL_ROUTER_PIPE`), `pipe=` /
   `pipe:` on the Python and TypeScript Router launchers, clients and

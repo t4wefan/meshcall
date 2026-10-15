@@ -11,6 +11,7 @@ const {
   defineService,
   defineType,
   duplexMethod,
+  subscriptionMethod,
   unaryMethod,
   serverStreamMethod,
   writeContract,
@@ -80,6 +81,18 @@ const service = defineService({
         let product = payload.value;
         for await (const item of items) product += item.value * payload.factor;
         return { product, handled_by: handledBy };
+      },
+    }),
+    ticks: subscriptionMethod({
+      cursor: "seq", resume: "since",
+      request: defineType("TypeScriptTicks", {
+        type: "object", properties: { since: { type: ["integer", "null"], default: null } }, additionalProperties: false,
+      }, { module: "typescript_interop_service" }),
+      outputItem: defineType("TypeScriptTick", {
+        type: "object", properties: { seq: { type: "integer" } }, required: ["seq"], additionalProperties: false,
+      }, { module: "typescript_interop_service" }),
+      handler: async function* ({ since }) {
+        for (let seq = since === null || since === undefined ? 0 : since + 1; seq < 5; seq += 1) yield { seq };
       },
     }),
     exchange: duplexMethod({
