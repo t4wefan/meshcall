@@ -19,6 +19,7 @@ var scenarios = []scenario{
 	{"targeted: instance_id routes, targeted services require it", targeted},
 	{"router: unknown method is method_not_found", unknownMethod},
 	{"server stream: item credit is respected", serverStreamCredit},
+	{"server stream: concurrent streams keep per-call credit", concurrentStreamCredit},
 	{"client stream: window, items, end, result", clientStream},
 	{"timeout: server enforces timeout_ms", serverTimeout},
 	{"idle: server enforces idle_timeout_ms on input", serverIdle},
@@ -321,6 +322,82 @@ func serverStreamCredit(h *harness) error {
 	}
 	if result["kind"] != "call.result" {
 		return fmt.Errorf("expected call.result after stream.end, got %v", result)
+	}
+	return nil
+}
+
+// concurrentStreamCredit runs many streams on one connection, granting a
+// little credit up front and one more per item consumed, as the runtimes do.
+// The Router enforces each call's credit (docs/protocol.md → Flow control), so
+// a producer that overran it would fail with flow_control_violation here.
+func concurrentStreamCredit(h *harness) error {
+	c, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	const streams, items, initial = 24, 20, 4
+	next, granted := map[string]int{}, map[string]int{}
+	for range streams {
+		id, err := c.open("count", frame{"n": items, "gap_ms": 0}, nil)
+		if err != nil {
+			return err
+		}
+		if err := c.send(frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": initial}); err != nil {
+			return err
+		}
+		next[id], granted[id] = 0, initial
+	}
+	// Before any replenishment each stream stops at its initial credit.
+	for received := 0; received < streams*initial; received++ {
+		f, err := c.receive()
+		if err != nil {
+			return err
+		}
+		id, _ := f["call_id"].(string)
+		if f["kind"] != "stream.item" || int(number(f["sequence"])) != next[id] {
+			return fmt.Errorf("expected item %d of %s, got %v", next[id], id, f)
+		}
+		if next[id]++; next[id] > granted[id] {
+			return fmt.Errorf("%s sent item %d with %d credit", id, next[id]-1, granted[id])
+		}
+	}
+	if err := c.expectNothing(200 * time.Millisecond); err != nil {
+		return fmt.Errorf("a stream sent beyond its initial credit: %w", err)
+	}
+	for id := range next {
+		if err := c.send(frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": initial}); err != nil {
+			return err
+		}
+		granted[id] += initial
+	}
+	for done := 0; done < streams; {
+		f, err := c.receive()
+		if err != nil {
+			return err
+		}
+		id, _ := f["call_id"].(string)
+		switch f["kind"] {
+		case "stream.item":
+			if int(number(f["sequence"])) != next[id] {
+				return fmt.Errorf("expected item %d of %s, got %v", next[id], id, f)
+			}
+			next[id]++
+			if granted[id] < items {
+				if err := c.send(frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": 1}); err != nil {
+					return err
+				}
+				granted[id]++
+			}
+		case "stream.end":
+		case "call.result":
+			if next[id] != items {
+				return fmt.Errorf("%s finished after %d of %d items", id, next[id], items)
+			}
+			done++
+		default:
+			return fmt.Errorf("unexpected frame %v", f)
+		}
 	}
 	return nil
 }

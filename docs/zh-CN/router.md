@@ -70,7 +70,7 @@ Router 在内存中仅维护四张轻量表：客户端连接表、服务实例�
   - 携带 `idempotency_key` 的一元调用按 `(service, method, idempotency_key, instance_id)` 去重：若相同 Key 的前序请求仍在执行，并发重复请求会自动合并等待同一个终止帧；若前序请求已完成，Router 会在 60 秒窗口内直接重放缓存的终止帧（最多缓存 4,096 条）。
   - 若处理该 Key 的实例中途断线（`instance_lost`），下一次携带同一 Key 的重试会自动优先选择另一个健康实例。
 - **三层超时兜底**：Router 对携带 `timeout_ms` 的调用在 `timeout_ms + --deadline-grace`（默认宽限 `500ms`）处设置定时器。正常情况下服务端的超时（`timeout_ms`）会先触发；只有当服务实例假死未响应时，Router 才会介入，向客户端返回 `deadline_exceeded`（`details.source = "router"`），并向实例发送 `call.cancel` 释放路由。
-- **空闲连接清理与背压队列**：客户端与服务实例默认每 15 秒发送一次协议级 `ping`；Router 对超过 `--idle-timeout`（默认 45 秒）无任何帧到达的静默连接自动关闭。每个对端连接拥有有界发送队列（最多 256 帧或至少 8 MiB），防止慢节点拖垮 Router 内存。
+- **空闲连接清理与背压队列**：客户端与服务实例默认每 15 秒发送一次协议级 `ping`；Router 对超过 `--idle-timeout`（默认 45 秒）无任何帧到达的静默连接自动关闭。每个对端连接拥有按字节计的有界发送队列（至少 8 MiB，或最大帧大小的两倍；每帧另计固定开销），防止慢节点拖垮 Router 内存。队列不限帧数：Router 只在消费方授予的额度（credit）内转发流条目，超出额度的条目视为发送方违规，该调用以 `protocol_error`（`reason: flow_control_violation`）失败，不断开任何连接。
 
 ---
 

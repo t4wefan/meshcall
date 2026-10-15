@@ -261,9 +261,27 @@ direction. A producer must not send the next item without credit. A runtime may
 hold one prefetched item while waiting for credit so it can discover iterator
 exhaustion without another window grant.
 
-Item credit bounds queue length. The WebSocket driver also applies a byte limit
-to encoded frames and fair scheduling across active calls. A future protocol
-revision may add byte-based stream credit without changing call semantics.
+Credit is per call and per direction; nothing limits the total a consumer
+grants across the calls on one connection. A Router enforces it: it counts the
+credit in every `stream.window` it forwards and the items it forwards against
+it, and an item beyond that credit is the producer's violation. The Router
+does not forward it; it fails the call with `protocol_error`
+(`details.source = "router"`, `details.reason = "flow_control_violation"`) to
+the client and sends `call.cancel` with reason `flow_control_violation` to the
+instance. No connection is closed for it. A consumer that receives an item
+beyond its credit fails the call with `protocol_error` likewise.
+
+Everything a Router buffers for a peer is therefore something that peer asked
+for: items within the credit it granted, and a bounded number of control and
+terminal frames per call it opened or accepted (`call.open`, `stream.end`,
+`call.result` or `call.error`, `call.cancel`, windows answering the items it
+sent, `pong` answering its `ping`). The Router bounds each peer's buffer by
+bytes, not by frame count (see [the Router](router.md)); a peer that stops
+reading while what it asked for exceeds that budget is disconnected as a slow
+peer. A consumer that may stall should keep its outstanding credit across all
+calls on a connection, times the size of an item, within that budget. Item
+credit does not bound bytes; a future protocol revision may add byte-based
+stream credit without changing call semantics.
 
 ## Terminal frames
 
@@ -396,8 +414,10 @@ circuit breaker), `balance_disabled`, `cancelled` (a joined idempotent call
 was cancelled by its first caller), `instance_unknown` / `instance_draining`
 (a targeted call named an instance that is not registered or is leaving) and
 `instance_required` (an `invalid_argument` for a targeted service called
-without `instance_id`) and `idempotency_key_on_duplex` (an
-`invalid_argument` for a duplex call carrying an idempotency key). A direct server uses the same reasons with
+without `instance_id`), `idempotency_key_on_duplex` (an
+`invalid_argument` for a duplex call carrying an idempotency key) and
+`flow_control_violation` (a `protocol_error`: a stream item beyond the
+consumer's credit, see [Flow control](#flow-control)). A direct server uses the same reasons with
 `source: "server"`. A server enforcing its own `max_inflight`
 answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`. Client retry policies add
 `attempts` to the final error when more than one attempt was made.

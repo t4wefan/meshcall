@@ -2,18 +2,27 @@ package router
 
 import "sync"
 
-// A bounded, per-call FIFO with round-robin scheduling. Control frames at a
-// call's head have priority, but never overtake that call's queued call.open.
+// A per-call FIFO with round-robin scheduling. Control frames at a call's head
+// have priority, but never overtake that call's queued call.open.
+//
+// It is bounded by bytes only. A frame count cannot be: many concurrent calls
+// may each legitimately queue a frame, and stream items are already bounded
+// per call by the credit the receiving peer granted (the Router enforces it,
+// see route.credit), so everything queued here is something that peer asked
+// for.
 type outbox struct {
 	mu     sync.Mutex
 	calls  map[string][]frame
 	order  []string
 	bytes  int
-	count  int
 	limit  int
 	closed bool
 	ready  chan struct{}
 }
+
+// frameOverhead approximates a queued frame's memory beyond its encoding (the
+// decoded struct), so a flood of tiny frames is bounded too.
+const frameOverhead = 512
 
 func newOutbox(limit int) *outbox {
 	return &outbox{calls: make(map[string][]frame), limit: limit, ready: make(chan struct{}, 1)}
@@ -24,15 +33,15 @@ func (q *outbox) push(f frame) bool {
 	f.raw = data
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed || q.count >= 256 || q.bytes+len(data) > q.limit {
+	size := len(data) + frameOverhead
+	if q.closed || q.bytes+size > q.limit {
 		return false
 	}
 	if len(q.calls[f.CallID]) == 0 {
 		q.order = append(q.order, f.CallID)
 	}
 	q.calls[f.CallID] = append(q.calls[f.CallID], f)
-	q.bytes += len(data)
-	q.count++
+	q.bytes += size
 	select {
 	case q.ready <- struct{}{}:
 	default:
@@ -63,8 +72,7 @@ func (q *outbox) pop() (frame, bool) {
 	} else {
 		q.order = append(q.order, id)
 	}
-	q.bytes -= len(f.raw)
-	q.count--
+	q.bytes -= len(f.raw) + frameOverhead
 	return f, true
 }
 
@@ -74,5 +82,5 @@ func (q *outbox) close() {
 	q.closed = true
 	q.calls = make(map[string][]frame)
 	q.order = nil
-	q.bytes, q.count = 0, 0
+	q.bytes = 0
 }

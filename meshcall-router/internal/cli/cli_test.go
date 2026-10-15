@@ -80,7 +80,7 @@ func fakeInstance(t *testing.T, routerURL string) {
 		totals := map[string]float64{}
 		echoes := map[string]int{} // duplex calls: output sequence so far
 		// count calls send only as much as the caller's credit allows, like a
-		// runtime: the Router drops a client whose outbox overflows.
+		// runtime: the Router fails a call whose items overrun it.
 		type countCall struct{ n, next, credit int }
 		counts := map[string]*countCall{}
 		flush := func(id string) {

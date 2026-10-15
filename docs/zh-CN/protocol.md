@@ -107,7 +107,7 @@ MeshCall 在有序、可靠的字节流/消息连接上传输 JSON 逻辑帧。W
 | `unauthenticated` | 未提供凭据或凭据无效 | `router` |
 | `resource_exhausted` | 达到容量上限（如 `max_inflight` 满载 `overloaded` 或单帧超大），通常可重试 | `router`, `server`, `client` |
 | `unavailable` | 无可用实例（`no_instances`）、实例断线（`instance_lost`）、全员熔断（`circuit_open`）或目标实例正在排空（`instance_draining`） | `router`, `client` |
-| `protocol_error` | 帧格式违反协议，或客户端收到不符合本地契约的响应（`invalid_response`） | 任意节点 |
+| `protocol_error` | 帧格式违反协议（如流条目超出消费方授予的额度：`flow_control_violation`），或客户端收到不符合本地契约的响应（`invalid_response`） | 任意节点 |
 | `internal` | 服务端内部未预期异常，或服务端返回值未通过自身契约校验 | `server` |
 
 ### 结构化校验错误（`details.violations`）
