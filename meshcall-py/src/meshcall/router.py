@@ -10,6 +10,7 @@ from meshcall.drivers.local import PIPE_PREFIX, check_unix_supported, pipe_addre
 from meshcall.errors import DriverStateError
 from meshcall.protocol import PROTOCOL_VERSION
 from meshcall.router_install import find_router_binary
+from meshcall.transport import DEFAULT_MAX_FRAME_SIZE
 
 
 class WebSocketRouter:
@@ -22,7 +23,8 @@ class WebSocketRouter:
         *,
         unix_path: str | Path | None = None,
         pipe: str | None = None,
-        max_frame_size: int = 1024 * 1024,
+        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
+        outbox_size: int | None = None,
         binary_path: str | Path | None = None,
         auth_file: str | Path | None = None,
         max_connections: int | None = None,
@@ -41,8 +43,10 @@ class WebSocketRouter:
         )
         if port is not None and not 0 <= port <= 65535:
             raise ValueError("Port must be between 0 and 65535")
-        if not 1 <= max_frame_size <= 64 * 1024 * 1024:
+        if not 1 <= max_frame_size <= DEFAULT_MAX_FRAME_SIZE:
             raise ValueError("max_frame_size must be between 1 and 67108864")
+        if outbox_size is not None and outbox_size < max_frame_size:
+            raise ValueError("outbox_size must be at least max_frame_size")
         if startup_timeout <= 0 or shutdown_timeout <= 0:
             raise ValueError("Process timeouts must be positive")
         if max_connections is not None and max_connections < 1:
@@ -55,6 +59,8 @@ class WebSocketRouter:
                 "Unix socket path exceeds the portable 103-byte limit"
             )
         self.max_frame_size = max_frame_size
+        #: Bytes queued for a peer that is not reading; None = Router default.
+        self.outbox_size = outbox_size
         self.binary_path = binary_path
         self.auth_file = Path(auth_file).absolute() if auth_file is not None else None
         #: Open WebSocket connections the Router accepts; None = Router default.
@@ -107,6 +113,8 @@ class WebSocketRouter:
                 "--max-frame-size",
                 str(self.max_frame_size),
             ]
+            if self.outbox_size is not None:
+                command.extend(["--outbox-size", str(self.outbox_size)])
             if self.pipe is not None:
                 command.extend(["--pipe", self.pipe])
             elif self.unix_path is not None:

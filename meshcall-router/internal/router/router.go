@@ -35,7 +35,10 @@ type Config struct {
 	// the local transport instead of a Unix socket.
 	Pipe         string
 	MaxFrameSize int
-	Auth         *Auth
+	// OutboxSize bounds the bytes queued for one peer that is not reading;
+	// it must hold at least one frame of MaxFrameSize.
+	OutboxSize int
+	Auth       *Auth
 	// DeadlineGrace is added to every call's timeout_ms before the router
 	// enforces it, so the service's own deadline_exceeded normally arrives first.
 	DeadlineGrace time.Duration
@@ -75,6 +78,9 @@ const (
 	DefaultMaxAnonymousConnections = 1000
 	DefaultHTTPDefaultTimeout      = 30 * time.Second
 	DefaultHTTPMaxInflight         = 10000
+	// DefaultMaxFrameSize is also the largest frame size accepted.
+	DefaultMaxFrameSize = 64 << 20
+	DefaultOutboxSize   = 256 << 20
 )
 
 type Ready struct {
@@ -211,10 +217,16 @@ type Router struct {
 
 func Start(config Config) (*Router, error) {
 	if config.MaxFrameSize == 0 {
-		config.MaxFrameSize = 1024 * 1024
+		config.MaxFrameSize = DefaultMaxFrameSize
 	}
-	if config.MaxFrameSize < 1 || config.MaxFrameSize > 64*1024*1024 {
+	if config.MaxFrameSize < 1 || config.MaxFrameSize > DefaultMaxFrameSize {
 		return nil, errors.New("max-frame-size must be between 1 and 67108864")
+	}
+	if config.OutboxSize == 0 {
+		config.OutboxSize = DefaultOutboxSize
+	}
+	if config.OutboxSize < config.MaxFrameSize {
+		return nil, errors.New("outbox-size must be at least max-frame-size")
 	}
 	if config.DeadlineGrace == 0 {
 		config.DeadlineGrace = DefaultDeadlineGrace
@@ -481,7 +493,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	} else {
 		ctx, cancel = context.WithCancel(r.ctx)
 	}
-	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(max(8*1024*1024, 2*r.config.MaxFrameSize)), drops: &r.metrics.outboxDrops}
+	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(r.config.OutboxSize), drops: &r.metrics.outboxDrops}
 	r.mu.Lock()
 	if r.closed || !r.config.Auth.valid(user) {
 		r.mu.Unlock()

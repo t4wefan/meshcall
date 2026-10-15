@@ -21,7 +21,7 @@ const (
 	DefaultPingInterval = 15 * time.Second
 	DefaultPingTimeout  = 10 * time.Second
 	DefaultIdleTimeout  = 45 * time.Second
-	DefaultMaxFrameSize = 1024 * 1024
+	DefaultMaxFrameSize = 64 << 20
 )
 
 // conn is one WebSocket carrying meshcall/1 frames.

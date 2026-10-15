@@ -328,7 +328,7 @@ func (r *Router) virtualClient(parent context.Context, user *User) (*peer, func(
 	id := make([]byte, 16)
 	_, _ = rand.Read(id)
 	p := &peer{ctx: ctx, cancel: cancel, user: user, role: "client", id: hex.EncodeToString(id),
-		out: newOutbox(max(8*1024*1024, 2*r.config.MaxFrameSize)), drops: &r.metrics.outboxDrops}
+		out: newOutbox(r.config.OutboxSize), drops: &r.metrics.outboxDrops}
 	r.mu.Lock()
 	if r.closed || !r.config.Auth.valid(user) {
 		r.mu.Unlock()

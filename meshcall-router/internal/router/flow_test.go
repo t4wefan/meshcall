@@ -124,6 +124,30 @@ func TestConcurrentStreamsToASlowReaderStayConnected(t *testing.T) {
 	}
 }
 
+// The outbox limit is configurable: a peer that leaves more than OutboxSize
+// unread is disconnected, however it came to be owed those bytes.
+func TestOutboxSizeDisconnectsAPeerThatStopsReading(t *testing.T) {
+	r, err := Start(Config{MaxFrameSize: 16 << 10, OutboxSize: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	instance := dial(t, r, "")
+	registerPeer(t, instance, "a")
+	client, _ := dialSlowReader(t, r)
+	hello(t, client, "client", "client")
+	window := int64(512) // 4 MiB: more than the kernel buffers absorb
+	send(t, client, frame{Kind: "call.open", CallID: "s", Service: testService, Method: "download", Payload: json.RawMessage(`{}`)})
+	send(t, client, frame{Kind: "stream.window", CallID: "s", Direction: "server", Credit: &window})
+	receive(t, instance)
+	receive(t, instance)
+	payload := json.RawMessage(`"` + strings.Repeat("x", 8<<10) + `"`)
+	for seq := range window {
+		send(t, instance, frame{Kind: "stream.item", CallID: "s", Direction: "server", Sequence: &seq, Payload: payload})
+	}
+	eventually(t, func() bool { return r.metrics.outboxDrops.Load() == 1 })
+}
+
 // An item beyond the consumer's credit is the producer's violation: only that
 // call fails, and neither connection is closed.
 func TestItemsBeyondCreditFailOnlyThatCall(t *testing.T) {

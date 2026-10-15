@@ -71,6 +71,17 @@ permission like any other service otherwise.
 `balance.kind` is one of `round_robin`, `least_inflight`, `random`, `sticky`,
 `disabled`.
 
+### Frame size
+
+A frame's encoded size is limited to 64 MiB by default, which is also the
+largest limit the Router accepts (`--max-frame-size`; `max_frame_size` /
+`maxFrameSize` / `MaxFrameSize` in the runtimes). A payload, including one
+stream item, must fit in one frame; larger data is sent as a stream. A peer
+that receives a larger frame closes the connection (WebSocket close 1009).
+The Router queues frames for each peer up to `--outbox-size` bytes (default
+256 MiB, at least the maximum frame size); a peer that stops reading
+while more than that is owed to it is disconnected.
+
 ### Metadata
 
 `metadata` is an optional object whose keys and values are strings. On

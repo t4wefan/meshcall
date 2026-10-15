@@ -138,9 +138,9 @@ per Router: a duplicate idempotent call sent to two different Routers may
 execute twice, which handlers that honour the key tolerate.
 
 The Router is a single process responsible for registration, authorization and
-forwarding. Each peer has a queue bounded by bytes: at least 8 MiB, or twice
-the configured maximum frame size, counting every frame's encoded size plus a
-fixed per-frame overhead. There is no frame-count limit: the Router forwards a
+forwarding. Each peer has a queue bounded by bytes: `--outbox-size` (default
+256 MiB; it must be at least `--max-frame-size`, default and maximum 64 MiB),
+counting every frame's encoded size plus a fixed per-frame overhead. There is no frame-count limit: the Router forwards a
 stream item only within the credit its consumer granted on that call (an item
 beyond it fails the call with `protocol_error`, reason
 `flow_control_violation`), so many concurrent streams to one peer are bounded

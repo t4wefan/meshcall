@@ -319,7 +319,10 @@ func TestQueuePreservesOpenBarrierAndBoundsMemory(t *testing.T) {
 			t.Fatal("control overtook open")
 		}
 	}
-	if q.push(frame{raw: make([]byte, 4097)}) {
+	if !q.push(frame{raw: make([]byte, 4096)}) {
+		t.Fatal("an empty queue refused a frame as large as its limit")
+	}
+	if q.push(frame{Kind: "ping"}) {
 		t.Fatal("unbounded queue")
 	}
 	q.close()
@@ -833,8 +836,10 @@ func TestUnixSocketOwnershipAndConfigValidation(t *testing.T) {
 	if _, err := Start(Config{Port: -1}); err == nil {
 		t.Fatal("invalid port accepted")
 	}
-	if _, err := Start(Config{MaxFrameSize: -1}); err == nil {
-		t.Fatal("invalid limit accepted")
+	for _, config := range []Config{{MaxFrameSize: -1}, {MaxFrameSize: DefaultMaxFrameSize + 1}, {OutboxSize: DefaultMaxFrameSize - 1}, {MaxFrameSize: 2048, OutboxSize: 1024}} {
+		if _, err := Start(config); err == nil {
+			t.Fatalf("invalid limits accepted: %+v", config)
+		}
 	}
 }
 

@@ -21,6 +21,10 @@ from meshcall.protocol import (
     encode_frame,
 )
 
+#: Largest encoded frame, sent or received, unless configured smaller; also
+#: the Router's ceiling.
+DEFAULT_MAX_FRAME_SIZE = 64 * 1024 * 1024
+
 
 class WebSocketLike(Protocol):
     async def send(self, message: str | bytes) -> None: ...

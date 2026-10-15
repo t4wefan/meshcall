@@ -11,6 +11,7 @@ import { gunzipSync } from "node:zlib";
 
 import { namedPipePath, unixSocketPath } from "./endpoint.js";
 import { PROTOCOL_VERSION } from "./protocol.js";
+import { DEFAULT_MAX_FRAME_SIZE } from "./transport.js";
 
 export interface WebSocketRouterOptions {
   readonly host?: string;
@@ -20,6 +21,8 @@ export interface WebSocketRouterOptions {
   /** Named pipe `\\.\pipe\NAME` to listen on (Windows only). */
   readonly pipe?: string;
   readonly maxFrameSize?: number;
+  /** Bytes queued for a peer that is not reading (at least `maxFrameSize`); omitted = Router default. */
+  readonly outboxSize?: number;
   readonly binaryPath?: string;
   readonly authFile?: string;
   /** Open WebSocket connections the Router accepts; omitted = Router default. */
@@ -218,9 +221,12 @@ export class WebSocketRouter {
     if (options.port !== undefined && (!Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65535)) {
       throw new RangeError("Port must be between 0 and 65535");
     }
-    const maxFrameSize = options.maxFrameSize ?? 1024 * 1024;
-    if (!Number.isSafeInteger(maxFrameSize) || maxFrameSize < 1 || maxFrameSize > 64 * 1024 * 1024) {
+    const maxFrameSize = options.maxFrameSize ?? DEFAULT_MAX_FRAME_SIZE;
+    if (!Number.isSafeInteger(maxFrameSize) || maxFrameSize < 1 || maxFrameSize > DEFAULT_MAX_FRAME_SIZE) {
       throw new RangeError("maxFrameSize must be between 1 and 67108864");
+    }
+    if (options.outboxSize !== undefined && (!Number.isSafeInteger(options.outboxSize) || options.outboxSize < maxFrameSize)) {
+      throw new RangeError("outboxSize must be at least maxFrameSize");
     }
     this.startupTimeout = options.startupTimeoutMs ?? 10000;
     this.shutdownTimeout = options.shutdownTimeoutMs ?? 5000;
@@ -249,7 +255,8 @@ export class WebSocketRouter {
       if (this.isRunning) return;
       await this.stopProcess();
       this.diagnostic = "";
-      const args = ["--shutdown-on-stdin-close", "--max-frame-size", String(this.options.maxFrameSize ?? 1024 * 1024)];
+      const args = ["--shutdown-on-stdin-close", "--max-frame-size", String(this.options.maxFrameSize ?? DEFAULT_MAX_FRAME_SIZE)];
+      if (this.options.outboxSize !== undefined) args.push("--outbox-size", String(this.options.outboxSize));
       if (this.pipe !== undefined) args.push("--pipe", this.pipe);
       else if (this.unixPath !== undefined) args.push("--unix-socket", this.unixPath);
       else args.push("--host", this.options.host ?? "127.0.0.1", "--port", String(this.options.port ?? 0));
