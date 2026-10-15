@@ -37,6 +37,7 @@ from meshcall.router_install import find_cli_binary
 PYTHON_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = PYTHON_PACKAGE_ROOT.parent
 TYPESCRIPT_ROOT = REPOSITORY_ROOT / "meshcall-ts"
+GO_ROOT = REPOSITORY_ROOT / "meshcall-go"
 RUNTIME_INDEX = TYPESCRIPT_ROOT / "dist" / "src" / "index.js"
 INTEROP_ROOT = Path(__file__).parent / "interop"
 RUN_INTEROP = os.environ.get("MESHCALL_RUN_INTEROP") == "1"
@@ -567,3 +568,200 @@ async def test_one_trace_from_a_python_client_to_a_typescript_service(
     assert context is not None
     assert where.trace_id == format(context.trace_id, "032x")
     assert where.parent_span_id == format(context.span_id, "016x")
+
+
+def _go_required() -> None:
+    if shutil.which("go") is None:
+        pytest.fail("go is required for cross-language tests with the Go runtime")
+
+
+@contextmanager
+def generated_python_client(contract_path: Path, root: Path, module: str):
+    package = root / f"generated-{uuid.uuid4().hex}"
+    _generate(str(contract_path), "--language", "python", "--output", str(package))
+    sys.path.insert(0, str(package / "src"))
+    try:
+        yield importlib.import_module(module)
+    finally:
+        sys.path.remove(str(package / "src"))
+        for imported in tuple(sys.modules):
+            if imported == module or imported.startswith(module + "."):
+                sys.modules.pop(imported, None)
+
+
+async def test_go_service_with_generated_python_client(tmp_path: Path) -> None:
+    _go_required()
+    router = WebSocketRouter(port=0)
+    await router.start()
+    contract = tmp_path / "go.meshcall.json"
+    process = await asyncio.create_subprocess_exec(
+        _tool("go"),
+        "run",
+        "./internal/interop/server",
+        f"ws://127.0.0.1:{router.bound_port}",
+        str(contract),
+        cwd=GO_ROOT,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    try:
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=180)
+        if not line:
+            raise AssertionError(await _process_failure(process))
+        module = "meshcall_test_v1_gointeropservice_client"
+        with generated_python_client(contract, tmp_path, module) as generated:
+            driver = WebSocketClientDriver(f"ws://127.0.0.1:{router.bound_port}")
+            async with generated.GoInteropServiceClient(driver) as client:
+                result = await client.multiply(6, 7)
+                assert (result.product, result.handled_by) == (42, "go")
+                items = [item.value async for item in client.download(4, 3)]
+                assert items == [0, 3, 6, 9]
+
+                async def input_items():
+                    for value in range(1, 4):
+                        yield generated.Item(value=value, handled_by="python")
+
+                assert (await client.upload(input_items(), 10, 2)).product == 22
+                assert [t.seq async for t in client.ticks()] == [0, 1, 2, 3, 4]
+                assert [t.seq async for t in client.ticks(2)] == [3, 4]
+                async with client.exchange(0, 5) as exchange:
+                    await exchange.send(generated.Item(value=2, handled_by="python"))
+                    assert (await anext(exchange)).value == 10
+                    await exchange.close_send()
+                    assert [item async for item in exchange] == []
+    finally:
+        await _stop_server_process(process)
+        await router.stop()
+
+
+GO_CLIENT_MAIN = """package main
+
+import (
+\t"context"
+\t"encoding/json"
+\t"io"
+\t"os"
+
+\tmeshcall "github.com/t4wefan/meshcall/meshcall-go"
+\t"github.com/t4wefan/meshcall/meshcall-go/testdata/{dir}/pyclient"
+\t"github.com/t4wefan/meshcall/meshcall-go/testdata/{dir}/tsclient"
+)
+
+func must[T any](v T, err error) T {{
+\tif err != nil {{
+\t\tpanic(err)
+\t}}
+\treturn v
+}}
+
+func ptr[T any](v T) *T {{ return &v }}
+
+func main() {{
+\tctx := context.Background()
+\trpc := must(meshcall.NewClient(meshcall.ClientOptions{{}}, os.Args[1]))
+\tdefer rpc.Close()
+\tout := map[string]any{{}}
+
+\tpy := pyclient.NewPythonInteropServiceClient(rpc)
+\tgreet := must(py.Greet(ctx, pyclient.PythonInteropServiceGreetRequest{{Name: "Go", Repeat: ptr(int64(2))}}))
+\tout["greet"] = greet.Message
+\tdownload := must(py.Download(ctx, pyclient.PythonInteropServiceDownloadRequest{{Count: 3}}))
+\tvar values []int64
+\tfor item, err := range download.All() {{
+\t\tvalues = append(values, must(item, err).ItemValue)
+\t}}
+\tout["download"] = values
+\tupload := must(py.Upload(ctx, pyclient.PythonInteropServiceUploadRequest{{Offset: 7}}, func(yield func(pyclient.PythonItem) bool) {{
+\t\tfor _, v := range []int64{{1, 2, 3}} {{
+\t\t\tif !yield(pyclient.PythonItem{{ItemValue: v, Status: "ready"}}) {{
+\t\t\t\treturn
+\t\t\t}}
+\t\t}}
+\t}}))
+\tout["upload"] = upload.Total
+\tevents := must(py.Events(ctx, pyclient.PythonInteropServiceEventsRequest{{Since: ptr(int64(2))}}))
+\tvar seqs []int64
+\tfor event, err := range events.All() {{
+\t\tseqs = append(seqs, must(event, err).Seq)
+\t}}
+\tout["events"] = seqs
+\texchange := must(py.Exchange(ctx, pyclient.PythonInteropServiceExchangeRequest{{Offset: 100}}))
+\t_ = exchange.Send(pyclient.PythonItem{{ItemValue: 1, Status: "busy"}})
+\tout["exchange"] = must(exchange.Recv()).ItemValue
+\t_ = exchange.CloseSend()
+\tif _, err := exchange.Recv(); err != io.EOF {{
+\t\tpanic(err)
+\t}}
+
+\tts := tsclient.NewTypeScriptInteropServiceClient(rpc)
+\tproduct := must(ts.Multiply(ctx, tsclient.TypeScriptRequest{{Value: 6, Factor: 7}}))
+\tout["multiply"] = []any{{product.Product, product.HandledBy}}
+\tticks := must(ts.Ticks(ctx, tsclient.TypeScriptTicks{{Since: ptr(int64(1))}}))
+\tvar tickSeqs []int64
+\tfor tick, err := range ticks.All() {{
+\t\ttickSeqs = append(tickSeqs, must(tick, err).Seq)
+\t}}
+\tout["ticks"] = tickSeqs
+\t_ = json.NewEncoder(os.Stdout).Encode(out)
+}}
+"""
+
+
+async def test_generated_go_client_calls_python_and_typescript_services(
+    tmp_path: Path,
+) -> None:
+    _go_required()
+    router = WebSocketRouter(port=0)
+    await router.start()
+    url = f"ws://127.0.0.1:{router.bound_port}"
+    server = RpcServer(
+        services=[PythonInteropService], driver=WebSocketRouterServerDriver(url)
+    )
+    await server.start()
+    py_contract = tmp_path / "python.meshcall.json"
+    write_contract((get_service_contract(PythonInteropService),), py_contract)
+    work_name = f"interop-{uuid.uuid4().hex[:12]}"
+    work = GO_ROOT / "testdata" / work_name
+    try:
+        async with running_typescript(tmp_path, {"router": {"endpoint": url}}) as (
+            _,
+            ts_contract,
+            _,
+        ):
+            _generate(
+                str(py_contract),
+                "--language",
+                "go",
+                "--package-name",
+                "pyclient",
+                "--output",
+                str(work / "pyclient"),
+            )
+            _generate(
+                str(ts_contract),
+                "--language",
+                "go",
+                "--package-name",
+                "tsclient",
+                "--output",
+                str(work / "tsclient"),
+            )
+            (work / "main.go").write_text(GO_CLIENT_MAIN.format(dir=work_name))
+            completed = await _run_process(
+                "go", "run", f"./testdata/{work_name}", url, cwd=GO_ROOT
+            )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        await server.stop()
+        await router.stop()
+    assert json.loads(completed.stdout) == {
+        "greet": "Hello, Go! Hello, Go!",
+        "download": [0, 1, 2],
+        "upload": 13,
+        "events": [3, 4],
+        "exchange": 101,
+        "multiply": [42, "typescript"],
+        "ticks": [2, 3, 4],
+    }

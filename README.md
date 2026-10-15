@@ -281,6 +281,10 @@ Unary calls and server streams work fully, client streams take an NDJSON body, a
 
 ---
 
+### Go
+
+Go services and clients use the Go runtime, [`meshcall-go`](meshcall-go/README.md): the same calls, errors, deadlines, streams, subscriptions and Router features, checked by the same conformance suite. `meshcall generate service.meshcall.json --language go --output internal/chatclient` writes a typed Go client for a service written in any of the three languages, and `meshcall.WriteContract` exports a Go service's contract for Python and TypeScript clients.
+
 ## Teach Your AI Coding Assistant
 
 If you build with an AI coding assistant, run `meshcall init` once in your project root:

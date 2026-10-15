@@ -17,8 +17,9 @@ router() {
     && CGO_ENABLED=0 go build -trimpath -ldflags="-X main.version=local" -o bin/meshcall ./cmd/meshcall)
 }
 go_checks() {
-  step "go vet + race tests"
+  step "go vet + race tests (Router, CLI, Go runtime)"
   (cd meshcall-router && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count=1 ./...)
+  (cd meshcall-go && test -z "$(gofmt -l .)" && go vet ./... && go test -race -count=1 ./...)
 }
 py_checks() {
   step "python lint, types, tests (incl. interop)"
@@ -55,10 +56,11 @@ drift() {
   scripts/regenerate.sh --check
 }
 conformance() {
-  step "protocol conformance (Python and TypeScript fixtures)"
+  step "protocol conformance (Python, TypeScript and Go fixtures)"
   (cd meshcall-router && go build -o bin/meshcall-conformance ./cmd/meshcall-conformance)
   (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s build)
   (cd meshcall-py && uv sync --frozen --quiet)
+  (cd meshcall-go && go build -o bin/conformance-fixture ./conformance/fixture)
   # TCP and the local transport (a Unix socket here, a named pipe on Windows).
   for transport in tcp local; do
     printf 'python (%s)... ' "$transport"
@@ -67,8 +69,11 @@ conformance() {
     printf 'typescript (%s)... ' "$transport"
     meshcall-router/bin/meshcall-conformance --transport "$transport" --fixture "node $PWD/meshcall-ts/dist/conformance/fixture.js" >"$PWD/.conformance-ts.log" 2>&1 \
       && echo ok || { echo FAILED; cat .conformance-ts.log; return 1; }
+    printf 'go (%s)... ' "$transport"
+    meshcall-router/bin/meshcall-conformance --transport "$transport" --fixture "$PWD/meshcall-go/bin/conformance-fixture" >"$PWD/.conformance-go.log" 2>&1 \
+      && echo ok || { echo FAILED; cat .conformance-go.log; return 1; }
   done
-  rm -f .conformance-py.log .conformance-ts.log
+  rm -f .conformance-py.log .conformance-ts.log .conformance-go.log
 }
 
 parts=${*:-all}
