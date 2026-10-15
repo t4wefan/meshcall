@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -297,7 +298,6 @@ type frame = map[string]any
 type client struct {
 	h      *harness
 	conn   *websocket.Conn
-	seq    int
 	frames chan frame
 	errors chan error
 }
@@ -375,6 +375,8 @@ func (c *client) send(f frame) error {
 
 var errNoFrame = errors.New("no frame within the wait")
 
+var callSeq atomic.Int64
+
 func (c *client) receive() (frame, error) { return c.receiveWithin(c.h.opts.Timeout) }
 
 func (c *client) receiveWithin(timeout time.Duration) (frame, error) {
@@ -403,9 +405,10 @@ func (c *client) expectNothing(d time.Duration) error {
 	return err
 }
 
+// callID is unique across every client of a run: the Router keys routes by
+// call_id, so two clients must never pick the same one.
 func (c *client) callID() string {
-	c.seq++
-	return fmt.Sprintf("call-%d-%d", time.Now().UnixNano()%1_000_000, c.seq)
+	return fmt.Sprintf("call-%d-%d", os.Getpid(), callSeq.Add(1))
 }
 
 func (c *client) open(method string, payload any, extra frame) (string, error) {
