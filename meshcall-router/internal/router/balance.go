@@ -150,14 +150,29 @@ func (r *Router) selectInstance(f frame, avoid *peer) (*peer, *frame) {
 		if err := canonicalJSON(&canonical, value); err != nil {
 			return fail("invalid_argument", "Invalid sticky key")
 		}
-		digest := sha256.Sum256([]byte(canonical.String()))
-		return p.instances[binary.BigEndian.Uint64(digest[:8])%uint64(len(p.instances))], nil
+		return rendezvous(p.instances, canonical.String()), nil
 	default: // disabled
 		if len(p.instances) != 1 {
 			return fail("unavailable", "Balance is disabled for "+f.Service+"."+f.Method)
 		}
 		return p.instances[0], nil
 	}
+}
+
+// rendezvous picks the instance with the highest hash of (instance id, key):
+// highest-random-weight hashing. Unlike hash-mod-N, an instance joining or
+// leaving only moves the keys it wins or held, so sticky state elsewhere
+// stays where it is.
+func rendezvous(instances []*peer, key string) *peer {
+	var best *peer
+	var bestScore uint64
+	for _, candidate := range instances {
+		digest := sha256.Sum256([]byte(candidate.instanceID + "\x00" + key))
+		if score := binary.BigEndian.Uint64(digest[:8]); best == nil || score > bestScore {
+			best, bestScore = candidate, score
+		}
+	}
+	return best
 }
 
 // targetInstance routes a call that names its instance. The caller chose the

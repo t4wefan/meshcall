@@ -1033,3 +1033,27 @@ func TestNamedPipe(t *testing.T) {
 		t.Fatal("a second Router listened on the same pipe")
 	}
 }
+
+func TestStickyRendezvousMovesOnlyTheLeavingInstancesKeys(t *testing.T) {
+	instances := []*peer{{instanceID: "a"}, {instanceID: "b"}, {instanceID: "c"}, {instanceID: "d"}}
+	before := map[string]string{}
+	counts := map[string]int{}
+	for i := 0; i < 2000; i++ {
+		key := fmt.Sprintf(`"user-%d"`, i)
+		before[key] = rendezvous(instances, key).instanceID
+		counts[before[key]]++
+	}
+	for id, n := range counts {
+		if n < 350 || n > 650 {
+			t.Fatalf("instance %s got %d of 2000 keys: %v", id, n, counts)
+		}
+	}
+	// "c" leaves: only its keys move; everyone else's stay put.
+	remaining := []*peer{instances[0], instances[1], instances[3]}
+	for key, owner := range before {
+		after := rendezvous(remaining, key).instanceID
+		if owner != "c" && after != owner {
+			t.Fatalf("key %s moved from %s to %s although %s did not leave", key, owner, after, owner)
+		}
+	}
+}
