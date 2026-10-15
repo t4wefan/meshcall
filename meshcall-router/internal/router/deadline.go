@@ -53,6 +53,21 @@ func (r *Router) endRoute(id string, rt *route) {
 	delete(r.routes, id)
 	rt.instance.inflight--
 	r.untrack(rt)
+	r.callEnded(rt.client)
+	if r.draining {
+		rt.instance.out.wake()
+		if len(r.routes) == 0 {
+			r.markDrained()
+		}
+	}
+}
+
+// callEnded releases one of a client's calls. Called under r.mu.
+func (r *Router) callEnded(client *peer) {
+	client.calls--
+	if r.draining {
+		client.out.wake()
+	}
 }
 
 func (r *Router) wake() {
@@ -78,8 +93,6 @@ func (r *Router) expireLoop() {
 			if r.routes[id] != rt {
 				continue
 			}
-			delete(r.routes, id)
-			rt.instance.inflight--
 			r.observe(rt.instance, false)
 			r.finishRoute(rt, "deadline_exceeded")
 			if rt.dedup != nil && rt.dedup.route == rt {
@@ -87,6 +100,7 @@ func (r *Router) expireLoop() {
 			}
 			rt.client.send(deadlineError(id))
 			rt.instance.send(frame{Kind: "call.cancel", CallID: id, Reason: "deadline_exceeded"})
+			r.endRoute(id, rt)
 		}
 		next := time.Hour
 		if len(r.deadlines) > 0 {

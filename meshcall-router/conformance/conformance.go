@@ -150,7 +150,7 @@ func newHarness(ctx context.Context, opts Options) (*harness, error) {
 // startRouter starts the Router, on the same port, socket or pipe as before
 // when restarting.
 func (h *harness) startRouter() error {
-	config := router.Config{Port: h.port, IdleTimeout: 1500 * time.Millisecond, DeadlineGrace: 300 * time.Millisecond}
+	config := router.Config{Port: h.port, IdleTimeout: 1500 * time.Millisecond, DeadlineGrace: 300 * time.Millisecond, ShutdownTimeout: 300 * time.Millisecond}
 	if h.opts.Local {
 		if h.local == "" {
 			if localsock.UnixSupported() {

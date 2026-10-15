@@ -36,7 +36,7 @@ var scenarios = []scenario{
 	{"http: closing the request cancels the call", httpCancelOnDisconnect},
 	{"idempotency: duplicate keys join once and replay", idempotency},
 	{"keepalive: instance pings within the router idle window", keepalive},
-	{"reconnect: instance re-registers after router restart", routerRestart},
+	{"reconnect: instance re-registers after a router shutdown", routerRestart},
 	{"drain: leaves the pool, finishes streams, disconnects", drain},
 }
 
@@ -689,8 +689,40 @@ func keepalive(h *harness) error {
 	return nil
 }
 
+// routerRestart shuts the Router down with a stream in flight: the client
+// gets router_shutdown, the instance a call.cancel and a 1001 close, and it
+// must register again with the restarted Router.
 func routerRestart(h *harness) error {
-	h.router.Close()
+	c, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	id, err := c.open("count", frame{"n": 1000, "gap_ms": 40}, nil)
+	if err != nil {
+		return err
+	}
+	if err := c.send(frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": 1000}); err != nil {
+		return err
+	}
+	if _, err := c.receive(); err != nil { // first item: the stream is live
+		return err
+	}
+	h.router.Shutdown()
+	for {
+		f, err := c.receive()
+		if err != nil {
+			return fmt.Errorf("no terminal frame for the stream the Router shut down: %w", err)
+		}
+		if f["kind"] == "stream.item" {
+			continue
+		}
+		code, _, retryable, details := errorOf(f)
+		if f["kind"] != "call.error" || code != "unavailable" || !retryable || details["reason"] != "router_shutdown" {
+			return fmt.Errorf("stream ended by a Router shutdown: %v", f)
+		}
+		break
+	}
 	time.Sleep(200 * time.Millisecond)
 	if err := h.startRouter(); err != nil {
 		return fmt.Errorf("restart router at %s: %w", h.routerURL(), err)
@@ -698,12 +730,12 @@ func routerRestart(h *harness) error {
 	if err := h.waitRegistered(10 * time.Second); err != nil {
 		return fmt.Errorf("instance did not re-register after router restart: %w", err)
 	}
-	c, err := h.client()
+	after, err := h.client()
 	if err != nil {
 		return err
 	}
-	defer c.close()
-	result, err := c.unary("echo", frame{"value": 1, "text": "back"}, nil)
+	defer after.close()
+	result, err := after.unary("echo", frame{"value": 1, "text": "back"}, nil)
 	if err != nil {
 		return err
 	}

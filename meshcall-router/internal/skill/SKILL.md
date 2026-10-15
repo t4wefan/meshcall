@@ -335,7 +335,14 @@ my_app/
   `.github/copilot-instructions.md`, `.windsurf/rules/meshcall.md`) when
   `--agent` is specified.
 - Rolling restart: `server.stop(drain=True)` / `server.close({ drain: true })`
-  leaves the pool first, so no request fails.
+  leaves the pool first, so no request fails. Restarting a Router: send it
+  SIGTERM; it refuses new calls with retryable `unavailable` /
+  `router_draining`, closes idle connections with 1001 so peers move to
+  another Router, and gives calls in flight `--shutdown-timeout` (default
+  10 s) before ending them with `unavailable` / `router_shutdown`.
+- `--max-calls-per-connection` (default 1000, `0` unlimited) bounds one
+  connection's calls in flight; beyond it a call gets retryable
+  `resource_exhausted` / `overloaded`.
 - Several Routers: give services and clients the list of endpoints; no
   coordination is needed because the Router keeps no state peers cannot rebuild.
 - Configure the Router with flags or `MESHCALL_ROUTER_<FLAG>` variables

@@ -85,10 +85,7 @@ func (r *Router) serveHealth(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if req.URL.Path == "/readyz" {
-		r.mu.Lock()
-		closed := r.closed
-		r.mu.Unlock()
-		if closed {
+		if r.stopping.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"status":"stopping"}` + "\n"))
 			return

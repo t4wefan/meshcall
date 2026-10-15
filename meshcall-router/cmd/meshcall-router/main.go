@@ -63,6 +63,8 @@ func run() error {
 	flag.StringVar(&config.Pipe, "pipe", "", `named pipe \\.\pipe\NAME, exclusive with host/port (Windows only: elsewhere use --unix-socket)`)
 	flag.IntVar(&config.MaxFrameSize, "max-frame-size", router.DefaultMaxFrameSize, "maximum frame bytes (at most 64 MiB)")
 	flag.IntVar(&config.OutboxSize, "outbox-size", router.DefaultOutboxSize, "bytes queued for a peer that is not reading before it is disconnected (at least max-frame-size)")
+	flag.IntVar(&config.MaxCallsPerConnection, "max-calls-per-connection", router.DefaultMaxCallsPerConnection, "calls one connection may have in flight (0: no limit)")
+	flag.DurationVar(&config.ShutdownTimeout, "shutdown-timeout", router.DefaultShutdownTimeout, "on SIGTERM/SIGINT, how long calls in flight may finish before they are ended (0: end them at once)")
 	flag.StringVar(&authPath, "auth-file", "", "JSON account and permission configuration")
 	flag.DurationVar(&config.DeadlineGrace, "deadline-grace", router.DefaultDeadlineGrace, "added to each call's timeout before the router enforces it")
 	flag.DurationVar(&config.IdleTimeout, "idle-timeout", router.DefaultIdleTimeout, "close connections that send nothing for this long")
@@ -113,6 +115,13 @@ func run() error {
 			return fmt.Errorf("a Unix socket or named pipe cannot be combined with host or port")
 		}
 	}
+	// The flags spell "none" as 0; Config reserves 0 for the default.
+	if config.MaxCallsPerConnection == 0 {
+		config.MaxCallsPerConnection = -1
+	}
+	if config.ShutdownTimeout == 0 {
+		config.ShutdownTimeout = -1
+	}
 	var err error
 	if config.Auth, err = loadAuth(authPath); err != nil {
 		return err
@@ -135,6 +144,8 @@ func run() error {
 	}
 	select {
 	case <-signals:
+		go func() { <-signals; r.Close() }() // a second signal skips the drain
+		r.Shutdown()
 	case <-parentGone:
 	case <-r.Done():
 		return fmt.Errorf("router listener stopped unexpectedly")

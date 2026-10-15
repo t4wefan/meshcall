@@ -119,6 +119,12 @@ instance at its cap and answers retryable `resource_exhausted`
 (`reason: "overloaded"`) when every instance is full; an instance also
 enforces the cap itself, so direct-mode servers behave the same.
 
+The Router also bounds the calls one connection may have in flight
+(`--max-calls-per-connection`, default 1000, `0` for no limit), counting
+calls that joined an in-flight idempotent call. A `call.open` beyond it
+fails with retryable `resource_exhausted` (`reason: "overloaded"`) and the
+connection stays open.
+
 The Router keeps a per-instance circuit breaker: a call that hits the
 Router's deadline, or that the instance answers with `internal` or
 `unavailable`, counts as a failure; application errors do not. After a
@@ -141,6 +147,28 @@ connection. Its `instance_id` stays reserved until then. Sending
 
 A direct server drains by closing its listener while keeping existing
 connections open, then waiting the same way.
+
+### Router shutdown
+
+A Router that is asked to stop (SIGTERM or SIGINT; a second signal skips the
+wait) drains first:
+
+1. `/readyz` answers 503. New connections are refused with HTTP 503 and
+   `Retry-After`, and every new `call.open` on an existing connection fails
+   with retryable `unavailable` (`reason: "router_draining"`). Such a call
+   reached no instance, so retrying it elsewhere is always safe.
+2. Each connection with nothing in flight (no call as a client, no routed
+   call as an instance) is closed with WebSocket status 1001 (going away), at
+   once or as soon as its last call ends. Clients reconnect, moving to
+   another Router when they have several; service instances reconnect the
+   same way and register wherever a Router accepts them.
+3. After `--shutdown-timeout` (default 10 s) the calls still in flight end:
+   the client receives retryable `unavailable` (`reason: "router_shutdown"`),
+   the instance receives `call.cancel` with reason `router_shutdown`, and
+   the remaining connections close with 1001.
+
+A Router that stops without draining (its owner closed its stdin, or the
+embedding program called `Close`) performs step 3 at once.
 
 ## Calls
 
@@ -428,7 +456,9 @@ was cancelled by its first caller), `instance_unknown` / `instance_draining`
 without `instance_id`), `idempotency_key_on_duplex` (an
 `invalid_argument` for a duplex call carrying an idempotency key) and
 `flow_control_violation` (a `protocol_error`: a stream item beyond the
-consumer's credit, see [Flow control](#flow-control)). A direct server uses the same reasons with
+consumer's credit, see [Flow control](#flow-control)), `router_draining` and
+`router_shutdown` (an `unavailable` from a Router that is stopping, see
+[Router shutdown](#router-shutdown)). A direct server uses the same reasons with
 `source: "server"`. A server enforcing its own `max_inflight`
 answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`. Client retry policies add
 `attempts` to the final error when more than one attempt was made.

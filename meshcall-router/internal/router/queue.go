@@ -78,6 +78,20 @@ func (q *outbox) pop() (frame, bool) {
 	return f, true
 }
 
+func (q *outbox) empty() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.order) == 0
+}
+
+// wake makes the writer look at the queue (and the Router's state) again.
+func (q *outbox) wake() {
+	select {
+	case q.ready <- struct{}{}:
+	default:
+	}
+}
+
 func (q *outbox) close() {
 	q.mu.Lock()
 	defer q.mu.Unlock()

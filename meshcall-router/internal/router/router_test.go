@@ -1075,7 +1075,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	t.Cleanup(r.Close)
 	if r.Ready().Metrics == "" {
 		t.Fatal("ready does not report the metrics address")
 	}
