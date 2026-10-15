@@ -310,7 +310,10 @@ type callHints struct {
 	instances string
 }
 
-const windowCredit = 256
+// windowCredit is the output credit the CLI grants a stream: how many items
+// it lets the Router buffer for it (docs/protocol.md → Flow control), small
+// enough that a burst of them stays well within the Router's byte budget.
+const windowCredit = 128
 
 func streamOut(conn *wire.Conn, id string, c CallOptions, w io.Writer, hint callHints) error {
 	grant := func(n int) error {

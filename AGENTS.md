@@ -129,9 +129,23 @@ Tests: `meshcall-py/tests/test_*.py` (one topic per file; `test_timing.py`,
 
 ## Conventions
 
-- Commits: `type: summary` (`feat`, `fix`, `docs`, `test`, `build`,
-  `refactor`), one logical change per commit, reference issues with
+- Branches: start from the latest `main` and name the branch
+  `<type>/<domain>/<topic>`. `type` matches the commit type (`feat`, `fix`,
+  `docs`, `test`, `build`, `refactor`, `chore`); `domain` is where the change
+  lives: `go` (`meshcall-router/`: Router, CLI, codegen, conformance), `py`
+  (`meshcall-py/`), `ts` (`meshcall-ts/`), `docs`, `ci` (workflows,
+  `scripts/`, release), `demo` (`demo/`, `best-practice/`), `skill`; join
+  several with `+`. Examples: `feat/go+py+ts/windows-pipes`,
+  `fix/ts/reconnect-race`, `docs/docs/http-calls`.
+- Commits: Conventional Commits with a scope, `type(scope): summary`
+  (`fix(ts): …`, `feat(router): …`, `docs(protocol): …`); the body may be
+  English or Chinese. One logical change per commit; reference issues with
   `Closes #N`.
+- Pull requests: one PR does one thing. Changes reach `main` through a PR
+  once CI is green; delete the branch after merging. Never commit unrelated
+  local changes, debug output, logs or screenshots, and never credentials,
+  tokens, `.env` files or signing material (publishing uses GitHub secrets;
+  see the release workflow).
 - Errors carry a stable `code`, a human message, and `details` with
   `source` (`client` | `router` | `server`) and `reason` where useful. New
   codes go into the table in `docs/protocol.md`.

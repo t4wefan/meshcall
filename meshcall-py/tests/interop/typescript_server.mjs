@@ -98,7 +98,7 @@ await writeContract([service], contractPath);
 const server = new MeshCallServer({ services: [service], accessLog: false, ...options });
 await server.start();
 process.stdout.write(JSON.stringify({
-  port: options.router || options.unixPath ? null : server.boundPort,
+  port: options.router || options.unixPath || options.pipe ? null : server.boundPort,
 }) + "\n");
 
 process.stdin.resume();

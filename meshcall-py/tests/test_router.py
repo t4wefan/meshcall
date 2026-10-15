@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -177,6 +178,9 @@ async def test_router_balancing_and_stream_forwarding_over_tcp() -> None:
         await router.stop()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix sockets are not used on Windows"
+)
 async def test_router_over_unix_websocket() -> None:
     socket_path = Path("/tmp") / f"meshcall-router-{uuid.uuid4().hex}.sock"
     router = WebSocketRouter(unix_path=socket_path)

@@ -4,7 +4,7 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { dirname } from "node:path";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 
-import { closeSocket, createSocket, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
+import { closeSocket, createSocket, namedPipePath, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
 import { tryContractEntry } from "./contract.js";
 import { contractWarnings, renderWarning } from "./diagnostics.js";
 import { DeadlineExceededError, ProtocolError, UnavailableError } from "./errors.js";
@@ -49,7 +49,10 @@ export interface MeshCallServerOptions {
   readonly services: ReadonlyArray<ServiceDefinition>;
   readonly host?: string;
   readonly port?: number;
+  /** Unix socket to listen on (not on Windows: use `pipe`). */
   readonly unixPath?: string;
+  /** Named pipe `\\.\pipe\NAME` to listen on (Windows only). */
+  readonly pipe?: string;
   readonly router?: RouterConnectionOptions;
   /**
    * This instance's id, visible to the Router, `router inspect` and targeted
@@ -98,12 +101,14 @@ export class MeshCallServer {
 
   public constructor(private readonly options: MeshCallServerOptions) {
     if (options.router !== undefined &&
-      (options.host !== undefined || options.port !== undefined || options.unixPath !== undefined)) {
+      (options.host !== undefined || options.port !== undefined || options.unixPath !== undefined || options.pipe !== undefined)) {
       throw new TypeError("Router mode cannot be combined with a Direct listener");
     }
-    if (options.unixPath !== undefined && (options.host !== undefined || options.port !== undefined)) {
-      throw new TypeError("Unix socket cannot be combined with host or port");
+    if ([options.unixPath, options.pipe, options.host ?? options.port].filter((v) => v !== undefined).length > 1) {
+      throw new TypeError("Choose one of host/port, unixPath (not on Windows) or pipe (Windows)");
     }
+    if (options.unixPath !== undefined) unixSocketPath(options.unixPath);
+    if (options.pipe !== undefined) namedPipePath(options.pipe);
     this.maxFrameSize = options.maxFrameSize ?? DEFAULT_MAX_FRAME_SIZE;
     this.handshakeTimeout = options.handshakeTimeoutMs ?? 10_000;
     for (const value of [this.maxFrameSize, this.handshakeTimeout]) {
@@ -339,7 +344,8 @@ export class MeshCallServer {
   }
 
   private async startDirect(): Promise<void> {
-    const path = this.options.unixPath;
+    const path = this.options.pipe !== undefined ? namedPipePath(this.options.pipe)
+      : this.options.unixPath !== undefined ? unixSocketPath(this.options.unixPath) : undefined;
     let listener: WebSocketServer;
     if (path === undefined) {
       listener = new WebSocketServer({
@@ -347,8 +353,7 @@ export class MeshCallServer {
         maxPayload: this.maxFrameSize,
       });
     } else {
-      const socketPath = unixSocketPath(path);
-      mkdirSync(dirname(socketPath), { recursive: true });
+      if (this.options.unixPath !== undefined) mkdirSync(dirname(path), { recursive: true });
       this.httpServer = createServer();
       listener = new WebSocketServer({ server: this.httpServer, maxPayload: this.maxFrameSize });
     }
@@ -361,7 +366,7 @@ export class MeshCallServer {
       listener.once("error", failed);
       if (this.httpServer !== undefined) {
         this.httpServer.once("error", failed);
-        this.httpServer.listen(unixSocketPath(path!));
+        this.httpServer.listen(path);
       }
     });
   }

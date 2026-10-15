@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
@@ -28,6 +29,7 @@ class NumberResult(BaseModel):
 
 
 handler_cancelled = asyncio.Event()
+handler_started = asyncio.Event()
 
 
 @service(name="test.v1.NumberService")
@@ -43,6 +45,7 @@ class NumberService:
 
     @method()
     async def cancellable(self, value: int) -> NumberResult:
+        handler_started.set()
         try:
             await asyncio.sleep(value)
         except asyncio.CancelledError:
@@ -258,10 +261,13 @@ async def test_all_call_shapes_over_tcp_websocket() -> None:
         assert deadline_error.value.code == ErrorCode.DEADLINE_EXCEEDED
 
         handler_cancelled.clear()
+        handler_started.clear()
         cancelled_call = asyncio.create_task(
             client.cancellable(NumberRequest(value=10))
         )
-        await asyncio.sleep(0.01)
+        # Cancel once the call is running: a fixed sleep can be shorter than
+        # one tick of Windows' 15.6 ms timer.
+        await asyncio.wait_for(handler_started.wait(), timeout=5)
         cancelled_call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await cancelled_call
@@ -289,6 +295,9 @@ async def test_all_call_shapes_over_tcp_websocket() -> None:
         await server.stop()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix sockets are not used on Windows"
+)
 async def test_unary_over_unix_websocket() -> None:
     socket_path = Path("/tmp") / f"meshcall-{uuid.uuid4().hex}.sock"
     driver = WebSocketDirectServerDriver(unix_path=socket_path)

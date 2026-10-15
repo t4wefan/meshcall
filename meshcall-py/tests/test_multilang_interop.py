@@ -15,6 +15,7 @@ import pytest
 from interop_service import PythonInteropService
 from router_fixtures import PASSWORD, write_auth_file
 from test_direct import NumberRequest, NumberResult, NumberService, NumberServiceClient
+from test_local_transport import WINDOWS, local_endpoint
 
 from meshcall import (
     RouterAuthClient,
@@ -39,6 +40,12 @@ TYPESCRIPT_ROOT = REPOSITORY_ROOT / "meshcall-ts"
 RUNTIME_INDEX = TYPESCRIPT_ROOT / "dist" / "src" / "index.js"
 INTEROP_ROOT = Path(__file__).parent / "interop"
 RUN_INTEROP = os.environ.get("MESHCALL_RUN_INTEROP") == "1"
+
+
+def _tool(name: str) -> str:
+    """The full path of a command: on Windows yarn and npm are .cmd scripts,
+    which CreateProcess finds only by their full name."""
+    return shutil.which(name) or name
 
 
 def _generate(*args: str) -> None:
@@ -73,7 +80,7 @@ def build_typescript_runtime() -> None:
             "`yarn --cwd meshcall-ts install --frozen-lockfile`"
         )
     subprocess.run(
-        ["yarn", "run", "build"],
+        [_tool("yarn"), "run", "build"],
         cwd=TYPESCRIPT_ROOT,
         check=True,
         capture_output=True,
@@ -141,7 +148,7 @@ async def test_typescript_service_with_generated_python_package(
 ) -> None:
     contract_path = tmp_path / "typescript-contract.json"
     process = await asyncio.create_subprocess_exec(
-        "node",
+        _tool("node"),
         str(INTEROP_ROOT / "typescript_server.mjs"),
         str(RUNTIME_INDEX),
         str(contract_path),
@@ -196,7 +203,7 @@ async def test_typescript_service_with_generated_python_package(
 async def running_typescript(root: Path, options: dict):
     contract_path = root / f"{uuid.uuid4().hex}.json"
     process = await asyncio.create_subprocess_exec(
-        "node",
+        _tool("node"),
         str(INTEROP_ROOT / "typescript_server.mjs"),
         str(RUNTIME_INDEX),
         str(contract_path),
@@ -231,31 +238,33 @@ def generated_typescript_client(contract_path: Path, root: Path):
 
 
 @pytest.mark.parametrize("routed", [False, True])
-@pytest.mark.parametrize("unix", [False, True])
+@pytest.mark.parametrize("local", [False, True])
 async def test_generated_python_streams_to_typescript_over_direct_and_router(
     tmp_path: Path,
     routed: bool,
-    unix: bool,
+    local: bool,
 ) -> None:
-    socket = Path("/tmp") / f"meshcall-interop-{uuid.uuid4().hex}.sock"
-    router = WebSocketRouter(unix_path=socket) if unix else WebSocketRouter(port=0)
+    # The local transport is a Unix socket, or a named pipe on Windows.
+    py_local = local_endpoint()
+    socket = Path(py_local.get("unix_path", "/nonexistent"))
+    pipe = py_local.get("pipe")
+    ts_local = {"pipe": pipe} if pipe is not None else {"unixPath": str(socket)}
+    router = WebSocketRouter(**py_local) if local else WebSocketRouter(port=0)
     options: dict = {}
     if routed:
         await router.start()
-        endpoint = (
-            {"unixPath": str(socket)} if unix else f"ws://127.0.0.1:{router.bound_port}"
-        )
+        endpoint = ts_local if local else f"ws://127.0.0.1:{router.bound_port}"
         options = {"router": {"endpoint": endpoint}}
-    elif unix:
-        options = {"unixPath": str(socket)}
+    elif local:
+        options = ts_local
     try:
         async with (
             asyncio.timeout(15),
             running_typescript(tmp_path, options) as (_, contract, ready),
         ):
             driver = (
-                WebSocketClientDriver(unix_path=socket)
-                if unix
+                WebSocketClientDriver(**py_local)
+                if local
                 else WebSocketClientDriver(
                     f"ws://127.0.0.1:{router.bound_port if routed else ready['port']}"
                 )
@@ -286,7 +295,7 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
                         assert [item async for item in exchange] == []
     finally:
         await router.stop()
-    if unix:
+    if local and not WINDOWS:
         assert not socket.exists()
 
 
@@ -339,7 +348,8 @@ async def _run_process(
     cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     process = await asyncio.create_subprocess_exec(
-        *command,
+        _tool(command[0]),
+        *command[1:],
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -385,7 +395,7 @@ async def _process_failure(process: asyncio.subprocess.Process) -> str:
 
 async def _auth_peer(options: dict[str, object]) -> dict[str, object]:
     process = await asyncio.create_subprocess_exec(
-        "node",
+        _tool("node"),
         str(INTEROP_ROOT / "router_auth_peer.mjs"),
         str(RUNTIME_INDEX),
         stdin=asyncio.subprocess.PIPE,
@@ -420,7 +430,7 @@ async def test_go_router_launchers_and_service_scoped_tokens_interoperate(
             port = router.bound_port
         else:
             node = await asyncio.create_subprocess_exec(
-                "node",
+                _tool("node"),
                 str(INTEROP_ROOT / "router_auth_peer.mjs"),
                 str(RUNTIME_INDEX),
                 stdin=asyncio.subprocess.PIPE,

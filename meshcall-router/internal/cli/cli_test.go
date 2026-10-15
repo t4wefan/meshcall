@@ -6,21 +6,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/t4wefan/meshcall/meshcall-router/internal/localsock"
 	"github.com/t4wefan/meshcall/meshcall-router/internal/router"
 )
 
 // fakeInstance registers a service with a contract and answers calls like a
 // runtime would, so the CLI can be tested without Python or TypeScript.
-func fakeInstance(t *testing.T, port int) {
+func fakeInstance(t *testing.T, routerURL string) {
 	t.Helper()
 	ctx := context.Background()
-	conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", port), nil)
+	endpoint, err := localsock.Parse(routerURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, _, err := websocket.Dial(ctx, endpoint.URL, &websocket.DialOptions{HTTPClient: endpoint.HTTPClient()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,10 +79,10 @@ func fakeInstance(t *testing.T, port int) {
 	go func() {
 		totals := map[string]float64{}
 		echoes := map[string]int{} // duplex calls: output sequence so far
-		// count calls: like a real service, send items only within the
-		// client's credit (the Router enforces it).
-		type counting struct{ next, n, credit int }
-		counts := map[string]*counting{}
+		// count calls send only as much as the caller's credit allows, like a
+		// runtime: the Router fails a call whose items overrun it.
+		type countCall struct{ n, next, credit int }
+		counts := map[string]*countCall{}
 		flush := func(id string) {
 			c := counts[id]
 			for ; c.credit > 0 && c.next < c.n; c.next, c.credit = c.next+1, c.credit-1 {
@@ -112,7 +119,8 @@ func fakeInstance(t *testing.T, port int) {
 					send(map[string]any{"kind": "call.result", "call_id": id, "payload": map[string]any{"greeting": "hello " + name, "saw": meta, "key": f["idempotency_key"]},
 						"metadata": map[string]string{"served_by": "fake"}})
 				case "count":
-					counts[id] = &counting{n: int(payload["n"].(float64))}
+					counts[id] = &countCall{n: int(payload["n"].(float64))}
+					flush(id)
 				case "sum":
 					send(map[string]any{"kind": "stream.window", "call_id": id, "direction": "client", "credit": 16})
 				case "echo":
@@ -152,7 +160,7 @@ func TestInspectAndCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(r.Close)
-	fakeInstance(t, r.Ready().Port)
+	fakeInstance(t, fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port))
 	opts := Options{Router: fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port), Timeout: 3 * time.Second}
 	ctx := context.Background()
 
@@ -229,7 +237,7 @@ func TestDuplexCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(r.Close)
-	fakeInstance(t, r.Ready().Port)
+	fakeInstance(t, fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port))
 	opts := Options{Router: fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port), Timeout: 3 * time.Second}
 	ctx := context.Background()
 
@@ -262,5 +270,42 @@ func TestDuplexCall(t *testing.T) {
 	FormatInspect(result, &out)
 	if !strings.Contains(out.String(), "duplex         echo()  — Echo items.  (duplex: answers while the caller types)") {
 		t.Fatalf("inspect does not show the duplex reason:\n%s", out.String())
+	}
+}
+
+// The local transport: a Unix socket, or a named pipe on Windows. Both the
+// WebSocket and the HTTP paths of the CLI must reach the Router through it.
+func TestLocalTransport(t *testing.T) {
+	var config router.Config
+	var url string
+	if localsock.UnixSupported() {
+		dir, err := os.MkdirTemp("/tmp", "meshcall-cli-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		config.UnixPath = filepath.Join(dir, "router.sock")
+		url = "unix://" + config.UnixPath
+	} else {
+		config.Pipe = fmt.Sprintf("meshcall-cli-test-%d", time.Now().UnixNano())
+		url = "pipe://" + config.Pipe
+	}
+	r, err := router.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	if localsock.UnixSupported() != (r.Ready().UnixPath != "") || localsock.UnixSupported() == (r.Ready().Pipe != "") {
+		t.Fatalf("ready does not report the local transport: %+v", r.Ready())
+	}
+	fakeInstance(t, url)
+	opts := Options{Router: url, Timeout: 3 * time.Second}
+	ctx := context.Background()
+	for _, overHTTP := range []bool{false, true} {
+		var out bytes.Buffer
+		err := Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "greet", Payload: map[string]any{"name": "local"}, JSON: true, HTTP: overHTTP}, &out)
+		if err != nil || !strings.Contains(out.String(), "hello local") {
+			t.Fatalf("call (http=%v): %v\n%s", overHTTP, err, out.String())
+		}
 	}
 }

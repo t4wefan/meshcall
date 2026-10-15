@@ -59,19 +59,22 @@ test("TypeScript owns a Go process, retries a failed bind and handles Unix clean
   await other.start();
   assert.ok(other.isRunning);
   await other.close();
-  const socket = join(tmpdir(), "meshcall-ts-router-" + process.pid + ".sock");
-  const unix = new WebSocketRouter({ unixPath: socket });
-  t.after(() => unix.stop());
-  await unix.start();
-  await access(socket);
-  assert.throws(() => unix.boundPort, /TCP port/u);
-  await unix.stop();
-  await assert.rejects(access(socket));
-  await router.start();
-  const exited = router.waitClosed();
-  process.kill(router.pid!, "SIGTERM");
-  assert.equal(await exited, 0);
-  assert.equal(router.isRunning, false);
+  if (process.platform !== "win32") { // the local transport there is a pipe; see local.test.ts
+    const socket = join(tmpdir(), "meshcall-ts-router-" + process.pid + ".sock");
+    const unix = new WebSocketRouter({ unixPath: socket });
+    t.after(() => unix.stop());
+    await unix.start();
+    await access(socket);
+    assert.throws(() => unix.boundPort, /TCP port/u);
+    await unix.stop();
+    await assert.rejects(access(socket));
+    // Windows has no SIGTERM: kill() terminates without a graceful exit code.
+    await router.start();
+    const exited = router.waitClosed();
+    process.kill(router.pid!, "SIGTERM");
+    assert.equal(await exited, 0);
+    assert.equal(router.isRunning, false);
+  }
 });
 
 test("typed AuthService issues scopes, routes all call shapes and revokes an active stream", { timeout: 10000, skip: routerMissing }, async (t) => {

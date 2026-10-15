@@ -59,12 +59,15 @@ conformance() {
   (cd meshcall-router && go build -o bin/meshcall-conformance ./cmd/meshcall-conformance)
   (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s build)
   (cd meshcall-py && uv sync --frozen --quiet)
-  printf 'python... '
-  meshcall-router/bin/meshcall-conformance --fixture "uv run --project $PWD/meshcall-py --locked python $PWD/meshcall-py/conformance/fixture.py" >"$PWD/.conformance-py.log" 2>&1 \
-    && echo ok || { echo FAILED; cat .conformance-py.log; return 1; }
-  printf 'typescript... '
-  meshcall-router/bin/meshcall-conformance --fixture "node $PWD/meshcall-ts/dist/conformance/fixture.js" >"$PWD/.conformance-ts.log" 2>&1 \
-    && echo ok || { echo FAILED; cat .conformance-ts.log; return 1; }
+  # TCP and the local transport (a Unix socket here, a named pipe on Windows).
+  for transport in tcp local; do
+    printf 'python (%s)... ' "$transport"
+    meshcall-router/bin/meshcall-conformance --transport "$transport" --fixture "uv run --project $PWD/meshcall-py --locked python $PWD/meshcall-py/conformance/fixture.py" >"$PWD/.conformance-py.log" 2>&1 \
+      && echo ok || { echo FAILED; cat .conformance-py.log; return 1; }
+    printf 'typescript (%s)... ' "$transport"
+    meshcall-router/bin/meshcall-conformance --transport "$transport" --fixture "node $PWD/meshcall-ts/dist/conformance/fixture.js" >"$PWD/.conformance-ts.log" 2>&1 \
+      && echo ok || { echo FAILED; cat .conformance-ts.log; return 1; }
+  done
   rm -f .conformance-py.log .conformance-ts.log
 }
 

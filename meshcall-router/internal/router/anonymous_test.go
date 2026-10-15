@@ -92,9 +92,11 @@ func TestAnonymousUserIsAnOrdinaryUserWithAReservedName(t *testing.T) {
 	}
 	send(t, inst, frame{Kind: "call.result", CallID: "k1", Payload: json.RawMessage(`{}`)})
 	receive(t, keyed)
-	// A wrong key is refused at connect, never downgraded to anonymous.
+	// A wrong key is refused at connect, never downgraded to anonymous. Flip
+	// the last hex digit: replacing it with a fixed one is a no-op 1 in 16.
+	wrong := key[:len(key)-1] + map[bool]string{true: "1", false: "0"}[key[len(key)-1] == '0']
 	_, resp, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port),
-		&websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + key[:len(key)-1] + "0"}}})
+		&websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + wrong}}})
 	if err == nil || resp == nil || resp.StatusCode != 401 {
 		t.Fatalf("a wrong API key was accepted: %v %v", err, resp)
 	}

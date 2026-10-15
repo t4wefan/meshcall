@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/t4wefan/meshcall/meshcall-router/internal/localsock"
 	"github.com/t4wefan/meshcall/meshcall-router/internal/router"
 )
 
@@ -43,6 +45,10 @@ type Options struct {
 	Verbose bool
 	// Timeout bounds any single wait for a frame.
 	Timeout time.Duration
+	// Local runs the Router on the local transport (a Unix socket, or a named
+	// pipe on Windows) instead of TCP; the fixture receives a unix:// or
+	// pipe:// MESHCALL_ROUTER_URL.
+	Local bool
 }
 
 // Result is the outcome of one scenario.
@@ -112,6 +118,8 @@ type harness struct {
 	opts    Options
 	router  *router.Router
 	port    int
+	local   string // Unix socket path or pipe name, with Options.Local
+	tempDir string
 	fixture *exec.Cmd
 	output  bytes.Buffer
 	outMu   sync.Mutex
@@ -124,7 +132,7 @@ func newHarness(ctx context.Context, opts Options) (*harness, error) {
 	}
 	h := &harness{ctx: ctx, opts: opts}
 	// Short Router idle timeout so the keepalive scenario is observable.
-	if err := h.startRouter(0); err != nil {
+	if err := h.startRouter(); err != nil {
 		return nil, err
 	}
 	if err := h.startFixture(); err != nil {
@@ -138,19 +146,63 @@ func newHarness(ctx context.Context, opts Options) (*harness, error) {
 	return h, nil
 }
 
-func (h *harness) startRouter(port int) error {
-	r, err := router.Start(router.Config{Port: port, IdleTimeout: 1500 * time.Millisecond, DeadlineGrace: 300 * time.Millisecond})
+// startRouter starts the Router, on the same port, socket or pipe as before
+// when restarting.
+func (h *harness) startRouter() error {
+	config := router.Config{Port: h.port, IdleTimeout: 1500 * time.Millisecond, DeadlineGrace: 300 * time.Millisecond}
+	if h.opts.Local {
+		if h.local == "" {
+			if localsock.UnixSupported() {
+				dir, err := os.MkdirTemp("/tmp", "meshcall-conformance-")
+				if err != nil {
+					return err
+				}
+				h.tempDir, h.local = dir, filepath.Join(dir, "router.sock")
+			} else {
+				h.local = fmt.Sprintf("meshcall-conformance-%d-%d", os.Getpid(), time.Now().UnixNano())
+			}
+		}
+		if localsock.UnixSupported() {
+			config.UnixPath = h.local
+		} else {
+			config.Pipe = h.local
+		}
+	}
+	r, err := router.Start(config)
 	if err != nil {
 		return err
 	}
-	h.router, h.port = r, r.Ready().Port
+	h.router = r
+	if !h.opts.Local {
+		h.port = r.Ready().Port
+	}
 	return nil
+}
+
+// routerURL is how the fixture and the raw clients reach the Router.
+func (h *harness) routerURL() string {
+	switch {
+	case !h.opts.Local:
+		return fmt.Sprintf("ws://127.0.0.1:%d", h.port)
+	case localsock.UnixSupported():
+		return "unix://" + h.local
+	default:
+		return "pipe://" + h.local
+	}
+}
+
+func (h *harness) endpoint() localsock.Endpoint {
+	endpoint, err := localsock.Parse(h.routerURL())
+	if err != nil {
+		panic(err) // the harness built the URL itself
+	}
+	return endpoint
 }
 
 func (h *harness) startFixture() error {
 	cmd := exec.CommandContext(h.ctx, h.opts.Fixture[0], h.opts.Fixture[1:]...)
 	cmd.Env = append(os.Environ(),
-		"MESHCALL_ROUTER_URL=ws://127.0.0.1:"+fmt.Sprint(h.port),
+		"MESHCALL_ROUTER_URL="+h.routerURL(),
 		"MESHCALL_CONFORMANCE_INSTANCE="+InstanceID,
 		"MESHCALL_PING_INTERVAL_MS=500",
 		"MESHCALL_STRICT=1",
@@ -187,6 +239,9 @@ func (h *harness) close() {
 	}
 	if h.router != nil {
 		h.router.Close()
+	}
+	if h.tempDir != "" {
+		_ = os.RemoveAll(h.tempDir)
 	}
 }
 
@@ -250,7 +305,8 @@ type client struct {
 func (h *harness) client() (*client, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, h.opts.Timeout)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", h.port), nil)
+	endpoint := h.endpoint()
+	conn, _, err := websocket.Dial(ctx, endpoint.URL, &websocket.DialOptions{HTTPClient: endpoint.HTTPClient()})
 	if err != nil {
 		return nil, fmt.Errorf("dial router: %w", err)
 	}

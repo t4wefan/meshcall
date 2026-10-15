@@ -59,7 +59,8 @@ func run() error {
 	var parentStdin, showVersion bool
 	flag.StringVar(&config.Host, "host", "", "TCP host (default 127.0.0.1)")
 	flag.IntVar(&config.Port, "port", 0, "TCP port (0 chooses an available port)")
-	flag.StringVar(&config.UnixPath, "unix-socket", "", "Unix socket path, exclusive with host/port")
+	flag.StringVar(&config.UnixPath, "unix-socket", "", "Unix socket path, exclusive with host/port (not on Windows: use --pipe)")
+	flag.StringVar(&config.Pipe, "pipe", "", `named pipe \\.\pipe\NAME, exclusive with host/port (Windows only: elsewhere use --unix-socket)`)
 	flag.IntVar(&config.MaxFrameSize, "max-frame-size", 1024*1024, "maximum frame bytes")
 	flag.StringVar(&authPath, "auth-file", "", "JSON account and permission configuration")
 	flag.DurationVar(&config.DeadlineGrace, "deadline-grace", router.DefaultDeadlineGrace, "added to each call's timeout before the router enforces it")
@@ -99,7 +100,7 @@ func run() error {
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments")
 	}
-	if config.UnixPath != "" {
+	if config.UnixPath != "" || config.Pipe != "" {
 		conflict := false
 		flag.Visit(func(f *flag.Flag) {
 			if f.Name == "host" || f.Name == "port" {
@@ -107,7 +108,7 @@ func run() error {
 			}
 		})
 		if conflict {
-			return fmt.Errorf("Unix socket cannot be combined with host or port")
+			return fmt.Errorf("a Unix socket or named pipe cannot be combined with host or port")
 		}
 	}
 	var err error

@@ -23,12 +23,17 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/t4wefan/meshcall/meshcall-router/internal/localsock"
 )
 
 type Config struct {
-	Host         string
-	Port         int
-	UnixPath     string
+	Host     string
+	Port     int
+	UnixPath string
+	// Pipe is a named pipe name (\\.\pipe\<Pipe>); Windows only, where it is
+	// the local transport instead of a Unix socket.
+	Pipe         string
 	MaxFrameSize int
 	Auth         *Auth
 	// DeadlineGrace is added to every call's timeout_ms before the router
@@ -76,6 +81,7 @@ type Ready struct {
 	Host     string `json:"host,omitempty"`
 	Port     int    `json:"port,omitempty"`
 	UnixPath string `json:"unix_path,omitempty"`
+	Pipe     string `json:"pipe,omitempty"`
 }
 
 type peer struct {
@@ -243,7 +249,18 @@ func Start(config Config) (*Router, error) {
 	}
 	var listener net.Listener
 	var err error
-	if config.UnixPath != "" {
+	if config.Pipe != "" {
+		if config.Host != "" || config.Port != 0 || config.UnixPath != "" {
+			return nil, errors.New("a named pipe cannot be combined with host, port or a Unix socket")
+		}
+		if config.Pipe, err = localsock.PipeName(config.Pipe); err != nil {
+			return nil, err
+		}
+		listener, err = localsock.ListenPipe(config.Pipe)
+	} else if config.UnixPath != "" {
+		if !localsock.UnixSupported() {
+			return nil, localsock.ErrUnixOnWindows
+		}
 		if config.Host != "" || config.Port != 0 {
 			return nil, errors.New("Unix socket cannot be combined with host or port")
 		}
@@ -290,7 +307,7 @@ func Start(config Config) (*Router, error) {
 	}
 	r.wg.Add(1)
 	go r.expireLoop()
-	r.ready = Ready{Kind: "router.ready", Protocol: Protocol, PID: os.Getpid(), UnixPath: config.UnixPath}
+	r.ready = Ready{Kind: "router.ready", Protocol: Protocol, PID: os.Getpid(), UnixPath: config.UnixPath, Pipe: config.Pipe}
 	if tcp, ok := listener.Addr().(*net.TCPAddr); ok {
 		r.ready.Host, r.ready.Port = config.Host, tcp.Port
 	}

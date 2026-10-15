@@ -472,7 +472,9 @@ func serverTimeout(h *harness) error {
 	if details["source"] != "server" {
 		return fmt.Errorf("deadline must come from the server (router grace is 300ms): %v", result)
 	}
-	if elapsed < 100*time.Millisecond || elapsed > 700*time.Millisecond {
+	// The lower bound allows one tick of a coarse timer: asyncio fires a
+	// timer due within the clock's resolution (15.6 ms on Windows) early.
+	if elapsed < 80*time.Millisecond || elapsed > 700*time.Millisecond {
 		return fmt.Errorf("deadline fired after %v", elapsed)
 	}
 	return nil
@@ -636,11 +638,10 @@ func keepalive(h *harness) error {
 }
 
 func routerRestart(h *harness) error {
-	port := h.port
 	h.router.Close()
 	time.Sleep(200 * time.Millisecond)
-	if err := h.startRouter(port); err != nil {
-		return fmt.Errorf("restart router on %d: %w", port, err)
+	if err := h.startRouter(); err != nil {
+		return fmt.Errorf("restart router at %s: %w", h.routerURL(), err)
 	}
 	if err := h.waitRegistered(10 * time.Second); err != nil {
 		return fmt.Errorf("instance did not re-register after router restart: %w", err)
