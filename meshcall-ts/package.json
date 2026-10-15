@@ -25,6 +25,14 @@
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
     },
+    "./web": {
+      "types": "./dist/src/web.d.ts",
+      "import": "./dist/src/web.js"
+    },
+    "./otel": {
+      "types": "./dist/src/otel.d.ts",
+      "import": "./dist/src/otel.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -40,7 +48,7 @@
   "sideEffects": false,
   "packageManager": "yarn@1.22.22",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "yarn build",
     "test": "yarn build && node --test dist/tests/*.test.js"
@@ -50,9 +58,23 @@
     "ajv-formats": "^3",
     "ws": "^8.21.3"
   },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.4.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.12.0",
+    "@opentelemetry/core": "^2.12.0",
+    "@opentelemetry/sdk-metrics": "^2.12.0",
+    "@opentelemetry/sdk-trace-base": "^2.12.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
   }
 }

@@ -255,3 +255,23 @@ Python and TypeScript.
 
 The first interceptor in either list is outermost. Interceptors do not see
 individual stream items; that remains a future extension.
+
+## Observability
+
+OpenTelemetry is an opt-in pair of interceptors per language: Python
+`meshcall.otel.client_interceptor()` / `server_interceptor()` (install
+`meshcall[otel]`), TypeScript `otelClientInterceptor()` /
+`otelServerInterceptor()` from `meshcall/otel` (`@opentelemetry/api` is an
+optional peer dependency; Node needs a context manager, which the
+OpenTelemetry Node SDK registers). Trace context travels as call metadata
+(`traceparent` / `tracestate`), so a trace continues across languages and
+through the Router, which forwards metadata untouched and has no OpenTelemetry
+dependency. Each call gets a span named `service/method` (`rpc.system =
+"meshcall"`, `rpc.service`, `rpc.method`, `rpc.meshcall.error_code`) and is
+counted in `meshcall.calls` and `meshcall.call.duration` by service, method,
+code and side. A server span covers the whole call; a client span covers a
+unary or client-stream call and only the opening of a stream.
+
+The Router exposes Prometheus metrics on a separate listener,
+`--metrics-listen 127.0.0.1:9464`, never on the public port; see
+[Router metrics](router.md#metrics).

@@ -18,6 +18,9 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Changed
 
+- Generated TypeScript clients declare server streams as `RpcStream<T>`
+  (implemented by `MeshCallServerStream`) and import runtime types with
+  `import type`. `scripts/regenerate.sh` builds the CLI before generating.
 - Sticky balancing uses rendezvous hashing: an instance joining or leaving
   moves only its own keys instead of remapping every key.
 - **Duplex is a supported, restricted shape** (#26). It must be declared
@@ -40,6 +43,33 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Go runtime (#19): `github.com/t4wefan/meshcall/meshcall-go` — services
+  (`HandleUnary`, `HandleServerStream`, `HandleClientStream`,
+  `HandleSubscription`, `HandleDuplex`) with contracts and JSON Schema from
+  struct tags, validation, contract warnings and strict mode, interceptors,
+  trailers, deadlines, idle timeouts, max in-flight, targeted services,
+  Router mode with reconnect and drain, and direct mode over TCP, Unix
+  sockets and Windows named pipes; clients with typed calls, retry,
+  reconnect, failover, subscriptions with resume and local validation. It
+  passes the conformance suite, interoperates with Python and TypeScript
+  both ways, and `meshcall generate --language go` writes typed Go clients.
+- Web client (#12): `meshcall/web` exports `MeshCallHttpClient`, a client
+  over HTTP v1 with `fetch` and no Node imports (browsers, Deno, Bun, edge
+  runtimes, Node 18+), with the same options, errors, local validation,
+  unary retry and subscription resume as `MeshCallClient`. Generated
+  TypeScript clients take the `MeshCallRpc` interface both clients
+  implement (services with duplex methods still take `MeshCallClient`) and
+  import only types from `meshcall`, so they bundle for browsers; CI
+  bundles both for the browser platform.
+- Observability (#7): opt-in OpenTelemetry interceptors —
+  `meshcall.otel.client_interceptor()` / `server_interceptor()`
+  (`meshcall[otel]`) and `otelClientInterceptor()` /
+  `otelServerInterceptor()` from `meshcall/otel` — with a span per call,
+  `meshcall.calls` / `meshcall.call.duration` metrics, and W3C trace context
+  carried in call metadata, so one trace spans Python, TypeScript and the
+  Router. The Router serves Prometheus metrics (calls by code, durations,
+  connections, routes, per-instance in-flight and breaker state, outbox
+  drops) on a separate opt-in listener, `--metrics-listen`.
 - Subscriptions (#14): `@method.subscription(cursor=, resume=)` /
   `subscriptionMethod({ cursor, resume })` declare a server stream that
   clients resubscribe to after a retryable failure or dropped connection,

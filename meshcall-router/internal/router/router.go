@@ -63,6 +63,9 @@ type Config struct {
 	// are refused with 503. HTTP calls are not counted: their admission is a
 	// separate design (#8). Zero means the default.
 	MaxConnections int
+	// MetricsListen, when set, serves Prometheus metrics on this TCP address
+	// (never on the public listener: labels name services and methods).
+	MetricsListen string
 }
 
 const (
@@ -82,6 +85,8 @@ type Ready struct {
 	Port     int    `json:"port,omitempty"`
 	UnixPath string `json:"unix_path,omitempty"`
 	Pipe     string `json:"pipe,omitempty"`
+	// Metrics is the address /metrics is served on, when enabled.
+	Metrics string `json:"metrics,omitempty"`
 }
 
 type peer struct {
@@ -98,10 +103,14 @@ type peer struct {
 	maxInflight int // 0 = unlimited
 	health      health
 	draining    bool
+	drops       *atomic.Uint64 // the Router's outbox-overflow counter
 }
 
 func (p *peer) send(f frame) {
 	if !p.out.push(f) {
+		if p.drops != nil {
+			p.drops.Add(1)
+		}
 		p.cancel() // Disconnect a slow peer instead of growing memory indefinitely.
 	}
 }
@@ -133,6 +142,9 @@ func (p *peer) writeLoop(maxFrameSize int) {
 
 type route struct {
 	id       string
+	service  string
+	method   string
+	started  time.Time
 	client   *peer
 	instance *peer
 	deadline time.Time
@@ -185,14 +197,16 @@ type Router struct {
 	dedup        map[string]*dedupEntry
 	// connections counts admitted WebSocket connections; anonymous counts
 	// those among them made without credentials.
-	connections  atomic.Int64
-	anonymous    atomic.Int64
-	httpInflight atomic.Int64
-	dedupOrder   *list.List
-	wg           sync.WaitGroup
-	closeOnce    sync.Once
-	done         chan struct{}
-	ready        Ready
+	connections   atomic.Int64
+	anonymous     atomic.Int64
+	httpInflight  atomic.Int64
+	metrics       *metrics
+	metricsServer *http.Server
+	dedupOrder    *list.List
+	wg            sync.WaitGroup
+	closeOnce     sync.Once
+	done          chan struct{}
+	ready         Ready
 }
 
 func Start(config Config) (*Router, error) {
@@ -304,12 +318,20 @@ func Start(config Config) (*Router, error) {
 		deadlineWake: make(chan struct{}, 1),
 		dedup:        make(map[string]*dedupEntry),
 		dedupOrder:   list.New(),
+		metrics:      newMetrics(),
 	}
 	r.wg.Add(1)
 	go r.expireLoop()
 	r.ready = Ready{Kind: "router.ready", Protocol: Protocol, PID: os.Getpid(), UnixPath: config.UnixPath, Pipe: config.Pipe}
 	if tcp, ok := listener.Addr().(*net.TCPAddr); ok {
 		r.ready.Host, r.ready.Port = config.Host, tcp.Port
+	}
+	if config.MetricsListen != "" {
+		if err := r.startMetrics(config.MetricsListen); err != nil {
+			cancel()
+			_ = listener.Close()
+			return nil, err
+		}
 	}
 	r.http = &http.Server{
 		Handler: http.HandlerFunc(r.handle), ReadHeaderTimeout: 5 * time.Second,
@@ -400,6 +422,9 @@ func (r *Router) Close() {
 		r.cancel()
 		r.mu.Unlock()
 		_ = r.http.Close()
+		if r.metricsServer != nil {
+			_ = r.metricsServer.Close()
+		}
 		_ = r.listener.Close() // Also covers Close racing with the Serve goroutine.
 		r.wg.Wait()
 		if r.socketInfo != nil {
@@ -456,7 +481,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	} else {
 		ctx, cancel = context.WithCancel(r.ctx)
 	}
-	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(max(8*1024*1024, 2*r.config.MaxFrameSize))}
+	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(max(8*1024*1024, 2*r.config.MaxFrameSize)), drops: &r.metrics.outboxDrops}
 	r.mu.Lock()
 	if r.closed || !r.config.Auth.valid(user) {
 		r.mu.Unlock()
@@ -672,12 +697,19 @@ func (r *Router) forward(p *peer, f frame) {
 		return
 	}
 	if f.Kind == "call.open" {
+		// refuse answers the call itself and records it.
+		refuse := func(e frame) {
+			if e.Error != nil {
+				r.refuse(f, e.Error.Code)
+			}
+			p.send(e)
+		}
 		if !(f.Service == AuthService && f.Method == "whoami") && !p.user.allowsCall(f.Service, f.Method) {
-			p.send(callError(f.CallID, "permission_denied", "Call is not permitted", false))
+			refuse(callError(f.CallID, "permission_denied", "Call is not permitted", false))
 			return
 		}
 		if r.routes[f.CallID] != nil {
-			p.send(callError(f.CallID, "protocol_error", "Duplicate call_id", false))
+			refuse(callError(f.CallID, "protocol_error", "Duplicate call_id", false))
 			return
 		}
 		if strings.HasPrefix(f.Service, reservedPrefix) {
@@ -685,12 +717,12 @@ func (r *Router) forward(p *peer, f frame) {
 			return
 		}
 		if len(r.routes) >= 65536 {
-			p.send(routerError(f.CallID, "resource_exhausted", "Router call capacity reached", true, "overloaded", ""))
+			refuse(routerError(f.CallID, "resource_exhausted", "Router call capacity reached", true, "overloaded", ""))
 			return
 		}
 		stream := r.methodStream(f.Service, f.Method)
 		if f.Idempotency != "" && stream == "duplex" {
-			p.send(routerError(f.CallID, "invalid_argument", "Duplex calls are never replayed and take no idempotency key", false, "idempotency_key_on_duplex", ""))
+			refuse(routerError(f.CallID, "invalid_argument", "Duplex calls are never replayed and take no idempotency key", false, "idempotency_key_on_duplex", ""))
 			return
 		}
 		var entry *dedupEntry
@@ -713,10 +745,10 @@ func (r *Router) forward(p *peer, f frame) {
 		}
 		instance, errorFrame := r.selectInstance(f, avoid)
 		if errorFrame != nil {
-			p.send(*errorFrame)
+			refuse(*errorFrame)
 			return
 		}
-		rt := &route{id: f.CallID, client: p, instance: instance, index: -1}
+		rt := &route{id: f.CallID, service: f.Service, method: f.Method, started: time.Now(), client: p, instance: instance, index: -1}
 		r.routes[f.CallID] = rt
 		instance.inflight++
 		if f.TimeoutMS != nil {
@@ -741,6 +773,7 @@ func (r *Router) forward(p *peer, f frame) {
 		if f.Kind == "call.cancel" {
 			// The client has given up; forget the route now so a service that
 			// ignores cancellation cannot pin router capacity.
+			r.finishRoute(rt, "cancelled")
 			r.endRoute(f.CallID, rt)
 		}
 	} else if p.role == "server" && rt.instance == p {
@@ -754,6 +787,11 @@ func (r *Router) forward(p *peer, f frame) {
 			if rt.dedup != nil {
 				r.dedupSettle(rt.dedup, f)
 			}
+			code := "ok"
+			if f.Error != nil {
+				code = f.Error.Code
+			}
+			r.finishRoute(rt, code)
 			r.endRoute(f.CallID, rt)
 		}
 	}
@@ -826,6 +864,7 @@ func (r *Router) remove(p *peer) {
 	for id, rt := range r.routes {
 		switch {
 		case rt.client == p:
+			r.finishRoute(rt, "cancelled")
 			r.endRoute(id, rt)
 			rt.instance.send(frame{Kind: "call.cancel", CallID: id, Reason: "client_disconnected"})
 		case rt.instance == p:
@@ -834,6 +873,7 @@ func (r *Router) remove(p *peer) {
 				r.dedupFail(rt.dedup, lost, p)
 				rt.dedup = nil
 			}
+			r.finishRoute(rt, "unavailable")
 			r.endRoute(id, rt)
 			rt.client.send(lost)
 		}

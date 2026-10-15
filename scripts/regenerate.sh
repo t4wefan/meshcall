@@ -22,7 +22,9 @@ status=0
 export NODE_OPTIONS="${NODE_OPTIONS:-} --no-deprecation"
 
 # `uv run meshcall` is the Python launcher for the Go CLI; point it at the
-# binaries this checkout built so no release download is attempted.
+# binaries this checkout builds now, so the output always comes from the
+# generator in the working tree and no release download is attempted.
+(cd meshcall-router && go build -o bin/meshcall ./cmd/meshcall && go build -o bin/meshcall-router ./cmd/meshcall-router)
 export MESHCALL_ROUTER_BINARY="$ROOT/meshcall-router/bin/meshcall-router"
 py() { (cd "$1" && shift && uv run --locked --reinstall-package meshcall "$@"); }
 

@@ -10,6 +10,7 @@ env:
 jobs:
   router:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: meshcall-router
@@ -33,9 +34,31 @@ jobs:
             meshcall-router/bin/meshcall-router
             meshcall-router/bin/meshcall
 
+  go-runtime:
+    needs: router
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: meshcall-go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: meshcall-router-linux
+          path: ${{ github.workspace }}/meshcall-router/bin
+      - run: chmod +x "$MESHCALL_ROUTER_BINARY" "${MESHCALL_ROUTER_BINARY%/*}/meshcall"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: meshcall-go/go.mod
+          cache-dependency-path: meshcall-go/go.sum
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+
   python:
     needs: router
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: meshcall-py
@@ -62,6 +85,7 @@ jobs:
   demos:
     needs: router
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -98,6 +122,7 @@ jobs:
   typescript:
     needs: router
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: meshcall-ts
@@ -120,6 +145,7 @@ jobs:
   interop:
     needs: router
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -136,6 +162,10 @@ jobs:
           node-version: 22
           cache: yarn
           cache-dependency-path: meshcall-ts/yarn.lock
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: meshcall-go/go.mod
+          cache-dependency-path: meshcall-go/go.sum
       - run: yarn install --frozen-lockfile
         working-directory: meshcall-ts
       - run: uv sync --frozen
@@ -148,6 +178,7 @@ jobs:
   drift:
     needs: router
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -168,6 +199,7 @@ jobs:
   conformance:
     needs: router
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -190,6 +222,7 @@ jobs:
     # Windows' local transport is a named pipe (#29): the Router, both
     # runtimes, interop and conformance all run here over a pipe and TCP.
     runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -209,6 +242,10 @@ jobs:
           go build -o bin/meshcall-router.exe ./cmd/meshcall-router
           go build -o bin/meshcall.exe ./cmd/meshcall
           go build -o bin/meshcall-conformance.exe ./cmd/meshcall-conformance
+          cd ../meshcall-go
+          go vet ./...
+          go test ./...
+          go build -o bin/conformance-fixture.exe ./conformance/fixture
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
@@ -231,11 +268,14 @@ jobs:
               --fixture "uv run --project meshcall-py --locked python meshcall-py/conformance/fixture.py"
             meshcall-router/bin/meshcall-conformance.exe --transport $transport \
               --fixture "node meshcall-ts/dist/conformance/fixture.js"
+            meshcall-router/bin/meshcall-conformance.exe --transport $transport \
+              --fixture "meshcall-go/bin/conformance-fixture.exe"
           done
 
   packaging:
     needs: router
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

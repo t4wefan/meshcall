@@ -50,7 +50,10 @@ s), `Idempotency-Key`, `MeshCall-Instance`, `MeshCall-Meta-<key>`. Errors are
 the same JSON envelope with an HTTP status (400, 401, 403, 404, 429, 503,
 504…). `GET /v1/openapi.json` describes every method you may call (feed it to
 Swagger UI or a client generator); `GET /v1/services` is the Registry.
-`meshcall call … --http` does the same from the CLI.
+`meshcall call … --http` does the same from the CLI. In a browser or edge
+runtime, pass `new MeshCallHttpClient(url, { token })` from `meshcall/web`
+to the generated TypeScript client instead of `MeshCallClient` (no duplex;
+add `--http-cors-origin` for other origins).
 
 ## Read errors
 
@@ -107,6 +110,18 @@ class Chat:
         async for item in items: ...
         return Message(text="ok")
 ```
+
+Go (`github.com/t4wefan/meshcall/meshcall-go`; schemas come from struct
+tags: `json`, optional = pointer or `omitempty`, `doc:"…"`):
+
+```go
+chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
+meshcall.HandleUnary(chat, "send", func(ctx *meshcall.Context, req SendRequest) (Message, error) {
+	return Message{Text: "echo " + req.Text}, nil
+}, meshcall.Doc("Append a message and return the reply."), meshcall.Idempotent())
+```
+
+Go clients: `meshcall generate <contract> --language go --output DIR`.
 
 TypeScript (schemas are explicit because types are erased):
 
@@ -259,7 +274,11 @@ my_app/
   expensive step; in Python an `asyncio.CancelledError` means the caller
   left, clean up and re-raise. TypeScript handlers get `ctx.signal`.
 - Log with the injected `logger` (it already carries service, method,
-  `call_id`); never `print`. Put request-scoped facts in trailers
+  `call_id`); never `print`. For tracing, add the OpenTelemetry interceptors
+  on both sides (`meshcall.otel.client_interceptor()` /
+  `server_interceptor()`, `meshcall/otel` in TypeScript): trace context
+  rides in call metadata across languages and the Router. Router metrics:
+  `--metrics-listen 127.0.0.1:9464`. Put request-scoped facts in trailers
   (`ctx.set_trailer("cache", "hit")`) when callers should see them.
 
 **Calling a service**

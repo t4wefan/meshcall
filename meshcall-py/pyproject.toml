@@ -34,8 +34,14 @@ Issues = "https://github.com/t4wefan/meshcall/issues"
 [project.scripts]
 meshcall = "meshcall.launcher:main"
 
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.27",
+]
+
 [dependency-groups]
 dev = [
+    "opentelemetry-sdk>=1.27",
     "pyright>=1.1.411",
     "pytest>=8.3",
     "pytest-asyncio>=0.26",
@@ -55,6 +61,9 @@ exclude = ["src/meshcall/bin"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# A test stuck this long dumps every thread's stack, so a hang in CI names
+# its test instead of sitting silent until the job is cancelled.
+faulthandler_timeout = 120
 testpaths = ["tests"]
 # Test fixtures are deliberately terse; test_diagnostics asserts the warnings.
 filterwarnings = ["ignore::meshcall.diagnostics.MeshCallWarning"]
