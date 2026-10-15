@@ -63,6 +63,8 @@ Router 在内存中仅维护四张轻量表：客户端连接表、服务实例�
 ## 3. 连接管理、熔断、去重与容错边界
 
 - **零中断优雅排空（Graceful Drain）**：服务实例停止前发送 `server.drain`，Router 立即将其从所有服务池摘除并回复 `server.drain.ack`，不再向其分配新请求，同时继续转发已建立调用的双向帧直到自然结束。Python 的 `await server.stop(drain=True)` 与 TypeScript 的 `await server.close({ drain: true })` 已内置该流程。
+- **Router 优雅关闭**：收到 SIGTERM/SIGINT 后先排空：`/readyz` 返回 503，新连接收到 HTTP 503，新调用以可重试的 `unavailable`（`reason: "router_draining"`）失败；没有进行中调用的连接立即以 1001 关闭，其余连接在最后一个调用结束后关闭；超过 `--shutdown-timeout`（默认 10 秒，`0` 表示不等待）仍未结束的调用以可重试的 `unavailable`（`reason: "router_shutdown"`）结束，实例收到 `call.cancel`。再次收到信号则跳过等待。
+- **单连接并发上限**：每个连接最多同时进行 `--max-calls-per-connection` 个调用（默认 1000，`0` 表示不限，加入进行中幂等调用的请求也计数），超出时以可重试的 `resource_exhausted`（`reason: "overloaded"`）拒绝，连接保持不变。
 - **并发上限（`max_inflight`）与实例级熔断器**：
   - 实例可在注册时声明 `max_inflight`，Router 自动绕开满载实例；若所有实例均满载，则返回可重试的 `resource_exhausted`（`reason: "overloaded"`）。
   - Router 为每个实例维护独立的熔断器（默认连续失败阈值 `--breaker-threshold 5`，冷却时间 `--breaker-cooldown 10s`）。当某个实例连续触发 Router 超时或返回 `internal`/`unavailable` 达到阈值时，将被自动隔离；冷却期满后放行 1 个半开探测请求，成功则恢复，失败则重新熔断。

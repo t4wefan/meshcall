@@ -119,9 +119,24 @@ and `meshcall call … --instance ID` addresses one.
   long. Services enforce running-call deadlines and stream credit; the Router
   executes only its own management methods and never buffers an entire
   business stream.
+- Each connection may have `--max-calls-per-connection` calls in flight
+  (default 1000, `0` for no limit); a further `call.open` fails with
+  retryable `resource_exhausted` / `overloaded` and the connection stays
+  open. Joining an in-flight idempotent call counts as a call.
+- SIGTERM or SIGINT drains the Router before it exits (see
+  [Router shutdown](protocol.md#router-shutdown)): `/readyz` answers 503, new
+  connections get HTTP 503 and new calls `unavailable` / `router_draining`,
+  idle connections close with 1001 at once and busy ones when their last call
+  ends, and after `--shutdown-timeout` (default 10 s, `0` for none) the calls
+  still in flight end with `unavailable` / `router_shutdown` and the instance
+  receives `call.cancel`. A second signal skips the wait. A Router owned by
+  the Python or TypeScript launcher, which closes its stdin to stop it, ends
+  the calls in flight at once. Embedding Go programs call `Shutdown()` or
+  `Close()`.
 - Restarting the Router loses its registrations and active routes. Version 1
   provides no automatic call replay, stream resumption, route migration, or
-  replicated Router state.
+  replicated Router state; streams that a restart ends fail with a retryable
+  error, so subscriptions resume from their cursor.
 
 ## High availability without Router state
 

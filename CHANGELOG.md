@@ -50,6 +50,19 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- **Graceful Router shutdown** (#8). On SIGTERM/SIGINT the Router drains:
+  `/readyz` answers 503, new connections get HTTP 503 and new calls
+  retryable `unavailable` (`reason: "router_draining"`), idle connections
+  close with WebSocket 1001 at once and busy ones after their last call, and
+  after `--shutdown-timeout` (default 10 s) the calls still in flight end
+  with retryable `unavailable` (`reason: "router_shutdown"`) and a
+  `call.cancel` to the instance. A second signal skips the wait. `Close()`
+  (and a launcher closing the Router's stdin) now ends calls the same way
+  instead of dropping connections. Go embedders get `Router.Shutdown()`.
+- `--max-calls-per-connection` (default 1000, `0` for no limit): a further
+  `call.open` on that connection fails with retryable `resource_exhausted`
+  (`reason: "overloaded"`).
+
 - Go runtime (#19): `github.com/t4wefan/meshcall/meshcall-go` — services
   (`HandleUnary`, `HandleServerStream`, `HandleClientStream`,
   `HandleSubscription`, `HandleDuplex`) with contracts and JSON Schema from

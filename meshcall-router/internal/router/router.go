@@ -35,6 +35,12 @@ type Config struct {
 	// the local transport instead of a Unix socket.
 	Pipe         string
 	MaxFrameSize int
+	// MaxCallsPerConnection bounds the calls one connection has in flight
+	// (0: DefaultMaxCallsPerConnection; negative: no limit).
+	MaxCallsPerConnection int
+	// ShutdownTimeout is how long Shutdown lets calls in flight finish
+	// (0: DefaultShutdownTimeout; negative: no wait).
+	ShutdownTimeout time.Duration
 	// OutboxSize bounds the bytes queued for one peer that is not reading;
 	// it must hold at least one frame of MaxFrameSize.
 	OutboxSize int
@@ -81,7 +87,14 @@ const (
 	// DefaultMaxFrameSize is also the largest frame size accepted.
 	DefaultMaxFrameSize = 64 << 20
 	DefaultOutboxSize   = 256 << 20
+
+	DefaultMaxCallsPerConnection = 1000
+	DefaultShutdownTimeout       = 10 * time.Second
 )
+
+// closeGrace bounds how long Close waits for connections to flush their last
+// frames and finish the closing handshake before cutting them.
+const closeGrace = 2 * time.Second
 
 type Ready struct {
 	Kind     string `json:"kind"`
@@ -105,7 +118,8 @@ type peer struct {
 	role        string
 	instanceID  string
 	services    []service
-	inflight    int
+	inflight    int // calls routed to this instance
+	calls       int // calls this client has open, including joined idempotent calls
 	maxInflight int // 0 = unlimited
 	health      health
 	draining    bool
@@ -121,10 +135,17 @@ func (p *peer) send(f frame) {
 	}
 }
 
-func (p *peer) writeLoop(maxFrameSize int) {
+// writeLoop sends queued frames. goingAway reports, once the queue is empty,
+// that a stopping Router is done with the peer: it is closed with 1001.
+func (p *peer) writeLoop(maxFrameSize int, goingAway func() bool) {
 	for {
 		f, ok := p.out.pop()
 		if !ok {
+			if goingAway() {
+				_ = p.conn.Close(websocket.StatusGoingAway, "router shutting down")
+				p.cancel()
+				return
+			}
 			select {
 			case <-p.ctx.Done():
 				return
@@ -186,14 +207,20 @@ func (rt *route) credit(f frame) bool {
 }
 
 type Router struct {
-	config       Config
-	listener     net.Listener
-	socketInfo   os.FileInfo
-	http         *http.Server
-	ctx          context.Context
-	cancel       context.CancelFunc
-	mu           sync.Mutex
-	closed       bool
+	config     Config
+	listener   net.Listener
+	socketInfo os.FileInfo
+	http       *http.Server
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	closed     bool
+	// draining is set by Shutdown and Close; stopping mirrors it for the
+	// writers' unlocked fast path.
+	draining     bool
+	stopping     atomic.Bool
+	drained      chan struct{} // closed when a draining Router has no routes
+	peersGone    chan struct{} // closed when a closed Router has no peers
 	peers        map[*peer]struct{}
 	instances    map[string]*peer
 	services     map[string]*pool
@@ -221,6 +248,12 @@ func Start(config Config) (*Router, error) {
 	}
 	if config.MaxFrameSize < 1 || config.MaxFrameSize > DefaultMaxFrameSize {
 		return nil, errors.New("max-frame-size must be between 1 and 67108864")
+	}
+	if config.MaxCallsPerConnection == 0 {
+		config.MaxCallsPerConnection = DefaultMaxCallsPerConnection
+	}
+	if config.ShutdownTimeout == 0 {
+		config.ShutdownTimeout = DefaultShutdownTimeout
 	}
 	if config.OutboxSize == 0 {
 		config.OutboxSize = DefaultOutboxSize
@@ -327,6 +360,7 @@ func Start(config Config) (*Router, error) {
 		config: config, listener: listener, socketInfo: socketInfo, ctx: ctx, cancel: cancel,
 		peers: make(map[*peer]struct{}), instances: make(map[string]*peer),
 		services: make(map[string]*pool), routes: make(map[string]*route), done: make(chan struct{}),
+		drained: make(chan struct{}), peersGone: make(chan struct{}),
 		deadlineWake: make(chan struct{}, 1),
 		dedup:        make(map[string]*dedupEntry),
 		dedupOrder:   list.New(),
@@ -350,7 +384,7 @@ func Start(config Config) (*Router, error) {
 		MaxHeaderBytes: 16 * 1024,
 	}
 	go func() {
-		if err := r.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
+		if err := r.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !r.stopping.Load() {
 			slog.Error("router listener stopped", "error", err)
 			go r.Close()
 		}
@@ -427,17 +461,97 @@ func (r *Router) Snapshot() Snapshot {
 func (r *Router) Ready() Ready          { return r.ready }
 func (r *Router) Done() <-chan struct{} { return r.done }
 
+// Shutdown drains the Router: no new connections or calls, idle connections
+// close with 1001, and calls in flight get ShutdownTimeout to finish before
+// Close ends the rest. See "Router shutdown" in docs/protocol.md.
+func (r *Router) Shutdown() {
+	r.mu.Lock()
+	r.startDraining()
+	if len(r.routes) == 0 {
+		r.markDrained()
+	}
+	r.mu.Unlock()
+	if r.config.ShutdownTimeout > 0 {
+		timer := time.NewTimer(r.config.ShutdownTimeout)
+		select {
+		case <-r.drained:
+		case <-r.ctx.Done():
+		case <-timer.C:
+		}
+		timer.Stop()
+	}
+	r.Close()
+}
+
+// startDraining stops admitting calls and closes idle connections. Called
+// under r.mu.
+func (r *Router) startDraining() {
+	if r.draining {
+		return
+	}
+	r.draining = true
+	r.stopping.Store(true)
+	for p := range r.peers {
+		p.out.wake()
+	}
+}
+
+func (r *Router) markDrained() {
+	select {
+	case <-r.drained:
+	default:
+		close(r.drained)
+	}
+}
+
+// goingAway reports that a stopping Router has nothing left for p. Called by
+// p's writer with an empty queue; holding r.mu orders it after any terminal
+// frame queued together with the end of p's last call.
+func (r *Router) goingAway(p *peer) bool {
+	if !r.stopping.Load() {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return (r.closed || (p.calls == 0 && p.inflight == 0)) && p.out.empty()
+}
+
+// Close ends every call in flight with retryable unavailable (router_shutdown),
+// cancels it at the instance, closes connections with 1001 once their last
+// frames are written, and stops. Shutdown drains before calling it.
 func (r *Router) Close() {
 	r.closeOnce.Do(func() {
 		r.mu.Lock()
+		r.startDraining()
 		r.closed = true
-		r.cancel()
+		for id, rt := range r.routes {
+			shutdown := routerError(id, "unavailable", "Router shut down", true, "router_shutdown", "")
+			if rt.dedup != nil && rt.dedup.route == rt {
+				r.dedupFail(rt.dedup, shutdown, nil)
+			}
+			r.finishRoute(rt, "unavailable")
+			rt.client.send(shutdown)
+			rt.instance.send(frame{Kind: "call.cancel", CallID: id, Reason: "router_shutdown"})
+			r.endRoute(id, rt)
+		}
+		r.markDrained()
+		if len(r.peers) == 0 {
+			close(r.peersGone) // remove closes it otherwise, never both
+		}
 		r.mu.Unlock()
+		grace, stop := context.WithTimeout(context.Background(), closeGrace)
+		_ = r.http.Shutdown(grace) // HTTP calls end with the frames queued above
+		_ = r.listener.Close()     // Also covers Close racing with the Serve goroutine.
+		select {
+		case <-r.peersGone:
+		case <-grace.Done():
+		}
+		stop()
+		r.cancel()
 		_ = r.http.Close()
 		if r.metricsServer != nil {
 			_ = r.metricsServer.Close()
 		}
-		_ = r.listener.Close() // Also covers Close racing with the Serve goroutine.
 		r.wg.Wait()
 		if r.socketInfo != nil {
 			if current, err := os.Lstat(r.config.UnixPath); err == nil && os.SameFile(r.socketInfo, current) {
@@ -455,6 +569,11 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	}
 	if strings.HasPrefix(req.URL.Path, httpPrefix) && !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
 		r.serveHTTP(w, req)
+		return
+	}
+	if r.stopping.Load() {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "router is shutting down", http.StatusServiceUnavailable)
 		return
 	}
 	// Admission before authentication, so a flood cannot even reach the
@@ -495,7 +614,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	}
 	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(r.config.OutboxSize), drops: &r.metrics.outboxDrops}
 	r.mu.Lock()
-	if r.closed || !r.config.Auth.valid(user) {
+	if r.draining || !r.config.Auth.valid(user) {
 		r.mu.Unlock()
 		cancel()
 		_ = conn.CloseNow()
@@ -505,7 +624,10 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	r.wg.Add(1)
 	r.mu.Unlock()
 	writerDone := make(chan struct{})
-	go func() { defer close(writerDone); p.writeLoop(r.config.MaxFrameSize) }()
+	go func() {
+		defer close(writerDone)
+		p.writeLoop(r.config.MaxFrameSize, func() bool { return r.goingAway(p) })
+	}()
 	defer func() {
 		cancel()
 		p.out.close()
@@ -724,8 +846,16 @@ func (r *Router) forward(p *peer, f frame) {
 			refuse(callError(f.CallID, "protocol_error", "Duplicate call_id", false))
 			return
 		}
+		if r.draining {
+			refuse(routerError(f.CallID, "unavailable", "Router is shutting down", true, "router_draining", ""))
+			return
+		}
 		if strings.HasPrefix(f.Service, reservedPrefix) {
 			r.management(p, f)
+			return
+		}
+		if limit := r.config.MaxCallsPerConnection; limit > 0 && p.calls >= limit {
+			refuse(routerError(f.CallID, "resource_exhausted", "Too many calls in flight on this connection", true, "overloaded", ""))
 			return
 		}
 		if len(r.routes) >= 65536 {
@@ -748,6 +878,7 @@ func (r *Router) forward(p *peer, f frame) {
 				}
 				if entry.route != nil {
 					entry.waiters = append(entry.waiters, dedupWaiter{client: p, callID: f.CallID})
+					p.calls++
 					return
 				}
 				avoid = entry.lastInstance
@@ -763,6 +894,7 @@ func (r *Router) forward(p *peer, f frame) {
 		rt := &route{id: f.CallID, service: f.Service, method: f.Method, started: time.Now(), client: p, instance: instance, index: -1}
 		r.routes[f.CallID] = rt
 		instance.inflight++
+		p.calls++
 		if f.TimeoutMS != nil {
 			r.track(rt, time.Duration(*f.TimeoutMS)*time.Millisecond)
 		}
@@ -823,9 +955,9 @@ func (r *Router) flowViolation(rt *route, byInstance bool) {
 	if rt.dedup != nil && rt.dedup.route == rt {
 		r.dedupFail(rt.dedup, violation, nil)
 	}
-	r.endRoute(rt.id, rt)
 	rt.client.send(violation)
 	rt.instance.send(frame{Kind: "call.cancel", CallID: rt.id, Reason: "flow_control_violation"})
+	r.endRoute(rt.id, rt)
 }
 
 // methodStream returns the registered stream kind of a method, or "".
@@ -869,6 +1001,13 @@ func (r *Router) remove(p *peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.peers, p)
+	if r.closed && len(r.peers) == 0 {
+		select {
+		case <-r.peersGone:
+		default:
+			close(r.peersGone)
+		}
+	}
 	if r.instances[p.instanceID] == p {
 		delete(r.instances, p.instanceID)
 		r.leavePools(p)

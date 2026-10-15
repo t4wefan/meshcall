@@ -81,6 +81,7 @@ func (r *Router) dedupSettle(entry *dedupEntry, terminal frame) {
 	entry.expires = time.Now().Add(dedupTTL)
 	for _, w := range entry.waiters {
 		w.client.send(withCallID(settled, w.callID))
+		r.callEnded(w.client)
 	}
 	entry.waiters = nil
 }
@@ -91,6 +92,7 @@ func (r *Router) dedupSettle(entry *dedupEntry, terminal frame) {
 func (r *Router) dedupFail(entry *dedupEntry, err frame, lost *peer) {
 	for _, w := range entry.waiters {
 		w.client.send(withCallID(err, w.callID))
+		r.callEnded(w.client)
 	}
 	entry.waiters = nil
 	entry.route = nil
