@@ -40,6 +40,16 @@ and are released together from a `vX.Y.Z` tag.
 
 ### Added
 
+- Go runtime (#19): `github.com/t4wefan/meshcall/meshcall-go` — services
+  (`HandleUnary`, `HandleServerStream`, `HandleClientStream`,
+  `HandleSubscription`, `HandleDuplex`) with contracts and JSON Schema from
+  struct tags, validation, contract warnings and strict mode, interceptors,
+  trailers, deadlines, idle timeouts, max in-flight, targeted services,
+  Router mode with reconnect and drain, and direct mode over TCP, Unix
+  sockets and Windows named pipes; clients with typed calls, retry,
+  reconnect, failover, subscriptions with resume and local validation. It
+  passes the conformance suite, interoperates with Python and TypeScript
+  both ways, and `meshcall generate --language go` writes typed Go clients.
 - Subscriptions (#14): `@method.subscription(cursor=, resume=)` /
   `subscriptionMethod({ cursor, resume })` declare a server stream that
   clients resubscribe to after a retryable failure or dropped connection,

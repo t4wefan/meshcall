@@ -4,9 +4,10 @@ Read this before changing anything. It is short on purpose; follow the links.
 
 ## What MeshCall is
 
-A typed, streaming RPC framework with three implementations that must behave
-identically: `meshcall-py/` (Python), `meshcall-ts/` (TypeScript), and
-`meshcall-router/` (Go; the standalone Router that all peers connect to).
+A typed, streaming RPC framework whose runtimes must behave identically:
+`meshcall-py/` (Python), `meshcall-ts/` (TypeScript) and `meshcall-go/` (Go),
+plus `meshcall-router/` (Go; the standalone Router that all peers connect
+to, the `meshcall` CLI, the client generators and the conformance suite).
 `docs/protocol.md` is the contract between them; `docs/architecture.md`
 explains the runtime design; `docs/router.md` the Router.
 
@@ -104,6 +105,11 @@ for you. When running tools directly:
 
 ## Where things live
 
+Rows below cover Python, TypeScript and the Go *Router* module; the Go
+runtime lives in `meshcall-go/` (`frame.go`, `client.go`, `server.go`,
+`service.go` for definitions and contracts, `schema.go` for JSON Schema and
+validation, `diagnostics.go`, `transport.go`, `conformance/fixture`).
+
 | Concern | Python | TypeScript | Go |
 | --- | --- | --- | --- |
 | Frame definitions | `meshcall-py/src/meshcall/protocol.py` | `meshcall-ts/src/protocol.ts` | `meshcall-router/internal/router/protocol.go` |
@@ -114,7 +120,7 @@ for you. When running tools directly:
 | Drivers (direct / router) | `drivers/websocket.py` | `server.ts` | — |
 | Router launcher, binary discovery | `router.py`, `router_install.py` | `router.ts` | `cmd/meshcall-router` |
 | Contract extraction, export | `contract.py`, `contract_io.py`, `export.py` | `contract.ts` | `internal/contract` (reader) |
-| Client generation | — | — | `internal/codegen` (Python + TypeScript), `internal/cli/generate.go` |
+| Client generation | — | — | `internal/codegen` (Python, TypeScript, Go), `internal/cli/generate.go` |
 | CLI launchers | `launcher.py` | `launcher.ts` | `cmd/meshcall` |
 | Routing, balancing, deadlines | — | — | `router.go`, `balance.go`, `deadline.go` |
 | Registry RPC, dedup, breaker | — | — | `management.go`, `dedup.go`, `breaker.go` |
@@ -125,7 +131,7 @@ for you. When running tools directly:
 
 Tests: `meshcall-py/tests/test_*.py` (one topic per file; `test_timing.py`,
 `test_interceptors.py` are good templates), `meshcall-ts/tests/*.test.ts`,
-`meshcall-router/internal/router/router_test.go`.
+`meshcall-go/*_test.go`, `meshcall-router/internal/router/router_test.go`.
 
 ## Conventions
 
@@ -133,7 +139,7 @@ Tests: `meshcall-py/tests/test_*.py` (one topic per file; `test_timing.py`,
   `<type>/<domain>/<topic>`. `type` matches the commit type (`feat`, `fix`,
   `docs`, `test`, `build`, `refactor`, `chore`); `domain` is where the change
   lives: `go` (`meshcall-router/`: Router, CLI, codegen, conformance), `py`
-  (`meshcall-py/`), `ts` (`meshcall-ts/`), `docs`, `ci` (workflows,
+  (`meshcall-py/`), `ts` (`meshcall-ts/`), `gort` (`meshcall-go/`), `docs`, `ci` (workflows,
   `scripts/`, release), `demo` (`demo/`, `best-practice/`), `skill`; join
   several with `+`. Examples: `feat/go+py+ts/windows-pipes`,
   `fix/ts/reconnect-race`, `docs/docs/http-calls`.

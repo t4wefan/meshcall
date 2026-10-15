@@ -108,6 +108,18 @@ class Chat:
         return Message(text="ok")
 ```
 
+Go (`github.com/t4wefan/meshcall/meshcall-go`; schemas come from struct
+tags: `json`, optional = pointer or `omitempty`, `doc:"…"`):
+
+```go
+chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
+meshcall.HandleUnary(chat, "send", func(ctx *meshcall.Context, req SendRequest) (Message, error) {
+	return Message{Text: "echo " + req.Text}, nil
+}, meshcall.Doc("Append a message and return the reply."), meshcall.Idempotent())
+```
+
+Go clients: `meshcall generate <contract> --language go --output DIR`.
+
 TypeScript (schemas are explicit because types are erased):
 
 ```typescript
