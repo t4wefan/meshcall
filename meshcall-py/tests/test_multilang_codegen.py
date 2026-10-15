@@ -149,9 +149,9 @@ def test_typescript_generator_preserves_one_way_streaming_shapes(
     )
     source = output.read_text(encoding="utf-8")
 
-    assert "type MeshCallServerStream" in source
+    assert "import type { MeshCallRpc, CallOptions, RpcStream" in source
     assert "public download(" in source
-    assert "MeshCallServerStream<StreamItem>" in source
+    assert "RpcStream<StreamItem>" in source
     assert (
         "this.rpc.serverStream<OneWayStreamServiceDownloadRequest, StreamItem>"
         in source
