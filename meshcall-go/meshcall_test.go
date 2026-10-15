@@ -126,8 +126,8 @@ func direct(t *testing.T, addr string, opts meshcall.ServerOptions) (*meshcall.S
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
-	if strings.HasPrefix(addr, "unix://") {
-		return server, addr
+	if strings.HasPrefix(addr, "unix://") || strings.HasPrefix(addr, "pipe://") {
+		return server, addr // local transports are dialled by the same address
 	}
 	return server, "ws://" + server.Addr().String()
 }
