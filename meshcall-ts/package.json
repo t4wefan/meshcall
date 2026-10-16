@@ -1,6 +1,6 @@
 {
   "name": "meshcall",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Async typed RPC for TypeScript services: WebSocket direct or through the MeshCall Router",
   "license": "MIT",
   "repository": {

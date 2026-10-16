@@ -10,6 +10,8 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-16
+
 ### Fixed
 
 - **A frame over the size limit fails only its call** in every runtime,
@@ -253,6 +255,7 @@ runtimes, the standalone Go Router, and the unified `meshcall` CLI.
   - `meshcall-conformance` runner in Go with reference fixtures for Python and
     TypeScript.
 
-[Unreleased]: https://github.com/t4wefan/meshcall/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/t4wefan/meshcall/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/t4wefan/meshcall/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/t4wefan/meshcall/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/t4wefan/meshcall/releases/tag/v0.1.0
