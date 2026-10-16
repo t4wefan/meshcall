@@ -28,6 +28,7 @@ const chatType = defineType<{ prefix?: string }>("Chat", object({ prefix: { type
 const textType = defineType<{ text: string }>("Text", object({ text: { type: "string" } }, ["text"]));
 const ticksType = defineType<{ count: number; since?: number | null }>("Ticks", object({ count: { type: "integer" }, since: { type: ["integer", "null"], default: null } }, ["count"]));
 const seqType = defineType<{ seq: number }>("Seq", object({ seq: { type: "integer" } }, ["seq"]));
+const sizeType = defineType<{ bytes: number }>("Size", object({ bytes: { type: "integer" } }, ["bytes"]));
 const drainType = defineType<{ delay_ms?: number }>("Drain", object({ delay_ms: { type: "integer", default: 0 } }));
 
 /** unix:///path and pipe://NAME select the local transport. */
@@ -94,6 +95,17 @@ const fixture = defineService({
         for (let seq = since === null || since === undefined ? 0 : since + 1; seq < count; seq += 1) yield { seq };
       },
     }),
+    big: unaryMethod({
+      description: "Return a text of bytes bytes.", readOnly: true, request: sizeType, response: textType,
+      handler: ({ bytes }) => ({ text: "x".repeat(bytes) }),
+    }),
+    big_items: serverStreamMethod({
+      description: "Yield one small item, then one of bytes bytes.", readOnly: true, request: sizeType, outputItem: textType,
+      handler: async function* ({ bytes }) {
+        yield { text: "small" };
+        yield { text: "x".repeat(bytes) };
+      },
+    }),
     chat: duplexMethod({
       description: "Echo each input with prefix; send done:<inputs> when input ends.",
       reason: "conformance: answers interleave with input",
@@ -144,6 +156,7 @@ server = new MeshCallServer({
   services: [fixture, targeted],
   router: { endpoint: routerEndpoint(process.env.MESHCALL_ROUTER_URL as string), instanceId: process.env.MESHCALL_CONFORMANCE_INSTANCE ?? "fixture-1" },
   pingIntervalMs: ping, pingTimeoutMs: Math.max(1000, ping * 2),
+  ...(process.env.MESHCALL_MAX_FRAME_SIZE === undefined ? {} : { maxFrameSize: Number(process.env.MESHCALL_MAX_FRAME_SIZE) }),
   accessLog: false,
 });
 await server.start();

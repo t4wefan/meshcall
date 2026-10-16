@@ -435,7 +435,11 @@ func (c *Client) open(ctx context.Context, info *CallInfo, payload json.RawMessa
 		call.abort(contextError(ctx), reason)
 	})
 	if err := conn.send(open); err != nil {
-		call.fail(&Error{Code: CodeUnavailable, Message: "Connection was lost", Retryable: true})
+		if e := frameTooLarge("client", err); e != nil {
+			call.fail(e)
+		} else {
+			call.fail(&Error{Code: CodeUnavailable, Message: "Connection was lost", Retryable: true})
+		}
 		return nil, call.failure
 	}
 	if info.Stream == "server_stream" || info.Stream == "duplex" {
@@ -616,7 +620,12 @@ func (call *clientCall) sendInput(ctx context.Context, payload json.RawMessage) 
 	seq := call.inputSeq
 	call.inputSeq++
 	call.mu.Unlock()
-	return call.conn.send(frame{Kind: "stream.item", CallID: call.id, Direction: "client", Sequence: &seq, Payload: payload})
+	err := call.conn.send(frame{Kind: "stream.item", CallID: call.id, Direction: "client", Sequence: &seq, Payload: payload})
+	if e := frameTooLarge("client", err); e != nil {
+		call.abort(e, "frame_too_large") // the call is open at the peer
+		return e
+	}
+	return err
 }
 
 func (call *clientCall) closeInput() error {

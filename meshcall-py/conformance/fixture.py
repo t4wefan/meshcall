@@ -146,6 +146,17 @@ class Fixture:
         for seq in range(0 if since is None else since + 1, count):
             yield Seq(seq=seq)
 
+    @method(read_only=True)
+    async def big(self, bytes: int) -> Text:
+        """Return a text of ``bytes`` bytes."""
+        return Text(text="x" * bytes)
+
+    @method.server_stream(read_only=True)
+    async def big_items(self, bytes: int) -> AsyncIterator[Text]:
+        """Yield one small item, then one of ``bytes`` bytes."""
+        yield Text(text="small")
+        yield Text(text="x" * bytes)
+
     @method.duplex(reason="conformance: answers interleave with input")
     async def chat(self, channel: RpcDuplex[Text, Text], prefix: str = "") -> None:
         """Echo each input with ``prefix``; send ``done:<inputs>`` when input ends."""
@@ -186,6 +197,8 @@ async def main() -> None:
         "ping_interval": ping,
         "ping_timeout": max(1.0, ping * 2),
     }
+    if "MESHCALL_MAX_FRAME_SIZE" in os.environ:
+        options["max_frame_size"] = int(os.environ["MESHCALL_MAX_FRAME_SIZE"])
     # unix:///path and pipe://NAME select the local transport.
     if url.startswith("unix://"):
         driver = WebSocketRouterServerDriver(

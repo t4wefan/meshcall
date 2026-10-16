@@ -30,6 +30,7 @@ var scenarios = []scenario{
 	{"duplex: output half-closes while input stays open", duplexServerHalfClose},
 	{"duplex: server enforces idle_timeout_ms on input", duplexIdle},
 	{"duplex: an idempotency key is refused", duplexIdempotencyKey},
+	{"frame size: an oversized result or item fails only its call", frameTooLarge},
 	{"http: unary calls, metadata, errors and deadlines", httpUnary},
 	{"http: server stream as typed NDJSON envelopes", httpServerStream},
 	{"http: client stream from an NDJSON body", httpClientStream},
@@ -47,6 +48,7 @@ func registration(h *harness) error {
 		"echo": "unary", "bad_response": "unary", "fail": "unary", "slow": "unary", "cancelled_tags": "unary", "invoked_tags": "unary",
 		"count": "server_stream", "sum": "client_stream", "metadata_echo": "unary", "drain_self": "unary",
 		"chat": "duplex", "announce": "duplex", "ticks": "server_stream",
+		"big": "unary", "big_items": "server_stream",
 	}
 	if !reflect.DeepEqual(methods, want) {
 		return fmt.Errorf("registered methods %v, want %v", methods, want)
@@ -836,4 +838,89 @@ func drain(h *harness) error {
 			return fmt.Errorf("stream failed during drain: %v", f)
 		}
 	}
+}
+
+// FixtureMaxFrameSize is the frame limit the harness gives the fixture, far
+// below the Router's, so an oversized frame is the fixture's to refuse.
+const FixtureMaxFrameSize = 1 << 20
+
+// frameTooLarge: a server never sends a frame over its limit (the Router would
+// pass it on and the client close its connection, or the Router itself
+// would close the instance's). Only that call fails, with frame_too_large,
+// and the instance's connection, carrying a bystander call, stays up.
+func frameTooLarge(h *harness) error {
+	bystander, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer bystander.close()
+	slow, err := bystander.open("slow", frame{"ms": 600, "tag": "frame-size"}, nil)
+	if err != nil {
+		return err
+	}
+	c, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	tooLarge := func(what string, f frame) error {
+		code, _, retryable, details := errorOf(f)
+		if f["kind"] != "call.error" || code != "resource_exhausted" || retryable ||
+			details["reason"] != "frame_too_large" || details["source"] != "server" {
+			return fmt.Errorf("%s over the frame limit: want non-retryable resource_exhausted, reason frame_too_large, source server; got %v", what, f)
+		}
+		return nil
+	}
+	result, err := c.unary("big", frame{"bytes": 2 * FixtureMaxFrameSize}, nil)
+	if err != nil {
+		return err
+	}
+	if err := tooLarge("a response", result); err != nil {
+		return err
+	}
+	id, err := c.open("big_items", frame{"bytes": 2 * FixtureMaxFrameSize}, nil)
+	if err != nil {
+		return err
+	}
+	if err := c.send(frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": 8}); err != nil {
+		return err
+	}
+	var items []any
+	for {
+		f, err := c.receive()
+		if err != nil {
+			return fmt.Errorf("big_items: %w", err)
+		}
+		if f["call_id"] != id {
+			continue
+		}
+		if f["kind"] == "stream.item" {
+			items = append(items, f["payload"])
+			continue
+		}
+		if err := tooLarge("a stream item", f); err != nil {
+			return err
+		}
+		break
+	}
+	if len(items) != 1 || !reflect.DeepEqual(items[0], map[string]any{"text": "small"}) {
+		return fmt.Errorf("big_items sent %v before failing, want one small item", items)
+	}
+	for {
+		f, err := bystander.receive()
+		if err != nil {
+			return fmt.Errorf("the bystander call on the same instance: %w", err)
+		}
+		if f["call_id"] != slow {
+			continue
+		}
+		if f["kind"] != "call.result" {
+			return fmt.Errorf("the instance's connection did not survive the oversized frames: %v", f)
+		}
+		break
+	}
+	if !h.registered() {
+		return fmt.Errorf("the instance left the Router")
+	}
+	return nil
 }

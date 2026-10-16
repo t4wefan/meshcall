@@ -43,7 +43,7 @@ from meshcall.protocol import (
 )
 from meshcall.server import INITIAL_STREAM_CREDIT
 from meshcall.streams import RpcDuplexClient, RpcServerStream
-from meshcall.transport import FrameConnection
+from meshcall.transport import FrameConnection, is_frame_too_large
 
 _STREAM_END = object()
 
@@ -702,14 +702,20 @@ class _ClientCall:
             if self.input_type is not None and self.input_type is not BaseModel
             else item
         )
-        await self.connection.send(
-            StreamItemFrame(
-                call_id=self.call_id,
-                direction="client",
-                sequence=self.input_sequence,
-                payload=validated.model_dump(mode="json", by_alias=True),
+        try:
+            await self.connection.send(
+                StreamItemFrame(
+                    call_id=self.call_id,
+                    direction="client",
+                    sequence=self.input_sequence,
+                    payload=validated.model_dump(mode="json", by_alias=True),
+                )
             )
-        )
+        except MeshCallError as exc:
+            if is_frame_too_large(exc):
+                # The call is open at the peer: end it there too.
+                await self._fail_locally(exc)
+            raise
         self.input_sequence += 1
 
     async def close_send(self) -> None:

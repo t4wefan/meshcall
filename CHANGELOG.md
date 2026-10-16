@@ -10,6 +10,18 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A frame over the size limit fails only its call** in every runtime,
+  with non-retryable `resource_exhausted` (`reason: "frame_too_large"`,
+  `source` the side that refused to send it), and the connection stays
+  open. Before, a Python server whose response was too large sent nothing,
+  so the caller waited for its deadline; a TypeScript server closed the
+  connection; and the Go runtime sent the frame, so the receiving peer (the
+  Router, for an instance) closed the whole connection and failed every call
+  on it. An oversized input stream item also cancels the call at the peer.
+  See [docs/protocol.md](docs/protocol.md#frame-size).
+
 ## [0.2.0] - 2026-10-15
 
 ### Security

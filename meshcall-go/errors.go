@@ -70,6 +70,16 @@ func errorFromPayload(p *errorPayload) *Error {
 	return &Error{Code: p.Code, Message: p.Message, Retryable: p.Retryable, Details: p.Details}
 }
 
+// frameTooLarge is the error for a call whose frame was not sent because it
+// is over the size limit (docs/protocol.md → Frame size); nil for any other
+// error. Not retryable: the same call would build the same frame.
+func frameTooLarge(source string, err error) *Error {
+	if !errors.Is(err, errFrameTooLarge) {
+		return nil
+	}
+	return detailed(CodeResourceExhausted, "Not sent: "+err.Error(), source, "frame_too_large", false)
+}
+
 func detailed(code, message, source, reason string, retryable bool) *Error {
 	details := map[string]any{"source": source}
 	if reason != "" {

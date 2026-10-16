@@ -21,7 +21,7 @@ import {
 import { ConsoleRpcLogger, type RpcLogger } from "./logging.js";
 import type { MeshCallRpc, RpcStream } from "./rpc.js";
 import { MeshCallSubscription } from "./subscription.js";
-import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
+import { DEFAULT_MAX_FRAME_SIZE, FrameWriter, isFrameTooLarge } from "./transport.js";
 import { checkReceived } from "./validation.js";
 import {
   type CallCancelFrame,
@@ -696,7 +696,7 @@ export class MeshCallClient implements MeshCallRpc {
     const maxSize = this.options.maxFrameSize ?? DEFAULT_MAX_FRAME_SIZE;
     const timeout = this.options.handshakeTimeoutMs ?? 10_000;
     const socket = createSocket(endpoint, maxSize, timeout, this.options.auth);
-    const writer = new FrameWriter(socket, maxSize);
+    const writer = new FrameWriter(socket, maxSize, "client");
     const liveness = new Liveness(socket, writer, {
       pingIntervalMs: this.options.pingIntervalMs === undefined
         ? DEFAULT_PING_INTERVAL_MS : this.options.pingIntervalMs,
@@ -1038,7 +1038,12 @@ class ServerStreamState<Item> {
     // Claim the sequence before awaiting so concurrent sends stay in order.
     const sequence = input.sequence;
     input.sequence += 1;
-    await this.send({ kind: "stream.item", call_id: this.callId, direction: "client", sequence, payload: item });
+    try {
+      await this.send({ kind: "stream.item", call_id: this.callId, direction: "client", sequence, payload: item });
+    } catch (error) {
+      if (isFrameTooLarge(error)) this.abort(error, "frame_too_large"); // the call is open at the peer
+      throw error;
+    }
   }
 
   public async closeInput(): Promise<void> {

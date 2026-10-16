@@ -206,6 +206,7 @@ func (h *harness) startFixture() error {
 		"MESHCALL_ROUTER_URL="+h.routerURL(),
 		"MESHCALL_CONFORMANCE_INSTANCE="+InstanceID,
 		"MESHCALL_PING_INTERVAL_MS=500",
+		fmt.Sprintf("MESHCALL_MAX_FRAME_SIZE=%d", FixtureMaxFrameSize),
 		"MESHCALL_STRICT=1",
 	)
 	cmd.Stdout = &lockedWriter{h: h}

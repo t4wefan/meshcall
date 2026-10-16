@@ -8,7 +8,7 @@ import type {
   CallOpenFrame, ErrorPayload, Frame, Metadata, StreamEndFrame, StreamItemFrame, StreamWindowFrame,
 } from "./protocol.js";
 import type { DuplexChannel, RpcContext, ServerCallNext, ServerInterceptor, ServiceMethod } from "./service.js";
-import type { FrameWriter } from "./transport.js";
+import { isFrameTooLarge, type FrameWriter } from "./transport.js";
 import { InvalidOutputError, validatePayload, type MethodValidators } from "./validation.js";
 
 export interface RuntimeMethod {
@@ -407,10 +407,16 @@ class ServerCall {
     const payload = validatePayload(this.method.validators.output, value, "output_item");
     await this.credit.acquire();
     if (this.terminal) return false;
-    await this.session.writer.send({
-      kind: "stream.item", call_id: this.frame.call_id, direction: "server",
-      sequence: this.outputSequence, payload,
-    });
+    try {
+      await this.session.writer.send({
+        kind: "stream.item", call_id: this.frame.call_id, direction: "server",
+        sequence: this.outputSequence, payload,
+      });
+    } catch (error) {
+      // The call ends with this error even if the handler goes on.
+      if (isFrameTooLarge(error)) await this.fail(error);
+      throw error;
+    }
     this.outputSequence += 1;
     return true;
   }
@@ -476,8 +482,17 @@ class ServerCall {
     if (!this.cleanup()) return;
     try {
       await this.session.writer.send(frame);
-    } catch {
-      this.session.close();
+    } catch (error) {
+      if (!isFrameTooLarge(error)) {
+        this.session.close();
+      } else {
+        safelyLog(() => this.context.logger.error("Terminal frame over the size limit: %s", error.message));
+        status = error.code;
+        await this.session.writer.send({
+          kind: "call.error", call_id: this.frame.call_id,
+          error: { code: error.code, message: error.message, retryable: false, details: error.details },
+        }).catch(() => this.session.close());
+      }
     } finally {
       // Leave the in-flight set only once the terminal frame is written: a
       // draining server closes its connections as soon as nothing is in

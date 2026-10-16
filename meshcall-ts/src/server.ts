@@ -307,7 +307,7 @@ export class MeshCallServer {
   }
 
   private session(socket: WebSocket, role: "direct" | "router"): { session: ServerSession; liveness: Liveness } {
-    const writer = new FrameWriter(socket, this.maxFrameSize);
+    const writer = new FrameWriter(socket, this.maxFrameSize, "server");
     const liveness = new Liveness(socket, writer, role === "direct"
       ? { idleTimeoutMs: this.options.idleTimeoutMs === undefined
           ? DEFAULT_IDLE_TIMEOUT_MS : this.options.idleTimeoutMs }
