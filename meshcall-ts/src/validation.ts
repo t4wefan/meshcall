@@ -1,34 +1,20 @@
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import type { z } from "zod";
 
-import type { JsonSchema, TypeContract } from "./contract.js";
+import type { JsonSchema, MethodSpec } from "./contract.js";
 import { InternalError, InvalidArgumentError, ProtocolError, type Violation } from "./errors.js";
-import type { ServiceMethod } from "./service.js";
 
+/** The zod schemas a server validates one method's payloads with. */
 export interface MethodValidators {
-  request: ValidateFunction | undefined;
-  response: ValidateFunction | undefined;
-  input: ValidateFunction | undefined;
-  output: ValidateFunction | undefined;
+  request: z.ZodType | undefined;
+  response: z.ZodType | undefined;
+  input: z.ZodType | undefined;
+  output: z.ZodType | undefined;
 }
 
-export function compileMethod(method: ServiceMethod): MethodValidators {
-  const ajv = new Ajv2020({ strict: false, useDefaults: true });
-  addFormats.default(ajv);
-  const typed = method as ServiceMethod & {
-    request?: TypeContract<unknown>;
-    response?: TypeContract<unknown>;
-    inputItem?: TypeContract<unknown>;
-    outputItem?: TypeContract<unknown>;
-  };
-  const compile = (type: TypeContract<unknown> | undefined) =>
-    type === undefined ? undefined : ajv.compile(type.schema);
-  return {
-    request: compile(typed.request),
-    response: compile(typed.response),
-    input: compile(typed.inputItem),
-    output: compile(typed.outputItem),
-  };
+export function methodValidators(method: MethodSpec): MethodValidators {
+  return { request: method.request, response: method.response, input: method.inputItem, output: method.outputItem };
 }
 
 /** What was validated; decides who is at fault (docs/protocol.md → Validation failures). */
@@ -47,15 +33,33 @@ export class InvalidOutputError extends InternalError {
   }
 }
 
-export function validatePayload(validate: ValidateFunction | undefined, value: unknown, subject: ValidationSubject): unknown {
-  if (validate === undefined || validate(value)) return value;
-  const violations = (validate.errors ?? []).map(violationOf);
+/**
+ * Parse a payload: the parsed value (defaults applied, unknown fields dropped)
+ * or the error for whoever is at fault.
+ */
+export function validatePayload(schema: z.ZodType | undefined, value: unknown, subject: ValidationSubject): unknown {
+  if (schema === undefined) return value;
+  const result = schema.safeParse(value);
+  if (result.success) return result.data;
+  const violations = result.error.issues.map((issue) => zodViolation(issue, value));
   if (subject === "response" || subject === "output_item") {
     throw new InvalidOutputError(subject, violations);
   }
   throw new InvalidArgumentError(subject === "request" ? "Invalid request" : "Invalid input stream item", {
     details: { source: "server", reason: subject, violations },
   });
+}
+
+/** A zod issue in the `(path, code, message)` shape every runtime sends. */
+function zodViolation(issue: z.core.$ZodIssue, root: unknown): Violation {
+  const path = issue.path.map(String).join(".");
+  let code: string = issue.code;
+  if (issue.code === "invalid_type") {
+    let at: unknown = root;
+    for (const key of issue.path) at = at !== null && typeof at === "object" ? (at as Record<PropertyKey, unknown>)[key] : undefined;
+    code = at === undefined ? "missing" : "type";
+  }
+  return { path, code, message: issue.message };
 }
 
 const compiled = new WeakMap<JsonSchema, ValidateFunction>();

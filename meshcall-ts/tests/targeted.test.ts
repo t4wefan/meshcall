@@ -2,25 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  defineService, defineType, InvalidArgumentError, lintService, MeshCallClient, MeshCallServer, UnavailableError, unaryMethod,
+  InvalidArgumentError, lintService, MeshCallClient, MeshCallServer, method, service, UnavailableError, z,
+  type RpcContext, type ServiceOptions,
 } from "../src/index.js";
+import { serviceSpec } from "../src/contract.js";
 
-const emptyType = defineType<Record<string, never>>("Empty", { type: "object", properties: {} });
-const instanceType = defineType<{ instance: string }>("Instance", {
-  type: "object", properties: { instance: { type: "string" } }, required: ["instance"],
-});
+const Empty = z.object({});
+const Instance = z.object({ instance: z.string() });
 
-const actor = defineService({
-  name: "test.v1.Actor", targeted: true, description: "Holds per-instance state.",
-  sourceModule: "targeted.test", sourceQualname: "Actor",
-  methods: {
-    whoami: unaryMethod({ description: "Report the serving instance.", readOnly: true, request: emptyType, response: instanceType, handler: (_, ctx) => ({ instance: ctx.instanceId }) }),
-  },
-});
-const plain = defineService({ ...actor, name: "test.v1.Plain", targeted: false, sourceQualname: "Plain" });
+function actorClass(name: string, options: ServiceOptions) {
+  @service(name, options)
+  class Actor {
+    @method({ description: "Report the serving instance.", readOnly: true, request: Empty, response: Instance })
+    whoami(_: unknown, ctx: RpcContext) { return { instance: ctx.instanceId }; }
+  }
+  return Actor;
+}
+
+const Actor = actorClass("test.v1.Actor", { targeted: true, description: "Holds per-instance state." });
+const Plain = actorClass("test.v1.Plain", { description: "Holds per-instance state." });
+const actor = { name: "test.v1.Actor" };
+const plain = { name: "test.v1.Plain" };
 
 test("direct server applies targeting rules", { timeout: 5000 }, async (t) => {
-  const server = new MeshCallServer({ services: [actor, plain], instanceId: "node-7", accessLog: false });
+  const server = new MeshCallServer({ services: [new Actor(), new Plain()], instanceId: "node-7", accessLog: false });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort);
   t.after(async () => { await client.close(); await server.close(); });
@@ -38,6 +43,8 @@ test("direct server applies targeting rules", { timeout: 5000 }, async (t) => {
 });
 
 test("sticky balancing on a targeted service warns", () => {
-  const sticky = defineService({ ...actor, name: "test.v1.Sticky", balance: { kind: "sticky", key: "request.key" } });
-  assert.ok(lintService(sticky).some((w) => w.code === "W006"));
+  const Sticky = actorClass("test.v1.Sticky", {
+    targeted: true, description: "Holds per-instance state.", balance: { kind: "sticky", key: "request.key" },
+  });
+  assert.ok(lintService(serviceSpec(Sticky)).some((w) => w.code === "W006"));
 });

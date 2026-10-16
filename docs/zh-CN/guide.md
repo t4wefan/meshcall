@@ -235,11 +235,11 @@ class Feed:
 # 消费：async for event in client.events(): ...
 ```
 
-TypeScript 使用 `subscriptionMethod({ cursor: "seq", resume: "since", … })` 与 `new Topic<Event>({ history: 1000, cursor: (e) => e.seq })`，Handler 中 `for await (const event of topic.subscribe(since)) yield event;`。Go 用 `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` 声明同样的契约（Go 没有 `Topic`），生成的 Go 客户端返回以同样方式自动重新订阅的 `*meshcall.Subscription`。完整规则见[协议规范：订阅](protocol.md#订阅subscriptions)。
+TypeScript 使用 `@method.subscription({ cursor: "seq", resume: "since", … })` 与 `new Topic<Event>({ history: 1000, cursor: (e) => e.seq })`，Handler 中 `for await (const event of topic.subscribe(since)) yield event;`。Go 用 `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` 声明同样的契约（Go 没有 `Topic`），生成的 Go 客户端返回以同样方式自动重新订阅的 `*meshcall.Subscription`。完整规则见[协议规范：订阅](protocol.md#订阅subscriptions)。
 
 ### 双向流（duplex）：最后的选择
 
-duplex 方法（Python `@method.duplex(reason="…")` 加一个 `channel: RpcDuplex[In, Out]` 参数，TypeScript `duplexMethod({ reason, … })`，Go `meshcall.HandleDuplex(svc, name, reason, handler)`）同时流式传输输入与输出。只有当输出必须与仍在不断到达的输入在同一调用内交错时才使用它，例如用户还在说话时就回应的语音轮次。它从不重试、不去重，不接受幂等键，不能标注 `idempotent` / `read_only`，不能通过 HTTP 调用，并在整个生命周期内固定在一个实例上；`reason` 会写入契约。只发送不读取的一方会在对方信用耗尽后卡住，因此请在发送的同时并发读取输出。请先尝试"服务端流 + 一元调用"或客户端流。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
+duplex 方法（Python `@method.duplex(reason="…")` 加一个 `channel: RpcDuplex[In, Out]` 参数，TypeScript `@method.duplex({ reason, … })`，Go `meshcall.HandleDuplex(svc, name, reason, handler)`）同时流式传输输入与输出。只有当输出必须与仍在不断到达的输入在同一调用内交错时才使用它，例如用户还在说话时就回应的语音轮次。它从不重试、不去重，不接受幂等键，不能标注 `idempotent` / `read_only`，不能通过 HTTP 调用，并在整个生命周期内固定在一个实例上；`reason` 会写入契约。只发送不读取的一方会在对方信用耗尽后卡住，因此请在发送的同时并发读取输出。请先尝试"服务端流 + 一元调用"或客户端流。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
 
 ---
 

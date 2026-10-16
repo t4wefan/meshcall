@@ -1,8 +1,8 @@
 import { MeshCallServer } from "meshcall";
 
-import { service } from "./service.js";
+import { TypeScriptGreetingService } from "./service.js";
 
-const server = new MeshCallServer({ services: [service] });
+const server = new MeshCallServer({ services: [new TypeScriptGreetingService()] });
 await server.start();
 process.stdout.write(`${JSON.stringify({ port: server.boundPort })}\n`);
 

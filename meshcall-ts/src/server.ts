@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 
 import { closeSocket, createSocket, namedPipePath, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
-import { tryContractEntry } from "./contract.js";
+import { bindService, contractEntry } from "./contract.js";
 import { contractWarnings, renderWarning } from "./diagnostics.js";
 import { DeadlineExceededError, ProtocolError, UnavailableError } from "./errors.js";
 import {
@@ -17,16 +17,13 @@ import {
   decodeFrame, FrameDecodeError, PROTOCOL_VERSION, type Frame, type RegisteredService,
 } from "./protocol.js";
 import { ServerSession, type RuntimeMethod, type RuntimeServices } from "./server-session.js";
-import type { ServiceDefinition, ServerInterceptor } from "./service.js";
+import type { ServerInterceptor } from "./service.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
-import { compileMethod } from "./validation.js";
+import { methodValidators } from "./validation.js";
 
 import type { RouterCredentials } from "./router-auth.js";
 
-export type {
-  ClientStreamMethod, RpcContext, ServerCallNext, ServerInterceptor, ServerStreamMethod,
-  ServiceDefinition, ServiceMethod, UnaryContext, UnaryMethod, DuplexMethod, DuplexChannel,
-} from "./service.js";
+export type { RpcContext, ServerCallNext, ServerInterceptor, DuplexChannel } from "./service.js";
 
 export interface RouterConnectionOptions {
   readonly auth?: RouterCredentials;
@@ -46,7 +43,8 @@ interface RouterLink {
 }
 
 export interface MeshCallServerOptions {
-  readonly services: ReadonlyArray<ServiceDefinition>;
+  /** Instances of `@service` classes. */
+  readonly services: ReadonlyArray<object>;
   readonly host?: string;
   readonly port?: number;
   /** Unix socket to listen on (not on Windows: use `pipe`). */
@@ -93,6 +91,7 @@ export class MeshCallServer {
   private running = false;
   private stopping = false;
   private readonly services: RuntimeServices;
+  private readonly targeted: ReadonlySet<string>;
   private readonly registration: RegisteredService[];
   private readonly logger: RpcLogger;
   private readonly maxFrameSize: number;
@@ -121,20 +120,19 @@ export class MeshCallServer {
     this.logger = options.logger ?? new ConsoleRpcLogger({}, options.colorize ?? false);
     const services = new Map<string, Map<string, RuntimeMethod>>();
     this.registration = [];
-    for (const service of options.services) {
+    const targeted = new Set<string>();
+    for (const instance of options.services) {
+      const { spec, definition: service } = bindService(instance);
       if (services.has(service.name)) throw new Error("Duplicate service name: " + service.name);
       const methods = new Map<string, RuntimeMethod>();
-      for (const [name, definition] of Object.entries(service.methods)) {
-        if (!["unary", "server_stream", "client_stream", "duplex"].includes(definition.stream)) {
-          throw new TypeError("Unsupported service method shape: " + definition.stream);
-        }
-        methods.set(name, { definition, validators: compileMethod(definition) });
+      for (const method of spec.methods) {
+        methods.set(method.name, { definition: service.methods[method.name]!, validators: methodValidators(method) });
       }
       services.set(service.name, methods);
-      const contract = tryContractEntry(service);
+      if (spec.targeted) targeted.add(service.name);
       this.registration.push({
         name: service.name,
-        ...(contract === undefined ? {} : { contract }),
+        contract: contractEntry(instance),
         ...(service.targeted === true ? { targeted: true } : {}),
         methods: Object.entries(service.methods).map(([name, method]) => ({
           name, stream: method.stream,
@@ -146,6 +144,7 @@ export class MeshCallServer {
       });
     }
     this.services = services;
+    this.targeted = targeted;
   }
 
   public get boundPort(): number {
@@ -322,7 +321,7 @@ export class MeshCallServer {
       logLevel: this.options.logLevel ?? "info",
       interceptors: this.options.interceptors ?? [],
       instanceId: this.instanceId,
-      targeted: new Set(this.options.services.filter((s) => s.targeted === true).map((s) => s.name)),
+      targeted: this.targeted,
       inflight: () => [...this.sessions.values()].reduce((sum, s) => sum + s.inFlight, 0),
       ...(this.options.maxInflight === undefined ? {} : { maxInflight: this.options.maxInflight }),
     }, liveness);

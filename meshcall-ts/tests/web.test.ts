@@ -6,54 +6,51 @@ import test from "node:test";
 import { build } from "esbuild";
 
 import {
-  clientStreamMethod, defineService, defineType, MeshCallError, MeshCallServer, serverStreamMethod,
-  subscriptionMethod, unaryMethod, WebSocketRouter, type MeshCallRpc,
+  MeshCallError, MeshCallServer, method, service, WebSocketRouter, z, type MeshCallRpc, type RpcContext,
 } from "../src/index.js";
 import { findRouterBinary } from "../src/router.js";
 import { MeshCallHttpClient } from "../src/web.js";
 
 const routerMissing = (() => { try { findRouterBinary(); return false; } catch { return "Go Router binary not built"; } })();
 
-interface Value { value: number }
-interface Seq { seq: number }
-
-const value = defineType<Value>("Value", { type: "object", properties: { value: { type: "integer" } }, required: ["value"] });
-const seq = defineType<Seq>("Seq", { type: "object", properties: { seq: { type: "integer" } }, required: ["seq"] });
-const since = defineType<{ since?: number | null }>("Since", {
-  type: "object", properties: { since: { type: ["integer", "null"], default: null } },
-});
+const Value = z.object({ value: z.number().int() });
+const Seq = z.object({ seq: z.number().int() });
+const Since = z.object({ since: z.number().int().nullable().default(null) });
+type Value = z.infer<typeof Value>;
+type Seq = z.infer<typeof Seq>;
+const valueSchema = z.toJSONSchema(Value);
+const seqSchema = z.toJSONSchema(Seq);
 let flaps = 0;
 
-const service = defineService({
-  name: "test.v1.Web", description: "", sourceModule: "web.test", sourceQualname: "Web",
-  methods: {
-    double: unaryMethod({ description: "", readOnly: true, request: value, response: value, handler: ({ value }) => ({ value: value * 2 }) }),
-    slow: unaryMethod({
-      description: "", readOnly: true, request: value, response: value,
-      handler: async ({ value }, { signal }) => { await delay(value, undefined, { signal }); return { value }; },
-    }),
-    count: serverStreamMethod({
-      description: "", readOnly: true, request: value, outputItem: seq,
-      handler: async function* ({ value }) { for (let i = 0; i < value; i += 1) yield { seq: i }; },
-    }),
-    sum: clientStreamMethod({
-      description: "", idempotent: true, request: value, inputItem: value, response: value,
-      handler: async ({ value }, items) => { let total = value; for await (const item of items) total += item.value; return { value: total }; },
-    }),
-    ticks: subscriptionMethod({
-      description: "", readOnly: true, cursor: "seq", resume: "since", request: since, outputItem: seq,
-      handler: async function* ({ since }) {
-        for (let i = since === null || since === undefined ? 0 : since + 1; i < 6; i += 1) {
-          yield { seq: i };
-          if (i === 2 && flaps === 0) {
-            flaps += 1;
-            throw new MeshCallError("unavailable", "flap", { retryable: true });
-          }
-        }
-      },
-    }),
-  },
-});
+@service("test.v1.Web", { description: "" })
+class Web {
+  @method({ description: "", readOnly: true, request: Value, response: Value })
+  double({ value }: Value) { return { value: value * 2 }; }
+
+  @method({ description: "", readOnly: true, request: Value, response: Value })
+  async slow({ value }: Value, { signal }: RpcContext) { await delay(value, undefined, { signal }); return { value }; }
+
+  @method.serverStream({ description: "", readOnly: true, request: Value, outputItem: Seq })
+  async *count({ value }: Value) { for (let i = 0; i < value; i += 1) yield { seq: i }; }
+
+  @method.clientStream({ description: "", idempotent: true, request: Value, inputItem: Value, response: Value })
+  async sum({ value }: Value, items: AsyncIterable<Value>) {
+    let total = value;
+    for await (const item of items) total += item.value;
+    return { value: total };
+  }
+
+  @method.subscription({ description: "", readOnly: true, cursor: "seq", resume: "since", request: Since, outputItem: Seq })
+  async *ticks({ since }: z.output<typeof Since>) {
+    for (let i = since === null ? 0 : since + 1; i < 6; i += 1) {
+      yield { seq: i };
+      if (i === 2 && flaps === 0) {
+        flaps += 1;
+        throw new MeshCallError("unavailable", "flap", { retryable: true });
+      }
+    }
+  }
+}
 
 test("meshcall/web bundles for browsers with no Node imports", async () => {
   const entry = fileURLToPath(new URL("../src/web.js", import.meta.url));
@@ -76,7 +73,7 @@ test("a generated client bundles for browsers: it imports only types from meshca
 test("the HTTP client makes every non-duplex call through a Router", { timeout: 20000, skip: routerMissing }, async (t) => {
   const router = new WebSocketRouter();
   await router.start();
-  const server = new MeshCallServer({ services: [service], accessLog: false, router: { endpoint: `ws://127.0.0.1:${router.boundPort}` } });
+  const server = new MeshCallServer({ services: [new Web()], accessLog: false, router: { endpoint: `ws://127.0.0.1:${router.boundPort}` } });
   await server.start();
   t.after(async () => { await server.close(); await router.stop(); });
   const rpc: MeshCallRpc = new MeshCallHttpClient(`http://127.0.0.1:${router.boundPort}`, {
@@ -84,13 +81,13 @@ test("the HTTP client makes every non-duplex call through a Router", { timeout: 
     logger: { bind() { return this; }, log() {}, debug() {}, info() {}, warning() {}, error() {} },
   });
 
-  assert.deepEqual(await rpc.unary("test.v1.Web", "double", { value: 21 }, { responseSchema: value.schema }), { value: 42 });
+  assert.deepEqual(await rpc.unary("test.v1.Web", "double", { value: 21 }, { responseSchema: valueSchema }), { value: 42 });
   await assert.rejects(rpc.unary("test.v1.Web", "double", { value: "x" }), (error) =>
     error instanceof MeshCallError && error.code === "invalid_argument" && (error.details as { reason?: string }).reason === "request");
   await assert.rejects(rpc.unary("test.v1.Web", "nope", {}), (error) => error instanceof MeshCallError && error.code === "method_not_found");
 
   const items: number[] = [];
-  for await (const item of rpc.serverStream<Value, Seq>("test.v1.Web", "count", { value: 300 }, { itemSchema: seq.schema })) items.push(item.seq);
+  for await (const item of rpc.serverStream<Value, Seq>("test.v1.Web", "count", { value: 300 }, { itemSchema: seqSchema })) items.push(item.seq);
   assert.deepEqual(items, Array.from({ length: 300 }, (_, i) => i));
 
   const total = await rpc.clientStream("test.v1.Web", "sum", { value: 1 }, (async function* () {

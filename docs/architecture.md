@@ -34,7 +34,7 @@ to carry exactly one version segment (`chat` → `chat.v0`). The Runtime operate
 frames and doesn't know whether the connection is direct or routed. WebSocket
 drivers own connection setup, role handshakes, TCP and local (Unix socket /
 Windows named pipe, `unix_path=` / `pipe=`) endpoints, and server
-registration. Duplex (`@method.duplex(reason=…)` / `duplexMethod({ reason })`)
+registration. Duplex (`@method.duplex(reason=…)` / `@method.duplex({ reason })`)
 is a restricted, opt-in shape of last resort: the handler gets a channel
 (`RpcDuplex` / `DuplexChannel`) to iterate input and `send` output, returns
 nothing, and the call is never retried, deduplicated or reachable over HTTP;

@@ -2,41 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  defineService, defineType, MeshCallClient, MeshCallError, MeshCallServer, serverStreamMethod,
-  unaryMethod, type ClientCallInfo, type ClientCallNext, type RpcContext, type ServerCallNext,
+  MeshCallClient, MeshCallError, MeshCallServer, method, service, z,
+  type ClientCallInfo, type ClientCallNext, type RpcContext, type ServerCallNext,
 } from "../src/index.js";
 
-interface Value { value: number }
-interface Echo { value: number; seen: Record<string, string> }
+const Value = z.object({ value: z.number().int() });
+const Echo = z.object({ value: z.number().int(), seen: z.record(z.string(), z.string()) });
+type Value = z.infer<typeof Value>;
+type Echo = z.infer<typeof Echo>;
 
-const valueType = defineType<Value>("Value", {
-  type: "object", properties: { value: { type: "integer" } }, required: ["value"],
-});
-const echoType = defineType<Echo>("Echo", {
-  type: "object",
-  properties: { value: { type: "integer" }, seen: { type: "object", additionalProperties: { type: "string" } } },
-  required: ["value", "seen"],
-});
+const NAME = "test.v1.InterceptService";
 
-const service = defineService({
-  name: "test.v1.InterceptService",
-  sourceModule: "interceptors.test", sourceQualname: "InterceptService",
-  methods: {
-    echo: unaryMethod({
-      request: valueType, response: echoType,
-      handler: (request, ctx) => {
-        ctx.setTrailer("handler", "ran");
-        return { value: request.value, seen: { ...ctx.metadata } };
-      },
-    }),
-    count: serverStreamMethod({
-      request: valueType, outputItem: valueType,
-      handler: async function* ({ value }) {
-        for (let index = 0; index < value; index += 1) yield { value: index };
-      },
-    }),
-  },
-});
+@service(NAME, { description: "Interceptor fixtures." })
+class InterceptService {
+  @method({ description: "Echo the value and the metadata the handler saw.", readOnly: true, request: Value, response: Echo })
+  echo(request: Value, ctx: RpcContext) {
+    ctx.setTrailer("handler", "ran");
+    return { value: request.value, seen: { ...ctx.metadata } };
+  }
+
+  @method.serverStream({ description: "Yield 0 up to value.", readOnly: true, request: Value, outputItem: Value })
+  async *count({ value }: Value) {
+    for (let index = 0; index < value; index += 1) yield { value: index };
+  }
+}
 
 test("server interceptors run outermost-first, short-circuit, and span whole streams", { timeout: 5000 }, async (t) => {
   const events: string[] = [];
@@ -52,24 +41,24 @@ test("server interceptors run outermost-first, short-circuit, and span whole str
     events.push("guard:pass");
     return next();
   };
-  const server = new MeshCallServer({ services: [service], accessLog: false, interceptors: [outer, guard] });
+  const server = new MeshCallServer({ services: [new InterceptService()], accessLog: false, interceptors: [outer, guard] });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort);
   t.after(async () => { await client.close(); await server.close(); });
 
-  const echoed = await client.unary<Value, Echo>(service.name, "echo", { value: 1 }, { metadata: { who: "friend" } });
+  const echoed = await client.unary<Value, Echo>(NAME, "echo", { value: 1 }, { metadata: { who: "friend" } });
   assert.deepEqual(echoed, { value: 1, seen: { who: "friend" } });
   assert.deepEqual(events, ["outer:echo:friend", "guard:pass", "outer:done"]);
 
   events.length = 0;
   await assert.rejects(
-    client.unary(service.name, "echo", { value: 0 }, { metadata: { who: "intruder" } }),
+    client.unary(NAME, "echo", { value: 0 }, { metadata: { who: "intruder" } }),
     (error: unknown) => error instanceof MeshCallError && error.code === "permission_denied",
   );
   assert.deepEqual(events, ["outer:echo:intruder"]);
 
   events.length = 0;
-  const stream = client.serverStream<Value, Value>(service.name, "count", { value: 3 });
+  const stream = client.serverStream<Value, Value>(NAME, "count", { value: 3 });
   const seen: number[] = [];
   for await (const item of stream) seen.push(item.value);
   assert.deepEqual(seen, [0, 1, 2]);
@@ -98,17 +87,17 @@ test("client interceptors propagate metadata, see trailers, and can retry", { ti
       throw error;
     }
   };
-  const server = new MeshCallServer({ services: [service], accessLog: false });
+  const server = new MeshCallServer({ services: [new InterceptService()], accessLog: false });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, {
     interceptors: [retryOnce, tracing],
   });
   t.after(async () => { await client.close(); await server.close(); });
 
-  const echoed = await client.unary<Value, Echo>(service.name, "echo", { value: 2 });
+  const echoed = await client.unary<Value, Echo>(NAME, "echo", { value: 2 });
   assert.deepEqual(echoed.seen, { traceparent: "00-trace" });
   assert.deepEqual(seen, [["unary", "echo", { handler: "ran" }]]);
-  const stream = client.serverStream<Value, Value>(service.name, "count", { value: 2 });
+  const stream = client.serverStream<Value, Value>(NAME, "count", { value: 2 });
   const items: number[] = [];
   for await (const item of stream) items.push(item.value);
   assert.deepEqual(items, [0, 1]);

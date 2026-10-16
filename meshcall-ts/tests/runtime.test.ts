@@ -8,81 +8,50 @@ import {
   MeshCallClient,
   MeshCallError,
   MeshCallServer,
-  defineService,
-  defineType,
+  method,
   renderContract,
-  unaryMethod,
+  service,
+  z,
 } from "../src/index.js";
 import {
   decodeFrame,
   encodeFrame,
 } from "../src/protocol.js";
 
-interface AddRequest {
-  left: number;
-  right: number;
+const AddRequest = z.object({ left: z.number(), right: z.number() }).meta({ id: "AddRequest" });
+const AddResult = z.object({ total: z.number() }).meta({ id: "AddResult" });
+type AddRequest = z.infer<typeof AddRequest>;
+type AddResult = z.infer<typeof AddResult>;
+
+const NAME = "test.v1.MathService";
+
+@service(NAME, { description: "Arithmetic." })
+class MathService {
+  @method({ description: "Add two numbers.", idempotent: true, request: AddRequest, response: AddResult })
+  add(request: AddRequest) {
+    return { total: request.left + request.right };
+  }
+
+  @method({ description: "Answer after 100 ms.", readOnly: true, request: AddRequest, response: AddResult })
+  async slow() {
+    await delay(100);
+    return { total: 0 };
+  }
 }
 
-interface AddResult {
-  total: number;
+@service("test.v1.ExportedMathService", { description: "Arithmetic, exported." })
+class ExportedMathService {
+  @method({ description: "Add two numbers.", idempotent: true, request: AddRequest, response: AddResult })
+  add(request: AddRequest) {
+    return { total: request.left + request.right };
+  }
 }
-
-const addRequest = defineType<AddRequest>("AddRequest", {
-  type: "object",
-  properties: {
-    left: { type: "number" },
-    right: { type: "number" },
-  },
-  required: ["left", "right"],
-  additionalProperties: false,
-});
-
-const addResult = defineType<AddResult>("AddResult", {
-  type: "object",
-  properties: { total: { type: "number" } },
-  required: ["total"],
-  additionalProperties: false,
-});
-
-const service = defineService({
-  name: "test.v1.MathService",
-  sourceModule: "runtime.test",
-  sourceQualname: "MathService",
-  methods: {
-    add: unaryMethod({
-      request: addRequest,
-      response: addResult,
-      handler: (request) => ({ total: request.left + request.right }),
-    }),
-    slow: unaryMethod({
-      request: addRequest,
-      response: addResult,
-      handler: async () => {
-        await delay(100);
-        return { total: 0 };
-      },
-    }),
-  },
-});
-
-const exportableService = defineService({
-  name: "test.v1.ExportedMathService",
-  sourceModule: "runtime.test",
-  sourceQualname: "ExportedMathService",
-  methods: {
-    add: unaryMethod({
-      request: addRequest,
-      response: addResult,
-      handler: (request) => ({ total: request.left + request.right }),
-    }),
-  },
-});
 
 test("TypeScript services export a portable contract", () => {
   assert.doesNotThrow(
-    () => new MeshCallServer({ services: [exportableService] }),
+    () => new MeshCallServer({ services: [new ExportedMathService()] }),
   );
-  const contract = JSON.parse(renderContract([exportableService])) as {
+  const contract = JSON.parse(renderContract([ExportedMathService])) as {
     services: Array<{
       name: string;
       methods: Array<{
@@ -93,19 +62,19 @@ test("TypeScript services export a portable contract", () => {
     }>;
   };
 
-  assert.equal(contract.services[0]?.name, exportableService.name);
+  assert.equal(contract.services[0]?.name, "test.v1.ExportedMathService");
   assert.equal(contract.services[0]?.methods[0]?.name, "add");
   assert.equal(contract.services[0]?.methods[0]?.request.qualname, "AddRequest");
   assert.equal(contract.services[0]?.methods[0]?.response.qualname, "AddResult");
 });
 
 test("unary client and server round trip", async () => {
-  const server = new MeshCallServer({ services: [service] });
+  const server = new MeshCallServer({ services: [new MathService()] });
   await server.start();
   const client = new MeshCallClient(`ws://127.0.0.1:${server.boundPort}`);
   try {
     const result = await client.unary<AddRequest, AddResult>(
-      service.name,
+      NAME,
       "add",
       { left: 7, right: 5 },
     );
@@ -117,12 +86,12 @@ test("unary client and server round trip", async () => {
 });
 
 test("unary deadline has a stable error code", async () => {
-  const server = new MeshCallServer({ services: [service] });
+  const server = new MeshCallServer({ services: [new MathService()] });
   await server.start();
   const client = new MeshCallClient(`ws://127.0.0.1:${server.boundPort}`);
   try {
     await assert.rejects(
-      client.unary<AddRequest, AddResult>(service.name, "slow", { left: 0, right: 0 }, {
+      client.unary<AddRequest, AddResult>(NAME, "slow", { left: 0, right: 0 }, {
         timeoutMs: 10,
       }),
       (error: unknown) =>

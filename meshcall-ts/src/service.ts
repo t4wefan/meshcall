@@ -66,7 +66,7 @@ export interface DuplexChannel<Input, Output> extends AsyncIterable<Input> {
 
 /**
  * Input and output stream at the same time: the shape of last resort (see
- * `duplexMethod`). There is no result value.
+ * `@method.duplex`). There is no result value.
  */
 export interface DuplexMethod<Request = unknown, Input = unknown, Output = unknown> {
   readonly stream: "duplex";

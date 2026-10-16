@@ -236,25 +236,25 @@ class Feed:
 ```
 
 ```typescript
-import { defineType, subscriptionMethod, Topic } from "meshcall";
+import { method, service, Topic, z } from "meshcall";
 
-interface Event { seq: number; text: string }
-const EventType = defineType<Event>("Event", {
-  type: "object", properties: { seq: { type: "integer" }, text: { type: "string" } }, required: ["seq", "text"],
-});
-const Since = defineType<{ since?: number | null }>("Since", {
-  type: "object", properties: { since: { type: ["integer", "null"], default: null } },
-});
-const topic = new Topic<Event>({ history: 1000, cursor: (e) => e.seq });
+const Event = z.object({ seq: z.int(), text: z.string() }).meta({ id: "Event" });
+type Event = z.infer<typeof Event>;
+const Since = z.object({ since: z.int().nullable().default(null) });
 
-// inside defineService({ methods: { ... } }):
-events: subscriptionMethod({
-  description: "Every event after since.", readOnly: true, cursor: "seq", resume: "since",
-  request: Since, outputItem: EventType,
-  handler: async function* ({ since }) {
-    for await (const event of topic.subscribe(since)) yield event;
-  },
-}),
+@service("demo.v1.Feed", { description: "An event feed." })
+class Feed {
+  readonly topic = new Topic<Event>({ history: 1000, cursor: (e) => e.seq });
+
+  @method.subscription({
+    description: "Every event after since.", readOnly: true, cursor: "seq", resume: "since",
+    request: Since, outputItem: Event,
+  })
+  async *events({ since }: z.infer<typeof Since>) {
+    for await (const event of this.topic.subscribe(since)) yield event;
+  }
+}
+// Publish from anywhere: feed.topic.publish({ seq: n, text: "..." })
 // Consume: for await (const event of client.events()) { ... }
 ```
 
@@ -262,7 +262,7 @@ In Go, `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` dec
 
 ### Duplex: The Shape of Last Resort
 
-A duplex method (`@method.duplex(reason="…")` with a `channel: RpcDuplex[In, Out]` parameter, TypeScript `duplexMethod({ reason, … })`, Go `meshcall.HandleDuplex(svc, name, reason, handler)`) streams input and output at the same time. Use it only when output must interleave with input that keeps arriving within one call, such as a voice turn answered while the user is still speaking. It is never retried or deduplicated, takes no idempotency key, cannot be `idempotent` / `read_only`, is unreachable over HTTP and pins one instance for its whole life; the `reason` goes into the contract. A side that only sends stalls once the other side's credit runs out, so read output concurrently with sending. Try a server stream plus unary calls, or a client stream, first.
+A duplex method (`@method.duplex(reason="…")` with a `channel: RpcDuplex[In, Out]` parameter, TypeScript `@method.duplex({ reason, … })`, Go `meshcall.HandleDuplex(svc, name, reason, handler)`) streams input and output at the same time. Use it only when output must interleave with input that keeps arriving within one call, such as a voice turn answered while the user is still speaking. It is never retried or deduplicated, takes no idempotency key, cannot be `idempotent` / `read_only`, is unreachable over HTTP and pins one instance for its whole life; the `reason` goes into the contract. A side that only sends stalls once the other side's credit runs out, so read output concurrently with sending. Try a server stream plus unary calls, or a client stream, first.
 
 ---
 

@@ -1,10 +1,10 @@
 import { writeContract } from "meshcall";
 
-import { service } from "../dist/service.js";
+import { TypeScriptGreetingService } from "../dist/service.js";
 
 const output = process.argv[2];
 if (output === undefined) {
   throw new Error("Expected a contract output path");
 }
 
-await writeContract([service], output);
+await writeContract([TypeScriptGreetingService], output);

@@ -40,6 +40,8 @@ TYPESCRIPT_ROOT = REPOSITORY_ROOT / "meshcall-ts"
 GO_ROOT = REPOSITORY_ROOT / "meshcall-go"
 RUNTIME_INDEX = TYPESCRIPT_ROOT / "dist" / "src" / "index.js"
 INTEROP_ROOT = Path(__file__).parent / "interop"
+# TypeScript services use decorators, so they are compiled with meshcall-ts.
+TYPESCRIPT_INTEROP = TYPESCRIPT_ROOT / "dist" / "tests" / "interop"
 RUN_INTEROP = os.environ.get("MESHCALL_RUN_INTEROP") == "1"
 
 
@@ -150,8 +152,7 @@ async def test_typescript_service_with_generated_python_package(
     contract_path = tmp_path / "typescript-contract.json"
     process = await asyncio.create_subprocess_exec(
         _tool("node"),
-        str(INTEROP_ROOT / "typescript_server.mjs"),
-        str(RUNTIME_INDEX),
+        str(TYPESCRIPT_INTEROP / "typescript_server.js"),
         str(contract_path),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -205,8 +206,7 @@ async def running_typescript(root: Path, options: dict):
     contract_path = root / f"{uuid.uuid4().hex}.json"
     process = await asyncio.create_subprocess_exec(
         _tool("node"),
-        str(INTEROP_ROOT / "typescript_server.mjs"),
-        str(RUNTIME_INDEX),
+        str(TYPESCRIPT_INTEROP / "typescript_server.js"),
         str(contract_path),
         json.dumps(options),
         stdin=asyncio.subprocess.PIPE,
@@ -540,8 +540,7 @@ async def test_one_trace_from_a_python_client_to_a_typescript_service(
     await router.start()
     process = await asyncio.create_subprocess_exec(
         _tool("node"),
-        str(INTEROP_ROOT / "typescript_traced_server.mjs"),
-        str(RUNTIME_INDEX),
+        str(TYPESCRIPT_INTEROP / "typescript_traced_server.js"),
         f"ws://127.0.0.1:{router.bound_port}",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,

@@ -1,8 +1,8 @@
 /**
  * In-process fan-out for subscriptions (docs/protocol.md → Subscriptions).
  *
- *   events: subscriptionMethod({ cursor: "seq", resume: "since", …,
- *     handler: ({ since }) => topic.subscribe(since) })
+ *   @method.subscription({ cursor: "seq", resume: "since", … })
+ *   events({ since }) { return topic.subscribe(since); }
  *
  * Fan-out across instances is not a Topic's job: route subscribers to the
  * instance that produces the events (a targeted service) or bridge an

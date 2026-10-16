@@ -125,33 +125,35 @@ meshcall.HandleUnary(chat, "send", func(ctx *meshcall.Context, req SendRequest) 
 
 Go clients: `meshcall generate <contract> --language go --output DIR`.
 
-TypeScript (schemas are explicit because types are erased):
+TypeScript (a class like Python's; zod schemas because types are erased —
+use the `z` that `meshcall` re-exports):
 
 ```typescript
-import { defineService, defineType, unaryMethod, serverStreamMethod } from "meshcall";
+import { method, service, z, type RpcContext } from "meshcall";
 
-const Message = defineType<{ text: string }>("Message", {
-  type: "object", properties: { text: { type: "string" } }, required: ["text"],
-});
-const Send = defineType<{ session_id: string; text: string }>("Send", {
-  type: "object", properties: { session_id: { type: "string" }, text: { type: "string" } },
-  required: ["session_id", "text"],
-});
+const Message = z.object({ text: z.string() }).meta({ id: "Message" });
+const Send = z.object({ session_id: z.string(), text: z.string() });
 
-export const chat = defineService({
-  name: "chat.v1.Chat", description: "Chat sessions.",
-  sourceModule: "chat", sourceQualname: "Chat",
-  methods: {
-    send: unaryMethod({ description: "Append a message and return the reply.", idempotent: true,
-      request: Send, response: Message, handler: ({ text }) => ({ text: "echo " + text }) }),
-  },
-});
+@service("chat.v1.Chat", { description: "Chat sessions." })
+export class Chat {
+  @method({ description: "Append a message and return the reply.", idempotent: true, request: Send, response: Message })
+  async send({ text }: z.infer<typeof Send>, ctx: RpcContext) {
+    return { text: "echo " + text };
+  }
+}
+// new MeshCallServer({ services: [new Chat()], router: { endpoint } })
 ```
+
+Also `@method.serverStream` (async generator), `@method.clientStream`
+(`items: AsyncIterable<T>`), `@method.subscription({ cursor, resume, … })`
+and `@method.duplex({ reason, … })`. The decorator checks the handler against
+its schemas at compile time; the request is one object (destructure it).
 
 Rules the runtime enforces or warns about (set `MESHCALL_STRICT=1` while
 you edit so warnings fail fast with a `hint` that says exactly what to add):
 
-- Every service and method has a description (docstring in Python).
+- Every service and method has a description (docstring in Python; required
+  by the decorator types in TypeScript).
 - A service whose instances hold distinct state (a session, a loaded model,
   an actor) is `targeted=True` / `targeted: true`: callers must name the
   instance (`instance="worker-3"`, generated clients require it, handlers

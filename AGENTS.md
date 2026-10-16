@@ -38,7 +38,7 @@ explains the runtime design; `docs/router.md` the Router.
 
 Set `MESHCALL_STRICT=1` whenever you write or change a service. Advisory
 contract warnings (missing descriptions, unannotated mutating methods, …)
-then fail at import / `defineService` with a `hint` saying exactly what to
+then fail at import / class definition (`@service`) with a `hint` saying exactly what to
 add. `scripts/check.sh demos` already runs the demos this way. To check one
 Python service by hand:
 
