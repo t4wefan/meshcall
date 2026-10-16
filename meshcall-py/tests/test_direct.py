@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
@@ -28,8 +29,11 @@ class NumberResult(BaseModel):
     total: int
 
 
-handler_cancelled = asyncio.Event()
-handler_started = asyncio.Event()
+# Handlers run on the server's worker thread and loop, so the test's loop
+# cannot wait on an asyncio.Event they set: set() from another thread does
+# not wake it (the wait then ends only at its timeout, or never).
+handler_cancelled = threading.Event()
+handler_started = threading.Event()
 
 
 @service(name="test.v1.NumberService")
@@ -267,11 +271,11 @@ async def test_all_call_shapes_over_tcp_websocket() -> None:
         )
         # Cancel once the call is running: a fixed sleep can be shorter than
         # one tick of Windows' 15.6 ms timer.
-        await asyncio.wait_for(handler_started.wait(), timeout=5)
+        assert await asyncio.to_thread(handler_started.wait, 5)
         cancelled_call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await cancelled_call
-        await asyncio.wait_for(handler_cancelled.wait(), timeout=1)
+        assert await asyncio.to_thread(handler_cancelled.wait, 1)
 
         stream = client.download(NumberRequest(value=40))
         assert [item.value async for item in stream] == list(range(40))
