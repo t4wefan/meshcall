@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -34,12 +35,18 @@ type conn struct {
 	pongs    sync.Map     // nonce → chan struct{}
 	closed   chan struct{}
 	once     sync.Once
+	maxFrame int
 }
+
+// errFrameTooLarge marks a frame send refused: the peer would close the
+// connection on receiving it. Callers fail only the frame's call
+// (frameTooLarge), with their own source.
+var errFrameTooLarge = errors.New("frame over the size limit")
 
 func newConn(ws *websocket.Conn, maxFrame int) *conn {
 	ws.SetReadLimit(int64(maxFrame))
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &conn{ws: ws, ctx: ctx, cancel: cancel, closed: make(chan struct{})}
+	c := &conn{ws: ws, ctx: ctx, cancel: cancel, closed: make(chan struct{}), maxFrame: maxFrame}
 	c.lastSeen.Store(time.Now().UnixNano())
 	return c
 }
@@ -48,6 +55,9 @@ func (c *conn) send(f frame) error {
 	data, err := json.Marshal(f)
 	if err != nil {
 		return err
+	}
+	if len(data) > c.maxFrame {
+		return fmt.Errorf("%w: %s is %d bytes, limit %d", errFrameTooLarge, f.Kind, len(data), c.maxFrame)
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

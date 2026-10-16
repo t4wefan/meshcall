@@ -34,6 +34,7 @@ from meshcall.errors import (
     InvalidArgumentError,
     MeshCallError,
     ProtocolError,
+    ResourceExhaustedError,
     UnavailableError,
     invalid_argument,
     invalid_response,
@@ -62,7 +63,7 @@ from meshcall.protocol import (
     StreamWindowFrame,
 )
 from meshcall.streams import RpcDuplex, RpcInputStream
-from meshcall.transport import FrameConnection
+from meshcall.transport import FrameConnection, is_frame_too_large
 from meshcall.worker import WorkerLoop, submit_to_loop
 
 INITIAL_STREAM_CREDIT = 16
@@ -581,14 +582,20 @@ class _ServerCall:
         await self.send_credit.acquire()
         if self.terminal:
             raise CallCancelledError("Call is closed")
-        await self.connection.send(
-            StreamItemFrame(
-                call_id=self.call_id,
-                direction="server",
-                sequence=self.output_sequence,
-                payload=payload,
+        try:
+            await self.connection.send(
+                StreamItemFrame(
+                    call_id=self.call_id,
+                    direction="server",
+                    sequence=self.output_sequence,
+                    payload=payload,
+                )
             )
-        )
+        except ResourceExhaustedError as exc:
+            if is_frame_too_large(exc):
+                # The call ends with this error even if the handler goes on.
+                await self._send_error(exc)
+            raise
         self.output_sequence += 1
 
     async def close_output(self) -> None:
@@ -769,6 +776,26 @@ class _ServerCall:
                 await self.connection.send(frame)
             except ConnectionError:
                 pass
+            except ResourceExhaustedError as exc:
+                if not is_frame_too_large(exc):
+                    raise
+                self.logger.error(  # noqa: PLE1205
+                    "{}.{} produced a terminal frame over the size limit: {}",
+                    self.method.service_name,
+                    self.method.contract.name,
+                    exc.message,
+                )
+                frame = CallErrorFrame(
+                    call_id=self.call_id,
+                    error=ErrorPayload(
+                        code=exc.code,
+                        message=exc.message,
+                        retryable=False,
+                        details=exc.details,
+                    ),
+                )
+                with contextlib.suppress(ConnectionError):
+                    await self.connection.send(frame)
             finally:
                 _log_access(
                     self.logger,

@@ -5,7 +5,7 @@ import contextlib
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from websockets.exceptions import ConnectionClosed
 
@@ -24,6 +24,14 @@ from meshcall.protocol import (
 #: Largest encoded frame, sent or received, unless configured smaller; also
 #: the Router's ceiling.
 DEFAULT_MAX_FRAME_SIZE = 64 * 1024 * 1024
+
+
+def is_frame_too_large(error: BaseException) -> bool:
+    """Whether ``error`` is a frame that ``FrameConnection.send`` did not send."""
+    return (
+        isinstance(error, ResourceExhaustedError)
+        and (error.details or {}).get("reason") == "frame_too_large"
+    )
 
 
 class WebSocketLike(Protocol):
@@ -49,12 +57,14 @@ class FrameConnection:
         websocket: WebSocketLike,
         *,
         max_frame_size: int,
+        source: Literal["client", "server"],
         ping_interval: float | None = None,
         ping_timeout: float | None = None,
         idle_timeout: float | None = None,
     ) -> None:
         self._websocket = websocket
         self._max_frame_size = max_frame_size
+        self._source = source
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
         self._idle_timeout = idle_timeout
@@ -73,9 +83,13 @@ class FrameConnection:
         if self._closed is not None:
             raise self._closed
         encoded = encode_frame(frame)
-        if len(encoded.encode()) > self._max_frame_size:
+        size = len(encoded.encode())
+        if size > self._max_frame_size:
+            # The peer would close the connection on receiving it; only this
+            # frame's call fails (docs/protocol.md → Frame size).
             raise ResourceExhaustedError(
-                f"Encoded frame exceeds {self._max_frame_size} byte limit",
+                f"Not sent: {frame.kind} is {size} bytes, limit {self._max_frame_size}",
+                details={"source": self._source, "reason": "frame_too_large"},
             )
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         pending = _PendingFrame(encoded=encoded, future=future)

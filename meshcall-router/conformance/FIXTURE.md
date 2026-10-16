@@ -3,7 +3,8 @@
 A runtime is tested by running a *fixture program* that registers the service
 `conformance.v1.Fixture` with the Router whose URL is in `MESHCALL_ROUTER_URL`,
 using the instance id in `MESHCALL_CONFORMANCE_INSTANCE` and a keepalive ping
-interval of `MESHCALL_PING_INTERVAL_MS` milliseconds. The program keeps running
+interval of `MESHCALL_PING_INTERVAL_MS` milliseconds, and, when
+`MESHCALL_MAX_FRAME_SIZE` is set, that maximum frame size in bytes. The program keeps running
 until it is drained (see `drain_self`) or killed. It must start under
 `MESHCALL_STRICT=1`, so every method needs a description and mutating ones an
 annotation; duplex methods need a reason.
@@ -23,6 +24,8 @@ annotation; duplex methods need a reason.
 | `ticks` | server stream, subscription (`cursor: "seq"`, `resume: "since"`) | `count: int`, `since: int \| null = null` | items `{seq}` | yields `seq` from `since + 1` (or 0) to `count - 1` |
 | `chat` | duplex | `prefix: str = ""`, items `{text}` | items `{text}` | sends `{text: prefix + text}` for each input as it arrives; when the input ends, sends `{text: "done:<inputs>"}` and returns |
 | `announce` | duplex | — , items `{text}` | items `{text}` | sends `{text: "hello"}`, closes its output, then reads the input to its end and returns |
+| `big` | unary | `bytes: int` | `{text}` | returns a text of `bytes` characters |
+| `big_items` | server stream | `bytes: int` | items `{text}` | yields `{text: "small"}`, then a text of `bytes` characters |
 
 The program also registers `conformance.v1.Targeted` with `targeted: true`
 and one method, `whoami` (unary, read-only, no parameters), returning
@@ -31,4 +34,4 @@ and one method, `whoami` (unary, read-only, no parameters), returning
 The suite expects the Python-style snake_case method names above in the
 registration (`echo`, `cancelled_tags`, `metadata_echo`, `drain_self`).
 Reference fixtures: `meshcall-py/conformance/fixture.py`,
-`meshcall-ts/conformance/fixture.ts`.
+`meshcall-ts/conformance/fixture.ts`, `meshcall-go/conformance/fixture`.

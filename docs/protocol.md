@@ -76,8 +76,23 @@ permission like any other service otherwise.
 A frame's encoded size is limited to 64 MiB by default, which is also the
 largest limit the Router accepts (`--max-frame-size`; `max_frame_size` /
 `maxFrameSize` / `MaxFrameSize` in the runtimes). A payload, including one
-stream item, must fit in one frame; larger data is sent as a stream. A peer
-that receives a larger frame closes the connection (WebSocket close 1009).
+stream item, must fit in one frame; larger data is sent as a stream.
+
+A sender checks every frame's encoded size before sending it and never
+sends one over its limit. Instead only that call fails, with non-retryable
+`resource_exhausted` (`reason: "frame_too_large"`), and the connection
+stays open:
+
+- a client fails the call locally (`source: "client"`); if the frame was an
+  input stream item the call is already open, so it also sends
+  `call.cancel`;
+- a server whose response, output stream item or error is too large sends
+  that error as the call's `call.error` instead (`source: "server"`),
+  without trailers, and stops the handler.
+
+A peer that receives a frame over its own limit closes the connection
+(WebSocket close 1009), so peers that talk to each other, the Router
+included, should use the same limit.
 The Router queues frames for each peer up to `--outbox-size` bytes (default
 256 MiB, at least the maximum frame size); a peer that stops reading
 while more than that is owed to it is disconnected.
@@ -478,7 +493,10 @@ answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`.
 Servers using the `Topic` helper add `slow_subscriber` (a retryable
 `resource_exhausted`) and `cursor_expired` (a non-retryable
 `invalid_argument`), both with `source: "server"`; see
-[Subscriptions](#subscriptions). Client retry policies add
+[Subscriptions](#subscriptions). Clients and servers report a frame they
+did not send because it was over the size limit as non-retryable
+`resource_exhausted`, `reason: "frame_too_large"`, with their own `source`
+(see [Frame size](#frame-size)). Client retry policies add
 `attempts` to the final error when more than one attempt was made.
 
 ### Validation failures

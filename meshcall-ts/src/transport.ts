@@ -6,6 +6,11 @@ import { encodeFrame, type Frame } from "./protocol.js";
 /** Largest encoded frame, sent or received, unless configured smaller; also the Router's ceiling. */
 export const DEFAULT_MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
+/** Whether `error` is a frame `FrameWriter.send` did not send because it was over the size limit. */
+export function isFrameTooLarge(error: unknown): error is ResourceExhaustedError {
+  return error instanceof ResourceExhaustedError && error.details?.reason === "frame_too_large";
+}
+
 interface PendingFrame {
   kind: Frame["kind"];
   encoded: string;
@@ -24,7 +29,8 @@ export class FrameWriter {
 
   public constructor(
     private readonly socket: WebSocket,
-    private readonly maxFrameSize = DEFAULT_MAX_FRAME_SIZE,
+    private readonly maxFrameSize: number,
+    private readonly source: "client" | "server",
   ) {}
 
   public async send(frame: Frame): Promise<void> {
@@ -36,8 +42,13 @@ export class FrameWriter {
       return;
     }
     const encoded = encodeFrame(frame);
-    if (Buffer.byteLength(encoded) > this.maxFrameSize) {
-      throw new ResourceExhaustedError("Encoded frame exceeds the byte limit");
+    const size = Buffer.byteLength(encoded);
+    if (size > this.maxFrameSize) {
+      // The peer would close the connection on receiving it; only this
+      // frame's call fails (docs/protocol.md → Frame size).
+      throw new ResourceExhaustedError(`Not sent: ${frame.kind} is ${size} bytes, limit ${this.maxFrameSize}`, {
+        details: { source: this.source, reason: "frame_too_large" },
+      });
     }
     const completion = new Promise<void>((resolve, reject) => {
       const pending = { kind: frame.kind, encoded, resolve, reject };

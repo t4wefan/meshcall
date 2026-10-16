@@ -638,7 +638,11 @@ func (call *serverCall) intercept(ctx *Context, request any, handler ServerCallN
 
 func (call *serverCall) send(f frame) error {
 	f.CallID = call.open.CallID
-	return call.sess.conn.send(f)
+	err := call.sess.conn.send(f)
+	if e := frameTooLarge("server", err); e != nil {
+		return e
+	}
+	return err
 }
 
 func (call *serverCall) run() {
@@ -714,7 +718,13 @@ func (call *serverCall) finish(f frame, status string) {
 		f.Metadata = call.trailers
 	}
 	call.trailerMu.Unlock()
-	_ = call.send(f)
+	if err := call.send(f); err != nil {
+		if e, ok := AsError(err); ok && e.Reason() == "frame_too_large" {
+			call.ctx.Logger.Error("Terminal frame over the size limit; failing the call", "error", err)
+			_ = call.send(frame{Kind: "call.error", Error: e.payload()})
+			status = e.Code
+		}
+	}
 	call.cleanup()
 	call.sess.server.access(call.open, status, call.started)
 }
@@ -888,7 +898,11 @@ func (call *serverCall) sendOutput(item any) error {
 	}
 	seq := call.outputSequence
 	call.outputSequence++
-	return call.send(frame{Kind: "stream.item", Direction: "server", Sequence: &seq, Payload: payload})
+	err = call.send(frame{Kind: "stream.item", Direction: "server", Sequence: &seq, Payload: payload})
+	if e, ok := AsError(err); ok && e.Reason() == "frame_too_large" {
+		call.cancel(e) // the call ends with this error even if the handler ignores it
+	}
+	return err
 }
 
 func (call *serverCall) closeOutput() error {

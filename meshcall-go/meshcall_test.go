@@ -421,3 +421,90 @@ func TestContractAndLint(t *testing.T) {
 }
 
 var _ = errors.New
+
+type Size struct {
+	Bytes int `json:"bytes"`
+}
+
+// A frame over the limit is never sent: only its call fails, with
+// frame_too_large, and the connection keeps serving other calls.
+func TestFramesOverTheLimitFailOnlyTheirCall(t *testing.T) {
+	const limit = 64 << 10
+	svc := meshcall.NewService("test.v1.Big", meshcall.Describe("Oversized frames."))
+	meshcall.HandleUnary(svc, "result", func(ctx *meshcall.Context, req Size) (Text, error) {
+		ctx.SetTrailer("t", "v")
+		return Text{Text: strings.Repeat("x", req.Bytes)}, nil
+	}, meshcall.Doc("A result of bytes bytes."), meshcall.ReadOnly())
+	meshcall.HandleServerStream(svc, "items", func(ctx *meshcall.Context, req Size, send func(Text) error) error {
+		if err := send(Text{Text: "small"}); err != nil {
+			return err
+		}
+		_ = send(Text{Text: strings.Repeat("x", req.Bytes)}) // ignored: the call ends anyway
+		return nil
+	}, meshcall.Doc("One small item, then one of bytes bytes."), meshcall.ReadOnly())
+	meshcall.HandleClientStream(svc, "upload", func(ctx *meshcall.Context, req Size, items *meshcall.Input[Text]) (Size, error) {
+		n := 0
+		for item, err := range items.All() {
+			if err != nil {
+				return Size{}, err
+			}
+			n += len(item.Text)
+		}
+		return Size{Bytes: n}, nil
+	}, meshcall.Doc("Count the uploaded bytes."), meshcall.Idempotent())
+	meshcall.HandleUnary(svc, "sleep", func(ctx *meshcall.Context, req Size) (Size, error) {
+		select {
+		case <-time.After(time.Duration(req.Bytes) * time.Millisecond):
+			return req, nil
+		case <-ctx.Done():
+			return Size{}, ctx.Err()
+		}
+	}, meshcall.Doc("Sleep bytes milliseconds."), meshcall.ReadOnly())
+	_, url := direct(t, "127.0.0.1:0", meshcall.ServerOptions{Services: []*meshcall.Service{svc}, MaxFrameSize: limit})
+	c := client(t, url, meshcall.ClientOptions{MaxFrameSize: limit})
+	ctx := context.Background()
+	tooLarge := func(err error, source string) bool {
+		e, ok := meshcall.AsError(err)
+		return ok && e.Code == meshcall.CodeResourceExhausted && !e.Retryable && e.Reason() == "frame_too_large" && e.Details["source"] == source
+	}
+
+	slow := make(chan error, 1)
+	go func() {
+		_, err := meshcall.Unary[Size, Size](ctx, c, "test.v1.Big", "sleep", Size{Bytes: 300})
+		slow <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	_, err := meshcall.Unary[Size, Text](ctx, c, "test.v1.Big", "result", Size{Bytes: 2 * limit})
+	if !tooLarge(err, "server") {
+		t.Fatalf("an oversized result: %v", err)
+	}
+	stream, err := meshcall.ServerStream[Size, Text](ctx, c, "test.v1.Big", "items", Size{Bytes: 2 * limit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first, err := stream.Recv(); err != nil || first.Text != "small" {
+		t.Fatalf("first item: %v %v", first, err)
+	}
+	if _, err := stream.Recv(); !tooLarge(err, "server") {
+		t.Fatalf("an oversized item: %v", err)
+	}
+	_, err = meshcall.Unary[Text, Text](ctx, c, "test.v1.Big", "result", Text{Text: strings.Repeat("x", 2*limit)})
+	if !tooLarge(err, "client") {
+		t.Fatalf("an oversized request: %v", err)
+	}
+	_, err = meshcall.ClientStream[Size, Text, Size](ctx, c, "test.v1.Big", "upload", Size{}, func(yield func(Text) bool) {
+		if yield(Text{Text: "ok"}) {
+			yield(Text{Text: strings.Repeat("x", 2*limit)})
+		}
+	})
+	if !tooLarge(err, "client") {
+		t.Fatalf("an oversized input item: %v", err)
+	}
+	if err := <-slow; err != nil {
+		t.Fatalf("a call in flight on the same connection: %v", err)
+	}
+	if got, err := meshcall.Unary[Size, Text](ctx, c, "test.v1.Big", "result", Size{Bytes: 10}); err != nil || len(got.Text) != 10 {
+		t.Fatalf("after: %v %v", got, err)
+	}
+}

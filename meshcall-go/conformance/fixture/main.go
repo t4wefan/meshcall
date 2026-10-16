@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +104,10 @@ type Seq struct {
 	Seq int `json:"seq"`
 }
 
+type Size struct {
+	Bytes int `json:"bytes"`
+}
+
 type Instance struct {
 	Instance string `json:"instance"`
 }
@@ -188,6 +193,15 @@ func main() {
 		}
 		return nil
 	}, meshcall.Doc("Yield seq 0..count-1, or only those after since."), meshcall.ReadOnly())
+	meshcall.HandleUnary(fixture, "big", func(ctx *meshcall.Context, req Size) (Text, error) {
+		return Text{Text: strings.Repeat("x", req.Bytes)}, nil
+	}, meshcall.Doc("Return a text of bytes bytes."), meshcall.ReadOnly())
+	meshcall.HandleServerStream(fixture, "big_items", func(ctx *meshcall.Context, req Size, send func(Text) error) error {
+		if err := send(Text{Text: "small"}); err != nil {
+			return err
+		}
+		return send(Text{Text: strings.Repeat("x", req.Bytes)})
+	}, meshcall.Doc("Yield one small item, then one of bytes bytes."), meshcall.ReadOnly())
 	meshcall.HandleDuplex(fixture, "chat", "conformance: answers interleave with input",
 		func(ctx *meshcall.Context, req Chat, ch *meshcall.Channel[Text, Text]) error {
 			count := 0
@@ -248,9 +262,10 @@ func main() {
 	if instance == "" {
 		instance = "fixture-1"
 	}
+	maxFrame, _ := strconv.Atoi(os.Getenv("MESHCALL_MAX_FRAME_SIZE")) // 0: the default
 	var err error
 	server, err = meshcall.NewServer(meshcall.ServerOptions{
-		Services: []*meshcall.Service{fixture, targeted}, InstanceID: instance,
+		Services: []*meshcall.Service{fixture, targeted}, InstanceID: instance, MaxFrameSize: maxFrame,
 		PingInterval: time.Duration(ping) * time.Millisecond, PingTimeout: max(time.Second, 2*time.Duration(ping)*time.Millisecond),
 		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})

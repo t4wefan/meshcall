@@ -130,6 +130,7 @@ class WebSocketClientDriver(ClientDriver):
         connection = FrameConnection(
             websocket,
             max_frame_size=self.max_frame_size,
+            source="client",
             ping_interval=self.ping_interval,
             ping_timeout=self.ping_timeout,
         )
@@ -204,6 +205,7 @@ class WebSocketDirectServerDriver(ServerDriver):
             connection = FrameConnection(
                 websocket,
                 max_frame_size=self.max_frame_size,
+                source="server",
                 idle_timeout=self.idle_timeout,
             )
             self._connections.add(connection)
@@ -405,6 +407,7 @@ class _RouterLink:
         connection = FrameConnection(
             websocket,
             max_frame_size=driver.max_frame_size,
+            source="server",
             ping_interval=driver.ping_interval,
             ping_timeout=driver.ping_timeout,
         )

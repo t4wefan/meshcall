@@ -24,7 +24,7 @@ class RecordingWebSocket:
 
 async def test_sends_control_first_and_round_robins_calls() -> None:
     websocket = RecordingWebSocket()
-    connection = FrameConnection(websocket, max_frame_size=1024 * 1024)
+    connection = FrameConnection(websocket, max_frame_size=1024 * 1024, source="client")
 
     frames = [
         StreamItemFrame(

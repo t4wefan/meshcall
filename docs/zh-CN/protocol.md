@@ -54,7 +54,11 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 
 ### 帧大小（Frame size）
 
-单帧编码后的大小默认上限为 64 MiB，这也是 Router 接受的最大值（`--max-frame-size`；各运行时为 `max_frame_size` / `maxFrameSize` / `MaxFrameSize`）。一个负载（包括单个流条目）必须放进一帧，更大的数据请用流发送。收到超大帧的一方会关闭连接（WebSocket 关闭码 1009）。Router 为每个对端排队的帧最多 `--outbox-size` 字节（默认 256 MiB，且不小于最大帧大小）；对端停止读取且欠它的数据超过该值时会被断开。
+单帧编码后的大小默认上限为 64 MiB，这也是 Router 接受的最大值（`--max-frame-size`；各运行时为 `max_frame_size` / `maxFrameSize` / `MaxFrameSize`）。一个负载（包括单个流条目）必须放进一帧，更大的数据请用流发送。
+
+发送方在发送前检查每一帧编码后的大小，超过上限的帧不会发出。只有这一帧所属的调用失败，错误为不可重试的 `resource_exhausted`（`reason: "frame_too_large"`），连接保持不变：客户端在本地让调用失败（`source: "client"`），如果超限的是输入流条目，调用已在对端打开，还会发送 `call.cancel`；服务端的响应、输出流条目或错误超限时，改为发送这个错误作为该调用的 `call.error`（`source: "server"`，不带 trailers），并停止处理函数。
+
+收到超过自身上限的帧的一方会关闭连接（WebSocket 关闭码 1009），因此互相通信的各方（包括 Router）应使用相同的上限。Router 为每个对端排队的帧最多 `--outbox-size` 字节（默认 256 MiB，且不小于最大帧大小）；对端停止读取且欠它的数据超过该值时会被断开。
 
 ### 元数据（Metadata 与 Trailers）
 - `call.open` 上的 `metadata` 携带调用方传入的请求头（如 Trace Context、关联 ID、租户标识）；
@@ -260,7 +264,7 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 | `flow_control_violation` | `protocol_error` | 流条目超出消费方授予的信用（见[流量控制](#流方向与流量控制flow-control)） |
 | `router_draining` / `router_shutdown` | `unavailable` | Router 正在停止（见 [Router 停机](#router-停机router-shutdown)） |
 
-直连服务端使用同样的 reason，但 `source: "server"`；服务端执行自身 `max_inflight` 时返回 `resource_exhausted`（`source: "server"`，`reason: "overloaded"`）。服务端的 `Topic` 还会使用 `slow_subscriber` 与 `cursor_expired`（见[订阅](#订阅subscriptions)）。客户端重试策略在进行了多次尝试时向最终错误加入 `attempts`。
+直连服务端使用同样的 reason，但 `source: "server"`；服务端执行自身 `max_inflight` 时返回 `resource_exhausted`（`source: "server"`，`reason: "overloaded"`）。服务端的 `Topic` 还会使用 `slow_subscriber` 与 `cursor_expired`（见[订阅](#订阅subscriptions)）。超过帧大小上限而未发出的帧，由客户端或服务端以不可重试的 `resource_exhausted`（`reason: "frame_too_large"`）报告，`source` 为拒绝发送的一方（见[帧大小](#帧大小frame-size)）。客户端重试策略在进行了多次尝试时向最终错误加入 `attempts`。
 
 ### 结构化校验错误（`details.violations`）
 
