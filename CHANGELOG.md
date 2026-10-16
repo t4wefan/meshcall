@@ -10,6 +10,41 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **TypeScript services are classes with zod schemas** (#49), like Python's
+  `@service` classes with Pydantic models. `defineService`, `defineType` and
+  the `unaryMethod` / `serverStreamMethod` / `clientStreamMethod` /
+  `subscriptionMethod` / `duplexMethod` builders are removed:
+
+  ```ts
+  import { method, service, z, type RpcContext } from "meshcall";
+
+  const Message = z.object({ text: z.string() }).meta({ id: "Message" });
+
+  @service("chat.v1.Chat", { description: "Chat sessions." })
+  class Chat {
+    @method({ description: "Echo.", idempotent: true, request: z.object({ text: z.string() }), response: Message })
+    async send({ text }: { text: string }, ctx: RpcContext) { return { text }; }
+  }
+  new MeshCallServer({ services: [new Chat()], … });
+  ```
+
+  Migrating: each `defineType` becomes a zod schema (name a model with
+  `.meta({ id })`), each builder a decorator with the same options minus
+  `handler`, the handler a method (`this` is the instance), and
+  `services: [definition]` becomes `services: [new Class()]`.
+  `sourceModule` / `sourceQualname` are gone (the class name is used).
+  `description` is required by the types, so a missing one is a compile
+  error instead of warning W001. `cursor` / `resume` must name properties
+  of the item / request type. The decorator checks each handler against its
+  schemas at compile time. Requests are parsed with zod on the server
+  (defaults applied, unknown fields dropped); violation codes for a missing
+  field and a wrong type stay `missing` and `type`, others are zod's issue
+  codes. `writeContract` / `renderContract` / `contractEntry` take classes
+  or instances. `z` is re-exported from `meshcall`. Generated TypeScript
+  clients are unchanged and do not need zod.
+
 ## [0.2.1] - 2026-10-16
 
 ### Fixed

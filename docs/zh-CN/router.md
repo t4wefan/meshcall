@@ -57,7 +57,7 @@ Router 在内存中仅维护四张轻量表：客户端连接表、服务实例�
   - 实例未注册该服务 → 返回 `unavailable`（`reason: "instance_unknown"`，不可重试）；
   - 实例正在优雅停机排空 → 返回 `unavailable`（`reason: "instance_draining"`，可重试）；
   - 实例已达 `max_inflight` 上限 → 返回 `resource_exhausted`（`reason: "overloaded"`，可重试）。
-- **强制定向服务（`targeted=True`）**：当服务每个实例持有独立状态（例如加载了不同模型的 GPU Worker、内存 Actor）时，可在定义服务时声明 `targeted=True`（Python `@service(..., targeted=True)`，TS `defineService({ targeted: true })`）：
+- **强制定向服务（`targeted=True`）**：当服务每个实例持有独立状态（例如加载了不同模型的 GPU Worker、内存 Actor）时，可在定义服务时声明 `targeted=True`（Python `@service(..., targeted=True)`，TS `@service(name, { targeted: true, … })`）：
   - 未携带 `instance_id` 的调用会在路由前被直接拒绝，返回 `invalid_argument`（`reason: "instance_required"`）；所有实例必须在该标志上保持一致；
   - 生成的客户端会将 `instance` 作为必填参数，在编译期杜绝漏传；`router inspect` 将此类服务标记为 `[targeted]`，`meshcall call … --instance ID` 可点名调用。
 

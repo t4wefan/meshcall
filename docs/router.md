@@ -85,7 +85,7 @@ the service, `unavailable` / `instance_draining` while it drains,
 `resource_exhausted` / `overloaded` at its cap; the circuit breaker is not
 consulted because the caller chose the instance by name. A service registered
 with `targeted: true` (Python `@service(..., targeted=True)`, TypeScript
-`defineService({ targeted: true })`) refuses untargeted calls with
+`@service(name, { targeted: true, … })`) refuses untargeted calls with
 `invalid_argument` / `instance_required` before routing; all its instances
 must agree on the flag. `router inspect` marks such services `[targeted]`
 and `meshcall call … --instance ID` addresses one.

@@ -5,73 +5,61 @@ import test from "node:test";
 import { WebSocketServer } from "ws";
 
 import {
-  clientStreamMethod, defineService, defineType, MeshCallClient, MeshCallError, MeshCallServer,
-  serverStreamMethod, unaryMethod, WebSocketRouter, type MeshCallServerOptions,
+  MeshCallClient, MeshCallError, MeshCallServer, method, service, WebSocketRouter, z,
+  type MeshCallServerOptions, type RpcContext,
 } from "../src/index.js";
 import { decodeFrame, encodeFrame, PROTOCOL_VERSION, type CallOpenFrame } from "../src/protocol.js";
 import { findRouterBinary } from "../src/router.js";
 
 const routerMissing = (() => { try { findRouterBinary(); return false; } catch { return "Go Router binary not built"; } })();
 
-interface Value { value: number }
-interface Echo { value: number; metadata: Record<string, string>; remainingKnown: boolean }
-interface Trickle { count: number; gapMs: number }
+const Value = z.object({ value: z.number().int() });
+const Echo = z.object({ value: z.number().int(), metadata: z.record(z.string(), z.string()), remainingKnown: z.boolean() });
+const Trickle = z.object({ count: z.number().int(), gapMs: z.number().int() });
+type Value = z.infer<typeof Value>;
+type Echo = z.infer<typeof Echo>;
+type Trickle = z.infer<typeof Trickle>;
 
-const valueType = defineType<Value>("Value", {
-  type: "object", properties: { value: { type: "integer" } }, required: ["value"],
-});
-const echoType = defineType<Echo>("Echo", {
-  type: "object",
-  properties: {
-    value: { type: "integer" },
-    metadata: { type: "object", additionalProperties: { type: "string" } },
-    remainingKnown: { type: "boolean" },
-  },
-  required: ["value", "metadata", "remainingKnown"],
-});
-const trickleType = defineType<Trickle>("Trickle", {
-  type: "object", properties: { count: { type: "integer" }, gapMs: { type: "integer" } },
-  required: ["count", "gapMs"],
-});
+const NAME = "test.v1.TimingService";
 
-const service = defineService({
-  name: "test.v1.TimingService",
-  sourceModule: "timing.test", sourceQualname: "TimingService",
-  methods: {
-    echo: unaryMethod({
-      request: valueType, response: echoType,
-      handler: (request, ctx) => {
-        ctx.setTrailer("handled-by", "typescript");
-        return { value: request.value, metadata: { ...ctx.metadata }, remainingKnown: ctx.remainingMs() !== null };
-      },
-    }),
-    trickle: serverStreamMethod({
-      request: trickleType, outputItem: valueType,
-      handler: async function* ({ count, gapMs }, { signal }) {
-        for (let value = 0; value < count; value += 1) {
-          await delay(gapMs, undefined, { signal });
-          yield { value };
-        }
-      },
-    }),
-    collect: clientStreamMethod({
-      request: valueType, inputItem: valueType, response: valueType,
-      handler: async (_, items, ctx) => {
-        let total = 0;
-        for await (const item of items) total += item.value;
-        ctx.setTrailer("items-seen", String(total));
-        return { value: total };
-      },
-    }),
-  },
-});
+@service(NAME, { description: "Timing fixtures." })
+class TimingService {
+  /** With a tag, `echo` sleeps `value` ms and reports the tag instead of the metadata. */
+  public constructor(private readonly tag?: string) {}
+
+  @method({ description: "Echo the value, the metadata and whether a deadline is known.", readOnly: true, request: Value, response: Echo })
+  async echo(request: Value, ctx: RpcContext) {
+    if (this.tag !== undefined) {
+      await delay(request.value);
+      return { value: request.value, metadata: { by: this.tag }, remainingKnown: false };
+    }
+    ctx.setTrailer("handled-by", "typescript");
+    return { value: request.value, metadata: { ...ctx.metadata }, remainingKnown: ctx.remainingMs() !== null };
+  }
+
+  @method.serverStream({ description: "Yield count items, gapMs apart.", readOnly: true, request: Trickle, outputItem: Value })
+  async *trickle({ count, gapMs }: Trickle, { signal }: RpcContext) {
+    for (let value = 0; value < count; value += 1) {
+      await delay(gapMs, undefined, { signal });
+      yield { value };
+    }
+  }
+
+  @method.clientStream({ description: "Sum the items.", readOnly: true, request: Value, inputItem: Value, response: Value })
+  async collect(_: Value, items: AsyncIterable<Value>, ctx: RpcContext) {
+    let total = 0;
+    for await (const item of items) total += item.value;
+    ctx.setTrailer("items-seen", String(total));
+    return { value: total };
+  }
+}
 
 const isError = (code: string, details?: Record<string, unknown>) => (error: unknown) =>
   error instanceof MeshCallError && error.code === code
   && (details === undefined || JSON.stringify(error.details) === JSON.stringify(details));
 
 async function running(options: Partial<MeshCallServerOptions> = {}, clientOptions = {}) {
-  const server = new MeshCallServer({ services: [service], accessLog: false, ...options });
+  const server = new MeshCallServer({ services: [new TimingService()], accessLog: false, ...options });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, clientOptions);
   return { server, client, close: async () => { await client.close(); await server.close(); } };
@@ -80,15 +68,15 @@ async function running(options: Partial<MeshCallServerOptions> = {}, clientOptio
 test("metadata reaches the handler and trailers come back on streams", { timeout: 5000 }, async (t) => {
   const app = await running();
   t.after(app.close);
-  const echoed = await app.client.unary<Value, Echo>(service.name, "echo", { value: 4 }, {
+  const echoed = await app.client.unary<Value, Echo>(NAME, "echo", { value: 4 }, {
     timeoutMs: 5000, metadata: { traceparent: "00-abc", tenant: "t1" },
   });
   assert.deepEqual(echoed, { value: 4, metadata: { traceparent: "00-abc", tenant: "t1" }, remainingKnown: true });
   await assert.rejects(
-    app.client.unary(service.name, "echo", { value: 1 }, { metadata: { "meshcall-x": "1" } }),
+    app.client.unary(NAME, "echo", { value: 1 }, { metadata: { "meshcall-x": "1" } }),
     RangeError,
   );
-  const stream = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 2, gapMs: 1 });
+  const stream = app.client.serverStream<Trickle, Value>(NAME, "trickle", { count: 2, gapMs: 1 });
   const seen: number[] = [];
   for await (const item of stream) seen.push(item.value);
   assert.deepEqual(seen, [0, 1]);
@@ -99,15 +87,15 @@ test("idle timeouts are enforced by the consuming side in each direction", { tim
   const app = await running();
   t.after(app.close);
   // Server stream: client watches arrival gaps.
-  const slow = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 3, gapMs: 300 }, { idleTimeoutMs: 50 });
+  const slow = app.client.serverStream<Trickle, Value>(NAME, "trickle", { count: 3, gapMs: 300 }, { idleTimeoutMs: 50 });
   await assert.rejects(slow.next(), isError("deadline_exceeded", { source: "client", reason: "idle" }));
-  const fast = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 3, gapMs: 1 }, { idleTimeoutMs: 1000 });
+  const fast = app.client.serverStream<Trickle, Value>(NAME, "trickle", { count: 3, gapMs: 1 }, { idleTimeoutMs: 1000 });
   const seen: number[] = [];
   for await (const item of fast) seen.push(item.value);
   assert.deepEqual(seen, [0, 1, 2]);
   // Client stream: server watches arrival gaps.
   await assert.rejects(app.client.clientStream(
-    service.name, "collect", { value: 0 },
+    NAME, "collect", { value: 0 },
     (async function* () { yield { value: 1 }; await delay(2000); yield { value: 2 }; })(),
     { idleTimeoutMs: 50 },
   ), isError("deadline_exceeded", { source: "server", reason: "idle" }));
@@ -137,14 +125,14 @@ test("the client deadline fires locally when the peer never answers", { timeout:
   t.after(() => client.close());
   const started = performance.now();
   await assert.rejects(
-    client.unary(service.name, "echo", { value: 1 }, { timeoutMs: 100 }),
+    client.unary(NAME, "echo", { value: 1 }, { timeoutMs: 100 }),
     isError("deadline_exceeded", { source: "client" }),
   );
   const elapsed = performance.now() - started;
   assert.ok(elapsed >= 100 && elapsed < 1000, "fired after " + elapsed + "ms");
   assert.equal(opened[0]?.timeout_ms, 100);
   // Streams use the same local budget and report the same source.
-  const stream = client.serverStream(service.name, "trickle", { count: 1, gapMs: 1 }, { timeoutMs: 50 });
+  const stream = client.serverStream(NAME, "trickle", { count: 1, gapMs: 1 }, { timeoutMs: 50 });
   await assert.rejects(stream.next(), isError("deadline_exceeded", { source: "client" }));
 });
 
@@ -160,12 +148,12 @@ test("a direct server drops silent clients while pinging clients stay connected"
   await delay(1600);
   // The silent client's socket was closed by the server; a new call reconnects.
   assert.deepEqual(
-    (await chatty.unary<Value, Echo>(service.name, "echo", { value: 2 })).value, 2,
+    (await chatty.unary<Value, Echo>(NAME, "echo", { value: 2 })).value, 2,
   );
   // The in-flight call of a silent client fails as a retryable connection loss.
   const silent = new MeshCallClient("ws://127.0.0.1:" + app.server.boundPort, undefined, { pingIntervalMs: null });
   t.after(() => silent.close());
-  const pending = silent.serverStream<Trickle, Value>(service.name, "trickle", { count: 1, gapMs: 3000 });
+  const pending = silent.serverStream<Trickle, Value>(NAME, "trickle", { count: 1, gapMs: 3000 });
   await assert.rejects(pending.next(), (error: unknown) =>
     error instanceof MeshCallError && error.code === "unavailable" && error.retryable);
 });
@@ -187,24 +175,24 @@ test("unknown frame fields are ignored and undefined payloads are sent as null",
 });
 
 test("the client reconnects after a direct server restart, bounded by the call timeout", { timeout: 10000 }, async (t) => {
-  const first = new MeshCallServer({ services: [service], accessLog: false });
+  const first = new MeshCallServer({ services: [new TimingService()], accessLog: false });
   await first.start();
   const port = first.boundPort;
   const client = new MeshCallClient("ws://127.0.0.1:" + port, undefined, {
     reconnect: { initialDelayMs: 50, maxDelayMs: 200 },
   });
   t.after(() => client.close());
-  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 1 })).value, 1);
+  assert.equal((await client.unary<Value, Echo>(NAME, "echo", { value: 1 })).value, 1);
   await first.close();
   await assert.rejects(
-    client.unary(service.name, "echo", { value: 2 }, { timeoutMs: 300 }),
+    client.unary(NAME, "echo", { value: 2 }, { timeoutMs: 300 }),
     (error: unknown) => error instanceof MeshCallError
       && (error.code === "unavailable" || error.code === "deadline_exceeded"),
   );
-  const second = new MeshCallServer({ services: [service], port, accessLog: false });
+  const second = new MeshCallServer({ services: [new TimingService()], port, accessLog: false });
   t.after(() => second.close());
   await second.start();
-  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 3 }, { timeoutMs: 5000 })).value, 3);
+  assert.equal((await client.unary<Value, Echo>(NAME, "echo", { value: 3 }, { timeoutMs: 5000 })).value, 3);
 });
 
 test("a Router-mode server re-registers after the Router restarts", { timeout: 15000, skip: routerMissing }, async (t) => {
@@ -213,14 +201,14 @@ test("a Router-mode server re-registers after the Router restarts", { timeout: 1
   const port = router.boundPort;
   const endpoint = "ws://127.0.0.1:" + port;
   const server = new MeshCallServer({
-    services: [service], router: { endpoint, instanceId: "phoenix" }, accessLog: false,
+    services: [new TimingService()], router: { endpoint, instanceId: "phoenix" }, accessLog: false,
     reconnect: { initialDelayMs: 50, maxDelayMs: 200 },
   });
   t.after(() => server.close());
   await server.start();
   const client = new MeshCallClient(endpoint, undefined, { reconnect: { initialDelayMs: 50, maxDelayMs: 200 } });
   t.after(() => client.close());
-  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 1 })).value, 1);
+  assert.equal((await client.unary<Value, Echo>(NAME, "echo", { value: 1 })).value, 1);
   await router.stop();
   for (let i = 0; i < 100 && server.routerConnected; i += 1) await delay(20);
   assert.equal(server.routerConnected, false);
@@ -230,14 +218,14 @@ test("a Router-mode server re-registers after the Router restarts", { timeout: 1
   await restarted.start();
   for (let i = 0; i < 200 && !server.routerConnected; i += 1) await delay(20);
   assert.equal(server.routerConnected, true);
-  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 2 }, { timeoutMs: 5000 })).value, 2);
+  assert.equal((await client.unary<Value, Echo>(NAME, "echo", { value: 2 }, { timeoutMs: 5000 })).value, 2);
 });
 
 test("a malformed frame that names a call fails only that call", { timeout: 5000 }, async (t) => {
   const app = await running();
   t.after(app.close);
   await app.client.connect();
-  const stream = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 3, gapMs: 500 });
+  const stream = app.client.serverStream<Trickle, Value>(NAME, "trickle", { count: 3, gapMs: 500 });
   const first = stream.next();
   await delay(50);
   // Reach past the public API to inject a bad window frame for the open call.
@@ -247,25 +235,25 @@ test("a malformed frame that names a call fails only that call", { timeout: 5000
   assert.ok(callId);
   socket.send(JSON.stringify({ kind: "stream.window", call_id: callId, direction: "server", credit: -1 }));
   await assert.rejects(first, isError("protocol_error"));
-  assert.equal((await app.client.unary<Value, Echo>(service.name, "echo", { value: 7 })).value, 7);
+  assert.equal((await app.client.unary<Value, Echo>(NAME, "echo", { value: 7 })).value, 7);
   // The same on the server side: the client stays connected and other calls work.
   const serverSocket = socket;
   serverSocket.send(JSON.stringify({ kind: "call.cancel", call_id: "nope", reason: 5 }));
   await delay(20);
-  assert.equal((await app.client.unary<Value, Echo>(service.name, "echo", { value: 8 })).value, 8);
+  assert.equal((await app.client.unary<Value, Echo>(NAME, "echo", { value: 8 })).value, 8);
 });
 
 test("drain finishes in-flight streams, refuses new work, then stops", { timeout: 10000, skip: routerMissing }, async (t) => {
   // Direct mode: the listener closes while existing calls run to completion.
   const app = await running();
   const port = app.server.boundPort;
-  const stream = app.client.serverStream<Trickle, Value>(service.name, "trickle", { count: 5, gapMs: 40 });
+  const stream = app.client.serverStream<Trickle, Value>(NAME, "trickle", { count: 5, gapMs: 40 });
   assert.equal((await stream.next()).value?.value, 0);
   const closing = app.server.close({ drain: true, drainTimeoutMs: 5000 });
   await delay(50);
   const late = new MeshCallClient("ws://127.0.0.1:" + port, undefined, { reconnect: { enabled: false } });
   t.after(() => late.close());
-  await assert.rejects(late.unary(service.name, "echo", { value: 1 }, { timeoutMs: 1000 }));
+  await assert.rejects(late.unary(NAME, "echo", { value: 1 }, { timeoutMs: 1000 }));
   const rest: number[] = [];
   for await (const item of stream) rest.push(item.value);
   assert.deepEqual(rest, [1, 2, 3, 4]);
@@ -277,27 +265,14 @@ test("drain finishes in-flight streams, refuses new work, then stops", { timeout
   t.after(() => router.stop());
   await router.start();
   const endpoint = "ws://127.0.0.1:" + router.boundPort;
-  const tagged = (tag: string) => defineService({
-    ...service,
-    methods: {
-      ...service.methods,
-      echo: unaryMethod({
-        request: valueType, response: echoType, description: "Say who answered.",
-        handler: async (request) => {
-          await delay(request.value);
-          return { value: request.value, metadata: { by: tag }, remainingKnown: false };
-        },
-      }),
-    },
-  });
-  const a = new MeshCallServer({ services: [tagged("a")], router: { endpoint, instanceId: "a" }, accessLog: false });
-  const b = new MeshCallServer({ services: [tagged("b")], router: { endpoint, instanceId: "b" }, accessLog: false });
+  const a = new MeshCallServer({ services: [new TimingService("a")], router: { endpoint, instanceId: "a" }, accessLog: false });
+  const b = new MeshCallServer({ services: [new TimingService("b")], router: { endpoint, instanceId: "b" }, accessLog: false });
   t.after(async () => { await a.close(); await b.close(); });
   await a.start();
   await b.start();
   const client = new MeshCallClient(endpoint);
   t.after(() => client.close());
-  const who = async (ms = 0) => (await client.unary<Value, Echo>(service.name, "echo", { value: ms })).metadata.by;
+  const who = async (ms = 0) => (await client.unary<Value, Echo>(NAME, "echo", { value: ms })).metadata.by;
   assert.equal(await who(), "a"); // round robin starts at a
   const slow = who(400);          // now routed to b... keep calling until one lands on a
   await delay(50);
@@ -315,38 +290,32 @@ test("drain finishes in-flight streams, refuses new work, then stops", { timeout
 
 test("the retry policy re-sends unary calls only when it is safe", { timeout: 5000 }, async (t) => {
   const seen = new Map<string, number>();
-  const flakyReq = defineType<{ tag: string; failTimes: number }>("Flaky", {
-    type: "object", properties: { tag: { type: "string" }, failTimes: { type: "integer" } }, required: ["tag", "failTimes"],
-  });
-  const attemptsType = defineType<{ attempts: number }>("Attempts", {
-    type: "object", properties: { attempts: { type: "integer" } }, required: ["attempts"],
-  });
-  const flaky = defineService({
-    name: "test.v1.FlakyService", description: "Fails a configurable number of times.",
-    sourceModule: "timing.test", sourceQualname: "Flaky",
-    methods: {
-      flaky: unaryMethod({
-        description: "Fail failTimes times with retryable unavailable, then succeed.",
-        request: flakyReq, response: attemptsType,
-        handler: ({ tag, failTimes }, ctx) => {
-          const count = (seen.get(tag) ?? 0) + 1;
-          seen.set(tag, count);
-          if (count <= failTimes) {
-            throw new MeshCallError("unavailable", "try again", { retryable: true, details: { key: ctx.idempotencyKey } });
-          }
-          return { attempts: count };
-        },
-      }),
-    },
-  });
-  const server = new MeshCallServer({ services: [flaky], accessLog: false });
+  const FlakyRequest = z.object({ tag: z.string(), failTimes: z.number().int() });
+  const Attempts = z.object({ attempts: z.number().int() });
+
+  @service("test.v1.FlakyService", { description: "Fails a configurable number of times." })
+  class FlakyService {
+    @method({
+      description: "Fail failTimes times with retryable unavailable, then succeed.",
+      request: FlakyRequest, response: Attempts,
+    })
+    flaky({ tag, failTimes }: z.infer<typeof FlakyRequest>, ctx: RpcContext) {
+      const count = (seen.get(tag) ?? 0) + 1;
+      seen.set(tag, count);
+      if (count <= failTimes) {
+        throw new MeshCallError("unavailable", "try again", { retryable: true, details: { key: ctx.idempotencyKey } });
+      }
+      return { attempts: count };
+    }
+  }
+  const server = new MeshCallServer({ services: [new FlakyService()], accessLog: false });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, {
     retry: { maxAttempts: 3, initialDelayMs: 10, maxDelayMs: 20 },
   });
   t.after(async () => { await client.close(); await server.close(); });
   const call = (tag: string, failTimes: number, options = {}) =>
-    client.unary<{ tag: string; failTimes: number }, { attempts: number }>(flaky.name, "flaky", { tag, failTimes }, options);
+    client.unary<{ tag: string; failTimes: number }, { attempts: number }>("test.v1.FlakyService", "flaky", { tag, failTimes }, options);
 
   await assert.rejects(call("plain", 1), (e: unknown) => e instanceof MeshCallError && e.code === "unavailable" && !("attempts" in (e.details ?? {})));
   assert.equal((await call("idem", 2, { idempotent: true })).attempts, 3);
@@ -357,19 +326,19 @@ test("the retry policy re-sends unary calls only when it is safe", { timeout: 50
 });
 
 test("maxInflight is enforced locally in direct mode", { timeout: 5000 }, async (t) => {
-  const server = new MeshCallServer({ services: [service], accessLog: false, maxInflight: 1 });
+  const server = new MeshCallServer({ services: [new TimingService()], accessLog: false, maxInflight: 1 });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, { retry: false });
   t.after(async () => { await client.close(); await server.close(); });
-  const stream = client.serverStream<Trickle, Value>(service.name, "trickle", { count: 3, gapMs: 200 });
+  const stream = client.serverStream<Trickle, Value>(NAME, "trickle", { count: 3, gapMs: 200 });
   await stream.next();
-  await assert.rejects(client.unary(service.name, "echo", { value: 1 }), (e: unknown) =>
+  await assert.rejects(client.unary(NAME, "echo", { value: 1 }), (e: unknown) =>
     e instanceof MeshCallError && e.code === "resource_exhausted" && e.retryable
     && JSON.stringify(e.details) === JSON.stringify({ source: "server", reason: "overloaded" }));
   const rest: number[] = [];
   for await (const item of stream) rest.push(item.value);
   assert.deepEqual(rest, [1, 2]);
-  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 4 })).value, 4);
+  assert.equal((await client.unary<Value, Echo>(NAME, "echo", { value: 4 })).value, 4);
 });
 
 test("several Routers give failover without coordination", { timeout: 15000, skip: routerMissing }, async (t) => {
@@ -380,18 +349,18 @@ test("several Routers give failover without coordination", { timeout: 15000, ski
   const endpoints = ports.map((port) => "ws://127.0.0.1:" + port);
   const reconnect = { initialDelayMs: 50, maxDelayMs: 200 };
   const server = new MeshCallServer({
-    services: [service], router: { endpoint: endpoints, instanceId: "multi" }, accessLog: false, reconnect,
+    services: [new TimingService()], router: { endpoint: endpoints, instanceId: "multi" }, accessLog: false, reconnect,
   });
   t.after(() => server.close());
   await server.start();
   assert.deepEqual([...server.routerEndpoints].sort(), [...endpoints].sort());
   const client = new MeshCallClient(endpoints, undefined, { reconnect });
   t.after(() => client.close());
-  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 1 })).value, 1);
+  assert.equal((await client.unary<Value, Echo>(NAME, "echo", { value: 1 })).value, 1);
   assert.equal(client.endpoint, endpoints[0]);
   // Lose the Router the client is on: the next call fails over to the other.
   await routers[0]!.stop();
-  assert.equal((await client.unary<Value, Echo>(service.name, "echo", { value: 2 }, { timeoutMs: 5000 })).value, 2);
+  assert.equal((await client.unary<Value, Echo>(NAME, "echo", { value: 2 }, { timeoutMs: 5000 })).value, 2);
   assert.equal(client.endpoint, endpoints[1]);
   for (let i = 0; i < 100 && server.routerEndpoints.length !== 1; i += 1) await delay(20);
   assert.deepEqual(server.routerEndpoints, [endpoints[1]]);

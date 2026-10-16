@@ -2,34 +2,32 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
-  clientStreamMethod, defineService, defineType, duplexMethod, MeshCallError, MeshCallServer, serverStreamMethod,
-  subscriptionMethod, unaryMethod,
-  type WebSocketEndpoint,
+  MeshCallError, MeshCallServer, method, service, z,
+  type DuplexChannel, type RpcContext, type WebSocketEndpoint,
 } from "../src/index.js";
 
-const object = (properties: Record<string, unknown>, required: string[] = []) =>
-  ({ type: "object", properties, required, additionalProperties: false });
+const Echo = z.object({ value: z.int(), text: z.string() }).meta({ id: "Echo" });
+const Fail = z.object({ code: z.string(), message: z.string(), retryable: z.boolean().default(false) }).meta({ id: "Fail" });
+const Ok = z.object({ ok: z.boolean() }).meta({ id: "Ok" });
+const Slow = z.object({ ms: z.int(), tag: z.string().default("") }).meta({ id: "Slow" });
+const Tag = z.object({ tag: z.string() }).meta({ id: "Tag" });
+const Empty = z.object({}).meta({ id: "Empty" });
+const Tags = z.object({ tags: z.array(z.string()) }).meta({ id: "Tags" });
+const Count = z.object({ n: z.int(), gap_ms: z.int().default(0) }).meta({ id: "Count" });
+const Index = z.object({ index: z.int() }).meta({ id: "Index" });
+const Sum = z.object({ offset: z.int().default(0) }).meta({ id: "Sum" });
+const Value = z.object({ value: z.int() }).meta({ id: "Value" });
+const Total = z.object({ total: z.int() }).meta({ id: "Total" });
+const Metadata = z.object({ metadata: z.record(z.string(), z.string()) }).meta({ id: "Metadata" });
+const Instance = z.object({ instance: z.string() }).meta({ id: "Instance" });
+const Chat = z.object({ prefix: z.string().default("") }).meta({ id: "Chat" });
+const Text = z.object({ text: z.string() }).meta({ id: "Text" });
+const Ticks = z.object({ count: z.int(), since: z.int().nullable().default(null) }).meta({ id: "Ticks" });
+const Seq = z.object({ seq: z.int() }).meta({ id: "Seq" });
+const Size = z.object({ bytes: z.int() }).meta({ id: "Size" });
+const Drain = z.object({ delay_ms: z.int().default(0) }).meta({ id: "Drain" });
 
-const echoType = defineType<{ value: number; text: string }>("Echo", object({ value: { type: "integer" }, text: { type: "string" } }, ["value", "text"]));
-const failType = defineType<{ code: string; message: string; retryable?: boolean }>("Fail", object({ code: { type: "string" }, message: { type: "string" }, retryable: { type: "boolean", default: false } }, ["code", "message"]));
-const okType = defineType<{ ok: boolean }>("Ok", object({ ok: { type: "boolean" } }, ["ok"]));
-const slowType = defineType<{ ms: number; tag?: string }>("Slow", object({ ms: { type: "integer" }, tag: { type: "string", default: "" } }, ["ms"]));
-const tagType = defineType<{ tag: string }>("Tag", object({ tag: { type: "string" } }, ["tag"]));
-const emptyType = defineType<Record<string, never>>("Empty", object({}));
-const tagsType = defineType<{ tags: string[] }>("Tags", object({ tags: { type: "array", items: { type: "string" } } }, ["tags"]));
-const countType = defineType<{ n: number; gap_ms?: number }>("Count", object({ n: { type: "integer" }, gap_ms: { type: "integer", default: 0 } }, ["n"]));
-const indexType = defineType<{ index: number }>("Index", object({ index: { type: "integer" } }, ["index"]));
-const sumType = defineType<{ offset?: number }>("Sum", object({ offset: { type: "integer", default: 0 } }));
-const valueType = defineType<{ value: number }>("Value", object({ value: { type: "integer" } }, ["value"]));
-const totalType = defineType<{ total: number }>("Total", object({ total: { type: "integer" } }, ["total"]));
-const metadataType = defineType<{ metadata: Record<string, string> }>("Metadata", object({ metadata: { type: "object", additionalProperties: { type: "string" } } }, ["metadata"]));
-const instanceType = defineType<{ instance: string }>("Instance", object({ instance: { type: "string" } }, ["instance"]));
-const chatType = defineType<{ prefix?: string }>("Chat", object({ prefix: { type: "string", default: "" } }));
-const textType = defineType<{ text: string }>("Text", object({ text: { type: "string" } }, ["text"]));
-const ticksType = defineType<{ count: number; since?: number | null }>("Ticks", object({ count: { type: "integer" }, since: { type: ["integer", "null"], default: null } }, ["count"]));
-const seqType = defineType<{ seq: number }>("Seq", object({ seq: { type: "integer" } }, ["seq"]));
-const sizeType = defineType<{ bytes: number }>("Size", object({ bytes: { type: "integer" } }, ["bytes"]));
-const drainType = defineType<{ delay_ms?: number }>("Drain", object({ delay_ms: { type: "integer", default: 0 } }));
+type Text = z.infer<typeof Text>;
 
 /** unix:///path and pipe://NAME select the local transport. */
 function routerEndpoint(url: string): WebSocketEndpoint {
@@ -38,122 +36,134 @@ function routerEndpoint(url: string): WebSocketEndpoint {
   return url;
 }
 
-const cancelled: string[] = [];
-const invoked: string[] = [];
 let server: MeshCallServer;
 
-const fixture = defineService({
-  name: "conformance.v1.Fixture",
-  description: "Deterministic behaviours the conformance suite drives through the Router.",
-  sourceModule: "conformance", sourceQualname: "Fixture",
-  methods: {
-    echo: unaryMethod({ description: "Return the input unchanged.", readOnly: true, request: echoType, response: echoType, handler: (r) => r }),
-    fail: unaryMethod({
-      description: "Raise an application error with the given code.", idempotent: true, request: failType, response: okType,
-      handler: ({ code, message, retryable }) => { throw new MeshCallError(code, message, { retryable: retryable ?? false, details: { from: "fixture" } }); },
-    }),
-    bad_response: unaryMethod({
-      description: "Return a response that breaks this method's own contract.", readOnly: true, request: emptyType, response: okType,
-      handler: () => ({ ok: "not-a-bool" } as unknown as { ok: boolean }),
-    }),
-    slow: unaryMethod({
-      description: "Sleep ms milliseconds; record tag if cancelled meanwhile.", idempotent: true, request: slowType, response: tagType,
-      handler: async ({ ms, tag }, { signal }) => {
-        invoked.push(tag ?? "");
-        try {
-          await delay(ms, undefined, { signal });
-        } catch (error) {
-          if (signal.aborted) cancelled.push(tag ?? "");
-          throw error;
-        }
-        return { tag: tag ?? "" };
-      },
-    }),
-    invoked_tags: unaryMethod({ description: "Tags of every slow call that started, in order.", readOnly: true, request: emptyType, response: tagsType, handler: () => ({ tags: [...invoked] }) }),
-    cancelled_tags: unaryMethod({ description: "Tags of slow calls that observed cancellation.", readOnly: true, request: emptyType, response: tagsType, handler: () => ({ tags: [...cancelled] }) }),
-    count: serverStreamMethod({
-      description: "Yield 0..n-1 with gap_ms between items.", readOnly: true, request: countType, outputItem: indexType,
-      handler: async function* ({ n, gap_ms }, { signal }) {
-        for (let index = 0; index < n; index += 1) {
-          if (gap_ms) await delay(gap_ms, undefined, { signal });
-          yield { index };
-        }
-      },
-    }),
-    sum: clientStreamMethod({
-      description: "Add every streamed value to offset.", idempotent: true, request: sumType, inputItem: valueType, response: totalType,
-      handler: async ({ offset }, items) => { let total = offset ?? 0; for await (const item of items) total += item.value; return { total }; },
-    }),
-    metadata_echo: unaryMethod({
-      description: "Return the call metadata and set trailers describing it.", readOnly: true, request: emptyType, response: metadataType,
-      handler: (_, ctx) => { ctx.setTrailer("echoed", "yes"); ctx.setTrailer("count", String(Object.keys(ctx.metadata).length)); return { metadata: { ...ctx.metadata } }; },
-    }),
-    ticks: subscriptionMethod({
-      description: "Yield seq 0..count-1, or only those after since.", readOnly: true, cursor: "seq", resume: "since",
-      request: ticksType, outputItem: seqType,
-      handler: async function* ({ count, since }) {
-        for (let seq = since === null || since === undefined ? 0 : since + 1; seq < count; seq += 1) yield { seq };
-      },
-    }),
-    big: unaryMethod({
-      description: "Return a text of bytes bytes.", readOnly: true, request: sizeType, response: textType,
-      handler: ({ bytes }) => ({ text: "x".repeat(bytes) }),
-    }),
-    big_items: serverStreamMethod({
-      description: "Yield one small item, then one of bytes bytes.", readOnly: true, request: sizeType, outputItem: textType,
-      handler: async function* ({ bytes }) {
-        yield { text: "small" };
-        yield { text: "x".repeat(bytes) };
-      },
-    }),
-    chat: duplexMethod({
-      description: "Echo each input with prefix; send done:<inputs> when input ends.",
-      reason: "conformance: answers interleave with input",
-      request: chatType, inputItem: textType, outputItem: textType,
-      handler: async ({ prefix }, channel) => {
-        let count = 0;
-        for await (const item of channel) {
-          count += 1;
-          await channel.send({ text: (prefix ?? "") + item.text });
-        }
-        await channel.send({ text: "done:" + count });
-      },
-    }),
-    announce: duplexMethod({
-      description: "Send hello, close the output, then read the input to its end.",
-      reason: "conformance: output ends before input",
-      request: emptyType, inputItem: textType, outputItem: textType,
-      handler: async (_, channel) => {
-        await channel.send({ text: "hello" });
-        await channel.closeSend();
-        for await (const _item of channel) { /* read to the end */ }
-      },
-    }),
-    drain_self: unaryMethod({
-      description: "Drain and stop this instance after delay_ms.", destructive: true, request: drainType, response: okType,
-      handler: ({ delay_ms }) => {
-        void delay(delay_ms ?? 0).then(() => server.close({ drain: true, drainTimeoutMs: 30_000 })).then(() => process.exit(0));
-        return { ok: true };
-      },
-    }),
-  },
-});
+@service("conformance.v1.Fixture", { description: "Deterministic behaviours the conformance suite drives through the Router." })
+class Fixture {
+  private readonly cancelled: string[] = [];
+  private readonly invoked: string[] = [];
+
+  @method({ description: "Return the input unchanged.", readOnly: true, request: Echo, response: Echo })
+  async echo(request: z.infer<typeof Echo>) {
+    return request;
+  }
+
+  @method({ description: "Raise an application error with the given code.", idempotent: true, request: Fail, response: Ok })
+  async fail({ code, message, retryable }: z.infer<typeof Fail>): Promise<z.infer<typeof Ok>> {
+    throw new MeshCallError(code, message, { retryable, details: { from: "fixture" } });
+  }
+
+  @method({ description: "Return a response that breaks this method's own contract.", readOnly: true, request: Empty, response: Ok })
+  async bad_response() {
+    return { ok: "not-a-bool" } as unknown as z.infer<typeof Ok>;
+  }
+
+  @method({ description: "Sleep ms milliseconds; record tag if cancelled meanwhile.", idempotent: true, request: Slow, response: Tag })
+  async slow({ ms, tag }: z.infer<typeof Slow>, { signal }: RpcContext) {
+    this.invoked.push(tag);
+    try {
+      await delay(ms, undefined, { signal });
+    } catch (error) {
+      if (signal.aborted) this.cancelled.push(tag);
+      throw error;
+    }
+    return { tag };
+  }
+
+  @method({ description: "Tags of every slow call that started, in order.", readOnly: true, request: Empty, response: Tags })
+  async invoked_tags() {
+    return { tags: [...this.invoked] };
+  }
+
+  @method({ description: "Tags of slow calls that observed cancellation.", readOnly: true, request: Empty, response: Tags })
+  async cancelled_tags() {
+    return { tags: [...this.cancelled] };
+  }
+
+  @method.serverStream({ description: "Yield 0..n-1 with gap_ms between items.", readOnly: true, request: Count, outputItem: Index })
+  async *count({ n, gap_ms }: z.infer<typeof Count>, { signal }: RpcContext) {
+    for (let index = 0; index < n; index += 1) {
+      if (gap_ms > 0) await delay(gap_ms, undefined, { signal });
+      yield { index };
+    }
+  }
+
+  @method.clientStream({ description: "Add every streamed value to offset.", idempotent: true, request: Sum, inputItem: Value, response: Total })
+  async sum({ offset }: z.infer<typeof Sum>, items: AsyncIterable<z.infer<typeof Value>>) {
+    let total = offset;
+    for await (const item of items) total += item.value;
+    return { total };
+  }
+
+  @method({ description: "Return the call metadata and set trailers describing it.", readOnly: true, request: Empty, response: Metadata })
+  async metadata_echo(_: unknown, ctx: RpcContext) {
+    ctx.setTrailer("echoed", "yes");
+    ctx.setTrailer("count", String(Object.keys(ctx.metadata).length));
+    return { metadata: { ...ctx.metadata } };
+  }
+
+  @method.subscription({
+    description: "Yield seq 0..count-1, or only those after since.", readOnly: true,
+    cursor: "seq", resume: "since", request: Ticks, outputItem: Seq,
+  })
+  async *ticks({ count, since }: z.infer<typeof Ticks>) {
+    for (let seq = since === null ? 0 : since + 1; seq < count; seq += 1) yield { seq };
+  }
+
+  @method({ description: "Return a text of bytes bytes.", readOnly: true, request: Size, response: Text })
+  async big({ bytes }: z.infer<typeof Size>) {
+    return { text: "x".repeat(bytes) };
+  }
+
+  @method.serverStream({ description: "Yield one small item, then one of bytes bytes.", readOnly: true, request: Size, outputItem: Text })
+  async *big_items({ bytes }: z.infer<typeof Size>) {
+    yield { text: "small" };
+    yield { text: "x".repeat(bytes) };
+  }
+
+  @method.duplex({
+    description: "Echo each input with prefix; send done:<inputs> when input ends.",
+    reason: "conformance: answers interleave with input",
+    request: Chat, inputItem: Text, outputItem: Text,
+  })
+  async chat({ prefix }: z.infer<typeof Chat>, channel: DuplexChannel<Text, Text>) {
+    let count = 0;
+    for await (const item of channel) {
+      count += 1;
+      await channel.send({ text: prefix + item.text });
+    }
+    await channel.send({ text: "done:" + count });
+  }
+
+  @method.duplex({
+    description: "Send hello, close the output, then read the input to its end.",
+    reason: "conformance: output ends before input",
+    request: Empty, inputItem: Text, outputItem: Text,
+  })
+  async announce(_: unknown, channel: DuplexChannel<Text, Text>) {
+    await channel.send({ text: "hello" });
+    await channel.closeSend();
+    for await (const _item of channel) { /* read to the end */ }
+  }
+
+  @method({ description: "Drain and stop this instance after delay_ms.", destructive: true, request: Drain, response: Ok })
+  async drain_self({ delay_ms }: z.infer<typeof Drain>) {
+    void delay(delay_ms).then(() => server.close({ drain: true, drainTimeoutMs: 30_000 })).then(() => process.exit(0));
+    return { ok: true };
+  }
+}
+
+@service("conformance.v1.Targeted", { description: "A targeted service: every call must name the instance it is for.", targeted: true })
+class Targeted {
+  @method({ description: "Return the id of the instance that served the call.", readOnly: true, request: Empty, response: Instance })
+  async whoami(_: unknown, ctx: RpcContext) {
+    return { instance: ctx.instanceId };
+  }
+}
 
 const ping = Number(process.env.MESHCALL_PING_INTERVAL_MS ?? "15000");
-const targeted = defineService({
-  name: "conformance.v1.Targeted", targeted: true,
-  description: "A targeted service: every call must name the instance it is for.",
-  sourceModule: "conformance", sourceQualname: "Targeted",
-  methods: {
-    whoami: unaryMethod({
-      description: "Return the id of the instance that served the call.", readOnly: true,
-      request: emptyType, response: instanceType, handler: (_, ctx) => ({ instance: ctx.instanceId }),
-    }),
-  },
-});
-
 server = new MeshCallServer({
-  services: [fixture, targeted],
+  services: [new Fixture(), new Targeted()],
   router: { endpoint: routerEndpoint(process.env.MESHCALL_ROUTER_URL as string), instanceId: process.env.MESHCALL_CONFORMANCE_INSTANCE ?? "fixture-1" },
   pingIntervalMs: ping, pingTimeoutMs: Math.max(1000, ping * 2),
   ...(process.env.MESHCALL_MAX_FRAME_SIZE === undefined ? {} : { maxFrameSize: Number(process.env.MESHCALL_MAX_FRAME_SIZE) }),

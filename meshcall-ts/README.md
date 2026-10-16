@@ -24,51 +24,32 @@ npx meshcall init --agent claude   # or target: claude | cursor | copilot | wind
 
 ## Quick Start
 
-Start with a minimal service definition:
+Start with a minimal service: a class whose decorated methods are the service's methods, with [zod](https://zod.dev) schemas for what goes in and out (`z` is re-exported, so there is one copy):
 
 ```typescript
-import {
-  defineService,
-  defineType,
-  MeshCallServer,
-  serverStreamMethod,
-} from "meshcall";
+import { MeshCallServer, method, service, z, type RpcContext } from "meshcall";
 
-const CountRequest = defineType<{ count: number }>("CountRequest", {
-  type: "object",
-  properties: { count: { type: "integer", minimum: 0 } },
-  required: ["count"],
-});
+const CountRequest = z.object({ count: z.int().min(0) });
+const CountItem = z.object({ value: z.int() }).meta({ id: "CountItem" });
 
-const CountItem = defineType<{ value: number }>("CountItem", {
-  type: "object",
-  properties: { value: { type: "integer" } },
-  required: ["value"],
-});
-
-const counter = defineService({
-  name: "example.v1.Counter",
-  description: "Stream sequential integer counts.",
-  sourceModule: "counter",
-  sourceQualname: "Counter",
-  methods: {
-    count: serverStreamMethod({
-      description: "Yield integers from 0 up to count - 1.",
-      readOnly: true,
-      request: CountRequest,
-      outputItem: CountItem,
-      handler: async function* ({ count }, { signal }) {
-        for (let value = 0; value < count; value += 1) {
-          signal.throwIfAborted();
-          yield { value };
-        }
-      },
-    }),
-  },
-});
+@service("example.v1.Counter", { description: "Stream sequential integer counts." })
+class Counter {
+  @method.serverStream({
+    description: "Yield integers from 0 up to count - 1.",
+    readOnly: true,
+    request: CountRequest,
+    outputItem: CountItem,
+  })
+  async *count({ count }: z.infer<typeof CountRequest>, { signal }: RpcContext) {
+    for (let value = 0; value < count; value += 1) {
+      signal.throwIfAborted();
+      yield { value };
+    }
+  }
+}
 
 const server = new MeshCallServer({
-  services: [counter],
+  services: [new Counter()],
   router: { endpoint: "ws://127.0.0.1:8765", instanceId: "counter-ts-1" },
 });
 await server.start();
@@ -76,9 +57,12 @@ await server.start();
 
 What happens here:
 
-- `defineType` binds a TypeScript type to a JSON Schema for runtime validation
-- `defineService` declares the service contract (`unaryMethod`, `serverStreamMethod`, `clientStreamMethod`, `subscriptionMethod` with `cursor` / `resume`, or `duplexMethod`, the restricted shape of last resort)
+- `@service(name, { description })` declares the class a MeshCall service; its instances are what `MeshCallServer` serves, so handlers can use `this`
+- `@method` (unary), `@method.serverStream`, `@method.clientStream`, `@method.subscription` (with `cursor` / `resume`) and `@method.duplex` (with a `reason`; the restricted shape of last resort) declare the methods. The decorator checks the method against its schemas at compile time: the handler receives the parsed request (defaults applied, unknown fields dropped) and must return what `response` / `outputItem` accepts
+- The schemas become the portable contract other languages generate clients from; `.meta({ id: "CountItem" })` names a model there (unnamed ones are named after the method). `description` is required by the types (`""` declares none on purpose)
 - `MeshCallServer` registers the service with the Go Router, allowing the same node to both expose services and act as a client calling other services in the mesh
+
+Decorators are TC39 standard decorators: TypeScript 5+ compiles them with no extra flags (do not set `experimentalDecorators`). Plain JavaScript needs a compiler that supports them.
 
 `WebSocketRouter` starts the bundled Router from Node: besides `host` / `port` it takes `unixPath` (Linux, macOS, FreeBSD) or `pipe` (Windows) for the local transport, `maxFrameSize` (default and maximum 64 MiB), `outboxSize` (bytes queued for a peer that is not reading; default the Router's 256 MiB, at least `maxFrameSize`), `maxConnections`, `binaryPath` and `authFile`.
 
@@ -97,7 +81,7 @@ npx meshcall generate service.meshcall.json --language python --output generated
 npx meshcall generate service.meshcall.json --language go --output internal/client
 ```
 
-Export a TypeScript service's portable contract with `await writeContract([counter], "service.meshcall.json")`.
+Export a TypeScript service's portable contract with `await writeContract([Counter], "service.meshcall.json")`.
 
 ## Subpath Exports
 

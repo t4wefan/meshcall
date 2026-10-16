@@ -24,51 +24,32 @@ npx meshcall init --agent claude   # 或定向生成：claude | cursor | copilot
 
 ## 快速开始 (Quick Start)
 
-从最小的服务定义开始：
+从最小的服务开始：一个类，被装饰的方法就是服务的方法，用 [zod](https://zod.dev) schema 描述输入和输出（`meshcall` 重新导出了 `z`，保证只有一份 zod）：
 
 ```typescript
-import {
-  defineService,
-  defineType,
-  MeshCallServer,
-  serverStreamMethod,
-} from "meshcall";
+import { MeshCallServer, method, service, z, type RpcContext } from "meshcall";
 
-const CountRequest = defineType<{ count: number }>("CountRequest", {
-  type: "object",
-  properties: { count: { type: "integer", minimum: 0 } },
-  required: ["count"],
-});
+const CountRequest = z.object({ count: z.int().min(0) });
+const CountItem = z.object({ value: z.int() }).meta({ id: "CountItem" });
 
-const CountItem = defineType<{ value: number }>("CountItem", {
-  type: "object",
-  properties: { value: { type: "integer" } },
-  required: ["value"],
-});
-
-const counter = defineService({
-  name: "example.v1.Counter",
-  description: "流式输出递增整数。",
-  sourceModule: "counter",
-  sourceQualname: "Counter",
-  methods: {
-    count: serverStreamMethod({
-      description: "依次产出从 0 到 count - 1 的整数。",
-      readOnly: true,
-      request: CountRequest,
-      outputItem: CountItem,
-      handler: async function* ({ count }, { signal }) {
-        for (let value = 0; value < count; value += 1) {
-          signal.throwIfAborted();
-          yield { value };
-        }
-      },
-    }),
-  },
-});
+@service("example.v1.Counter", { description: "流式输出递增整数。" })
+class Counter {
+  @method.serverStream({
+    description: "依次产出从 0 到 count - 1 的整数。",
+    readOnly: true,
+    request: CountRequest,
+    outputItem: CountItem,
+  })
+  async *count({ count }: z.infer<typeof CountRequest>, { signal }: RpcContext) {
+    for (let value = 0; value < count; value += 1) {
+      signal.throwIfAborted();
+      yield { value };
+    }
+  }
+}
 
 const server = new MeshCallServer({
-  services: [counter],
+  services: [new Counter()],
   router: { endpoint: "ws://127.0.0.1:8765", instanceId: "counter-ts-1" },
 });
 await server.start();
@@ -76,13 +57,16 @@ await server.start();
 
 这段代码做了什么：
 
-- `defineType` 将 TypeScript 类型与用于运行时校验的 JSON Schema 绑定
-- `defineService` 声明服务契约（支持 `unaryMethod`、`serverStreamMethod`、`clientStreamMethod`、带 `cursor` / `resume` 的 `subscriptionMethod`，以及作为最后手段、受限制的 `duplexMethod`）
+- `@service(name, { description })` 把类声明为 MeshCall 服务；`MeshCallServer` 服务的是它的实例，所以处理函数里可以用 `this`
+- `@method`（一元）、`@method.serverStream`、`@method.clientStream`、`@method.subscription`（带 `cursor` / `resume`）和 `@method.duplex`（必须给 `reason`，受限的最后手段）声明方法。装饰器在编译期用 schema 检查方法签名：处理函数拿到的是解析后的请求（已填默认值、去掉未知字段），返回值必须符合 `response` / `outputItem`
+- schema 会变成可移植契约，其他语言据此生成客户端；`.meta({ id: "CountItem" })` 给模型命名（不命名的按方法名命名）。`description` 在类型上是必填的（写 `""` 表示有意不写）
 - `MeshCallServer` 将服务注册到 Go Router，使同一个节点既能对外提供服务，也能同时作为客户端调用网格中的其他服务
+
+装饰器是 TC39 标准装饰器：TypeScript 5 及以上无需额外配置即可编译（不要开启 `experimentalDecorators`）。纯 JavaScript 需要支持标准装饰器的编译器。
 
 `WebSocketRouter` 在 Node 中启动内置的 Router：除 `host` / `port` 外，还接受本地传输 `unixPath`（Linux、macOS、FreeBSD）或 `pipe`（Windows），以及 `maxFrameSize`（默认且最大 64 MiB）、`outboxSize`（为不读取数据的对端排队的字节数，默认使用 Router 的 256 MiB，不得小于 `maxFrameSize`）、`maxConnections`、`binaryPath` 与 `authFile`。
 
-订阅与双向流的规则见协议规范的[订阅](../docs/zh-CN/protocol.md#订阅subscriptions)与[双向流调用](../docs/zh-CN/protocol.md#双向流调用duplex-calls)：`subscriptionMethod` 的客户端在可重试失败后自动从最后一个 cursor 恢复，`Topic` 把发布的条目分发给进程内所有订阅者；`duplexMethod` 必须给出 `reason`，不重试、不去重、不能通过 HTTP 调用。
+订阅与双向流的规则见协议规范的[订阅](../docs/zh-CN/protocol.md#订阅subscriptions)与[双向流调用](../docs/zh-CN/protocol.md#双向流调用duplex-calls)：`@method.subscription` 的客户端在可重试失败后自动从最后一个 cursor 恢复，`Topic` 把发布的条目分发给进程内所有订阅者；`@method.duplex` 必须给出 `reason`，不重试、不去重、不能通过 HTTP 调用。
 
 ## 使用 CLI 探索、调用与生成客户端
 

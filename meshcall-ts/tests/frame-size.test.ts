@@ -1,68 +1,47 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  clientStreamMethod, defineService, defineType, MeshCallClient, MeshCallError, MeshCallServer,
-  serverStreamMethod, unaryMethod,
-} from "../src/index.js";
+import { MeshCallClient, MeshCallError, MeshCallServer, method, service, z, type RpcContext } from "../src/index.js";
 
 const LIMIT = 64 * 1024;
 
-interface Size { bytes: number }
-interface Text { text: string }
+const Size = z.object({ bytes: z.number().int() });
+const Text = z.object({ text: z.string() });
+type Size = z.infer<typeof Size>;
+type Text = z.infer<typeof Text>;
 
-const sizeType = defineType<Size>("Size", {
-  type: "object", properties: { bytes: { type: "integer" } }, required: ["bytes"],
-});
-const textType = defineType<Text>("Text", {
-  type: "object", properties: { text: { type: "string" } }, required: ["text"],
-});
+@service("test.v1.Big", { description: "Oversized frames." })
+class Big {
+  @method({ description: "A result of bytes bytes.", readOnly: true, request: Size, response: Text })
+  async result({ bytes }: Size, ctx: RpcContext) {
+    ctx.setTrailer("t", "v");
+    return { text: "x".repeat(bytes) };
+  }
 
-const service = defineService({
-  name: "test.v1.Big",
-  description: "Oversized frames.",
-  sourceModule: "frame-size.test", sourceQualname: "Big",
-  methods: {
-    result: unaryMethod({
-      description: "A result of bytes bytes.", readOnly: true,
-      request: sizeType, response: textType,
-      handler: async ({ bytes }, ctx) => {
-        ctx.setTrailer("t", "v");
-        return { text: "x".repeat(bytes) };
-      },
-    }),
-    echo: unaryMethod({
-      description: "Return the text.", readOnly: true,
-      request: textType, response: textType,
-      handler: async (request) => request,
-    }),
-    items: serverStreamMethod({
-      description: "One small item, then one of bytes bytes.", readOnly: true,
-      request: sizeType, outputItem: textType,
-      handler: async function* ({ bytes }) {
-        yield { text: "small" };
-        yield { text: "x".repeat(bytes) };
-      },
-    }),
-    upload: clientStreamMethod({
-      description: "Count the uploaded bytes.", idempotent: true,
-      request: sizeType, inputItem: textType, response: sizeType,
-      handler: async (_, items) => {
-        let bytes = 0;
-        for await (const item of items) bytes += item.text.length;
-        return { bytes };
-      },
-    }),
-    sleep: unaryMethod({
-      description: "Sleep bytes milliseconds.", readOnly: true,
-      request: sizeType, response: sizeType,
-      handler: async (request) => {
-        await new Promise((resolve) => setTimeout(resolve, request.bytes));
-        return request;
-      },
-    }),
-  },
-});
+  @method({ description: "Return the text.", readOnly: true, request: Text, response: Text })
+  async echo(request: Text) {
+    return request;
+  }
+
+  @method.serverStream({ description: "One small item, then one of bytes bytes.", readOnly: true, request: Size, outputItem: Text })
+  async *items({ bytes }: Size) {
+    yield { text: "small" };
+    yield { text: "x".repeat(bytes) };
+  }
+
+  @method.clientStream({ description: "Count the uploaded bytes.", idempotent: true, request: Size, inputItem: Text, response: Size })
+  async upload(_: Size, items: AsyncIterable<Text>) {
+    let bytes = 0;
+    for await (const item of items) bytes += item.text.length;
+    return { bytes };
+  }
+
+  @method({ description: "Sleep bytes milliseconds.", readOnly: true, request: Size, response: Size })
+  async sleep(request: Size) {
+    await new Promise((resolve) => setTimeout(resolve, request.bytes));
+    return request;
+  }
+}
 
 function tooLarge(source: string) {
   return (error: unknown): boolean => {
@@ -76,7 +55,7 @@ function tooLarge(source: string) {
 }
 
 test("a frame over the limit fails only its call", { timeout: 10000 }, async () => {
-  const server = new MeshCallServer({ services: [service], accessLog: false, maxFrameSize: LIMIT });
+  const server = new MeshCallServer({ services: [new Big()], accessLog: false, maxFrameSize: LIMIT });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, { maxFrameSize: LIMIT });
   try {

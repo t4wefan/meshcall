@@ -3,52 +3,44 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 import {
-  contractEntry, defineService, defineType, MeshCallClient, MeshCallError, MeshCallServer, subscriptionMethod, Topic,
+  contractEntry, MeshCallClient, MeshCallError, MeshCallServer, method, service, Topic, z,
+  type SubscriptionMethodOptions,
 } from "../src/index.js";
 
-interface Tick { seq: number }
-interface Ticks { since?: number | null }
-
-const tickType = defineType<Tick>("Tick", {
-  type: "object", properties: { seq: { type: "integer" } }, required: ["seq"],
-});
-const ticksType = defineType<Ticks>("Ticks", {
-  type: "object", properties: { since: { type: ["integer", "null"], default: null } },
-});
+const Tick = z.object({ seq: z.number().int() });
+const Ticks = z.object({ since: z.number().int().nullable().default(null) });
+type Tick = z.infer<typeof Tick>;
+type Ticks = z.input<typeof Ticks>;
 
 const topic = new Topic<Tick>({ history: 1000, cursor: (tick) => tick.seq });
 const opened: Array<number | null | undefined> = [];
 let failEvery = 0;
 
-const service = defineService({
-  name: "test.v1.Feed", description: "Subscription fixtures.",
-  sourceModule: "subscription.test", sourceQualname: "Feed",
-  methods: {
-    ticks: subscriptionMethod({
-      description: "Every tick after since.", readOnly: true, cursor: "seq", resume: "since",
-      request: ticksType, outputItem: tickType,
-      handler: async function* ({ since }) {
-        opened.push(since);
-        let sent = 0;
-        for await (const tick of topic.subscribe(since)) {
-          yield tick;
-          sent += 1;
-          if (failEvery > 0 && sent === failEvery) throw new MeshCallError("unavailable", "flap", { retryable: true });
-        }
-      },
-    }),
-    broken: subscriptionMethod({
-      description: "Fails for good after one item.", readOnly: true, request: ticksType, outputItem: tickType,
-      handler: async function* () {
-        yield { seq: 0 };
-        throw new MeshCallError("app.gone", "no more");
-      },
-    }),
-  },
-});
+@service("test.v1.Feed", { description: "Subscription fixtures." })
+class Feed {
+  @method.subscription({
+    description: "Every tick after since.", readOnly: true, cursor: "seq", resume: "since",
+    request: Ticks, outputItem: Tick,
+  })
+  async *ticks({ since }: z.output<typeof Ticks>) {
+    opened.push(since);
+    let sent = 0;
+    for await (const tick of topic.subscribe(since)) {
+      yield tick;
+      sent += 1;
+      if (failEvery > 0 && sent === failEvery) throw new MeshCallError("unavailable", "flap", { retryable: true });
+    }
+  }
+
+  @method.subscription({ description: "Fails for good after one item.", readOnly: true, request: Ticks, outputItem: Tick })
+  async *broken() {
+    yield { seq: 0 };
+    throw new MeshCallError("app.gone", "no more");
+  }
+}
 
 async function running() {
-  const server = new MeshCallServer({ services: [service], accessLog: false });
+  const server = new MeshCallServer({ services: [new Feed()], accessLog: false });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, {
     reconnect: { initialDelayMs: 10, maxDelayMs: 50 },
@@ -68,16 +60,40 @@ async function take(iterator: AsyncIterator<Tick>, n: number): Promise<number[]>
 }
 
 test("the contract declares the subscription", () => {
-  const methods = contractEntry(service).methods as Array<Record<string, unknown>>;
+  const methods = contractEntry(Feed).methods as Array<Record<string, unknown>>;
   assert.equal(methods[0]?.stream, "server_stream");
   assert.deepEqual(methods[0]?.subscription, { cursor: "seq", resume: "since" });
   assert.deepEqual(methods[1]?.subscription, { cursor: null, resume: null });
-  assert.throws(() => subscriptionMethod({
-    description: "", cursor: "seq", request: ticksType, outputItem: tickType, handler: async function* () {},
-  }), /together/);
-  assert.throws(() => subscriptionMethod({
-    description: "", cursor: "nope", resume: "since", request: ticksType, outputItem: tickType, handler: async function* () {},
-  }), /not a property/);
+  // cursor and resume come together, and cursor names an item property: both checked by the types.
+  // @ts-expect-error cursor without resume
+  const cursorOnly: SubscriptionMethodOptions<typeof Ticks, typeof Tick> = {
+    description: "", cursor: "seq", request: Ticks, outputItem: Tick,
+  };
+  const badCursor: SubscriptionMethodOptions<typeof Ticks, typeof Tick> = {
+    // @ts-expect-error cursor is not an item property
+    description: "", cursor: "nope", resume: "since", request: Ticks, outputItem: Tick,
+  };
+  assert.ok(cursorOnly && badCursor);
+  // resume must be an optional request property: checked when the class is defined.
+  const Required = z.object({ since: z.number().int() });
+  assert.throws(() => {
+    @service("test.v1.BadResume", { description: "" })
+    class BadResume {
+      @method.subscription({ description: "", readOnly: true, cursor: "seq", resume: "since", request: Required, outputItem: Tick })
+      async *ticks() { /* never called */ }
+    }
+    return BadResume;
+  }, /must be optional/);
+  assert.throws(() => {
+    @service("test.v1.NoResume", { description: "" })
+    class NoResume {
+      @method.subscription({
+        description: "", readOnly: true, cursor: "seq", resume: "after" as "since", request: Ticks, outputItem: Tick,
+      })
+      async *ticks() { /* never called */ }
+    }
+    return NoResume;
+  }, /not a request property/);
 });
 
 test("resumes after retryable failures and dropped connections", { timeout: 10000 }, async (t) => {

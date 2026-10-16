@@ -26,7 +26,7 @@ Python RPC 事件循环 <---- 线程安全桥接 ----> 业务工作线程事件�
 ```
 
 - **契约层与网络传输解耦**：默认调用形状为一元调用（`unary`），通过显式装饰器声明推荐的服务端流（`server_stream`）、客户端流（`client_stream`）或订阅（`@method.subscription` / `subscriptionMethod`，线路上是可从 cursor 恢复的服务端流）。**函数参数即请求体（Parameters are the request）**：多个函数参数会被自动打包为一个合成的请求模型用于校验与传输，模型类型的参数只是其中一个字段。服务名自动规范化为包含一个版本段（如 `chat` → `chat.v0`）。
-- **双向流（duplex）是受限的最后手段**：必须显式声明（`@method.duplex(reason=…)` / `duplexMethod({ reason })`），Handler 拿到一个通道（`RpcDuplex` / `DuplexChannel`）迭代输入、`send` 输出，不返回值；该调用从不重试、不去重、不能通过 HTTP 调用。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
+- **双向流（duplex）是受限的最后手段**：必须显式声明（`@method.duplex(reason=…)` / `@method.duplex({ reason })`），Handler 拿到一个通道（`RpcDuplex` / `DuplexChannel`）迭代输入、`send` 输出，不返回值；该调用从不重试、不去重、不能通过 HTTP 调用。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
 - **依赖注入参数自动剥离**：名为 `logger`（类型 `RpcLogger`）和 `ctx` / `context`（类型 `RpcContext`）的参数属于服务端运行时依赖注入，在提取请求契约时会自动剔除，不会暴露在生成的客户端参数列表中。Docstring 与 `read_only` / `idempotent` / `destructive` / `deprecated` 选项作为 `description`、`annotations` 与 `deprecated` 写入契约。
 - **逻辑帧与底层模式解耦**：运行时核心仅处理逻辑帧（Frame），无需关心底层是 Direct 直连还是经由 Router 转发；连接握手、角色声明、TCP 与本地传输（Unix 套接字或 Windows 命名管道：Python `unix_path=` / `pipe=`，TypeScript `unixPath` / `pipe`）绑定及服务注册均由 Driver 层封装。
 

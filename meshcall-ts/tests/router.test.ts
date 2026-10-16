@@ -7,7 +7,7 @@ import test from "node:test";
 
 import {
   MeshCallClient, MeshCallError, MeshCallServer, RouterAuthClient, WebSocketRouter,
-  defineService, defineType, findRouterBinary, unaryMethod, serverStreamMethod, clientStreamMethod,
+  findRouterBinary, method, service, z,
 } from "../src/index.js";
 
 // These tests spawn the Go Router; skip with a clear reason when no binary is
@@ -19,27 +19,25 @@ const salt = Buffer.from("meshcall-test-01");
 const hash = "pbkdf2-sha256$600000$" + salt.toString("hex") + "$" +
   pbkdf2Sync(password, salt, 600000, 32, "sha256").toString("hex");
 const auth = { username: "issuer", password };
-const valueType = defineType<{ value: number }>("Value", {
-  type: "object", properties: { value: { type: "integer" } }, required: ["value"], additionalProperties: false,
-});
-const service = defineService({
-  name: "test.v1.RouterService", sourceModule: "router.test", sourceQualname: "RouterService",
-  methods: {
-    echo: unaryMethod({ request: valueType, response: valueType, handler: (request) => request }),
-    download: serverStreamMethod({
-      request: valueType, outputItem: valueType,
-      handler: async function* (request) { for (let value = 0; value < request.value; value++) yield { value }; },
-    }),
-    upload: clientStreamMethod({
-      request: valueType, inputItem: valueType, response: valueType,
-      handler: async (request, items) => {
-        let value = request.value;
-        for await (const item of items) value += item.value;
-        return { value };
-      },
-    }),
-  },
-});
+const NAME = "test.v1.RouterService";
+const Value = z.object({ value: z.number().int() });
+type Value = z.infer<typeof Value>;
+
+@service(NAME, { description: "Router fixtures." })
+class RouterService {
+  @method({ description: "Echo the request.", readOnly: true, request: Value, response: Value })
+  echo(request: Value) { return request; }
+
+  @method.serverStream({ description: "Yield 0 up to value.", readOnly: true, request: Value, outputItem: Value })
+  async *download(request: Value) { for (let value = 0; value < request.value; value++) yield { value }; }
+
+  @method.clientStream({ description: "Add the items to value.", idempotent: true, request: Value, inputItem: Value, response: Value })
+  async upload(request: Value, items: AsyncIterable<Value>) {
+    let value = request.value;
+    for await (const item of items) value += item.value;
+    return { value };
+  }
+}
 const isError = (code: string) => (error: unknown) => error instanceof MeshCallError && error.code === code;
 
 test("TypeScript owns a Go process, retries a failed bind and handles Unix cleanup", { timeout: 10000, skip: routerMissing }, async (t) => {
@@ -83,13 +81,13 @@ test("typed AuthService issues scopes, routes all call shapes and revokes an act
   const file = join(directory, "auth.json");
   await writeFile(file, JSON.stringify({ users: [{
     username: auth.username, password_hash: hash, roles: ["client", "server"],
-    register: [service.name], call: [service.name + "/*", "meshcall.router.v1.AuthService/*"],
+    register: [NAME], call: [NAME + "/*", "meshcall.router.v1.AuthService/*"],
   }] }));
   const router = new WebSocketRouter({ authFile: file });
   t.after(() => router.stop());
   await router.start();
   const endpoint = "ws://127.0.0.1:" + router.boundPort;
-  const server = new MeshCallServer({ services: [service], router: { endpoint, auth }, accessLog: false });
+  const server = new MeshCallServer({ services: [new RouterService()], router: { endpoint, auth }, accessLog: false });
   t.after(() => server.close());
   await server.start();
   const issuer = new MeshCallClient(endpoint, undefined, { auth });
@@ -97,24 +95,24 @@ test("typed AuthService issues scopes, routes all call shapes and revokes an act
   const management = new RouterAuthClient(issuer);
   assert.equal((await management.whoami()).username, auth.username);
   const issued = await management.issueToken({
-    scopes: [{ service: service.name, methods: ["echo", "download", "upload"] }],
+    scopes: [{ service: NAME, methods: ["echo", "download", "upload"] }],
   });
   const client = new MeshCallClient(endpoint, undefined, { auth: { token: issued.token } });
   t.after(() => client.close());
-  assert.deepEqual(await client.unary(service.name, "echo", { value: 9 }), { value: 9 });
+  assert.deepEqual(await client.unary(NAME, "echo", { value: 9 }), { value: 9 });
   const downloaded: number[] = [];
   for await (const item of client.serverStream<{ value: number }, { value: number }>(
-    service.name, "download", { value: 64 },
+    NAME, "download", { value: 64 },
   )) downloaded.push(item.value);
   assert.deepEqual(downloaded, Array.from({ length: 64 }, (_, i) => i));
-  assert.deepEqual(await client.clientStream(service.name, "upload", { value: 7 },
+  assert.deepEqual(await client.clientStream(NAME, "upload", { value: 7 },
     (async function* () { for (const value of downloaded) yield { value }; })()), { value: 2023 });
-  await assert.rejects(client.unary(service.name, "forbidden", {}), isError("permission_denied"));
+  await assert.rejects(client.unary(NAME, "forbidden", {}), isError("permission_denied"));
   await assert.rejects(client.unary("other.v1.Service", "echo", {}), isError("permission_denied"));
   await assert.rejects(new RouterAuthClient(client).issueToken({
-    scopes: [{ service: service.name, methods: ["*"] }],
+    scopes: [{ service: NAME, methods: ["*"] }],
   }), isError("permission_denied"));
-  const stream = client.serverStream(service.name, "download", { value: 100000 });
+  const stream = client.serverStream(NAME, "download", { value: 100000 });
   await stream.next();
   assert.equal(await management.revokeToken(issued.token_id), true);
   await assert.rejects(async () => { for await (const _ of stream) { /* drain buffered items */ } }, isError("unavailable"));

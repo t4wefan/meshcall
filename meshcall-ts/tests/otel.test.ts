@@ -7,35 +7,27 @@ import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { AggregationTemporality, InMemoryMetricExporter, MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 
-import { defineService, defineType, MeshCallClient, MeshCallError, MeshCallServer, unaryMethod } from "../src/index.js";
+import { MeshCallClient, MeshCallError, MeshCallServer, method, service, z, type RpcContext } from "../src/index.js";
 import { otelClientInterceptor, otelServerInterceptor } from "../src/otel.js";
 
-interface Echo { text: string; traceparent: string; traceId: string }
+const Text = z.object({ text: z.string() });
+const Echo = z.object({ text: z.string(), traceparent: z.string(), traceId: z.string() });
+type Text = z.infer<typeof Text>;
+type Echo = z.infer<typeof Echo>;
 
-const textType = defineType<{ text: string }>("Text", {
-  type: "object", properties: { text: { type: "string" } }, required: ["text"],
-});
-const echoType = defineType<Echo>("Echo", {
-  type: "object", properties: { text: { type: "string" }, traceparent: { type: "string" }, traceId: { type: "string" } },
-  required: ["text", "traceparent", "traceId"],
-});
+@service("test.v1.Traced", { description: "" })
+class Traced {
+  @method({ description: "", readOnly: true, request: Text, response: Echo })
+  echo({ text }: Text, ctx: RpcContext) {
+    return {
+      text, traceparent: ctx.metadata.traceparent ?? "",
+      traceId: trace.getSpan(context.active())?.spanContext().traceId ?? "",
+    };
+  }
 
-const service = defineService({
-  name: "test.v1.Traced", description: "", sourceModule: "otel.test", sourceQualname: "Traced",
-  methods: {
-    echo: unaryMethod({
-      description: "", readOnly: true, request: textType, response: echoType,
-      handler: ({ text }, ctx) => ({
-        text, traceparent: ctx.metadata.traceparent ?? "",
-        traceId: trace.getSpan(context.active())?.spanContext().traceId ?? "",
-      }),
-    }),
-    fail: unaryMethod({
-      description: "", readOnly: true, request: textType, response: echoType,
-      handler: () => { throw new MeshCallError("app.nope", "no"); },
-    }),
-  },
-});
+  @method({ description: "", readOnly: true, request: Text, response: Echo })
+  fail(): Echo { throw new MeshCallError("app.nope", "no"); }
+}
 
 test("one trace spans client and server; metrics count calls by code", { timeout: 10000 }, async (t) => {
   // What an OpenTelemetry Node SDK registers: the active span follows awaits.
@@ -48,14 +40,14 @@ test("one trace spans client and server; metrics count calls by code", { timeout
   const meterProvider = new MeterProvider({ readers: [reader] });
   const options = { tracerProvider, meterProvider };
 
-  const server = new MeshCallServer({ services: [service], accessLog: false, interceptors: [otelServerInterceptor(options)] });
+  const server = new MeshCallServer({ services: [new Traced()], accessLog: false, interceptors: [otelServerInterceptor(options)] });
   await server.start();
   const client = new MeshCallClient("ws://127.0.0.1:" + server.boundPort, undefined, {
     interceptors: [otelClientInterceptor(options)],
   });
   t.after(async () => { await client.close(); await server.close(); });
 
-  const echo = await client.unary<{ text: string }, Echo>("test.v1.Traced", "echo", { text: "hi" });
+  const echo = await client.unary<Text, Echo>("test.v1.Traced", "echo", { text: "hi" });
   const finished = spans.getFinishedSpans();
   const clientSpan = finished.find((s) => s.kind === SpanKind.CLIENT)!;
   const serverSpan = finished.find((s) => s.kind === SpanKind.SERVER)!;
