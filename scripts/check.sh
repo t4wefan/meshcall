@@ -28,7 +28,7 @@ py_checks() {
 }
 ts_checks() {
   step "typescript types + tests"
-  (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s check && yarn -s test)
+  (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s run check && yarn -s test)
 }
 demos() {
   step "demos end to end (MESHCALL_STRICT=1: contract warnings fail)"
