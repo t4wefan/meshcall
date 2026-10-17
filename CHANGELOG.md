@@ -53,6 +53,9 @@ matching `meshcall-go/vX.Y.Z` tag.
 - **Removed experimental subscriptions (`cursor` / `resume` and `Topic`)**:
   resumable stream cursor conventions are application-level parameters on
   `@stream` methods rather than a separate protocol/contract primitive.
+- **Removed legacy `ClientBase` underscore aliases** in Python (`_unary`,
+  `_server_stream`, `_client_stream`, `_duplex`); callers use `call_unary`,
+  `call_server_stream`, `call_client_stream`, and `call_duplex`.
 
 ## [0.2.1] - 2026-10-16
 

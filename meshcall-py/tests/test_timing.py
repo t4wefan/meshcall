@@ -71,7 +71,7 @@ class TimingClient(ClientBase):
         timeout: float | None = None,
         metadata: dict[str, str] | None = None,
     ) -> Result:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "echo_metadata",
             request,
@@ -92,7 +92,7 @@ class TimingClient(ClientBase):
             value: int
             gap_ms: int
 
-        return self._server_stream(
+        return self.call_server_stream(
             self.service_name,
             "trickle",
             TrickleRequest(value=value, gap_ms=gap_ms),
@@ -107,7 +107,7 @@ class TimingClient(ClientBase):
         *,
         idle_timeout: float | None = None,
     ) -> Result:
-        return await self._client_stream(
+        return await self.call_client_stream(
             self.service_name,
             "collect",
             Request(),

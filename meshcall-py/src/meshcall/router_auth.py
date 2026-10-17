@@ -147,7 +147,7 @@ class RouterAuthClient(ClientBase):
     """Typed client for the Go Router's built-in, unary management service."""
 
     async def whoami(self) -> RouterIdentity:
-        return await self._unary(AUTH_SERVICE, "whoami", _Empty(), RouterIdentity)
+        return await self.call_unary(AUTH_SERVICE, "whoami", _Empty(), RouterIdentity)
 
     async def issue_token(
         self, scopes: list[RouterScope], ttl_seconds: int = 900
@@ -158,7 +158,7 @@ class RouterAuthClient(ClientBase):
             )
             for scope in scopes
         ]
-        return await self._unary(
+        return await self.call_unary(
             AUTH_SERVICE,
             "issue_token",
             _IssueRequest(ttl_seconds=ttl_seconds, scopes=normalized),
@@ -166,7 +166,7 @@ class RouterAuthClient(ClientBase):
         )
 
     async def revoke_token(self, token_id: str) -> bool:
-        result = await self._unary(
+        result = await self.call_unary(
             AUTH_SERVICE,
             "revoke_token",
             _RevokeRequest(token_id=token_id),

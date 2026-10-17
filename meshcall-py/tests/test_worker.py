@@ -46,7 +46,7 @@ class WorkerIsolationClient(ClientBase):
         *,
         timeout: float,
     ) -> WorkResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "block",
             request,
@@ -55,7 +55,7 @@ class WorkerIsolationClient(ClientBase):
         )
 
     async def identify(self, request: WorkRequest) -> WorkResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "identify",
             request,

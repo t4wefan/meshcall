@@ -102,7 +102,7 @@ async def test_access_log_records_success_failures_and_injected_logger() -> None
             colorize=True,
         ) as client,
     ):
-        result = await client._unary(
+        result = await client.call_unary(
             "test.v1.AccessLogService",
             "ok",
             request(7),
@@ -111,7 +111,7 @@ async def test_access_log_records_success_failures_and_injected_logger() -> None
         assert result == AccessLogResult(value=7)
 
         with pytest.raises(MeshCallError) as failed:
-            await client._unary(
+            await client.call_unary(
                 "test.v1.AccessLogService",
                 "fail",
                 request(8),
@@ -120,7 +120,7 @@ async def test_access_log_records_success_failures_and_injected_logger() -> None
         assert failed.value.code == ErrorCode.INVALID_ARGUMENT
 
         with pytest.raises(MeshCallError) as missing:
-            await client._unary(
+            await client.call_unary(
                 "test.v1.AccessLogService",
                 "missing",
                 request(9),
@@ -157,7 +157,7 @@ async def test_access_log_can_be_disabled() -> None:
             access_log=False,
         ) as client,
     ):
-        result = await client._unary(
+        result = await client.call_unary(
             "test.v1.AccessLogService",
             "ok",
             request(1),
@@ -175,7 +175,7 @@ async def test_access_log_color_can_be_disabled() -> None:
             colorize=False,
         ) as client,
     ):
-        result = await client._unary(
+        result = await client.call_unary(
             "test.v1.AccessLogService",
             "ok",
             request(2),

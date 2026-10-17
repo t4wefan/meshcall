@@ -62,21 +62,21 @@ class BigClient(ClientBase):
     service_name = "test.v1.Big"
 
     async def result(self, request: Size) -> Text:
-        return await self._unary(self.service_name, "result", request, Text)
+        return await self.call_unary(self.service_name, "result", request, Text)
 
     async def echo(self, request: Text) -> Text:
-        return await self._unary(self.service_name, "echo", request, Text)
+        return await self.call_unary(self.service_name, "echo", request, Text)
 
     def items(self, request: Size) -> RpcServerStream[Text]:
-        return self._server_stream(self.service_name, "items", request, Text)
+        return self.call_server_stream(self.service_name, "items", request, Text)
 
     async def upload(self, request: Size, items: AsyncIterable[Text]) -> Size:
-        return await self._client_stream(
+        return await self.call_client_stream(
             self.service_name, "upload", request, items, Text, Size
         )
 
     async def sleep(self, request: Size) -> Size:
-        return await self._unary(self.service_name, "sleep", request, Size)
+        return await self.call_unary(self.service_name, "sleep", request, Size)
 
 
 def _too_large(error: MeshCallError, source: str) -> bool:

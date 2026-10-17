@@ -49,7 +49,9 @@ class Plain:
 
 class Client(ClientBase):
     async def whoami(self, service_name: str, **kwargs: Any) -> Instance:
-        return await self._unary(service_name, "whoami", Empty(), Instance, **kwargs)
+        return await self.call_unary(
+            service_name, "whoami", Empty(), Instance, **kwargs
+        )
 
 
 @pytest.fixture

@@ -84,7 +84,7 @@ class RouteServiceClient(ClientBase):
     service_name = "test.v1.RouteService"
 
     async def round_robin(self, request: RouteRequest) -> RouteResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "round_robin",
             request,
@@ -92,7 +92,7 @@ class RouteServiceClient(ClientBase):
         )
 
     async def least_inflight(self, request: RouteRequest) -> RouteResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "least_inflight",
             request,
@@ -100,7 +100,7 @@ class RouteServiceClient(ClientBase):
         )
 
     async def sticky(self, request: RouteRequest) -> RouteResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "sticky",
             request,

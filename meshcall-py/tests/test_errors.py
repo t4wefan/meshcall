@@ -66,13 +66,15 @@ class ErrorClient(ClientBase):
     service_name = "test.v1.ErrorService"
 
     async def echo(self, request: BaseModel, **kwargs: Any) -> Result:
-        return await self._unary(self.service_name, "echo", request, Result, **kwargs)
+        return await self.call_unary(
+            self.service_name, "echo", request, Result, **kwargs
+        )
 
     async def bad_response(self) -> Result:
-        return await self._unary(self.service_name, "bad_response", Empty(), Result)
+        return await self.call_unary(self.service_name, "bad_response", Empty(), Result)
 
     def bad_items(self) -> RpcServerStream[Result]:
-        return self._server_stream(self.service_name, "bad_items", Empty(), Result)
+        return self.call_server_stream(self.service_name, "bad_items", Empty(), Result)
 
 
 @pytest.fixture

@@ -54,13 +54,15 @@ class InterceptClient(ClientBase):
     service_name = "test.v1.InterceptService"
 
     async def echo(self, request: Request, **kwargs: Any) -> Result:
-        return await self._unary(self.service_name, "echo", request, Result, **kwargs)
+        return await self.call_unary(
+            self.service_name, "echo", request, Result, **kwargs
+        )
 
     def count(self, value: int, **kwargs: Any) -> RpcServerStream[Item]:
         class CountRequest(BaseModel):
             value: int
 
-        return self._server_stream(
+        return self.call_server_stream(
             self.service_name, "count", CountRequest(value=value), Item, **kwargs
         )
 

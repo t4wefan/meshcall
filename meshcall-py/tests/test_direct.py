@@ -87,7 +87,7 @@ class NumberServiceClient(ClientBase):
     service_name = "test.v1.NumberService"
 
     async def unary(self, request: NumberRequest) -> NumberResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "unary",
             request,
@@ -100,7 +100,7 @@ class NumberServiceClient(ClientBase):
         *,
         timeout: float | None = None,
     ) -> NumberResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "slow",
             request,
@@ -109,7 +109,7 @@ class NumberServiceClient(ClientBase):
         )
 
     async def cancellable(self, request: NumberRequest) -> NumberResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "cancellable",
             request,
@@ -120,7 +120,7 @@ class NumberServiceClient(ClientBase):
         self,
         request: NumberRequest,
     ) -> RpcServerStream[NumberItem]:
-        return self._server_stream(
+        return self.call_server_stream(
             self.service_name,
             "download",
             request,
@@ -132,7 +132,7 @@ class NumberServiceClient(ClientBase):
         request: NumberRequest,
         items: AsyncIterable[NumberItem],
     ) -> NumberResult:
-        return await self._client_stream(
+        return await self.call_client_stream(
             self.service_name,
             "upload",
             request,
@@ -145,7 +145,7 @@ class NumberServiceClient(ClientBase):
         self,
         request: NumberRequest,
     ) -> RpcDuplexClient[NumberItem, NumberItem]:
-        return self._duplex(
+        return self.call_duplex(
             self.service_name,
             "duplex",
             request,
@@ -208,7 +208,7 @@ class ExpandedServiceClient(ClientBase):
     service_name = "test.v1.ExpandedService"
 
     async def unary(self, left: int, right: int = 1) -> NumberResult:
-        return await self._unary(
+        return await self.call_unary(
             self.service_name,
             "unary",
             ExpandedUnaryRequest(left=left, right=right),
@@ -216,7 +216,7 @@ class ExpandedServiceClient(ClientBase):
         )
 
     def download(self, start: int, stop: int) -> RpcServerStream[NumberItem]:
-        return self._server_stream(
+        return self.call_server_stream(
             self.service_name,
             "download",
             ExpandedDownloadRequest(start=start, stop=stop),
@@ -228,7 +228,7 @@ class ExpandedServiceClient(ClientBase):
         offset: int,
         items: AsyncIterable[NumberItem],
     ) -> NumberResult:
-        return await self._client_stream(
+        return await self.call_client_stream(
             self.service_name,
             "upload",
             ExpandedUploadRequest(offset=offset),
@@ -241,7 +241,7 @@ class ExpandedServiceClient(ClientBase):
         self,
         offset: int,
     ) -> RpcDuplexClient[NumberItem, NumberItem]:
-        return self._duplex(
+        return self.call_duplex(
             self.service_name,
             "duplex",
             ExpandedDuplexRequest(offset=offset),
