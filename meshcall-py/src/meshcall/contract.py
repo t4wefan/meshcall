@@ -268,7 +268,7 @@ class Method:
         destructive: bool | None = None,
         deprecated: str | None = None,
     ) -> MethodDeclaration:
-        """Declare a subscription: a server stream meant to stay open and resume.
+        """Declare a subscription (Experimental): a server stream meant to stay open and resume.
 
         ``cursor`` names the item field holding each item's position,
         ``resume`` the optional request parameter that continues after it.

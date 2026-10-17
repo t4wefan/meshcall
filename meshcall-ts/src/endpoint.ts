@@ -40,6 +40,18 @@ export function createSocket(
 ): WebSocket {
   const headers = auth === undefined ? {} : { Authorization: authorizationHeader(auth) };
   if (typeof endpoint === "string") {
+    if (endpoint.startsWith("unix://")) {
+      const path = unixSocketPath(endpoint.slice("unix://".length));
+      return new WebSocket("ws://localhost/", {
+        maxPayload, handshakeTimeout, headers, createConnection: () => connect(path),
+      });
+    }
+    if (endpoint.startsWith("pipe://")) {
+      const path = namedPipePath(endpoint.slice("pipe://".length));
+      return new WebSocket("ws://localhost/", {
+        maxPayload, handshakeTimeout, headers, createConnection: () => connect(path),
+      });
+    }
     return new WebSocket(endpoint, { maxPayload, handshakeTimeout, headers });
   }
   const path = "pipe" in endpoint ? namedPipePath(endpoint.pipe) : unixSocketPath(endpoint.unixPath);

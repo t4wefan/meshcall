@@ -145,7 +145,7 @@ method.serverStream = <Request extends Schema, Item extends Schema>(options: Ser
   ): void => record(context, fn, { ...options, stream: "server_stream" });
 
 /**
- * A subscription: a server stream meant to stay open, which clients reopen
+ * (Experimental) A subscription: a server stream meant to stay open, which clients reopen
  * after a retryable failure, passing the last item's `cursor` as `resume`.
  */
 method.subscription = <Request extends Schema, Item extends Schema>(options: SubscriptionOptions<Request, Item>) =>
@@ -239,6 +239,13 @@ function checkResume(spec: MethodSpec): void {
   if (!field.safeParse(undefined).success) {
     throw new Error(`subscription resume ${JSON.stringify(resume)} must be optional: the first call has no cursor yet`);
   }
+}
+
+/** Whether `value` is a `@service` class or an instance of one. */
+export function isService(value: unknown): value is object {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+  const target = typeof value === "function" ? value : (value as { constructor?: object }).constructor;
+  return target !== undefined && specs.has(target);
 }
 
 /** The contract of a `@service` class or of one of its instances. */

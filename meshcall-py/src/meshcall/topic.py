@@ -36,7 +36,7 @@ class _Subscriber(Generic[T]):
 
 
 class Topic(Generic[T]):
-    """Publish items to every subscriber in this process.
+    """Publish items to every subscriber in this process (Experimental).
 
     Each subscriber has a bounded queue (``queue_size``). One that falls that
     far behind is cut off with retryable ``resource_exhausted`` (``reason:

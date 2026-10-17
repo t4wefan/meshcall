@@ -531,4 +531,18 @@ async def _connect_endpoint(
         )
     if uri is None:
         raise DriverStateError("WebSocket URI is not configured")
+    if uri.startswith("pipe://"):
+        return await pipe_connect(
+            pipe_address(uri.removeprefix("pipe://")),
+            max_size=max_frame_size,
+            additional_headers=headers,
+        )
+    if uri.startswith("unix://"):
+        check_unix_supported()
+        return await unix_connect(
+            uri.removeprefix("unix://"),
+            uri="ws://localhost/",
+            max_size=max_frame_size,
+            additional_headers=headers,
+        )
     return await connect(uri, max_size=max_frame_size, additional_headers=headers)

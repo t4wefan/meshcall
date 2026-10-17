@@ -178,11 +178,11 @@ def start_expanded():
         ),
         retry=RetryPolicy(max_attempts=3, initial_delay=0.1, max_delay=2.0, multiplier=2.0),
         max_frame_size=64 * 1024 * 1024,  # 64 MiB
-        # 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
+        # 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为（HTTP /v1/call/* 与 /openapi.json 默认与 WS 共用同一端口）：
         spawn_if_local=True,
-        http_listen="127.0.0.1:8080",     # 开启 HTTP/SSE 网关与 /openapi.json
         http_cors_origins=["https://app.example.com"],
         http_default_timeout=30.0,
+        metrics_listen="127.0.0.1:9090",  # 可选：独立暴露 Prometheus /metrics 端口
         auth_file="/etc/meshcall/auth.json",
         outbox_size=16 * 1024 * 1024,
         max_connections=1024,
@@ -390,11 +390,11 @@ async function startExpanded() {
       jitter: 0.2,
     },
     maxFrameSize: 64 * 1024 * 1024,
-    // 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
+    // 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为（HTTP /v1/call/* 与 /openapi.json 默认与 WS 共用同一端口）：
     spawnIfLocal: true,
-    httpListen: "127.0.0.1:8080",
     httpCorsOrigins: ["https://app.example.com"],
     httpDefaultTimeoutMs: 30_000,
+    metricsListen: "127.0.0.1:9090",
     authFile: "/etc/meshcall/auth.json",
     outboxSize: 16 * 1024 * 1024,
     maxConnections: 1024,
@@ -629,9 +629,10 @@ func startExpanded() error {
 			Jitter:       0.2,
 		}),
 		meshcall.WithMaxFrameSize(64<<20), // 64 MiB
-		// 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
+		// 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为（HTTP /v1/call/* 与 /openapi.json 默认与 WS 共用同一端口）：
 		meshcall.WithSpawnIfLocal(true),
-		meshcall.WithHTTPGateway("127.0.0.1:8080", 30*time.Second, "https://app.example.com"),
+		meshcall.WithHTTPConfig(30*time.Second, "https://app.example.com"),
+		meshcall.WithMetricsListen("127.0.0.1:9090"),
 		meshcall.WithAuthFile("/etc/meshcall/auth.json"),
 		meshcall.WithRouterLimits(16<<20, 1024),
 	)
@@ -761,10 +762,10 @@ func runClient(ctx context.Context) error {
 ## 四、 分阶段实现计划 (Implementation Roadmap)
 
 ### Phase 1: 统一的 `Router` 对象与极简启动/连接入口
-- [ ] **Python (`meshcall-py`)**：实现统一的 `Router` 类（兼具服务端/客户端配置、多路复用连接管理与内置服务 `list_services` / `describe_service` / `whoami` / `issue_token` / `revoke_token` 调用）、`meshcall.run(*services, router=..., ...)`、`await meshcall.serve(*services, router=..., ...)`（支持本地地址未监听时自动拉起内嵌 Router、bind 竞争回退连接、SIGINT/SIGTERM 优雅排空）。
-- [ ] **TypeScript (`meshcall-ts`)**：实现统一的 `Router` 类（含 `Router.connect`、客户端连接复用及内置 `Registry`/`AuthService` 方法）、`run(services, opts)`、`serve(services, opts)`。
-- [ ] **Go (`meshcall-go`)**：实现统一的 `Router` 类型（`NewRouter`、`ConnectRouter`、客户端连接复用及内置 `Registry`/`AuthService` 方法）、`meshcall.Run(...)`、`meshcall.Serve(...)`。
-- [ ] **Experimental 边界整理**：将 `subscription` 与 `Topic` 标记为实验特性（Experimental），从核心推荐路径与默认主推导出中降级。
+- [x] **Python (`meshcall-py`)**：实现统一的 `Router` 类（兼具服务端/客户端配置、多路复用连接管理与内置服务 `list_services` / `describe_service` / `whoami` / `issue_token` / `revoke_token` 调用）、`meshcall.run(*services, router=..., ...)`、`await meshcall.serve(*services, router=..., ...)`（支持本地地址未监听时自动拉起内嵌 Router、bind 竞争回退连接、SIGINT/SIGTERM 优雅排空）。
+- [x] **TypeScript (`meshcall-ts`)**：实现统一的 `Router` 类（含 `Router.connect`、客户端连接复用及内置 `Registry`/`AuthService` 方法）、`run(services, opts)`、`serve(services, opts)`。
+- [x] **Go (`meshcall-go`)**：实现统一的 `Router` 类型（`NewRouter`、`ConnectRouter`、客户端连接复用及内置 `Registry`/`AuthService` 方法）、`meshcall.Run(...)`、`meshcall.Serve(...)`。
+- [x] **Experimental 边界整理**：将 `subscription` 与 `Topic` 标记为实验特性（Experimental），从核心推荐路径与默认主推导出中降级。
 
 ### Phase 2: 服务端签名统一与样板消除
 - [ ] **Client Stream / Duplex 参数顺序统一**：三端统一支持“普通业务参数在前，流（`chunks`）或双向通道（`channel`）在最后”。

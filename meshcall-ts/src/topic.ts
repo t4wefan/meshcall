@@ -1,5 +1,5 @@
 /**
- * In-process fan-out for subscriptions (docs/protocol.md → Subscriptions).
+ * (Experimental) In-process fan-out for subscriptions (docs/protocol.md → Subscriptions).
  *
  *   @method.subscription({ cursor: "seq", resume: "since", … })
  *   events({ since }) { return topic.subscribe(since); }

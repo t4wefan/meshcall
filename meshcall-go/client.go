@@ -129,12 +129,13 @@ type ClientCallNext func(ctx context.Context, info *CallInfo) error
 // ClientInterceptor wraps every outgoing call; the first one is outermost.
 type ClientInterceptor func(ctx context.Context, info *CallInfo, next ClientCallNext) error
 
-// Client connects lazily to a Router or direct server and makes calls.
-type Client struct {
-	opts      ClientOptions
-	endpoints []endpoint
-	logger    *slog.Logger
+// Caller is satisfied by both *Router and *Client so generated clients can be
+// constructed from either a shared Router or a standalone Client.
+type Caller interface {
+	Client() *Client
+}
 
+type clientState struct {
 	mu            sync.Mutex
 	cursor        int
 	conn          *conn
@@ -142,6 +143,16 @@ type Client struct {
 	everConnected bool
 	closed        bool
 	calls         map[string]*clientCall
+	onClose       func()
+}
+
+// Client connects lazily to a Router or direct server and makes calls.
+type Client struct {
+	opts        ClientOptions
+	endpoints   []endpoint
+	logger      *slog.Logger
+	defaultOpts []CallOption
+	*clientState
 }
 
 // NewClient creates a client for one endpoint, or several tried in order
@@ -151,7 +162,7 @@ func NewClient(opts ClientOptions, endpoints ...string) (*Client, error) {
 	if len(endpoints) == 0 {
 		return nil, errors.New("meshcall: NewClient needs an endpoint")
 	}
-	c := &Client{opts: opts, calls: map[string]*clientCall{}}
+	c := &Client{opts: opts, clientState: &clientState{calls: map[string]*clientCall{}}}
 	for _, raw := range endpoints {
 		e, err := parseEndpoint(raw)
 		if err != nil {
@@ -185,17 +196,57 @@ func NewClient(opts ClientOptions, endpoints ...string) (*Client, error) {
 	return c, nil
 }
 
+// Client implements Caller.
+func (c *Client) Client() *Client { return c }
+
+// WithOptions returns a lightweight shallow copy of Client that shares the
+// underlying connection and merges opts into every call made through it.
+func (c *Client) WithOptions(opts CallOptions) *Client {
+	clone := *c
+	merged := make([]CallOption, 0, len(c.defaultOpts)+5)
+	merged = append(merged, c.defaultOpts...)
+	if opts.Timeout > 0 {
+		merged = append(merged, WithTimeout(opts.Timeout))
+	}
+	if opts.IdleTimeout > 0 {
+		merged = append(merged, WithIdleTimeout(opts.IdleTimeout))
+	}
+	if len(opts.Metadata) > 0 {
+		md := make(map[string]string, len(opts.Metadata))
+		for k, v := range opts.Metadata {
+			md[k] = v
+		}
+		merged = append(merged, WithMetadata(md))
+	}
+	if opts.IdempotencyKey != "" {
+		merged = append(merged, WithIdempotencyKey(opts.IdempotencyKey))
+	}
+	if opts.Instance != "" {
+		merged = append(merged, WithInstance(opts.Instance))
+	}
+	if opts.Idempotent {
+		merged = append(merged, IdempotentCall())
+	}
+	clone.defaultOpts = merged
+	return &clone
+}
+
 // Close closes the connection; calls in flight fail with unavailable.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
 	conn := c.conn
 	c.conn = nil
+	onClose := c.onClose
+	c.onClose = nil
 	c.mu.Unlock()
 	if conn != nil {
 		conn.close()
 	}
 	c.failAll(&Error{Code: CodeUnavailable, Message: "Client is closed"})
+	if onClose != nil {
+		onClose()
+	}
 	return nil
 }
 
@@ -657,8 +708,11 @@ func (call *clientCall) result() (json.RawMessage, map[string]string, error) {
 
 // --- typed calls -----------------------------------------------------------
 
-func buildInfo(service, method, stream string, opts []CallOption) *CallInfo {
+func (c *Client) buildInfo(service, method, stream string, opts []CallOption) *CallInfo {
 	o := &CallOptions{}
+	for _, opt := range c.defaultOpts {
+		opt(o)
+	}
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -753,7 +807,7 @@ func Unary[Req, Resp any](ctx context.Context, c *Client, service, method string
 	if err != nil {
 		return resp, err
 	}
-	info := buildInfo(service, method, "unary", opts)
+	info := c.buildInfo(service, method, "unary", opts)
 	err = c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
 		call, err := c.open(ctx, info, payload)
 		if err != nil {
@@ -777,7 +831,7 @@ func ClientStream[Req, Item, Resp any](ctx context.Context, c *Client, service, 
 	if err != nil {
 		return resp, err
 	}
-	info := buildInfo(service, method, "client_stream", opts)
+	info := c.buildInfo(service, method, "client_stream", opts)
 	err = c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
 		call, err := c.open(ctx, info, payload)
 		if err != nil {
@@ -878,7 +932,7 @@ func (s *Stream[Item]) Close() {
 }
 
 func openStream[Item any](ctx context.Context, c *Client, service, method, shape string, payload json.RawMessage, opts []CallOption) (*clientCall, error) {
-	info := buildInfo(service, method, shape, opts)
+	info := c.buildInfo(service, method, shape, opts)
 	var call *clientCall
 	err := c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
 		var err error

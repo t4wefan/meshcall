@@ -320,7 +320,7 @@ func HandleServerStream[Req, Item any](s *Service, name string, handler func(ctx
 	s.add(serverStreamMethod(name, nil, handler), opts)
 }
 
-// HandleSubscription adds a subscription: a server stream clients resume
+// HandleSubscription adds a subscription (Experimental): a server stream clients resume
 // after interruptions, passing the last item's cursor field as the resume
 // request field. Pass "", "" for a subscription without a cursor.
 func HandleSubscription[Req, Item any](s *Service, name, cursor, resume string, handler func(ctx *Context, req Req, send func(Item) error) error, opts ...MethodOption) {

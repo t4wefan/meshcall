@@ -67,12 +67,35 @@ export {
 } from "./server.js";
 
 export {
-  findCliBinary, findRouterBinary, installRouter, platformPackageName, routerCacheDir, routerVersion, WebSocketRouter,
-  type InstallRouterOptions, type WebSocketRouterOptions,
+  DEFAULT_ROUTER_URL,
+  findCliBinary,
+  findRouterBinary,
+  installRouter,
+  platformPackageName,
+  Router,
+  routerCacheDir,
+  routerVersion,
+  run,
+  RunningServer,
+  serve,
+  WebSocketRouter,
+  type InstallRouterOptions,
+  type RouterOptions,
+  type ServeOptions,
+  type WebSocketRouterOptions,
 } from "./router.js";
 export {
-  RouterAuthClient, ROUTER_AUTH_SERVICE, type RouterCredentials, type RouterScope,
-  type RouterIdentity, type IssuedToken,
+  REGISTRY_SERVICE,
+  RouterAuthClient,
+  RouterCredentials,
+  ROUTER_AUTH_SERVICE,
+  type IssuedToken,
+  type RegistryBalance,
+  type RegistryInstance,
+  type RegistryMethod,
+  type RegistryService,
+  type RouterIdentity,
+  type RouterScope,
 } from "./router-auth.js";
 export { Topic, type TopicOptions } from "./topic.js";
-export type { MeshCallRpc, RpcStream } from "./rpc.js";
+export { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";

@@ -45,9 +45,13 @@ from meshcall.ir import (
     SubscriptionSpec,
 )
 from meshcall.logging import RpcLogger
-from meshcall.router import WebSocketRouter
+from meshcall.router import Router, RunningServer, WebSocketRouter, run, serve
 from meshcall.router_auth import (
     IssuedToken,
+    RegistryBalance,
+    RegistryInstance,
+    RegistryMethod,
+    RegistryService,
     RouterAuthClient,
     RouterCredentials,
     RouterIdentity,
@@ -82,8 +86,13 @@ __all__ = [
     "PermissionDeniedError",
     "ProtocolError",
     "ReconnectPolicy",
+    "RegistryBalance",
+    "RegistryInstance",
+    "RegistryMethod",
+    "RegistryService",
     "ResourceExhaustedError",
     "RetryPolicy",
+    "Router",
     "RouterAuthClient",
     "RouterCredentials",
     "RouterIdentity",
@@ -95,6 +104,7 @@ __all__ = [
     "RpcLogger",
     "RpcServer",
     "RpcServerStream",
+    "RunningServer",
     "ServerCallNext",
     "ServerInterceptor",
     "StreamKind",
@@ -111,6 +121,8 @@ __all__ = [
     "load_contract",
     "method",
     "render_contract",
+    "run",
+    "serve",
     "service",
     "write_contract",
 ]

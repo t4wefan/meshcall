@@ -21,7 +21,7 @@ import {
   clientDeadlineGraceMs, DEFAULT_RETRY, retryDelayMs, validateMetadata, type ReconnectPolicy, type RetryPolicy,
 } from "./policy.js";
 import type { Metadata } from "./protocol.js";
-import type { MeshCallRpc, RpcStream } from "./rpc.js";
+import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
 import { MeshCallSubscription } from "./subscription.js";
 import { checkReceived } from "./validation.js";
 
@@ -116,6 +116,7 @@ function errorOf(body: unknown, status: number): MeshCallError {
 export class MeshCallHttpClient implements MeshCallRpc {
   private readonly base: string;
   private readonly fetcher: typeof fetch;
+  private defaultCallOptions: CallOptions = {};
 
   /** `url` is the Router's address, e.g. `https://router.example` (ws:// also accepted). */
   public constructor(url: string, private readonly options: MeshCallHttpClientOptions = {}) {
@@ -123,9 +124,21 @@ export class MeshCallHttpClient implements MeshCallRpc {
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
+  public withOptions(options: CallOptions): MeshCallHttpClient {
+    const clone = Object.create(MeshCallHttpClient.prototype) as MeshCallHttpClient;
+    Object.assign(clone, {
+      base: this.base,
+      fetcher: this.fetcher,
+      options: this.options,
+      defaultCallOptions: mergeCallOptions(this.defaultCallOptions, options),
+    });
+    return clone;
+  }
+
   public async unary<Request, Response>(
     service: string, method: string, request: Request, options: CallOptions = {},
   ): Promise<Response> {
+    options = mergeCallOptions(this.defaultCallOptions, options);
     const policy = { ...DEFAULT_RETRY, ...(this.options.retry === false ? { enabled: false } : this.options.retry ?? {}) };
     const mayRetry = policy.enabled && (options.idempotent === true || options.idempotencyKey !== undefined);
     const deadline = options.timeoutMs === undefined ? undefined : performance.now() + options.timeoutMs;
@@ -157,6 +170,7 @@ export class MeshCallHttpClient implements MeshCallRpc {
   public async clientStream<Request, Item, Response>(
     service: string, method: string, request: Request, items: AsyncIterable<Item>, options: CallOptions = {},
   ): Promise<Response> {
+    options = mergeCallOptions(this.defaultCallOptions, options);
     const lines = [JSON.stringify(request ?? null)];
     for await (const item of items) lines.push(JSON.stringify(item));
     const { body } = await this.call(service, method, lines.join("\n") + "\n", "application/x-ndjson", options);
@@ -167,6 +181,7 @@ export class MeshCallHttpClient implements MeshCallRpc {
   public serverStream<Request, Item>(
     service: string, method: string, request: Request, options: CallOptions = {},
   ): RpcStream<Item> {
+    options = mergeCallOptions(this.defaultCallOptions, options);
     return new HttpServerStream<Item>((control) => this.open(
       service, method, JSON.stringify(request ?? null), "application/json", options, control,
     ), options, this.budget(options));
@@ -176,8 +191,9 @@ export class MeshCallHttpClient implements MeshCallRpc {
     service: string, method: string, request: Request, options: SubscriptionOptions = {},
   ): MeshCallSubscription<Item> {
     const { cursor, resume, ...callOptions } = options;
+    const merged = mergeCallOptions(this.defaultCallOptions, callOptions);
     return new MeshCallSubscription<Item>(
-      (payload) => this.serverStream<Record<string, unknown>, Item>(service, method, payload, callOptions),
+      (payload) => this.serverStream<Record<string, unknown>, Item>(service, method, payload, merged),
       request as Record<string, unknown>,
       { ...(cursor === undefined ? {} : { cursor }), ...(resume === undefined ? {} : { resume }) },
       this.options.reconnect ?? {},
@@ -332,4 +348,9 @@ class HttpServerStream<Item> implements RpcStream<Item> {
     await this.cancel("iterator_closed");
     return { done: true, value: undefined };
   }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.cancel("iterator_closed");
+  }
 }
+
