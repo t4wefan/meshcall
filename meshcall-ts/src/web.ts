@@ -9,13 +9,13 @@
  *   const mesh = new Mesh(router, { token: "mk_…" });
  *   const chat = new ChatClient(mesh); // any generated client without duplex methods
  *
- * Unary, server-stream, client-stream and subscription calls behave like
- * WebSocket `Mesh`'s: the same options, errors, trailers, local schema
- * validation, unary retry policy and subscription resume. A client stream's
- * items are collected and sent as one NDJSON body. Duplex is WebSocket-only.
+ * Unary, server-stream and client-stream calls behave like WebSocket `Mesh`'s:
+ * the same options, errors, trailers, local schema validation and unary retry
+ * policy. A client stream's items are collected and sent as one NDJSON body.
+ * Duplex is WebSocket-only.
  * Calling from another origin needs `--http-cors-origin` on the Router.
  */
-import type { CallOptions, DuplexCallOptions, MeshCallDuplexCall, SubscriptionOptions } from "./client.js";
+import type { CallOptions, DuplexCallOptions, MeshCallDuplexCall } from "./client.js";
 import { CallCancelledError, DeadlineExceededError, MeshCallError, ProtocolError, UnavailableError } from "./errors.js";
 import type { RpcLogger } from "./log.js";
 import {
@@ -26,17 +26,15 @@ import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
 // Types only: importing router-auth's values would pull contract.ts (and Node's
 // crypto/fs/path) into browser bundles.
 import type { IssuedToken, RegistryService, RouterIdentity, RouterScope } from "./router-auth.js";
-import { MeshCallSubscription } from "./subscription.js";
 import { checkReceived } from "./validation.js";
 
-export type { CallOptions, SubscriptionOptions } from "./client.js";
+export type { CallOptions } from "./client.js";
 export {
   CallCancelledError, DeadlineExceededError, ErrorCode, InternalError, InvalidArgumentError, MeshCallError,
   MethodNotFoundError, PermissionDeniedError, ProtocolError, ResourceExhaustedError, UnauthenticatedError,
   UnavailableError, type Violation,
 } from "./errors.js";
 export type { MeshCallRpc, RpcStream } from "./rpc.js";
-export { MeshCallSubscription } from "./subscription.js";
 
 export const DEFAULT_ROUTER_URL = "ws://127.0.0.1:8765";
 
@@ -185,7 +183,7 @@ export interface HttpTransportOptions {
   readonly fetch?: typeof fetch;
   /** Built-in retry for unary calls; `false` disables. */
   readonly retry?: RetryPolicy | false;
-  /** Backoff between subscription resubscriptions. */
+  /** Reconnect backoff policy. */
   readonly reconnect?: ReconnectPolicy;
   /** Extra time past `timeoutMs` before failing locally. Defaults to `max(1s, 10%)`. */
   readonly deadlineGraceMs?: number;
@@ -201,7 +199,7 @@ export interface MeshWebOptions {
   readonly fetch?: typeof fetch;
   /** Built-in retry for unary calls; `false` disables. */
   readonly retry?: RetryPolicy | false;
-  /** Backoff between subscription resubscriptions. */
+  /** Reconnect backoff policy. */
   readonly reconnect?: ReconnectPolicy;
   /** Extra time past `timeoutMs` before failing locally. Defaults to `max(1s, 10%)`. */
   readonly deadlineGraceMs?: number;
@@ -216,15 +214,6 @@ function normalizeScopeService(service: string): string {
   if (service === "*" || service === "" || /\.v\d/u.test(service)) return service;
   return `${service}.v0`;
 }
-
-const consoleLogger: RpcLogger = {
-  bind() { return consoleLogger; },
-  log(level, message, ...args) { (level === "error" ? console.error : console.warn)(message, ...args); },
-  debug() {},
-  info() {},
-  warning(message, ...args) { console.warn(message, ...args); },
-  error(message, ...args) { console.error(message, ...args); },
-};
 
 /** Local deadline and caller signal folded into one AbortController. */
 class CallControl {
@@ -352,21 +341,6 @@ export class HttpTransport implements MeshCallRpc {
     return new HttpServerStream<Item>((control) => this.open(
       service, method, JSON.stringify(request ?? null), "application/json", options, control,
     ), options, this.budget(options));
-  }
-
-  public subscribe<Request extends object, Item>(
-    service: string, method: string, request: Request, options: SubscriptionOptions = {},
-  ): MeshCallSubscription<Item> {
-    const { cursor, resume, ...callOptions } = options;
-    const merged = mergeCallOptions(this.defaultCallOptions, callOptions);
-    return new MeshCallSubscription<Item>(
-      (payload) => this.serverStream<Record<string, unknown>, Item>(service, method, payload, merged),
-      request as Record<string, unknown>,
-      { ...(cursor === undefined ? {} : { cursor }), ...(resume === undefined ? {} : { resume }) },
-      this.options.reconnect ?? {},
-      this.options.logger ?? consoleLogger,
-      service + "." + method,
-    );
   }
 
   public duplex<Request, InputItem, OutputItem>(
@@ -644,12 +618,6 @@ export class Mesh implements MeshCallRpc {
     service: string, method: string, request: Request, items: AsyncIterable<Item>, options?: CallOptions,
   ): Promise<Response> {
     return this.transport.clientStream(service, method, request, items, options);
-  }
-
-  public subscribe<Request extends object, Item>(
-    service: string, method: string, request: Request, options?: SubscriptionOptions,
-  ): MeshCallSubscription<Item> {
-    return this.transport.subscribe(service, method, request, options);
   }
 
   public duplex<Request, InputItem, OutputItem>(

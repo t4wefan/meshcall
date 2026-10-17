@@ -25,7 +25,6 @@ var scenarios = []scenario{
 	{"idle: server enforces idle_timeout_ms on input", serverIdle},
 	{"cancel: handler observes call.cancel", cancelObserved},
 	{"metadata: request metadata and trailers", metadataAndTrailers},
-	{"subscription: resume continues after the cursor", subscriptionResume},
 	{"duplex: interleaved, per-direction credit, input half-close", duplexInterleaved},
 	{"duplex: output half-closes while input stays open", duplexServerHalfClose},
 	{"duplex: server enforces idle_timeout_ms on input", duplexIdle},
@@ -47,7 +46,7 @@ func registration(h *harness) error {
 	want := map[string]string{
 		"echo": "unary", "bad_response": "unary", "fail": "unary", "slow": "unary", "cancelled_tags": "unary", "invoked_tags": "unary",
 		"count": "server_stream", "sum": "client_stream", "metadata_echo": "unary", "drain_self": "unary",
-		"chat": "duplex", "announce": "duplex", "ticks": "server_stream",
+		"chat": "duplex", "announce": "duplex",
 		"big": "unary", "big_items": "server_stream",
 	}
 	if !reflect.DeepEqual(methods, want) {
@@ -65,10 +64,6 @@ func registration(h *harness) error {
 			} `json:"annotations"`
 			Response     any     `json:"response"`
 			DuplexReason *string `json:"duplex_reason"`
-			Subscription *struct {
-				Cursor *string `json:"cursor"`
-				Resume *string `json:"resume"`
-			} `json:"subscription"`
 		} `json:"methods"`
 	}
 	raw := snapshot.Contracts[Service]
@@ -81,10 +76,6 @@ func registration(h *harness) error {
 	for _, m := range entry.Methods {
 		if m.Description == nil || *m.Description == "" {
 			return fmt.Errorf("method %s has no description in the registered contract", m.Name)
-		}
-		if s := m.Subscription; (m.Name == "ticks") != (s != nil) ||
-			s != nil && (s.Cursor == nil || *s.Cursor != "seq" || s.Resume == nil || *s.Resume != "since") {
-			return fmt.Errorf("only ticks is a subscription, with cursor seq and resume since: %s", raw)
 		}
 		if m.Name == "echo" && !m.Annotations.ReadOnly {
 			return fmt.Errorf("echo should be registered read_only")
@@ -399,49 +390,6 @@ func concurrentStreamCredit(h *harness) error {
 			done++
 		default:
 			return fmt.Errorf("unexpected frame %v", f)
-		}
-	}
-	return nil
-}
-
-// subscriptionResume checks the server side of a resumed subscription: asked
-// to continue after cursor 2, it sends only what comes after it.
-func subscriptionResume(h *harness) error {
-	c, err := h.client()
-	if err != nil {
-		return err
-	}
-	defer c.close()
-	for _, tc := range []struct {
-		since any
-		want  []int
-	}{{nil, []int{0, 1, 2, 3, 4}}, {2, []int{3, 4}}} {
-		id, err := c.open("ticks", frame{"count": 5, "since": tc.since}, nil)
-		if err != nil {
-			return err
-		}
-		if err := c.send(frame{"kind": "stream.window", "call_id": id, "direction": "server", "credit": 16}); err != nil {
-			return err
-		}
-		var got []int
-		for {
-			f, err := c.receive()
-			if err != nil {
-				return err
-			}
-			if f["kind"] == "stream.item" {
-				got = append(got, int(number(f["payload"].(map[string]any)["seq"])))
-				continue
-			}
-			if f["kind"] == "call.result" {
-				break
-			}
-			if f["kind"] != "stream.end" {
-				return fmt.Errorf("since=%v: unexpected %v", tc.since, f)
-			}
-		}
-		if !reflect.DeepEqual(got, tc.want) {
-			return fmt.Errorf("since=%v: got %v, want %v", tc.since, got, tc.want)
 		}
 	}
 	return nil

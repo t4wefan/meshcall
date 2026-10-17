@@ -96,7 +96,6 @@ class RegistryMethod(BaseModel):
     deprecated: str | None = None
     parameters: list[str] | None = None
     duplex_reason: str | None = None
-    subscription: dict[str, Any] | None = None
     instances: list[str] = Field(default_factory=list)
 
 

@@ -48,16 +48,7 @@ type Method struct {
 	Deprecated  *string
 	// DuplexReason says why a duplex method needs the shape; duplex only.
 	DuplexReason *string
-	// Subscription marks a server stream as a subscription; nil otherwise.
-	Subscription *Subscription
 	Raw          *Object
-}
-
-// Subscription is how a subscription resumes: the item property holding each
-// item's position and the request parameter that continues after it.
-type Subscription struct {
-	Cursor *string
-	Resume *string
 }
 
 type Service struct {
@@ -206,15 +197,6 @@ func parseMethod(obj *Object) (*Method, error) {
 	}
 	if err := checkDuplex(m); err != nil {
 		return nil, err
-	}
-	if s := obj.Obj("subscription"); s != nil {
-		m.Subscription = &Subscription{Cursor: optionalString(s, "cursor"), Resume: optionalString(s, "resume")}
-		if m.Stream != "server_stream" {
-			return nil, fmt.Errorf("method %s: only a server stream can be a subscription", m.Name)
-		}
-		if (m.Subscription.Cursor == nil) != (m.Subscription.Resume == nil) {
-			return nil, fmt.Errorf("method %s: a subscription has cursor and resume together, or neither", m.Name)
-		}
 	}
 	return m, nil
 }

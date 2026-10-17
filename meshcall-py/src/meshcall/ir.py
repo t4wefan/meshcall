@@ -56,16 +56,6 @@ class MethodAnnotations(BaseModel):
     destructive: bool = False
 
 
-class SubscriptionSpec(BaseModel):
-    """How a subscription is resumed: the item property holding its position
-    and the request parameter that continues after it. Both or neither."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    cursor: str | None = None
-    resume: str | None = None
-
-
 class MethodContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -85,8 +75,6 @@ class MethodContract(BaseModel):
     deprecated: str | None = None
     # Why the method needs the duplex shape; required for duplex, absent otherwise.
     duplex_reason: str | None = None
-    # Set on server streams declared as subscriptions (docs/protocol.md).
-    subscription: SubscriptionSpec | None = None
 
 
 class ServiceContract(BaseModel):

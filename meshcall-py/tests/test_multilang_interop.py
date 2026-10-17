@@ -294,9 +294,6 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
                             assert (await anext(exchange)).value == value * 3
                         await exchange.close_send()
                         assert [item async for item in exchange] == []
-
-                    assert [t.seq async for t in client.ticks()] == list(range(5))
-                    assert [t.seq async for t in client.ticks(2)] == [3, 4]
     finally:
         await router.stop()
     if local and not WINDOWS:
@@ -623,8 +620,6 @@ async def test_go_service_with_generated_python_client(tmp_path: Path) -> None:
                         yield generated.Item(value=value, handled_by="python")
 
                 assert (await client.upload(10, 2, input_items())).product == 22
-                assert [t.seq async for t in client.ticks()] == [0, 1, 2, 3, 4]
-                assert [t.seq async for t in client.ticks(2)] == [3, 4]
                 async with client.exchange(0, 5) as exchange:
                     await exchange.send(generated.Item(value=2, handled_by="python"))
                     assert (await anext(exchange)).value == 10
@@ -680,12 +675,6 @@ func main() {{
 \t\t}}
 \t}}))
 \tout["upload"] = upload.Total
-\tevents := must(py.Events(ctx, ptr(int64(2))))
-\tvar seqs []int64
-\tfor event, err := range events.All() {{
-\t\tseqs = append(seqs, must(event, err).Seq)
-\t}}
-\tout["events"] = seqs
 \texchange := must(py.Exchange(ctx, 100))
 \t_ = exchange.Send(pyclient.PythonItem{{ItemValue: 1, Status: "busy"}})
 \tout["exchange"] = must(exchange.Recv()).ItemValue
@@ -697,12 +686,6 @@ func main() {{
 \tts := tsclient.NewTypeScriptInteropServiceClient(rpc)
 \tproduct := must(ts.Multiply(ctx, 6, 7))
 \tout["multiply"] = []any{{product.Product, product.HandledBy}}
-\tticks := must(ts.Ticks(ctx, ptr(int64(1))))
-\tvar tickSeqs []int64
-\tfor tick, err := range ticks.All() {{
-\t\ttickSeqs = append(tickSeqs, must(tick, err).Seq)
-\t}}
-\tout["ticks"] = tickSeqs
 \t_ = json.NewEncoder(os.Stdout).Encode(out)
 }}
 """
@@ -759,8 +742,6 @@ async def test_generated_go_client_calls_python_and_typescript_services(
         "greet": "Hello, Go! Hello, Go!",
         "download": [0, 1, 2],
         "upload": 13,
-        "events": [3, 4],
         "exchange": 101,
         "multiply": [42, "typescript"],
-        "ticks": [2, 3, 4],
     }

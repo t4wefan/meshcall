@@ -13,8 +13,6 @@ const handledBy = options.router?.instanceId ?? "typescript";
 const Request = z.object({ value: z.int(), factor: z.int() }).meta({ id: "TypeScriptRequest" });
 const Result = z.object({ product: z.int(), handled_by: z.string() }).meta({ id: "TypeScriptResult" });
 const Item = z.object({ value: z.int(), handled_by: z.string() }).meta({ id: "TypeScriptItem" });
-const Ticks = z.object({ since: z.int().nullable().default(null) }).meta({ id: "TypeScriptTicks" });
-const Tick = z.object({ seq: z.int() }).meta({ id: "TypeScriptTick" });
 type Request = z.infer<typeof Request>;
 type Item = z.infer<typeof Item>;
 
@@ -35,11 +33,6 @@ class TypeScriptInteropService {
     let product = value;
     for await (const item of items) product += item.value * factor;
     return { product, handled_by: handledBy };
-  }
-
-  @method.subscription({ description: "", cursor: "seq", resume: "since", request: Ticks, outputItem: Tick })
-  async *ticks({ since }: z.infer<typeof Ticks>) {
-    for (let seq = since === null ? 0 : since + 1; seq < 5; seq += 1) yield { seq };
   }
 
   @method.duplex({ description: "", reason: "interop: answers each item as it arrives", request: Request, inputItem: Item, outputItem: Item })

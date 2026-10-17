@@ -145,9 +145,6 @@ func FormatInspect(result map[string]any, w io.Writer) {
 				names = append(names, fmt.Sprint(p))
 			}
 			tags := annotationTags(m["annotations"])
-			if m["subscription"] != nil {
-				tags = append([]string{"subscription"}, tags...)
-			}
 			if dep, ok := m["deprecated"].(string); ok {
 				tags = append(tags, "deprecated→"+dep)
 			}

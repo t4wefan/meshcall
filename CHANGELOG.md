@@ -12,21 +12,13 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ### Added
 
-- **One-line services and Router-first startup** (#53, #54). `meshcall.run(...)`,
-  `await meshcall.serve(...)` (Python), `serve(...)` / `run(...)` (TypeScript)
-  and `meshcall.Serve(...)` / `meshcall.Run(...)` (Go) resolve the Router from
-  `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), start a bundled Router
-  when the address is local and nothing listens there, register the services,
-  and drain on `SIGINT` / `SIGTERM`. Generated clients connect with
-  `Client.connect(...)` (Python `await Client.connect(router_or_url)`,
-  TypeScript `await Client.connect(rpc)`, Go `NewClient(router)`).
-- **A unified `Router` object**: pass it to `serve`/`run` for configuration,
-  connect once and share the connection across several generated clients, and
-  call the built-in services directly: `list_services`, `describe_service`,
-  `whoami`, `issue_token`, `revoke_token`.
-- **Method shorthands and dependency injection** (#53). `@query`, `@mutates`
+- **Four-layer peer architecture (`Service & Contract`, `Router` & `LocalRouter`, `Mesh`, `GeneratedClient`)**:
+  - `Router` is a pure endpoint descriptor (`ws://`, `wss://`, `http://`, `https://`, `unix://`, `pipe://`, or a failover list of URLs).
+  - `LocalRouter` manages a local `meshcall-router` subprocess (`LocalRouter(port=...)` in Python, `LocalRouter.start(...)` / `new LocalRouter(...)` in TypeScript, `meshcall.StartLocalRouter(...)` / `meshcall.NewLocalRouter(...)` in Go). Passing an unstarted `LocalRouter` to `Mesh` automatically starts the subprocess when `Mesh` serves or connects and stops it when `Mesh` closes.
+  - `Mesh` is the peer runtime that mounts services (`mesh.mount(svc)`), serves them (`mesh.run()`, `mesh.serve()`, `mesh.startServing()`, `mesh.Serve()`), multiplexes a single client connection across generated clients (`ChatClient(mesh)` / `new ChatClient(mesh)` / `NewChatClient(mesh)`), and exposes the Router's built-in services on `mesh.registry` (`list`, `describe`) and `mesh.auth` (`whoami`, `issue_token`, `revoke_token`).
+- **Semantic method decorators and dependency injection** (#53). `@query`, `@mutates`
   and `@stream` (Python/TypeScript) and `Query`, `Mutates`, `StreamServer`,
-  `StreamClient` (Go) declare the four call shapes with less ceremony.
+  `StreamClient`, `Duplex` (Go) declare all call shapes (`DuplexChannel[In, Out]` / `DuplexChannel<In, Out>` for restricted duplex methods with `@mutates(reason=...)`).
   Dependencies (`@dependency` / `dependency()` / `Provide`) and metadata
   parameters (`meta("key")` / `FromMeta`) are resolved per call, cached within
   the call, cleaned up through `yield`, and stripped from contracts and
@@ -38,21 +30,14 @@ matching `meshcall-go/vX.Y.Z` tag.
   `.withOptions(...)` / `.WithOptions(...)`. TypeScript services can declare
   parameters inline (`input: { session_id: z.string() }`) and Go services can
   be defined by struct reflection.
-- `best-practice/` now shows a transactional session-store dependency, a
+- `best-practice/` shows a transactional session-store dependency, a
   TypeScript CLI and a Go client over one Router.
-- **An HTTP-only Router for clients in every runtime**. `meshcall.HTTPRouter`
-  (Python, `httpx`), `HTTPRouter` (TypeScript, `meshcall/web`, `fetch`) and
-  `meshcall.NewHTTPRouter` (Go, `net/http`) speak the Router's HTTP v1 API and
-  are passed to generated clients exactly like a WebSocket Router
-  (`ChatClient(http)` / `await ChatClient.connect(http)` /
-  `NewChatClient(httpRouter)`). Unary calls (with the idempotent retry),
-  server and client streams, subscriptions resumed from their cursor, and the
-  built-in Registry/AuthService calls work; duplex is WebSocket-only and
-  raises `method_not_found` with `reason: "duplex_over_http"`. Python
-  generated clients now build on a transport-neutral `MeshCallRpc` protocol
-  (`RpcClient`), and Go's `Caller` is a transport interface instead of a
-  `*Client` accessor, so `*Client`, `*Router` and `*HTTPRouter` are
-  interchangeable.
+- **HTTP client transport in every runtime**. Passing an `http://` or `https://`
+  `Router` to `Mesh` (including browser-safe `Mesh` and `Router` in `meshcall/web`)
+  speaks the Router's HTTP v1 API. Unary calls (with idempotent retry),
+  server and client streams, and the built-in `mesh.registry` / `mesh.auth`
+  calls work identically to WebSocket; duplex is WebSocket-only and raises
+  `method_not_found` with `reason: "duplex_over_http"`.
 
 ### Changed
 
@@ -60,39 +45,14 @@ matching `meshcall-go/vX.Y.Z` tag.
   Python generated methods no longer end with `timeout` / `idle_timeout` /
   `metadata` / `idempotency_key` keywords (a targeted service's client still
   requires `instance`, so naming an instance stays a compile-time rule).
-  TypeScript generated clients gained `static async connect(rpc)`.
 - **TypeScript services are classes with zod schemas** (#49), like Python's
   `@service` classes with Pydantic models. `defineService`, `defineType` and
   the `unaryMethod` / `serverStreamMethod` / `clientStreamMethod` /
-  `subscriptionMethod` / `duplexMethod` builders are removed:
-
-  ```ts
-  import { method, service, z, type RpcContext } from "meshcall";
-
-  const Message = z.object({ text: z.string() }).meta({ id: "Message" });
-
-  @service("chat.v1.Chat", { description: "Chat sessions." })
-  class Chat {
-    @method({ description: "Echo.", idempotent: true, request: z.object({ text: z.string() }), response: Message })
-    async send({ text }: { text: string }, ctx: RpcContext) { return { text }; }
-  }
-  new MeshCallServer({ services: [new Chat()], … });
-  ```
-
-  Migrating: each `defineType` becomes a zod schema (name a model with
-  `.meta({ id })`), each builder a decorator with the same options minus
-  `handler`, the handler a method (`this` is the instance), and
-  `services: [definition]` becomes `services: [new Class()]`.
-  `sourceModule` / `sourceQualname` are gone (the class name is used).
-  `description` is required by the types, so a missing one is a compile
-  error instead of warning W001. `cursor` / `resume` must name properties
-  of the item / request type. The decorator checks each handler against its
-  schemas at compile time. Requests are parsed with zod on the server
-  (defaults applied, unknown fields dropped); violation codes for a missing
-  field and a wrong type stay `missing` and `type`, others are zod's issue
-  codes. `writeContract` / `renderContract` / `contractEntry` take classes
-  or instances. `z` is re-exported from `meshcall`. Generated TypeScript
-  clients are unchanged and do not need zod.
+  `duplexMethod` builders are replaced by `@service`, `@query`, `@mutates`,
+  and `@stream`. `z` is re-exported from `meshcall`.
+- **Removed experimental subscriptions (`cursor` / `resume` and `Topic`)**:
+  resumable stream cursor conventions are application-level parameters on
+  `@stream` methods rather than a separate protocol/contract primitive.
 
 ## [0.2.1] - 2026-10-16
 

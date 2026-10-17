@@ -16,8 +16,6 @@ import {
   type DuplexCallOptions,
   type MeshCallClientOptions,
   type MeshCallDuplexCall,
-  type MeshCallSubscription,
-  type SubscriptionOptions,
 } from "./client.js";
 import { isService } from "./contract.js";
 import { namedPipePath, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
@@ -852,12 +850,6 @@ export class Mesh implements MeshCallRpc {
     service: string, method: string, request: Request, items: AsyncIterable<Item>, options?: CallOptions,
   ): Promise<Response> {
     return this.ensureTransport().clientStream(service, method, request, items, options);
-  }
-
-  public subscribe<Request extends object, Item>(
-    service: string, method: string, request: Request, options?: SubscriptionOptions,
-  ): MeshCallSubscription<Item> {
-    return this.ensureTransport().subscribe(service, method, request, options);
   }
 
   public duplex<Request, InputItem, OutputItem>(

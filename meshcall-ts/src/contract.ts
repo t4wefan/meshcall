@@ -56,18 +56,6 @@ export interface ClientStreamOptions<Request extends Schema, Item extends Schema
   readonly response: Response;
 }
 
-/**
- * How a subscription resumes (docs/protocol.md → Subscriptions): `cursor` is
- * the item property holding each item's position, `resume` the optional
- * request property that continues after it. Both or neither.
- */
-export type SubscriptionSpec<Request extends Schema, Item extends Schema> =
-  | { readonly cursor: keyof z.output<Item> & string; readonly resume: keyof z.input<Request> & string }
-  | { readonly cursor?: undefined; readonly resume?: undefined };
-
-export type SubscriptionOptions<Request extends Schema, Item extends Schema> =
-  ServerStreamOptions<Request, Item> & SubscriptionSpec<Request, Item>;
-
 /** A duplex call is never replayed, so it has no idempotent / readOnly hint. */
 export interface DuplexOptions<Request extends Schema, Input extends Schema, Output extends Schema>
   extends Omit<MethodSemantics, "idempotent" | "readOnly"> {
@@ -134,7 +122,6 @@ export interface MethodSpec extends Partial<Omit<MethodSemantics, "description">
   readonly inputItem?: Schema;
   readonly outputItem?: Schema;
   readonly reason?: string;
-  readonly subscription?: { readonly cursor?: string; readonly resume?: string };
   readonly bindingMode?: BindingMode;
   readonly parameterNames?: ReadonlyArray<string>;
 }
@@ -382,22 +369,6 @@ method.serverStream = <Request extends Schema, Item extends Schema>(options: Ser
     context: ClassMethodDecoratorContext<This>,
   ): void => record(context, fn, { ...options, stream: "server_stream", bindingMode: "request_object" });
 
-/**
- * (Experimental) A subscription: a server stream meant to stay open, which clients reopen
- * after a retryable failure, passing the last item's `cursor` as `resume`.
- */
-method.subscription = <Request extends Schema, Item extends Schema>(options: SubscriptionOptions<Request, Item>) =>
-  <This>(
-    fn: (this: This, request: z.output<Request>, context: RpcContext) => AsyncIterable<z.input<Item>>,
-    context: ClassMethodDecoratorContext<This>,
-  ): void => {
-    const { cursor, resume, ...rest } = options;
-    record(context, fn, {
-      ...rest, stream: "server_stream", bindingMode: "request_object",
-      subscription: cursor === undefined || resume === undefined ? {} : { cursor, resume },
-    });
-  };
-
 /** A client stream: `(request, items, ctx) => response`. */
 method.clientStream = <Request extends Schema, Item extends Schema, Response extends Schema>(
   options: ClientStreamOptions<Request, Item, Response>,
@@ -469,7 +440,6 @@ export function service(
       if (spec.readOnly === true && spec.destructive === true) {
         throw new Error(`Method ${spec.name} cannot be both readOnly and destructive`);
       }
-      if (spec.subscription?.resume !== undefined) checkResume(spec);
     }
     const spec: ServiceSpec = {
       name: normalized.name,
@@ -483,16 +453,6 @@ export function service(
     };
     specs.set(target, recordWarnings(target, spec));
   };
-}
-
-function checkResume(spec: MethodSpec): void {
-  const resume = spec.subscription?.resume as string;
-  const shape = spec.request instanceof z.ZodObject ? spec.request.shape as Record<string, Schema> : {};
-  const field = shape[resume];
-  if (field === undefined) throw new Error(`subscription resume ${JSON.stringify(resume)} is not a request property`);
-  if (!field.safeParse(undefined).success) {
-    throw new Error(`subscription resume ${JSON.stringify(resume)} must be optional: the first call has no cursor yet`);
-  }
 }
 
 /** Whether `value` is a `@service` class or an instance of one. */
@@ -701,9 +661,6 @@ export function contractEntry(service: object): Record<string, unknown> {
         },
         deprecated: m.deprecated ?? null,
         duplex_reason: m.stream === "duplex" ? m.reason : null,
-        subscription: m.subscription === undefined
-          ? null
-          : { cursor: m.subscription.cursor ?? null, resume: m.subscription.resume ?? null },
       };
     }),
   };

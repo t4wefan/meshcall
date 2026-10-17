@@ -66,21 +66,6 @@ class MeshCallRpc(Protocol):
         instance: str | None = None,
     ) -> RpcServerStream[Any]: ...
 
-    def call_subscription(
-        self,
-        service: str,
-        method: str,
-        request: BaseModel,
-        item_type: type[BaseModel | str | bytes],
-        *,
-        cursor: str | None = None,
-        resume: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        instance: str | None = None,
-    ) -> RpcServerStream[Any]: ...
-
     async def call_client_stream(
         self,
         service: str,

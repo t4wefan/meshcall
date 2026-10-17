@@ -326,38 +326,6 @@ class _HttpTransport:
             options,
         )
 
-    def call_subscription(
-        self,
-        service: str,
-        method: str,
-        request: BaseModel,
-        item_type: type[BaseModel | str | bytes],
-        *,
-        cursor: str | None = None,
-        resume: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        instance: str | None = None,
-    ) -> RpcServerStream[Any]:
-        options = _merge_options(
-            self._options,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-        )
-        return _HTTPSubscription(
-            self,
-            service,
-            method,
-            request,
-            item_type,
-            options,
-            cursor=cursor,
-            resume=resume,
-        )
-
     async def call_client_stream(
         self,
         service: str,
@@ -539,89 +507,6 @@ class _HTTPServerStream(RpcServerStream[Any]):
 
     async def cancel(self, reason: str = "client_closed") -> None:
         await self._finish()
-
-    @property
-    def trailers(self) -> Mapping[str, str]:
-        return self._trailers
-
-
-class _HTTPSubscription(RpcServerStream[Any]):
-    """A server stream reopened from its cursor after a retryable failure."""
-
-    def __init__(
-        self,
-        router: _HttpTransport,
-        service: str,
-        method: str,
-        request: BaseModel,
-        item_type: type[BaseModel | str | bytes],
-        options: _Options,
-        *,
-        cursor: str | None,
-        resume: str | None,
-    ) -> None:
-        self._router = router
-        self._service = service
-        self._method = method
-        self._request = request
-        self._item_type = item_type
-        self._options = options
-        self._cursor = cursor
-        self._resume = resume
-        self._stream: _HTTPServerStream | None = None
-        self._attempt = 0
-        self._last: Any = None
-        self._done = False
-        self._trailers: dict[str, str] = {}
-
-    def __aiter__(self) -> Self:
-        return self
-
-    async def __anext__(self) -> Any:
-        while True:
-            if self._stream is None:
-                self._stream = self._router.call_server_stream(  # type: ignore[assignment]
-                    self._service,
-                    self._method,
-                    self._request,
-                    self._item_type,
-                    timeout=self._options.timeout,
-                    idle_timeout=self._options.idle_timeout,
-                    metadata=self._options.metadata,
-                    instance=self._options.instance,
-                )
-            stream = self._stream
-            assert stream is not None
-            try:
-                item = await stream.__anext__()
-            except StopAsyncIteration:
-                self._trailers = dict(stream.trailers)
-                self._done = True
-                raise
-            except MeshCallError as exc:
-                self._stream = None
-                if (
-                    not exc.retryable
-                    or self._cursor is None
-                    or self._resume is None
-                    or self._attempt >= self._router.retry.max_attempts
-                ):
-                    raise
-                self._attempt += 1
-                await asyncio.sleep(self._router.retry.delay(self._attempt))
-                if self._last is not None:
-                    cursor_value = getattr(self._last, self._cursor, None)
-                    self._request = self._request.model_copy(
-                        update={self._resume: cursor_value}
-                    )
-                continue
-            self._last = item
-            return item
-
-    async def cancel(self, reason: str = "client_closed") -> None:
-        if self._stream is not None:
-            await self._stream.cancel(reason)
-        self._done = True
 
     @property
     def trailers(self) -> Mapping[str, str]:

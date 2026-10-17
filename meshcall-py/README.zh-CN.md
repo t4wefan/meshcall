@@ -117,7 +117,7 @@ async def main() -> None:
         mesh.mount(Chat())
         async with mesh.serve() as server:
             print(f"serving on {server.url}")  # 例如 ws://127.0.0.1:53281
-            await asyncio.Event().wait()       # 离开代码块时会先排空再停止
+            await asyncio.Event().wait()  # 离开代码块时会先排空再停止
 
 
 asyncio.run(main())

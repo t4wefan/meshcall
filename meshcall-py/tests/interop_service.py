@@ -26,10 +26,6 @@ class PythonTotal(BaseModel):
     total: int
 
 
-class PythonEvent(BaseModel):
-    seq: int
-
-
 @service(name="test.v1.PythonInteropService")
 class PythonInteropService:
     @method()
@@ -56,11 +52,6 @@ class PythonInteropService:
         async for item in items:
             total += item.value
         return PythonTotal(total=total)
-
-    @method.subscription(cursor="seq", resume="since")
-    async def events(self, since: int | None = None) -> AsyncIterator[PythonEvent]:
-        for seq in range(0 if since is None else since + 1, 5):
-            yield PythonEvent(seq=seq)
 
     @method.duplex(reason="interop: answers each item as it arrives")
     async def exchange(

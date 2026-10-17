@@ -87,7 +87,6 @@ export interface RegistryMethod {
   readonly annotations?: Readonly<Record<string, unknown>> | null;
   readonly parameters?: ReadonlyArray<string>;
   readonly duplex_reason?: string | null;
-  readonly subscription?: Readonly<Record<string, unknown>> | null;
   readonly instances?: ReadonlyArray<string>;
 }
 

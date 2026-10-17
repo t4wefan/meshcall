@@ -118,7 +118,6 @@ async def test_mesh_manages_unstarted_local_router() -> None:
     assert not unstarted_router.is_running
 
 
-
 async def test_mesh_builtin_auth_and_token_scoping(tmp_path: Path) -> None:
     name = get_service_contract(NumberService).name
     auth_file = write_auth_file(tmp_path / "auth.json", name)

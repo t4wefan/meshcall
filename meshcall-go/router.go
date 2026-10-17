@@ -77,7 +77,6 @@ type RegistryMethod struct {
 	Deprecated   *string         `json:"deprecated,omitempty"`
 	Parameters   []string        `json:"parameters,omitempty"`
 	DuplexReason *string         `json:"duplex_reason,omitempty"`
-	Subscription json.RawMessage `json:"subscription,omitempty"`
 	Instances    []string        `json:"instances"`
 }
 
@@ -1066,14 +1065,6 @@ func (m *Mesh) duplexRaw(ctx context.Context, service, method string, request js
 		return nil, err
 	}
 	return c.duplexRaw(ctx, service, method, request, opts)
-}
-
-func (m *Mesh) reconnectDelays() func() (time.Duration, bool) {
-	return m.Client().reconnectDelays()
-}
-
-func (m *Mesh) log() *slog.Logger {
-	return m.Client().log()
 }
 
 // Drain gracefully drains in-flight calls on the Mesh's active server, if serving.

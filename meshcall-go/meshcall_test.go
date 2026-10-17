@@ -25,14 +25,6 @@ type Text struct {
 	Text string `json:"text"`
 }
 
-type Since struct {
-	Since *int `json:"since"`
-}
-
-type Tick struct {
-	Seq int `json:"seq"`
-}
-
 type Empty struct{}
 
 type Who struct {
@@ -98,21 +90,6 @@ func fixture(flaps *atomic.Int32) *meshcall.Service {
 			}
 		}
 	}, meshcall.Doc("Answer each input as it arrives."))
-	meshcall.HandleSubscription(svc, "ticks", "seq", "since", func(ctx *meshcall.Context, req Since, send func(Tick) error) error {
-		start := 0
-		if req.Since != nil {
-			start = *req.Since + 1
-		}
-		for seq := start; seq < 6; seq++ {
-			if err := send(Tick{Seq: seq}); err != nil {
-				return err
-			}
-			if seq == 2 && flaps.Add(1) == 1 {
-				return &meshcall.Error{Code: meshcall.CodeUnavailable, Message: "flap", Retryable: true}
-			}
-		}
-		return nil
-	}, meshcall.Doc("Ticks after since."), meshcall.ReadOnly())
 	return svc
 }
 
@@ -313,23 +290,6 @@ func exercise(t *testing.T, c *meshcall.Client, flaps *atomic.Int32) {
 	if e, ok := meshcall.AsError(err); !ok || e.Reason() != "idempotency_key_on_duplex" {
 		t.Fatalf("duplex with a key: %v", err)
 	}
-
-	// A subscription resumes after the retryable failure from its cursor.
-	flaps.Store(0)
-	sub, err := meshcall.Subscribe[Since, Tick](ctx, c, svc, "ticks", Since{}, meshcall.SubscriptionSpec{Cursor: "seq", Resume: "since"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ticks []int
-	for tick, err := range sub.All() {
-		if err != nil {
-			t.Fatal(err)
-		}
-		ticks = append(ticks, tick.Seq)
-	}
-	if fmt.Sprint(ticks) != "[0 1 2 3 4 5]" {
-		t.Fatalf("ticks: %v", ticks)
-	}
 }
 
 func TestLocalTransport(t *testing.T) {
@@ -393,10 +353,6 @@ func TestContractAndLint(t *testing.T) {
 		case "echo":
 			if m["duplex_reason"] != "replies interleave with input" {
 				t.Fatalf("echo: %v", m)
-			}
-		case "ticks":
-			if fmt.Sprint(m["subscription"]) != "map[cursor:seq resume:since]" {
-				t.Fatalf("ticks: %v", m)
 			}
 		}
 	}

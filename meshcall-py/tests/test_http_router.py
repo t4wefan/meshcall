@@ -19,7 +19,6 @@ from meshcall import (
     MeshCallError,
     RetryPolicy,
     Router,
-    method,
     mutates,
     query,
     service,
@@ -37,16 +36,9 @@ class Item(BaseModel):
     value: int
 
 
-class Tick(BaseModel):
-    seq: int
-
-
 @service("test.v1.HttpShape")
 class HttpShape:
     """Every call shape the HTTP API supports."""
-
-    def __init__(self) -> None:
-        self._subscription_calls = 0
 
     @query
     async def add(self, a: int, b: int) -> Sum:
@@ -71,16 +63,6 @@ class HttpShape:
     async def fail(self) -> Sum:
         """Raise an application error."""
         raise MeshCallError("app.nope", "no", details={"from": "service"})
-
-    @method.subscription(cursor="seq", resume="since", description="Tick after since.")
-    async def ticks(self, since: int | None = None) -> AsyncIterator[Tick]:
-        """Tick, failing once after the third item to force a resume."""
-        self._subscription_calls += 1
-        start = 0 if since is None else since + 1
-        for seq in range(start, 6):
-            yield Tick(seq=seq)
-            if seq == 2 and self._subscription_calls == 1:
-                raise MeshCallError("unavailable", "flap", retryable=True)
 
 
 @pytest.fixture
@@ -142,15 +124,6 @@ async def test_http_errors_and_builtin_registry(
 
         services = await mesh.registry.list()
         assert [entry.name for entry in services] == ["test.v1.HttpShape"]
-
-
-async def test_http_subscription_resumes_from_cursor(
-    generated: Any, router_http_url: str
-) -> None:
-    async with Mesh(Router(router_http_url)) as mesh:
-        client = generated.HttpShapeClient(mesh)
-        ticks = [tick.seq async for tick in client.ticks()]
-        assert ticks == [0, 1, 2, 3, 4, 5]
 
 
 async def test_duplex_is_refused_over_http(router_http_url: str) -> None:

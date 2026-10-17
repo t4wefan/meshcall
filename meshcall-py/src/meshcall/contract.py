@@ -31,7 +31,6 @@ from meshcall.ir import (
     MethodContract,
     ServiceContract,
     StreamKind,
-    SubscriptionSpec,
     TypeRef,
 )
 from meshcall.logging import RpcLogger
@@ -132,7 +131,6 @@ class MethodOptions:
     destructive: bool | None = None
     deprecated: str | None = None
     duplex_reason: str | None = None
-    subscription: SubscriptionSpec | None = None
     allow_duplex_infer: bool = False
 
 
@@ -268,41 +266,6 @@ class Method:
             deprecated=deprecated,
         )
 
-    def subscription(
-        self,
-        *,
-        cursor: str | None = None,
-        resume: str | None = None,
-        balance: BalancePolicy | None = None,
-        description: str | None = None,
-        idempotent: bool | None = None,
-        read_only: bool | None = None,
-        destructive: bool | None = None,
-        deprecated: str | None = None,
-    ) -> MethodDeclaration:
-        """Declare a subscription (Experimental): a server stream meant to stay open and resume.
-
-        ``cursor`` names the item field holding each item's position,
-        ``resume`` the optional request parameter that continues after it.
-        Clients reopen the call after a retryable failure, passing the last
-        cursor as ``resume``. Give both or neither.
-        """
-        if (cursor is None) != (resume is None):
-            raise ContractError(
-                "@method.subscription takes cursor= and resume= together (or neither)"
-            )
-        return MethodDeclaration(
-            stream=StreamKind.SERVER,
-            balance=balance,
-            binding=BindingKind.INSTANCE,
-            description=description,
-            idempotent=idempotent,
-            read_only=read_only,
-            destructive=destructive,
-            deprecated=deprecated,
-            subscription=SubscriptionSpec(cursor=cursor, resume=resume),
-        )
-
     def client_stream(
         self,
         *,
@@ -375,7 +338,6 @@ class MethodDeclaration:
         destructive: bool | None = None,
         deprecated: str | None = None,
         duplex_reason: str | None = None,
-        subscription: SubscriptionSpec | None = None,
         allow_duplex_infer: bool = False,
     ) -> None:
         self.options = MethodOptions(
@@ -388,7 +350,6 @@ class MethodDeclaration:
             destructive=destructive,
             deprecated=deprecated,
             duplex_reason=duplex_reason,
-            subscription=subscription,
             allow_duplex_infer=allow_duplex_infer,
         )
 
@@ -844,10 +805,6 @@ def _extract_method(
             raise ContractError(f"Invalid stream result on {func.__qualname__}")
         output_type = output_args[0]
         _require_model(output_type, f"stream item for {func.__qualname__}")
-        if options.subscription is not None:
-            _check_subscription(
-                func, options.subscription, output_type, request_type, request_fields
-            )
         contract = MethodContract(
             name=name,
             stream=StreamKind.SERVER,
@@ -972,37 +929,7 @@ def _method_semantics(
         ),
         "deprecated": options.deprecated,
         "duplex_reason": options.duplex_reason,
-        "subscription": options.subscription,
     }
-
-
-def _check_subscription(
-    func: Callable[..., Any],
-    spec: SubscriptionSpec,
-    item_type: Any,
-    request_type: type[BaseModel],
-    request_fields: tuple[str, ...],
-) -> None:
-    """The cursor is an item property; resume an optional request parameter."""
-    if spec.cursor is None:
-        return
-    item_properties = TypeAdapter(item_type).json_schema().get("properties", {})
-    if spec.cursor not in item_properties:
-        raise ContractError(
-            f"Subscription {func.__qualname__}: cursor {spec.cursor!r} is not a "
-            f"field of {getattr(item_type, '__qualname__', str(item_type))}"
-        )
-    if spec.resume not in request_fields:
-        raise ContractError(
-            f"Subscription {func.__qualname__}: resume {spec.resume!r} is not a "
-            "parameter of the method"
-        )
-    field = request_type.model_fields[spec.resume]
-    if field.is_required():
-        raise ContractError(
-            f"Subscription {func.__qualname__}: parameter {spec.resume!r} must be "
-            "optional (default None): the first call has no cursor yet"
-        )
 
 
 @dataclass(frozen=True)

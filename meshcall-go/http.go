@@ -122,8 +122,6 @@ func (h *httpTransport) Close() error {
 	return nil
 }
 
-func (h *httpTransport) reconnectDelays() func() (time.Duration, bool) { return h.reconnect.delays() }
-func (h *httpTransport) log() *slog.Logger                             { return h.logger }
 func (h *httpTransport) WithCallOptions(opts CallOptions) Caller {
 	return h.WithOptions(opts)
 }

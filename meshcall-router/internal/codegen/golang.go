@@ -432,15 +432,6 @@ func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m 
 	case "server_stream":
 		item := reg.Name(requiredRef(m.OutputItem, m.Name+" output item"))
 		fullSig := append(append([]string{}, sigParams...), "opts ...meshcall.CallOption")
-		if s := m.Subscription; s != nil {
-			spec := "meshcall.SubscriptionSpec{}"
-			if s.Cursor != nil {
-				spec = "meshcall.SubscriptionSpec{Cursor: " + jsonDumps(*s.Cursor) + ", Resume: " + jsonDumps(*s.Resume) + "}"
-			}
-			b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (*meshcall.Subscription[" + item + "], error) {\n")
-			b.WriteString("\treturn " + call("Subscribe", request+", "+item, reqExpr, spec) + "\n}\n")
-			return
-		}
 		b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (*meshcall.Stream[" + item + "], error) {\n")
 		b.WriteString("\treturn " + call("ServerStream", request+", "+item, reqExpr) + "\n}\n")
 	case "client_stream":

@@ -95,15 +95,6 @@ type Text struct {
 	Text string `json:"text"`
 }
 
-type Ticks struct {
-	Count int  `json:"count"`
-	Since *int `json:"since"`
-}
-
-type Seq struct {
-	Seq int `json:"seq"`
-}
-
 type Size struct {
 	Bytes int `json:"bytes"`
 }
@@ -181,18 +172,6 @@ func main() {
 		ctx.SetTrailer("count", strconv.Itoa(len(ctx.Metadata)))
 		return Metadata{Metadata: ctx.Metadata}, nil
 	}, meshcall.Doc("Return the call metadata and set trailers describing it."), meshcall.ReadOnly())
-	meshcall.HandleSubscription(fixture, "ticks", "seq", "since", func(ctx *meshcall.Context, req Ticks, send func(Seq) error) error {
-		start := 0
-		if req.Since != nil {
-			start = *req.Since + 1
-		}
-		for seq := start; seq < req.Count; seq++ {
-			if err := send(Seq{Seq: seq}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}, meshcall.Doc("Yield seq 0..count-1, or only those after since."), meshcall.ReadOnly())
 	meshcall.HandleUnary(fixture, "big", func(ctx *meshcall.Context, req Size) (Text, error) {
 		return Text{Text: strings.Repeat("x", req.Bytes)}, nil
 	}, meshcall.Doc("Return a text of bytes bytes."), meshcall.ReadOnly())

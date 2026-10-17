@@ -46,7 +46,6 @@ from meshcall.ir import (
     BindingKind,
     MethodAnnotations,
     StreamKind,
-    SubscriptionSpec,
 )
 from meshcall.logging import RpcLogger
 from meshcall.router import (
@@ -77,7 +76,6 @@ from meshcall.streams import (
     RpcInputStream,
     RpcServerStream,
 )
-from meshcall.topic import Topic
 
 __all__ = [
     "AuthClient",
@@ -131,8 +129,6 @@ __all__ = [
     "ServerCallNext",
     "ServerInterceptor",
     "StreamKind",
-    "SubscriptionSpec",
-    "Topic",
     "UnauthenticatedError",
     "UnavailableError",
     "Violation",

@@ -18,7 +18,7 @@ Each call gets a span (``CLIENT`` / ``SERVER``) named ``service/method`` with
 ``meshcall.call.duration`` (histogram, seconds) by service, method, code
 (``ok`` or the error code) and side. A server span covers the whole call,
 streams included. A client span covers a unary or client-stream call; for a
-server stream, subscription or duplex call it covers opening the call (the
+server stream or duplex call it covers opening the call (the
 stream's items are not awaited by the interceptor).
 """
 

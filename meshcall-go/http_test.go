@@ -101,22 +101,6 @@ func TestHTTPMeshEveryShape(t *testing.T) {
 		t.Fatalf("duplex over HTTP: %v", err)
 	}
 
-	flaps.Store(0)
-	subscription, err := meshcall.Subscribe[Since, Tick](ctx, httpMesh, svc, "ticks", Since{}, meshcall.SubscriptionSpec{Cursor: "seq", Resume: "since"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ticks []int
-	for tick, err := range subscription.All() {
-		if err != nil {
-			t.Fatal(err)
-		}
-		ticks = append(ticks, tick.Seq)
-	}
-	if fmt.Sprint(ticks) != "[0 1 2 3 4 5]" {
-		t.Fatalf("ticks: %v", ticks)
-	}
-
 	services, err := httpMesh.Registry().List(ctx)
 	if err != nil {
 		t.Fatal(err)

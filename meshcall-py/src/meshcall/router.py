@@ -804,9 +804,7 @@ class Mesh:
                 await self._running_server.stop(drain=True)
             if self._client is not None:
                 client, self._client = self._client, None
-                stop = getattr(client, "close", None) or getattr(
-                    client, "stop", None
-                )
+                stop = getattr(client, "close", None) or getattr(client, "stop", None)
                 if stop is not None:
                     await stop()
         finally:
@@ -922,9 +920,6 @@ class Mesh:
 
     def call_server_stream(self, *args: Any, **kwargs: Any) -> RpcServerStream[Any]:
         return self._ensure_client().call_server_stream(*args, **kwargs)
-
-    def call_subscription(self, *args: Any, **kwargs: Any) -> RpcServerStream[Any]:
-        return self._ensure_client().call_subscription(*args, **kwargs)
 
     async def call_client_stream(self, *args: Any, **kwargs: Any) -> Any:
         return await self._ensure_client().call_client_stream(*args, **kwargs)

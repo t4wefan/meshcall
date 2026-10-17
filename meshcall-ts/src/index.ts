@@ -3,10 +3,8 @@ export {
   MeshCallClient,
   MeshCallDuplexCall,
   MeshCallServerStream,
-  MeshCallSubscription,
   type CallOptions,
   type DuplexCallOptions,
-  type SubscriptionOptions,
   type ClientCallInfo,
   type ClientCallNext,
   type ClientInterceptor,
@@ -34,7 +32,6 @@ export {
   type ServerStreamOptions,
   type ServiceOptions,
   type StreamOptions,
-  type SubscriptionOptions as SubscriptionMethodOptions,
   type UnaryOptions,
 } from "./contract.js";
 export {
@@ -122,5 +119,4 @@ export {
   type RouterIdentity,
   type RouterScope,
 } from "./router-auth.js";
-export { Topic, type TopicOptions } from "./topic.js";
 export { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";

@@ -133,7 +133,7 @@ async def main() -> None:
         mesh.mount(Chat())
         async with mesh.serve() as server:
             print(f"serving on {server.url}")  # e.g. ws://127.0.0.1:53281
-            await asyncio.Event().wait()       # leaving the block stops and drains
+            await asyncio.Event().wait()  # leaving the block stops and drains
 
 
 asyncio.run(main())
