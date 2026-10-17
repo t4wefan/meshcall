@@ -6,14 +6,21 @@
 
 ## 一、 核心设计原则
 
-1. **所写即所调（Server ↔ Client 签名 1:1 镜像）**
-   - 服务端定义什么业务参数、什么顺序，生成的客户端就以完全相同的参数列表和顺序调用。
+1. **所写即所调（Server ↔ Client 签名 1:1 镜像，无特殊“参数展开/解包”规则）**
+   - 服务端定义什么业务参数列表 `(p1, p2, ...)`、什么顺序，生成的三端客户端（Python / TypeScript / Go）就以完全相同的参数列表和顺序调用：
+     - 服务端写 0 个参数 `()` $\rightarrow$ 三端客户端都调 `()`（Go 也不再传空结构体 `Empty{}`）。
+     - 服务端写多个参数 `(path, content)` $\rightarrow$ 三端客户端都调 `(path, content)`。
+     - 服务端写 1 个结构体/Model 参数 `(profile: WelcomeProfile)` $\rightarrow$ 三端客户端都调 `(profile)`（直接传 `WelcomeProfile`，既不拆散其内部字段，也不在外面套一层合成的 `<Service><Method>Request`）。
    - 核心 RPC 收敛为最纯粹的 **4 种基础形态**：**Unary**、**Server Stream**、**Client Stream**、**Duplex**。
    - **Client Stream** 与 **Duplex** 统一遵循：**普通业务参数在前，流（`chunks`）或双向通道（`channel`）在最后**。
    - `subscription` 与 `Topic` 保留底层实现但降级为 **Experimental（实验特性）**，从核心推荐流程与主示例中移出。
-2. **极简样板代码（Zero Boilerplate）**
+2. **极简样板代码（Zero Boilerplate）与统一的 `Router` 抽象**
    - 服务端一行启动：`meshcall.run(Workspace())` / `await run(new Workspace())` / `meshcall.Run(NewWorkspace())`。默认连接 `MESHCALL_ROUTER_URL`（回退 `ws://127.0.0.1:8765`）；若目标为本地地址且未监听，自动拉起内置 `meshcall-router` 并在退出时优雅排空回收。
    - 客户端一行连接：`WorkspaceClient.connect()` / `workspaceclient.Connect(ctx)`。
+   - **统一的 `Router` 对象（服务端配置 + 客户端多路复用连接 + 内置服务调用）**：
+     - 传给服务端启动：`meshcall.run(Workspace(), router=router)` 配置 Router 连接、重连、鉴权及本地内嵌网关参数。
+     - 传给多个客户端复用连接：`async with Router.connect(...) as router:` 后，多个生成的 Client（`WorkspaceClient(router)`、`BillingClient(router)`）共享同一条底层 WebSocket 连接。
+     - 直接调用 Router 内置服务：在 `router` 上直接提供 `list_services`、`describe_service`、`whoami`、`issue_token`、`revoke_token` 强类型方法。
    - 消除重复类型声明（TS 装饰器内联 `input: { ... }` 自动推导参数类型；Go 通过结构体反射自动注册方法与参数，使用 `iter.Seq2[T, error]` 直接 `for range` 消费流）。
 3. **轻量依赖注入（DI，参考 [`FastEvents`](https://github.com/t4wefan/FastEvents)）**
    - 支持函数式依赖 `@dependency` 与类提供者 `_provider()`。
@@ -40,8 +47,9 @@ from meshcall import (
     DuplexChannel,
     ReconnectPolicy,
     RetryPolicy,
-    RouterConfig,
+    Router,
     RouterCredentials,
+    RouterScope,
     RpcContext,
     dependency,
     meta,
@@ -146,7 +154,7 @@ class Workspace:
 
 
 # ============================================================================
-# 3. 服务端启动：极简模式 vs 展开配置模式
+# 3. 服务端启动：极简模式 vs 传入 Router 对象展开配置
 # ============================================================================
 def start_minimal():
     # 极简一行启动（默认连 ws://127.0.0.1:8765，本地未运行则自动拉起内嵌 Router）
@@ -154,33 +162,35 @@ def start_minimal():
 
 
 def start_expanded():
-    # 展开配置：包含 Router 拓扑/内嵌网关配置、连接保活、以及服务端实例限流与生命周期
+    # 构造 Router 对象：既可传给服务端启动，也可用于客户端连接与调用内置服务
+    router = Router(
+        # 连接地址：支持单 URL、多 URL 故障转移列表、unix:///tmp/mesh.sock、pipe://mesh
+        url=["ws://127.0.0.1:8765", "ws://127.0.0.1:8766"],
+        auth=RouterCredentials.bearer("mk_service_secret"),
+        # Peer ↔ Router 链路保活、自动重连与客户端重试策略
+        ping_interval=20.0,
+        ping_timeout=10.0,
+        reconnect=ReconnectPolicy(
+            initial_delay=0.1,
+            max_delay=5.0,
+            multiplier=2.0,
+            jitter=0.2,
+        ),
+        retry=RetryPolicy(max_attempts=3, initial_delay=0.1, max_delay=2.0, multiplier=2.0),
+        max_frame_size=64 * 1024 * 1024,  # 64 MiB
+        # 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
+        spawn_if_local=True,
+        http_listen="127.0.0.1:8080",     # 开启 HTTP/SSE 网关与 /openapi.json
+        http_cors_origins=["https://app.example.com"],
+        http_default_timeout=30.0,
+        auth_file="/etc/meshcall/auth.json",
+        outbox_size=16 * 1024 * 1024,
+        max_connections=1024,
+    )
+
     meshcall.run(
         Workspace(),
-        # --- Router 相关配置（也可直接传 "ws://..." 或 ["ws://r1:8765", "ws://r2:8765"]）---
-        router=RouterConfig(
-            # 连接地址：支持单 URL、多 URL 故障转移列表、unix:///tmp/mesh.sock、pipe://mesh
-            url=["ws://127.0.0.1:8765", "ws://127.0.0.1:8766"],
-            auth=RouterCredentials.bearer("mk_service_secret"),
-            # Peer ↔ Router 链路保活与自动重连策略
-            ping_interval=20.0,
-            ping_timeout=10.0,
-            reconnect=ReconnectPolicy(
-                initial_delay=0.1,
-                max_delay=5.0,
-                multiplier=2.0,
-                jitter=0.2,
-            ),
-            max_frame_size=64 * 1024 * 1024,  # 64 MiB
-            # 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
-            spawn_if_local=True,
-            http_listen="127.0.0.1:8080",     # 开启 HTTP/SSE 网关与 /openapi.json
-            http_cors_origins=["https://app.example.com"],
-            http_default_timeout=30.0,
-            auth_file="/etc/meshcall/auth.json",
-            outbox_size=16 * 1024 * 1024,
-            max_connections=1024,
-        ),
+        router=router,                        # 也可直接传 "ws://..." 或 ["ws://r1:8765", ...]
         # --- Server 实例级配置 ---
         instance_id="workspace-node-1",       # 实例标识，用于指定实例调用与监控
         max_inflight=128,                     # 最大并发请求数（上报 Router 用于负载均衡）
@@ -192,18 +202,18 @@ def start_expanded():
 
 
 # ============================================================================
-# 4. 客户端连接与调用 (由 `meshcall generate` 自动生成 WorkspaceClient)
+# 4. 客户端连接、复用 Router 连接与调用内置服务
 # ============================================================================
 from generated.workspace_client import WorkspaceClient
 
 
 async def main():
-    # 方式 A：极简连接
+    # 方式 A：单服务极简连接（内部自动管理 Router 连接）
     # async with WorkspaceClient.connect() as ws: ...
 
-    # 方式 B：展开连接配置
-    async with WorkspaceClient.connect(
-        router=["ws://127.0.0.1:8765", "ws://127.0.0.1:8766"],  # 或传 RouterConfig(...) / "unix://..."
+    # 方式 B：显式连接 Router —— 支持直接调用 Router 内置服务，并供多个 Client 复用同一条连接
+    async with Router.connect(
+        url=["ws://127.0.0.1:8765", "ws://127.0.0.1:8766"],
         auth=RouterCredentials.bearer("mk_client_token"),
         peer_id="cli-caller-1",
         reconnect=ReconnectPolicy(initial_delay=0.1, max_delay=5.0, multiplier=2.0, jitter=0.2),
@@ -212,7 +222,19 @@ async def main():
         ping_timeout=10.0,
         deadline_grace=2.0,
         interceptors=[otel_client_interceptor()],
-    ) as ws:
+    ) as router:
+        # 1) 调用 Router 内置服务 (Registry & AuthService)
+        services = await router.list_services()
+        info = await router.describe_service("workspace")
+        me = await router.whoami()
+        issued = await router.issue_token(
+            scopes=[RouterScope(service="workspace", methods=["*"])],
+            ttl_seconds=900,
+        )
+        await router.revoke_token(issued.token_id)
+
+        # 2) 将 router 传给生成的 Client（可绑定多个不同服务的 Client，复用同一条连接）
+        ws = WorkspaceClient(router)
 
         # ① Unary：参数顺序与服务端 (path, content) 完全一致
         stat = await ws.write_file("/hello.txt", "hello world")
@@ -252,6 +274,7 @@ async def main():
 import { z } from "zod";
 import {
   DuplexChannel,
+  Router,
   RouterCredentials,
   dependency,
   meta,
@@ -347,7 +370,7 @@ export class Workspace {
 }
 
 // ============================================================================
-// 3. 服务端启动：极简模式 vs 展开配置模式
+// 3. 服务端启动：极简模式 vs 传入 Router 对象展开配置
 // ============================================================================
 async function startMinimal() {
   // 极简一行启动
@@ -355,30 +378,30 @@ async function startMinimal() {
 }
 
 async function startExpanded() {
-  // 展开配置
-  await run(new Workspace(), {
-    // --- Router 相关配置（也可直接传 "ws://127.0.0.1:8765" 或 ["ws://r1:8765", "ws://r2:8765"]）---
-    router: {
-      url: ["ws://127.0.0.1:8765", "ws://127.0.0.1:8766"], // 或 unixPath: "/tmp/mesh.sock" / pipe: "mesh"
-      auth: RouterCredentials.bearer("mk_service_secret"),
-      pingIntervalMs: 20_000,
-      pingTimeoutMs: 10_000,
-      reconnect: {
-        initialDelayMs: 100,
-        maxDelayMs: 5_000,
-        multiplier: 2.0,
-        jitter: 0.2,
-      },
-      maxFrameSize: 64 * 1024 * 1024,
-      // 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
-      spawnIfLocal: true,
-      httpListen: "127.0.0.1:8080",
-      httpCorsOrigins: ["https://app.example.com"],
-      httpDefaultTimeoutMs: 30_000,
-      authFile: "/etc/meshcall/auth.json",
-      outboxSize: 16 * 1024 * 1024,
-      maxConnections: 1024,
+  const router = new Router({
+    url: ["ws://127.0.0.1:8765", "ws://127.0.0.1:8766"], // 或 unixPath: "/tmp/mesh.sock" / pipe: "mesh"
+    auth: RouterCredentials.bearer("mk_service_secret"),
+    pingIntervalMs: 20_000,
+    pingTimeoutMs: 10_000,
+    reconnect: {
+      initialDelayMs: 100,
+      maxDelayMs: 5_000,
+      multiplier: 2.0,
+      jitter: 0.2,
     },
+    maxFrameSize: 64 * 1024 * 1024,
+    // 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
+    spawnIfLocal: true,
+    httpListen: "127.0.0.1:8080",
+    httpCorsOrigins: ["https://app.example.com"],
+    httpDefaultTimeoutMs: 30_000,
+    authFile: "/etc/meshcall/auth.json",
+    outboxSize: 16 * 1024 * 1024,
+    maxConnections: 1024,
+  });
+
+  await run(new Workspace(), {
+    router, // 也可直接传 "ws://127.0.0.1:8765" 或 ["ws://r1:8765", ...]
     // --- Server 实例级配置 ---
     instanceId: "workspace-node-1",
     maxInflight: 128,
@@ -390,17 +413,17 @@ async function startExpanded() {
 }
 
 // ============================================================================
-// 4. 客户端连接与调用 (由 `meshcall generate` 自动生成 WorkspaceClient)
+// 4. 客户端连接、复用 Router 连接与调用内置服务
 // ============================================================================
 import { WorkspaceClient } from "./generated/workspace-client.js";
 
 async function main() {
-  // 方式 A：极简连接
+  // 方式 A：单服务极简连接
   // await using ws = await WorkspaceClient.connect();
 
-  // 方式 B：展开连接配置
-  await using ws = await WorkspaceClient.connect({
-    router: ["ws://127.0.0.1:8765", "ws://127.0.0.1:8766"],
+  // 方式 B：显式连接 Router —— 调用内置服务 + 多 Client 复用同一条连接
+  await using router = await Router.connect({
+    url: ["ws://127.0.0.1:8765", "ws://127.0.0.1:8766"],
     auth: RouterCredentials.bearer("mk_client_token"),
     peerId: "ts-caller-1",
     reconnect: {
@@ -420,6 +443,16 @@ async function main() {
     deadlineGraceMs: 2_000,
     interceptors: [otelClientInterceptor()],
   });
+
+  // 1) 调用 Router 内置服务 (Registry & AuthService)
+  const services = await router.listServices();
+  const info = await router.describeService("workspace");
+  const me = await router.whoami();
+  const issued = await router.issueToken([{ service: "workspace", methods: ["*"] }], 900);
+  await router.revokeToken(issued.token_id);
+
+  // 2) 将 router 传给生成的 Client 复用连接
+  const ws = new WorkspaceClient(router);
 
   // ① Unary：位置参数与服务端完全一致
   const stat = await ws.writeFile("/hello.txt", "hello world");
@@ -575,7 +608,7 @@ func (w *Workspace) OpenTerminal(
 }
 
 // ============================================================================
-// 3. 服务端启动：极简模式 vs 展开配置模式
+// 3. 服务端启动：极简模式 vs 传入 Router 对象展开配置
 // ============================================================================
 
 func startMinimal() error {
@@ -584,34 +617,29 @@ func startMinimal() error {
 }
 
 func startExpanded() error {
-	// 展开配置：清晰区分 Router 配置与 Server 实例配置
+	// 构造 Router 对象：既可传给服务端启动，也可用于客户端连接与调用内置服务
+	router := meshcall.NewRouter(
+		meshcall.WithRouterURLs("ws://127.0.0.1:8765", "ws://127.0.0.1:8766"),
+		meshcall.WithAuth(meshcall.BearerToken("mk_service_secret")),
+		meshcall.WithPing(20*time.Second, 10*time.Second),
+		meshcall.WithReconnect(meshcall.ReconnectPolicy{
+			InitialDelay: 100 * time.Millisecond,
+			MaxDelay:     5 * time.Second,
+			Multiplier:   2.0,
+			Jitter:       0.2,
+		}),
+		meshcall.WithMaxFrameSize(64<<20), // 64 MiB
+		// 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
+		meshcall.WithSpawnIfLocal(true),
+		meshcall.WithHTTPGateway("127.0.0.1:8080", 30*time.Second, "https://app.example.com"),
+		meshcall.WithAuthFile("/etc/meshcall/auth.json"),
+		meshcall.WithRouterLimits(16<<20, 1024),
+	)
+
 	return meshcall.Run(
 		NewWorkspace(),
 		meshcall.WithDependencies(dbDep, callerIDDep),
-
-		// --- Router 相关配置（也可简写为 meshcall.WithRouterURL("ws://127.0.0.1:8765")）---
-		meshcall.WithRouter(meshcall.RouterConfig{
-			URLs:         []string{"ws://127.0.0.1:8765", "ws://127.0.0.1:8766"},
-			Auth:         meshcall.BearerToken("mk_service_secret"),
-			PingInterval: 20 * time.Second,
-			PingTimeout:  10 * time.Second,
-			Reconnect: meshcall.ReconnectPolicy{
-				InitialDelay: 100 * time.Millisecond,
-				MaxDelay:     5 * time.Second,
-				Multiplier:   2.0,
-				Jitter:       0.2,
-			},
-			MaxFrameSize: 64 << 20, // 64 MiB
-			// 若本地自动拉起内嵌 Router，以下参数控制内嵌 Router 行为：
-			SpawnIfLocal:       true,
-			HTTPListen:         "127.0.0.1:8080",
-			HTTPCORSOrigins:    []string{"https://app.example.com"},
-			HTTPDefaultTimeout: 30 * time.Second,
-			AuthFile:           "/etc/meshcall/auth.json",
-			OutboxSize:         16 << 20,
-			MaxConnections:     1024,
-		}),
-
+		meshcall.WithRouter(router),
 		// --- Server 实例级配置 ---
 		meshcall.WithInstanceID("workspace-node-1"),
 		meshcall.WithMaxInflight(128),
@@ -622,38 +650,49 @@ func startExpanded() error {
 }
 
 // ============================================================================
-// 4. 客户端连接与调用 (由 `meshcall generate` 自动生成 workspaceclient)
+// 4. 客户端连接、复用 Router 连接与调用内置服务
 // ============================================================================
 
 func runClient(ctx context.Context) error {
-	// 方式 A：极简连接
+	// 方式 A：单服务极简连接
 	// ws, err := workspaceclient.Connect(ctx)
 
-	// 方式 B：展开连接配置
-	ws, err := workspaceclient.Connect(
+	// 方式 B：显式连接 Router —— 调用内置服务 + 多 Client 复用同一条连接
+	router, err := meshcall.ConnectRouter(
 		ctx,
-		workspaceclient.WithRouterURLs("ws://127.0.0.1:8765", "ws://127.0.0.1:8766"),
-		workspaceclient.WithAuth(meshcall.BearerToken("mk_client_token")),
-		workspaceclient.WithPeerID("go-caller-1"),
-		workspaceclient.WithReconnect(meshcall.ReconnectPolicy{
+		meshcall.WithRouterURLs("ws://127.0.0.1:8765", "ws://127.0.0.1:8766"),
+		meshcall.WithAuth(meshcall.BearerToken("mk_client_token")),
+		meshcall.WithPeerID("go-caller-1"),
+		meshcall.WithReconnect(meshcall.ReconnectPolicy{
 			InitialDelay: 100 * time.Millisecond,
 			MaxDelay:     5 * time.Second,
 			Multiplier:   2.0,
 			Jitter:       0.2,
 		}),
-		workspaceclient.WithRetry(meshcall.RetryPolicy{
+		meshcall.WithRetry(meshcall.RetryPolicy{
 			MaxAttempts:  3,
 			InitialDelay: 100 * time.Millisecond,
 			MaxDelay:     2 * time.Second,
 			Multiplier:   2.0,
 		}),
-		workspaceclient.WithPing(20*time.Second, 10*time.Second),
-		workspaceclient.WithDeadlineGrace(2*time.Second),
+		meshcall.WithPing(20*time.Second, 10*time.Second),
+		meshcall.WithDeadlineGrace(2*time.Second),
 	)
 	if err != nil {
 		return err
 	}
-	defer ws.Close()
+	defer router.Close()
+
+	// 1) 调用 Router 内置服务 (Registry & AuthService)
+	services, err := router.ListServices(ctx)
+	info, err := router.DescribeService(ctx, "workspace")
+	me, err := router.Whoami(ctx)
+	issued, err := router.IssueToken(ctx, []meshcall.RouterScope{{Service: "workspace", Methods: []string{"*"}}}, 900)
+	revoked, err := router.RevokeToken(ctx, issued.TokenID)
+	_, _, _, _ = services, info, me, revoked
+
+	// 2) 将 router 传给生成的 Client 复用连接
+	ws := workspaceclient.New(router)
 
 	// ① Unary：参数与服务端 (ctx, path, content) 完全一致
 	stat, err := ws.WriteFile(ctx, "/hello.txt", "hello world")
@@ -707,9 +746,9 @@ func runClient(ctx context.Context) error {
 
 ### 1. 用户使用 MeshCall 开发服务的流程（4 步闭环）
 1. **写服务（Write Service as Plain Functions）**：直接定义业务类与方法（Unary / Server Stream / Client Stream / Duplex），数据库、鉴权、或网关 Header（`meta("x-user-id")`）通过 DI 声明在参数中。
-2. **一键运行（Zero-Config Run）**：`meshcall.run(Workspace())` 一行启动；本地未起 Router 时自动拉起内嵌 `meshcall-router`，生产环境通过 `MESHCALL_ROUTER_URL` 或 `RouterConfig` 切换。
-3. **生成强类型客户端（Generate Client）**：运行 `meshcall generate` 导出契约并生成目标语言客户端（DI 参数自动剥离，业务参数签名 1:1 对齐）。
-4. **像本地函数一样调用（Connect & Call）**：`WorkspaceClient.connect()` 连接后直接按原参数调用；超时、幂等键、指定实例或透传 Header 通过 `.with_options(...)` 链式附加。
+2. **一键运行（Zero-Config Run）**：`meshcall.run(Workspace())` 一行启动；本地未起 Router 时自动拉起内嵌 `meshcall-router`，生产环境通过 `MESHCALL_ROUTER_URL` 或传入 `Router(...)` 对象切换。
+3. **生成强类型客户端（Generate Client）**：运行 `meshcall generate` 导出契约并生成目标语言客户端（DI 参数自动剥离，业务参数签名 1:1 对齐，不暴露合成的 `<Service><Method>Request` 包装结构体）。
+4. **像本地函数一样调用（Connect & Call）**：单服务直接 `WorkspaceClient.connect()`；多服务或需调用 Router 内置服务（`list_services` / `describe_service` / `whoami` / `issue_token` / `revoke_token`）时通过 `Router.connect()` 建立共享连接并传入 `WorkspaceClient(router)`；单次调用超时、幂等键、指定实例或透传 Header 通过 `.with_options(...)` 链式附加。
 
 ### 2. MeshCall 库本身的开发与演进流程
 1. **契约与协议先行**：涉及协议或契约结构变更时，先更新 `docs/protocol.md` 与 `meshcall-router/internal/contract`。
@@ -721,10 +760,10 @@ func runClient(ctx context.Context) error {
 
 ## 四、 分阶段实现计划 (Implementation Roadmap)
 
-### Phase 1: 极简启动/连接入口与 `RouterConfig`
-- [ ] **Python (`meshcall-py`)**：实现 `meshcall.run(*services, ...)`、`await meshcall.serve(*services, ...)`、`meshcall.connect(...)` 与展开版 `RouterConfig`（支持本地地址未监听时自动拉起内嵌 Router、bind 竞争回退连接、SIGINT/SIGTERM 优雅排空）。
-- [ ] **TypeScript (`meshcall-ts`)**：实现 `run(services, opts)`、`serve(services, opts)`、`connect(opts)` 与 `RouterConfig`。
-- [ ] **Go (`meshcall-go`)**：实现 `meshcall.Run(...)`、`meshcall.Serve(...)`、`meshcall.Connect(...)` 与 `RouterConfig`。
+### Phase 1: 统一的 `Router` 对象与极简启动/连接入口
+- [ ] **Python (`meshcall-py`)**：实现统一的 `Router` 类（兼具服务端/客户端配置、多路复用连接管理与内置服务 `list_services` / `describe_service` / `whoami` / `issue_token` / `revoke_token` 调用）、`meshcall.run(*services, router=..., ...)`、`await meshcall.serve(*services, router=..., ...)`（支持本地地址未监听时自动拉起内嵌 Router、bind 竞争回退连接、SIGINT/SIGTERM 优雅排空）。
+- [ ] **TypeScript (`meshcall-ts`)**：实现统一的 `Router` 类（含 `Router.connect`、客户端连接复用及内置 `Registry`/`AuthService` 方法）、`run(services, opts)`、`serve(services, opts)`。
+- [ ] **Go (`meshcall-go`)**：实现统一的 `Router` 类型（`NewRouter`、`ConnectRouter`、客户端连接复用及内置 `Registry`/`AuthService` 方法）、`meshcall.Run(...)`、`meshcall.Serve(...)`。
 - [ ] **Experimental 边界整理**：将 `subscription` 与 `Topic` 标记为实验特性（Experimental），从核心推荐路径与默认主推导出中降级。
 
 ### Phase 2: 服务端签名统一与样板消除
@@ -738,10 +777,10 @@ func runClient(ctx context.Context) error {
 - [ ] **Go DI**：实现 `meshcall.Dependency(...)`、`meshcall.Meta[T]("...")`、`meshcall.WithDependencies(...)` 类型注入与契约剥离。
 
 ### Phase 4: 客户端 `.with_options` 与 Codegen 全面对齐
-- [ ] **三端 Client Runtime**：新增 `.with_options(...)`（Python）、`.withOptions(...)`（TS）、`.WithOptions(...)`（Go）链式调用选项；TS Server Stream 支持直接 `for await`，Client/Duplex 支持 `await using`；Go Stream 支持返回 `iter.Seq2[T, error]` 直接 `for range`。
+- [ ] **三端 Client Runtime**：新增 `.with_options(...)`（Python）、`.withOptions(...)`（TS）、`.WithOptions(...)`（Go）链式调用选项；支持 `GeneratedClient(router)` 复用 `Router` 连接与 `GeneratedClient.connect(...)` 极简连接；TS Server Stream 支持直接 `for await`，Client/Duplex 支持 `await using`；Go Stream 支持返回 `iter.Seq2[T, error]` 直接 `for range`。
 - [ ] **Go CLI Codegen (`meshcall-router/internal/codegen`)**：
-  - 生成 `GeneratedClient.connect(...)` / `Connect(ctx, ...)` 静态入口。
-  - 生成与服务端 1:1 镜像的纯业务参数签名（移除尾随 `timeout`、`metadata` 等杂项参数；Client Stream / Duplex 普通参数在前、流在后）。
+  - 生成 `GeneratedClient.connect(...)` / `Connect(ctx, ...)` 静态入口与接收 `Router` 的构造函数。
+  - 三端（含 Go）统一按 `parameters` 生成与服务端 1:1 镜像的纯业务参数签名（不暴露合成的 `<Service><Method>Request` 结构体，移除尾随 `timeout`、`metadata` 等杂项参数；Client Stream / Duplex 普通参数在前、流在后）。
   - 支持 `--naming preserve|idiomatic` 跨语言惯用命名转换。
   - 更新 `internal/codegen/testdata/*` 黄金测试文件。
 
