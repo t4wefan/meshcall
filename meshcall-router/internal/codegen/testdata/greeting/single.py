@@ -2,8 +2,6 @@
 # External dependencies: uv add 'meshcall>=0.2.1' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from pydantic import BaseModel
 
 from meshcall.client import ClientBase
@@ -29,12 +27,6 @@ class GreetingServiceClient(ClientBase):
     async def greet(
         self,
         request: GreetingRequest,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        idempotency_key: str | None = None,
     ) -> GreetingResult:
         request = GreetingServiceGreetRequest(
             request=request,
@@ -44,9 +36,4 @@ class GreetingServiceClient(ClientBase):
             'greet',
             request,
             GreetingResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-            idempotency_key=idempotency_key,
         )

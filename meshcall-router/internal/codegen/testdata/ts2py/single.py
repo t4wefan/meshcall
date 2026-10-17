@@ -2,7 +2,7 @@
 # External dependencies: uv add 'meshcall>=0.2.1' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Mapping
+from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
@@ -43,11 +43,6 @@ class TypeScriptGreetingServiceClient(ClientBase):
     def count(
         self,
         count: int,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[NumberItem]:
         """Stream the integers from 0 up to, but not including, count."""
         request = CountRequest(
@@ -58,10 +53,6 @@ class TypeScriptGreetingServiceClient(ClientBase):
             'count',
             request,
             NumberItem,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
             idempotent=True,
         )
 
@@ -69,11 +60,6 @@ class TypeScriptGreetingServiceClient(ClientBase):
         self,
         offset: int,
         items: AsyncIterable[NumberItem],
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> SumResult:
         """Add every streamed value to offset and return the total."""
         request = SumRequest(
@@ -86,10 +72,6 @@ class TypeScriptGreetingServiceClient(ClientBase):
             items,
             NumberItem,
             SumResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
             idempotent=True,
         )
 
@@ -97,12 +79,6 @@ class TypeScriptGreetingServiceClient(ClientBase):
         self,
         name: str,
         repeat: int,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        idempotency_key: str | None = None,
     ) -> GreetingResult:
         """Greet name repeat times and say which runtime answered."""
         request = GreetingRequest(
@@ -114,10 +90,5 @@ class TypeScriptGreetingServiceClient(ClientBase):
             'greet',
             request,
             GreetingResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-            idempotency_key=idempotency_key,
             idempotent=True,
         )

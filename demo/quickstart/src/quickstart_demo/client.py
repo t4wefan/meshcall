@@ -11,7 +11,7 @@ async def main() -> None:
         WebSocketClientDriver("ws://127.0.0.1:8765")
     )
     async with client:
-        stream = client.count(10, timeout=5)
+        stream = client.with_options(timeout=5).count(10)
         async for item in stream:
             print(item.value)
 

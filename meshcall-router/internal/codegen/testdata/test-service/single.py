@@ -2,7 +2,7 @@
 # External dependencies: uv add 'meshcall>=0.2.1' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Mapping
+from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
@@ -44,12 +44,6 @@ class TestServiceClient(ClientBase):
     async def unary(
         self,
         request: Request,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        idempotency_key: str | None = None,
     ) -> Result:
         request = TestServiceUnaryRequest(
             request=request,
@@ -59,21 +53,11 @@ class TestServiceClient(ClientBase):
             'unary',
             request,
             Result,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-            idempotency_key=idempotency_key,
         )
 
     def download(
         self,
         request: Request,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[Item]:
         request = TestServiceDownloadRequest(
             request=request,
@@ -83,21 +67,12 @@ class TestServiceClient(ClientBase):
             'download',
             request,
             Item,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )
 
     async def upload(
         self,
         request: Request,
         items: AsyncIterable[Item],
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> Result:
         request = TestServiceUploadRequest(
             request=request,
@@ -109,20 +84,11 @@ class TestServiceClient(ClientBase):
             items,
             Item,
             Result,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )
 
     def duplex(
         self,
         request: Request,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcDuplexClient[Item, Item]:
         request = TestServiceDuplexRequest(
             request=request,
@@ -133,8 +99,4 @@ class TestServiceClient(ClientBase):
             request,
             Item,
             Item,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )

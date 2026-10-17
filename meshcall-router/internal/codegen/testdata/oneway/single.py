@@ -2,7 +2,7 @@
 # External dependencies: uv add 'meshcall>=0.2.1' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Mapping
+from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
@@ -32,11 +32,6 @@ class OneWayStreamServiceClient(ClientBase):
     def download(
         self,
         start: int,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[StreamItem]:
         request = OneWayStreamServiceDownloadRequest(
             start=start,
@@ -46,21 +41,12 @@ class OneWayStreamServiceClient(ClientBase):
             'download',
             request,
             StreamItem,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )
 
     async def upload(
         self,
         offset: int,
         items: AsyncIterable[StreamItem],
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> StreamResult:
         request = OneWayStreamServiceUploadRequest(
             offset=offset,
@@ -72,8 +58,4 @@ class OneWayStreamServiceClient(ClientBase):
             items,
             StreamItem,
             StreamResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )

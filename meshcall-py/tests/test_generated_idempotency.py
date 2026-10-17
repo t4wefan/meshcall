@@ -45,7 +45,8 @@ def generated(
         cwd=TESTS,
     )
     source = output.read_text(encoding="utf-8")
-    assert "idempotency_key: str | None = None," in source
+    # Options come from with_options(); the method mirrors the server handler.
+    assert "idempotency_key" not in source
     module = types.ModuleType("generated_keyed_client")
     monkeypatch.setitem(sys.modules, module.__name__, module)
     exec(compile(source, str(output), "exec"), module.__dict__)  # noqa: S102
@@ -69,5 +70,7 @@ async def test_generated_unary_method_sends_the_key(
     async with generated.KeyedClient(
         WebSocketClientDriver(f"ws://127.0.0.1:{server}")
     ) as client:
-        assert (await client.put(1, idempotency_key="order-42")).key == "order-42"
+        assert (
+            await client.with_options(idempotency_key="order-42").put(1)
+        ).key == "order-42"
         assert (await client.put(1)).key is None

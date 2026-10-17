@@ -2,7 +2,7 @@
 # External dependencies: uv add 'meshcall>=0.2.1' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Mapping
+from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
@@ -63,12 +63,6 @@ class ShowcaseServiceClient(ClientBase):
         self,
         name: str,
         repeat: int = 1,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        idempotency_key: str | None = None,
     ) -> GreetingResult:
         """Parameters are the request: ``name`` and ``repeat`` are its fields."""
         request = ShowcaseServiceGreetRequest(
@@ -80,23 +74,12 @@ class ShowcaseServiceClient(ClientBase):
             'greet',
             request,
             GreetingResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-            idempotency_key=idempotency_key,
             idempotent=True,
         )
 
     async def welcome(
         self,
         profile: WelcomeRequest,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        idempotency_key: str | None = None,
     ) -> WelcomeResult:
         """A model-typed parameter is just one field of the request."""
         request = ShowcaseServiceWelcomeRequest(
@@ -107,11 +90,6 @@ class ShowcaseServiceClient(ClientBase):
             'welcome',
             request,
             WelcomeResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-            idempotency_key=idempotency_key,
             idempotent=True,
         )
 
@@ -119,11 +97,6 @@ class ShowcaseServiceClient(ClientBase):
         self,
         start: int,
         stop: int,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[CountItem]:
         """Server stream: the client receives typed items asynchronously."""
         request = ShowcaseServiceCountRequest(
@@ -135,10 +108,6 @@ class ShowcaseServiceClient(ClientBase):
             'count',
             request,
             CountItem,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
             idempotent=True,
         )
 
@@ -146,11 +115,6 @@ class ShowcaseServiceClient(ClientBase):
         self,
         offset: int,
         items: AsyncIterable[NumberItem],
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> TotalResult:
         """Client stream: the service consumes a typed inbound stream."""
         request = ShowcaseServiceSumValuesRequest(
@@ -163,9 +127,5 @@ class ShowcaseServiceClient(ClientBase):
             items,
             NumberItem,
             TotalResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
             idempotent=True,
         )

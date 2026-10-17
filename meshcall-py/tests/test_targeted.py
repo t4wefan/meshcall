@@ -108,8 +108,10 @@ def test_contract_and_generated_clients_carry_targeting(meshcall_cli, tmp_path) 
     )[1]
     py_actor = generate("test_targeted:Actor", "python", "actor.py")
     py_plain = generate("test_targeted:Plain", "python", "plain.py")
-    assert "        instance: str,\n" in py_actor
-    assert "        instance: str | None = None,\n" in py_plain
+    # A targeted call names its instance at compile time; other options come
+    # from with_options().
+    assert "        instance: str," in py_actor
+    assert "instance=instance" not in py_plain
     assert "instance=instance," in py_actor
     ts_actor = generate("test_targeted:Actor", "typescript", "actor.ts")
     ts_plain = generate("test_targeted:Plain", "typescript", "plain.ts")

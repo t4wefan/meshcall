@@ -2,8 +2,6 @@
 # External dependencies: uv add 'meshcall>=0.2.1' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from pydantic import BaseModel
 
 from meshcall.client import ClientBase
@@ -26,11 +24,6 @@ class CounterServiceClient(ClientBase):
     def count(
         self,
         stop: int,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[CountItem]:
         """Stream the integers from 0 up to, but not including, ``stop``."""
         request = CounterServiceCountRequest(
@@ -41,9 +34,5 @@ class CounterServiceClient(ClientBase):
             "count",
             request,
             CountItem,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
             idempotent=True,
         )
