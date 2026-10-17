@@ -493,6 +493,7 @@ type serveConfig struct {
 	strict       bool
 	drainTimeout time.Duration
 	listenAddr   string
+	dependencies []DependencyProvider
 }
 
 // ServeOption configures Serve and Run.
@@ -583,12 +584,32 @@ func (r *RunningServer) Close() error {
 
 // Serve starts one or more services, auto-spawning a local Router when targeting
 // a local address that is not yet listening, and returns a *RunningServer handle.
-// Arguments may be *Service, []*Service, *Router, ServeOption, or RouterOption.
+// Arguments may be *Service, []*Service, a struct (or pointer) embedding
+// ServiceMeta, *Router, ServeOption, or RouterOption.
 func Serve(ctx context.Context, args ...any) (*RunningServer, error) {
 	cfg := serveConfig{
 		routerCfg:    defaultRouterConfig(),
 		drainTimeout: 10 * time.Second,
 	}
+	// Pass 1: apply options first so WithDependencies is available when reflecting structs.
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case nil, *Service, []*Service:
+			continue
+		case *Router:
+			WithRouter(v).applyServe(&cfg)
+		case ServeOption:
+			v.applyServe(&cfg)
+		case RouterOption:
+			v.applyRouter(&cfg.routerCfg)
+		default:
+			if hasServiceMeta(arg) {
+				continue
+			}
+			return nil, fmt.Errorf("meshcall: unsupported Serve argument of type %T", arg)
+		}
+	}
+	// Pass 2: collect and reflect services.
 	var services []*Service
 	for _, arg := range args {
 		switch v := arg.(type) {
@@ -598,14 +619,16 @@ func Serve(ctx context.Context, args ...any) (*RunningServer, error) {
 			services = append(services, v)
 		case []*Service:
 			services = append(services, v...)
-		case *Router:
-			WithRouter(v).applyServe(&cfg)
-		case ServeOption:
-			v.applyServe(&cfg)
-		case RouterOption:
-			v.applyRouter(&cfg.routerCfg)
+		case *Router, ServeOption, RouterOption:
+			continue
 		default:
-			return nil, fmt.Errorf("meshcall: unsupported Serve argument of type %T", arg)
+			if hasServiceMeta(arg) {
+				svc, err := ReflectService(arg, WithDependencies(cfg.dependencies...))
+				if err != nil {
+					return nil, err
+				}
+				services = append(services, svc)
+			}
 		}
 	}
 	serverOpts := ServerOptions{

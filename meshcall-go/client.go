@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -862,6 +863,48 @@ func ClientStream[Req, Item, Resp any](ctx context.Context, c *Client, service, 
 	return resp, err
 }
 
+// ClientStreamSeq sends items from an iter.Seq2[Item, error] and returns the server's single answer.
+func ClientStreamSeq[Req, Item, Resp any](ctx context.Context, c *Client, service, method string, req Req, items iter.Seq2[Item, error], opts ...CallOption) (Resp, error) {
+	var resp Resp
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return resp, err
+	}
+	info := c.buildInfo(service, method, "client_stream", opts)
+	err = c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
+		call, err := c.open(ctx, info, payload)
+		if err != nil {
+			return err
+		}
+		pumpCtx, stopPump := context.WithCancel(ctx)
+		defer stopPump()
+		go func() {
+			for item, itemErr := range items {
+				if itemErr != nil {
+					call.abort(itemErr, "input_producer_failed")
+					return
+				}
+				raw, err := json.Marshal(item)
+				if err != nil || call.sendInput(pumpCtx, raw) != nil {
+					if err != nil {
+						call.abort(err, "input_producer_failed")
+					}
+					return
+				}
+			}
+			_ = call.closeInput()
+		}()
+		raw, trailers, err := call.result()
+		info.Trailers = trailers
+		if err != nil {
+			return err
+		}
+		resp, err = decodeReceived[Resp](raw, "invalid_response")
+		return err
+	})
+	return resp, err
+}
+
 // Stream is a stream of items from the server.
 type Stream[Item any] struct {
 	call     *clientCall
@@ -953,6 +996,29 @@ func ServerStream[Req, Item any](ctx context.Context, c *Client, service, method
 		return nil, err
 	}
 	return &Stream[Item]{call: call}, nil
+}
+
+// ServerStreamSeq returns an iter.Seq2[Item, error] that opens a server-stream call
+// on first iteration and yields items until io.EOF or error.
+func ServerStreamSeq[Req, Item any](ctx context.Context, c *Client, service, method string, req Req, opts ...CallOption) iter.Seq2[Item, error] {
+	return func(yield func(Item, error) bool) {
+		var zero Item
+		stream, err := ServerStream[Req, Item](ctx, c, service, method, req, opts...)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		defer stream.Close()
+		for {
+			item, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			if !yield(item, err) || err != nil {
+				return
+			}
+		}
+	}
 }
 
 // DuplexCall is an open duplex call: Send input items while Recv-ing output.
