@@ -81,12 +81,16 @@ export class LlmServiceClient {
       "assemble_prompt",
       {},
       items,
-      { ...options, responseSchema: PromptAssemblySchema },
+      { idempotent: true, ...options, responseSchema: PromptAssemblySchema },
     );
   }
 
   /**
    * Stream a deterministic reply for ``prompt`` into ``session_id``.
+   *
+   * The user message and the assistant reply are staged in the call's unit
+   * of work: they become visible together when the stream ends, and are
+   * dropped if the caller cancels the stream halfway.
    */
   public stream_chat(
     session_id: string,

@@ -4,24 +4,31 @@
 
 本指南同时面向**人类工程师**与 **AI 编程助手**。每一节都会先讲清楚**为什么要这样用、适用什么业务场景**，随后提供可直接复制使用的 **Python** 与 **TypeScript** 完整代码范例；Go 运行时（`meshcall-go`）写法不同之处也会给出 **Go** 示例。
 
+示例采用 v0.3 API：服务使用 `@query` / `@mutates` / `@stream` 声明，服务端用 `run` / `serve` 启动，客户端通过 `Router` 与生成的 `.connect(...)` / `.with_options(...)` 方法连接。订阅（subscription）与 `Topic` 仍然可用，但在 v0.3 中是**实验特性**，不进入主教学流程。
+
 ---
 
 ## 目录
 
 1. [Router 优先架构：为什么推荐始终通过 Router 通信](#1-router-优先架构为什么推荐始终通过-router-通信)
+   - [Router 对象：服务端配置、共享连接与内置服务](#router-对象服务端配置共享连接与内置服务)
+   - [一行启动：`run` 与 `serve`](#一行启动run-与-serve)
    - [本地传输：Unix 套接字与命名管道](#本地传输unix-套接字与命名管道)
 2. [服务契约编写规范与严格模式 (`MESHCALL_STRICT=1`)](#2-服务契约编写规范与严格模式-meshcall_strict1)
+   - [方法声明：`@query`、`@mutates`、`@stream`](#方法声明querymutatesstream)
+   - [依赖注入与 `meta()`](#依赖注入与-meta)
 3. [三种核心调用模式：Unary、Server Stream、Client Stream](#3-三种核心调用模式unaryserver-streamclient-stream)
-   - [订阅：可恢复的流](#订阅可恢复的流)
+   - [订阅：可恢复的流（实验特性）](#订阅可恢复的流实验特性)
    - [双向流（duplex）：最后的选择](#双向流duplex最后的选择)
 4. [生成与使用跨语言强类型客户端](#4-生成与使用跨语言强类型客户端)
+   - [单次调用选项 `with_options`](#单次调用选项-with_options)
    - [从浏览器、边缘运行时或 curl 调用](#从浏览器边缘运行时或-curl-调用)
 5. [使用 CLI 实时探测与调试在线服务](#5-使用-cli-实时探测与调试在线服务)
 6. [无状态负载均衡 vs. 有状态实例定向调用 (`targeted`)](#6-无状态负载均衡-vs-有状态实例定向调用-targeted)
 7. [生产环境高可用：三层超时、自动重试、幂等去重与优雅停机](#7-生产环境高可用三层超时自动重试幂等去重与优雅停机)
-   - [Router 停机、容量限制与指标](#6-router-停机容量限制与指标)
+   - [Router 停机、容量限制与指标](#router-停机容量限制与指标)
 8. [安全鉴权、ACL 权限控制与临时范围 Token](#8-安全鉴权acl-权限控制与临时范围-token)
-   - [匿名调用方与 API Key](#3-匿名调用方与-api-key)
+   - [匿名调用方与 API Key](#匿名调用方与-api-key)
 9. [拦截器（Interceptors）、元数据（Metadata）与结构化错误处理](#9-拦截器interceptors元数据metadata与结构化错误处理)
    - [OpenTelemetry 链路追踪](#opentelemetry-链路追踪)
 10. [AI 编程助手集成（`meshcall init`）](#10-ai-编程助手集成meshcall-init)
@@ -36,60 +43,136 @@
 
 1. **单个节点可同时承担服务端与客户端角色** —— 在传统的点对点 RPC 中，每个服务都必须分配并监听自己的端口，调用方也必须维护所有对端节点的地址。而在 Router 模式下，全网只有一个统一入口（如 `ws://127.0.0.1:8765`）。任何一个 Python 或 TypeScript 节点只需主动连接 Router，既可以向 Router 注册自身提供的 `@service`，又可以同时作为客户端调用网格中的任何其他服务。
 2. **原生 CLI 与 AI 实时可观测** —— 只要通过 Router 运行，你和 AI 编程助手随时都可以使用 `meshcall router inspect` 查看全网服务契约，并用 `meshcall call` 直接发起调用调试。
-3. **平滑扩缩容与高可用** —— 随时拉起第二个实例即可自动获得负载均衡、健康检查、熔断保护与无损滚动停机（`drain=True`），业务代码零改动。
+3. **平滑扩缩容与高可用** —— 随时拉起第二个实例即可自动获得负载均衡、健康检查、熔断保护与无损滚动停机，业务代码零改动。
 
-### Python：同一节点兼具服务端与客户端
+### Router 对象：服务端配置、共享连接与内置服务
+
+v0.3 用一个 `Router` 对象统一了 Router 相关的全部入口，它承担三种角色：
+
+1. **`run` / `serve` 的配置** —— 端点、凭据、重连/重试策略，以及本地内嵌 Router 的启动参数。
+2. **共享客户端连接** —— `Router.connect(...)` 建立一条多路复用的 WebSocket；传入它的所有生成客户端共用这条连接。
+3. **Router 内置服务的强类型客户端** —— `list_services`、`describe_service`、`whoami`、`issue_token`、`revoke_token`（TypeScript：`listServices`、`describeService`、`whoami`、`issueToken`、`revokeToken`；Go：`ListServices`、`DescribeService`、`Whoami`、`IssueToken`、`RevokeToken`）。
 
 ```python
-from meshcall import RpcServer, WebSocketRouter
-from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
+from meshcall import Router, RouterScope
 
-# 1. 启动 SDK 内置的 Go Router（也可在外部独立运行 `meshcall-router --port 8765`）
-router = WebSocketRouter(host="127.0.0.1", port=8765)
-await router.start()
+async with Router.connect("ws://127.0.0.1:8765") as router:
+    services = await router.list_services()
+    info = await router.describe_service("chat.v1.Chat")
+    me = await router.whoami()
+    issued = await router.issue_token(
+        scopes=[RouterScope(service="chat.v1.Chat", methods=["send"])],
+        ttl_seconds=900,
+    )
+    await router.revoke_token(issued.token_id)
 
-# 2. 任何节点都可以同时创建客户端调用其他服务，并通过 RpcServer 注册自身服务
-other_service_client = OtherServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
-
-server = RpcServer(
-    services=[MyService(downstream=other_service_client)],
-    driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="worker-1"),
-)
-await server.start()
+# 生成的客户端复用同一条连接：
+chat = ChatClient(router)
+billing = BillingClient(router)
 ```
-
-### TypeScript：同一节点兼具服务端与客户端
 
 ```typescript
-import { MeshCallClient, MeshCallServer, WebSocketRouter } from "meshcall";
+import { Router } from "meshcall";
 
-// 1. 启动内置的 Go Router（或连接已有的 Router）
-const router = new WebSocketRouter({ host: "127.0.0.1", port: 8765 });
-await router.start();
-
-// 2. 该节点既可以调用其他服务，也可以向 Router 注册自身服务
-const client = new MeshCallClient("ws://127.0.0.1:8765");
-
-const server = new MeshCallServer({
-  services: [myService],
-  router: { endpoint: "ws://127.0.0.1:8765", instanceId: "worker-ts-1" },
-});
-await server.start();
+const router = await Router.connect("ws://127.0.0.1:8765");
+const services = await router.listServices();
+const info = await router.describeService("chat.v1.Chat");
+const me = await router.whoami();
+const issued = await router.issueToken(
+  [{ service: "chat.v1.Chat", methods: ["send"] }],
+  900,
+);
+await router.revokeToken(issued.token_id);
+await router.close();
 ```
-
-### Go：同一节点兼具服务端与客户端
-
-Go 运行时没有 Router 启动器：先运行 `meshcall-router --port 8765`（或使用已部署的 Router），再连接它。
 
 ```go
-chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
-// meshcall.HandleUnary(chat, "send", handler, meshcall.Doc("…"), meshcall.Idempotent())
+router, err := meshcall.ConnectRouter(ctx, meshcall.WithRouterURLs("ws://127.0.0.1:8765"))
+if err != nil {
+    return err
+}
+defer func() { _ = router.Close() }()
 
-server, err := meshcall.NewServer(meshcall.ServerOptions{Services: []*meshcall.Service{chat}, InstanceID: "worker-go-1"})
-err = server.ConnectRouter(ctx, "ws://127.0.0.1:8765")
-
-rpc, err := meshcall.NewClient(meshcall.ClientOptions{}, "ws://127.0.0.1:8765")
+services, err := router.ListServices(ctx)
+if err != nil {
+    return err
+}
+info, err := router.DescribeService(ctx, "chat.v1.Chat")
+if err != nil {
+    return err
+}
+me, err := router.Whoami(ctx)
+if err != nil {
+    return err
+}
+issued, err := router.IssueToken(ctx,
+    []meshcall.RouterScope{{Service: "chat.v1.Chat", Methods: []string{"send"}}}, 900)
+if err != nil {
+    return err
+}
+revoked, err := router.RevokeToken(ctx, issued.TokenID)
+if err != nil {
+    return err
+}
+_, _, _ = services, info, me
+_, _ = issued, revoked
 ```
+
+Go 调用返回强类型值（`[]meshcall.RegistryService`、`RegistryServiceDetail`、`WhoamiResponse`、`IssuedToken`、`RevokeTokenResponse`）；上面的赋值只是示意。
+
+### 一行启动：`run` 与 `serve`
+
+`run` 是生产环境入口：它解析 Router 地址（`MESHCALL_ROUTER_URL`，默认 `ws://127.0.0.1:8765`），当目标是本地地址且尚无监听时自动拉起内置 Router，注册传入的所有服务，并在 `SIGINT` / `SIGTERM` 时优雅排空后退出。`serve` 是它背后的异步构件：返回一个 `RunningServer`（`.url`、`.instance_id`、`.stop(drain=True)`），测试与多客户端演示都使用它。
+
+```python
+from meshcall import run
+from my_app.service import MyService
+
+if __name__ == "__main__":
+    run(MyService())                    # 多个服务：run(Chat(), Billing())
+    # 显式配置：
+    # run(MyService(), router=Router("ws://127.0.0.1:8765", auth=...))
+```
+
+```python
+from meshcall import Router, serve
+
+async with serve(MyService(), router=Router("ws://127.0.0.1:0")) as server:
+    print(server.url)                   # ws://127.0.0.1:<实际端口>
+    ...
+# 退出上下文即排空进行中的调用，并停止自己拉起的 Router
+```
+
+```typescript
+import { run } from "meshcall";
+
+await run(new MyService());
+```
+
+```typescript
+import { Router, serve } from "meshcall";
+
+await using server = await serve(new MyService(), {
+  router: new Router("ws://127.0.0.1:0"),
+});
+console.log(server.url);
+```
+
+```go
+// 阻塞式入口：收到 SIGINT / SIGTERM 后先排空再返回。
+if err := meshcall.Run(NewMyService(), meshcall.WithInstanceID("worker-go-1")); err != nil {
+    log.Fatal(err)
+}
+
+// 非阻塞形式：
+srv, err := meshcall.Serve(ctx, NewMyService(), meshcall.WithRouter(meshcall.NewRouter()))
+if err != nil {
+    return err
+}
+defer func() { _ = srv.Close() }()      // Close 会先排空
+```
+
+如果本地 Router 不存在时你希望直接报错而不是自动拉起，传 `router=Router(..., spawn_if_local=False)`（TypeScript `spawnIfLocal: false`，Go `meshcall.WithSpawnIfLocal(false)`）。`serve` 还接受服务实例级选项（`instance_id`、`max_inflight`、`strict`、`access_log`、`interceptors`）。
 
 ### 本地传输：Unix 套接字与命名管道
 
@@ -100,11 +183,11 @@ meshcall-router --unix-socket /tmp/mesh.sock               # Windows：--pipe me
 meshcall --router unix:///tmp/mesh.sock router inspect     # Windows：pipe://mesh
 ```
 
-- **Python**：`WebSocketRouter(unix_path="/tmp/mesh.sock")`、`WebSocketClientDriver(unix_path=...)`、`WebSocketRouterServerDriver(unix_path=...)`；Windows 上用 `pipe="mesh"`。
-- **TypeScript**：`new WebSocketRouter({ unixPath })`、`new MeshCallClient({ unixPath: "/tmp/mesh.sock" })`、`router: { endpoint: { unixPath } }`；Windows 上用 `{ pipe: "mesh" }`。
-- **Go** 与 CLI：端点字符串 `unix:///tmp/mesh.sock` 与 `pipe://mesh`。
+- **Python**：`Router(unix_path="/tmp/mesh.sock")` 或 `Router(pipe="mesh")` —— 同一个对象既可传给 `run` / `serve`，也可传给生成的客户端。
+- **TypeScript**：`new Router({ unixPath: "/tmp/mesh.sock" })` 或 `new Router({ pipe: "mesh" })`。
+- **Go** 与 CLI：端点字符串 `unix:///tmp/mesh.sock` 与 `pipe://mesh`（`meshcall.WithUnixSocket(path)` / `meshcall.WithPipe(name)`）。
 
-> **关于直连模式（`WebSocketDirectServerDriver` / `MeshCallServer({ port })`）的说明：** 点对点直连模式仅作为架构早期演进的痕迹与底层兼容性方法保留，**不推荐在实际项目中使用**。直连模式需要手动管理服务端监听端口，无法让节点在统一网格中对等地兼具服务端与客户端身份，且无法使用 `meshcall router inspect` 等路由与可观测能力。
+> **关于直连模式（`WebSocketDirectServerDriver` / `MeshCallServer({ port })` / TypeScript `serve(..., { listen })`）的说明：** 点对点直连模式仅作为架构早期演进的痕迹与底层兼容性方法保留，**不推荐在实际项目中使用**。直连模式需要手动管理服务端监听端口，无法让节点在统一网格中对等地兼具服务端与客户端身份，且无法使用 `meshcall router inspect` 等路由与可观测能力。
 
 ---
 
@@ -117,14 +200,165 @@ meshcall --router unix:///tmp/mesh.sock router inspect     # Windows：pipe://me
 1. **服务名必须包含版本段**：推荐格式为 `<命名空间>.v<主版本>.<服务名>`（例如 `billing.v1.InvoiceService`）。未写版本号的名称（如 `chat`）会被自动规范化为 `chat.v0`。
 2. **函数参数即请求体（Parameters are the request）**：不要把所有参数包进一个 `Request` 类里。直接按自然习惯写多个函数参数（如 `session_id: str, limit: int = 20`），MeshCall 会自动合成请求模型。
 3. **返回值必须是结构化模型**：始终返回 Pydantic `BaseModel`（Python）或对象 `TypeContract`（TypeScript），不要直接返回裸的 `str` / `int` / `dict`，以便未来平滑扩展字段。
-4. **开发与 CI 阶段开启 `MESHCALL_STRICT=1`**：开启后，缺少 docstring/description（`W001`）、修改状态的方法未标注副作用属性（`W002`）、注解自相矛盾（`W003`）等契约告警（`W001`–`W006`）会在导入或启动阶段立即报错，并给出精确到行的修复提示（`hint`）。
+4. **开发与 CI 阶段开启 `MESHCALL_STRICT=1`**：开启后，缺少 docstring/description（`W001`）、修改状态的方法未标注副作用属性（`W002`）、注解自相矛盾（`W003`）等契约告警（`W001`–`W006`）会在导入或启动阶段立即报错，并给出精确的修复提示（`hint`）。
 
-| 语义注解 | 业务含义 | `RetryPolicy` 是否自动重试？ |
+### 方法声明：`@query`、`@mutates`、`@stream`
+
+方法装饰器一次性声明语义；同一份契约同时驱动校验、重试、`meshcall inspect` 与生成的客户端。
+
+```python
+from collections.abc import AsyncIterator
+from meshcall import mutates, query, service, stream
+
+
+@service("billing.v1.Invoices")
+class Invoices:
+    """发票操作。"""
+
+    @query
+    async def get(self, invoice_id: str) -> Invoice:
+        """读取单张发票（只读且幂等）。"""
+        ...
+
+    @mutates(idempotent=True)
+    async def rename(self, invoice_id: str, title: str) -> Invoice:
+        """修改标题；重复执行同一调用是安全的。"""
+        ...
+
+    @mutates(destructive=True)
+    async def delete(self, invoice_id: str) -> Deleted:
+        """删除发票（没有幂等键时绝不自动重试）。"""
+        ...
+
+    @stream
+    async def export(self, account_id: str) -> AsyncIterator[Row]:
+        """流式导出；普通 `@stream` 方法默认只读。"""
+        ...
+```
+
+| 装饰器 | 业务含义 | `RetryPolicy` 是否自动重试？ |
 | --- | --- | --- |
-| `read_only=True` (`readOnly: true`) | 纯读取查询，不修改任何状态（自动隐含 `idempotent`） | **是**（遇到可重试错误自动重试） |
-| `idempotent=True` (`idempotent: true`) | 会修改状态，但使用相同参数重复执行多次的结果完全一致（如按 ID 覆盖更新） | **是** |
-| `destructive=True` (`destructive: true`) | 不可直接重复执行的写操作（如扣款、追加日志、删除） | **否**（除非调用方显式传入了 `idempotency_key`） |
+| `@query` | 纯读取查询；隐含 `read_only=True, idempotent=True` | **是** |
+| `@mutates(idempotent=True)` | 会修改状态，但使用相同参数重复执行多次的结果完全一致 | **是** |
+| `@mutates(destructive=True)` 或裸 `@mutates` | 不可直接重复执行的写操作（如扣款、追加日志） | **否**（除非调用方显式传入了 `idempotency_key`） |
+| `@stream` | 服务端流；默认只读/幂等，可用 `read_only=False` / `idempotent=False` 覆盖；名字看起来像写操作（`delete_*` 等）的方法不会获得默认值 | 流从不重试 |
 | `deprecated="use_v2"` | 将方法标记为废弃，生成的客户端会带上 `@deprecated` 编译器警告 | 取决于读写注解 |
+
+TypeScript 使用同样的形状，并显式给出 Schema：
+
+```typescript
+import { mutates, query, service, stream, z } from "meshcall";
+
+const Invoice = z.object({ id: z.string(), title: z.string() }).meta({ id: "Invoice" });
+
+@service("billing.v1.Invoices", { description: "发票操作。" })
+class Invoices {
+  @query({ description: "读取单张发票。", input: { invoice_id: z.string() }, output: Invoice })
+  async get(invoice_id: string) { ... }
+
+  @mutates({ description: "删除发票。", input: { invoice_id: z.string() }, output: Invoice, destructive: true })
+  async delete(invoice_id: string) { ... }
+
+  @stream({ description: "流式导出。", input: { account_id: z.string() }, outputItem: z.object({ line: z.string() }) })
+  async *export(account_id: string) { ... }
+}
+```
+
+Go 通过 `HandleUnary`、`HandleServerStream`、`HandleClientStream` 与 `HandleDuplex` 注册 Handler，并用 `Doc(...)`、`ReadOnly()`、`Idempotent()` 或 `Destructive()` 标注：
+
+```go
+chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
+
+meshcall.HandleUnary(chat, "send", func(ctx *meshcall.Context, req SendRequest) (Message, error) {
+    return Message{Text: "echo " + req.Text}, nil
+}, meshcall.Doc("Append a message and return the reply."), meshcall.Idempotent())
+```
+
+### 依赖注入与 `meta()`
+
+Handler 可以声明服务端专有依赖，而不把这些参数写进契约。依赖提供者在**每次调用中最多执行一次**，并在该调用内缓存；如果提供者是生成器（`yield`），调用结束时会执行清理逻辑，因此“成功提交 / 失败回滚”可以自然表达。被注入的参数——依赖、`meta("key")` 值、`ctx: RpcContext` 与 `logger: RpcLogger`——都会从契约与所有生成的客户端中剔除。
+
+```python
+from collections.abc import AsyncIterator
+from typing import Annotated
+from meshcall import dependency, meta, mutates
+
+@dependency
+async def transaction() -> AsyncIterator[SessionUnit]:
+    """每个调用一个工作单元：成功提交，出错或取消则丢弃。"""
+    unit = SessionUnit(store)
+    try:
+        yield unit
+    except BaseException:
+        await unit.rollback()
+        raise
+    else:
+        await unit.commit()
+
+Tx = Annotated[SessionUnit, transaction._provider()]   # 或 Annotated[T, dependency(provider)]
+CallerId = Annotated[str | None, meta("x-caller-id")]
+
+@mutates(idempotent=True)
+async def send(self, session_id: str, text: str, *, tx: Tx, caller: CallerId) -> Message:
+    """`tx` 与 `caller` 只在服务端注入。"""
+    ...
+```
+
+依赖也可以继续声明依赖或元数据：
+
+```python
+@dependency
+async def current_user(authorization: Annotated[str, meta("authorization")]) -> str:
+    return authorization.removeprefix("Bearer ")
+```
+
+TypeScript 用 `dependency(provider, { inject })` 声明依赖，并通过方法的 `inject` 注入：
+
+```typescript
+import { dependency, meta, mutates } from "meshcall";
+
+const CurrentUser = dependency(
+  async function* (authorization: string | undefined) {
+    yield authorization?.replace(/^Bearer\s+/, "") ?? "";
+  },
+  { inject: [meta("authorization")] },
+);
+
+@mutates({
+  description: "追加一条消息。",
+  input: { session_id: z.string(), text: z.string() },
+  output: Message,
+  inject: [CurrentUser],
+})
+async send(session_id: string, text: string, user: string) {
+  return { text: `${user}: ${text}` };
+}
+```
+
+Go 通过 `WithDependencies` 一次性注册提供者；参数类型已注册的 Handler 参数会被注入并从契约中移除：
+
+```go
+type CallerID string
+
+func NewWorkspace() *Workspace { return &Workspace{} }
+
+type Workspace struct {
+    meshcall.ServiceMeta `name:"workspace.v1.Workspace" description:"Remote workspace."`
+}
+
+func (w *Workspace) WriteFile(ctx *meshcall.Context, path, content string, caller CallerID) (FileStat, error) {
+    return FileStat{Path: path, Bytes: len(content), Caller: string(caller)}, nil
+}
+
+err := meshcall.Run(NewWorkspace(), meshcall.WithDependencies(
+    meshcall.Meta[CallerID]("x-caller-id", meshcall.WithMetaDefault(CallerID("anonymous"))),
+))
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+`meta()` 读取调用元数据（按大小写不敏感匹配，符合 HTTP 头的习惯）；它用于网关、CLI 身份等传输层信息，而不是业务参数。
 
 ---
 
@@ -132,12 +366,14 @@ meshcall --router unix:///tmp/mesh.sock router inspect     # Windows：pipe://me
 
 **核心优势：** 流式调用按方向独立维护**条目信用窗口（Item Credit，初始窗口为 16）**。当消费端处理较慢时，生产端会自动等待窗口授信，绝不会在内存中无限堆积数据；同时单连接上的多个并发流按 `call_id` 公平轮转发送，大流量流不会饿死其他普通调用。
 
+三种运行时遵循同一条规则：**普通业务参数在前，客户端流的入站迭代器在最后**。生成的客户端 1:1 镜像这个参数列表。
+
 ### Python 服务端与客户端范例
 
 ```python
 from collections.abc import AsyncIterator
 from pydantic import BaseModel
-from meshcall import RpcContext, RpcInputStream, RpcLogger, method, service
+from meshcall import RpcContext, RpcInputStream, RpcLogger, mutates, query, service, stream
 
 
 class Chunk(BaseModel):
@@ -154,30 +390,30 @@ class TextProcessor:
     """提供文本一元处理、服务端流分词与客户端流聚合。"""
 
     # 1. 一元调用 (Unary): 普通参数 -> 响应模型
-    @method(read_only=True)
+    @query
     async def echo(self, text: str, ctx: RpcContext) -> Chunk:
         """原样返回输入文本，并通过 Trailer 附带字符长度。"""
         ctx.set_trailer("length", str(len(text)))
         return Chunk(text=text)
 
     # 2. 服务端流 (Server Stream): 普通参数 -> AsyncIterator[条目模型]
-    @method.server_stream(read_only=True)
+    @stream
     async def tokenize(self, sentence: str, logger: RpcLogger) -> AsyncIterator[Chunk]:
         """将句子按空格切分并逐词流式推送给客户端。"""
         logger.info("tokenizing sentence")
         for word in sentence.split():
             yield Chunk(text=word)
 
-    # 3. 客户端流 (Client Stream): RpcInputStream[条目模型] + 普通参数 -> 响应模型
-    @method.client_stream(idempotent=True)
+    # 3. 客户端流 (Client Stream): 普通参数在前、入站流在后；用 @mutates 声明
+    @mutates(idempotent=True)
     async def join_chunks(
         self,
-        chunks: RpcInputStream[Chunk],
-        separator: str = " ",
+        separator: str,
+        items: RpcInputStream[Chunk],
     ) -> Summary:
         """接收客户端持续发送的文本块流，并以 separator 拼接后返回汇总结果。"""
         parts: list[str] = []
-        async for chunk in chunks:
+        async for chunk in items:
             parts.append(chunk.text)
         return Summary(count=len(parts), combined=separator.join(parts))
 ```
@@ -185,38 +421,98 @@ class TextProcessor:
 **在生成的 Python 客户端中调用这三种模式：**
 
 ```python
-async with TextProcessorClient(driver) as client:
+from text_client import TextProcessorClient
+
+async with TextProcessorClient.connect("ws://127.0.0.1:8765") as client:
     # 1. 一元调用
-    chunk = await client.echo("hello", timeout=5.0)
+    chunk = await client.echo("hello")
 
     # 2. 服务端流（如果可能提前 break 退出循环，建议使用 `async with` 以自动通知服务端取消流）
-    async with client.tokenize("one two three", timeout=10.0, idle_timeout=3.0) as stream:
+    async with client.with_options(timeout=10.0, idle_timeout=3.0).tokenize("one two three") as stream:
         async for item in stream:
             print(item.text)
 
-    # 3. 客户端流
-    call = await client.join_chunks(separator="-", timeout=10.0)
-    await call.send(Chunk(text="a"))
-    await call.send(Chunk(text="b"))
-    await call.close_send()
-    summary = await call
+    # 3. 客户端流：生成的客户端方法最后一个参数是 AsyncIterable
+    async def chunks() -> AsyncIterator[Chunk]:
+        yield Chunk(text="a")
+        yield Chunk(text="b")
+
+    summary = await client.with_options(timeout=10.0).join_chunks("-", chunks())
     print(summary.combined)  # "a-b"
 ```
 
-### 订阅：可恢复的流
+### TypeScript 服务端与客户端范例
+
+```typescript
+import { mutates, query, serve, service, stream, z, Router } from "meshcall";
+
+const Chunk = z.object({ text: z.string() }).meta({ id: "Chunk" });
+const Summary = z.object({ count: z.int(), combined: z.string() }).meta({ id: "Summary" });
+
+@service("text.v1.TextProcessor", { description: "提供文本一元处理、服务端流分词与客户端流聚合。" })
+class TextProcessor {
+  @query({ description: "原样返回输入文本。", input: { text: z.string() }, output: Chunk })
+  async echo(text: string) {
+    return { text };
+  }
+
+  @stream({ description: "将句子逐词流式推送。", input: { sentence: z.string() }, outputItem: Chunk })
+  async *tokenize(sentence: string) {
+    for (const word of sentence.split(" ")) yield { text: word };
+  }
+
+  @mutates({
+    description: "接收客户端文本块流并拼接。",
+    input: { separator: z.string().default(" ") },
+    streamInput: Chunk,
+    output: Summary,
+    idempotent: true,
+  })
+  async join_chunks(separator: string, items: AsyncIterable<{ text: string }>) {
+    const parts: string[] = [];
+    for await (const chunk of items) parts.push(chunk.text);
+    return { count: parts.length, combined: parts.join(separator) };
+  }
+}
+
+await serve(new TextProcessor(), { router: new Router("ws://127.0.0.1:8765") });
+```
+
+```typescript
+import { Router } from "meshcall";
+import { TextProcessorClient } from "./generated/text-ts/src/index.js";
+
+const router = await Router.connect("ws://127.0.0.1:8765");
+const client = await TextProcessorClient.connect(router);
+try {
+  const chunk = await client.echo("hello");
+  for await (const item of client.withOptions({ timeoutMs: 10_000, idleTimeoutMs: 3_000 }).tokenize("one two three")) {
+    console.log(item.text);
+  }
+  async function* chunks() { yield { text: "a" }; yield { text: "b" }; }
+  const summary = await client.join_chunks("-", chunks());
+  console.log(summary.combined); // "a-b"
+} finally {
+  await router.close();
+}
+```
+
+### 订阅：可恢复的流（实验特性）
+
+> **v0.3 实验特性。** 订阅与 `Topic` 保留底层实现，但不在推荐的教学流程中，API 可能变化。若新代码只需要一个长时间的结果流，请使用普通的 `@stream` / `@stream(...)` 服务端流。
 
 事件、通知与实时数据适合声明为**订阅**：一个服务端流，其条目带有有序的 cursor（如 `seq`），请求带一个可选的恢复参数（如 `since`）。连接断开或遇到可重试错误后，生成的客户端会自动重新打开调用，把最后的 `seq` 作为 `since` 传回，对调用方而言仍是同一个迭代器；订阅没有默认超时。Handler 必须只产出 `since` 之后的条目。
 
 `Topic`（Python 与 TypeScript）把条目分发给同一进程内的每个订阅者，并保留有限的历史用于重放。落后太多的订阅者以可重试的 `resource_exhausted`（`reason: "slow_subscriber"`）被断开并重新订阅；早于历史的 cursor 以 `invalid_argument`（`reason: "cursor_expired"`）失败，而不是悄悄跳过事件。跨实例时，请把产生事件的服务设为 `targeted`，或把消息中间件桥接到每个实例的 Topic：Router 不是消息中间件。
 
 ```python
-from meshcall import Topic
-
+from collections.abc import AsyncIterator
+from pydantic import BaseModel
+from meshcall import Topic, method, service
 
 class Event(BaseModel):
     seq: int
     text: str
-
 
 @service("feed.v1.Feed")
 class Feed:
@@ -235,17 +531,46 @@ class Feed:
 # 消费：async for event in client.events(): ...
 ```
 
-TypeScript 使用 `@method.subscription({ cursor: "seq", resume: "since", … })` 与 `new Topic<Event>({ history: 1000, cursor: (e) => e.seq })`，Handler 中 `for await (const event of topic.subscribe(since)) yield event;`。Go 用 `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` 声明同样的契约（Go 没有 `Topic`），生成的 Go 客户端返回以同样方式自动重新订阅的 `*meshcall.Subscription`。完整规则见[协议规范：订阅](protocol.md#订阅subscriptions)。
+```typescript
+import { method, service, Topic, z } from "meshcall";
+
+const Event = z.object({ seq: z.int(), text: z.string() }).meta({ id: "Event" });
+type Event = z.infer<typeof Event>;
+const Since = z.object({ since: z.int().nullable().default(null) });
+
+@service("demo.v1.Feed", { description: "实时事件流。" })
+class Feed {
+  readonly topic = new Topic<Event>({ history: 1000, cursor: (e) => e.seq });
+
+  @method.subscription({
+    description: "推送 since 之后的每个事件。", readOnly: true, cursor: "seq", resume: "since",
+    request: Since, outputItem: Event,
+  })
+  async *events({ since }: z.infer<typeof Since>) {
+    for await (const event of this.topic.subscribe(since)) yield event;
+  }
+}
+// 在任意位置发布：feed.topic.publish({ seq: n, text: "..." })
+// 消费：for await (const event of client.events()) { ... }
+```
+
+Go 用 `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` 声明同样的契约（Go 没有 `Topic`），生成的 Go 客户端返回以同样方式自动重新订阅的 `*meshcall.Subscription`。这些 API 均为实验特性。
 
 ### 双向流（duplex）：最后的选择
 
-duplex 方法（Python `@method.duplex(reason="…")` 加一个 `channel: RpcDuplex[In, Out]` 参数，TypeScript `@method.duplex({ reason, … })`，Go `meshcall.HandleDuplex(svc, name, reason, handler)`）同时流式传输输入与输出。只有当输出必须与仍在不断到达的输入在同一调用内交错时才使用它，例如用户还在说话时就回应的语音轮次。它从不重试、不去重，不接受幂等键，不能标注 `idempotent` / `read_only`，不能通过 HTTP 调用，并在整个生命周期内固定在一个实例上；`reason` 会写入契约。只发送不读取的一方会在对方信用耗尽后卡住，因此请在发送的同时并发读取输出。请先尝试"服务端流 + 一元调用"或客户端流。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
+duplex 方法同时流式传输输入与输出。只有当输出必须与仍在不断到达的输入在同一调用内交错时才使用它，例如用户还在说话时就回应的语音轮次。它从不重试、不去重，不接受幂等键，不能标注 `idempotent` / `read_only`，不能通过 HTTP 调用，并在整个生命周期内固定在一个实例上；`reason` 会写入契约。只发送不读取的一方会在对方信用耗尽后卡住，因此请在发送的同时并发读取输出。请先尝试“服务端流 + 一元调用”或客户端流。
+
+- **Python**：`@method.duplex(reason="…")` 加一个 `channel: DuplexChannel[In, Out]` 参数；Handler 返回 `None`。
+- **TypeScript**：`@method.duplex({ reason, input, streamInput, outputItem, … })`（或带 `streamInput` 与 `streamOutput` 的 `@mutates`），Handler 拿到通道且不返回值。
+- **Go**：`meshcall.HandleDuplex(svc, name, reason, handler)`，最后一个参数为 `*meshcall.DuplexChannel[In, Out]`。
+
+详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
 
 ---
 
 ## 4. 生成与使用跨语言强类型客户端
 
-**核心优势：** 统一的 Go CLI（`meshcall generate`）既可以直接读取 Python `module:Class`，也可以读取通用的 `.meshcall.json` 契约文件，一键生成 Python、TypeScript 或 Go 客户端。**生成的客户端不仅校验入参，还会自动校验服务端返回的响应与流条目**，第一时间拦截服务端与客户端契约版本不一致的问题。
+**核心优势：** 统一的 Go CLI（`meshcall generate`）既可以直接读取 Python `module:Class`，也可以读取通用的 `.meshcall.json` 契约文件，一键生成 Python、TypeScript 或 Go 客户端。**生成的客户端不仅校验入参，还会自动校验服务端返回的响应与流条目**，并且方法签名与服务端业务参数 1:1 镜像（生成的 TypeScript 与 Go 方法还会额外接受一个可选的尾部 options/opts 参数）。
 
 ```bash
 # 1. 从 Python 服务 -> 生成可安装的 Python uv 客户端包
@@ -274,6 +599,76 @@ meshcall generate contract.meshcall.json \
   --output internal/textclient
 ```
 
+生成的客户端一行即可连接。Python 的 `connect()` 会解析默认 Router（`MESHCALL_ROUTER_URL`，再回退 `ws://127.0.0.1:8765`），也可以直接传入 `Router` 或 URL；TypeScript 的 `MyClient.connect(router)` 包装一个已有的 `Router`（用 `Router.connect(...)` 创建）；Go 则用生成的 `NewMyClient(router)` 构造函数包装 `*Router`。
+
+```python
+from meshcall import Router
+from text_client import TextProcessorClient
+
+async with TextProcessorClient.connect() as client:          # 默认 Router
+    chunk = await client.echo("hello")
+
+router = await Router.connect("ws://127.0.0.1:8765")
+text = TextProcessorClient(router)                           # 共享连接
+```
+
+```typescript
+import { Router } from "meshcall";
+import { TextProcessorClient } from "./generated/text-ts/src/index.js";
+
+const router = await Router.connect();
+const client = await TextProcessorClient.connect(router);
+const chunk = await client.echo("hello");
+```
+
+```go
+router := meshcall.NewRouter()                               // MESHCALL_ROUTER_URL
+defer func() { _ = router.Close() }()
+client := textclient.NewTextProcessorClient(router)
+chunk, err := client.Echo(ctx, "hello")
+_, _ = chunk, err
+```
+
+### 单次调用选项 `with_options`
+
+控制参数从不进入业务方法签名。链式设置一次，然后照常调用方法（生成的 TypeScript 与 Go 方法也接受一个可选的尾部 options/opts 参数；`with_options` 让三种运行时的调用写法保持一致）：
+
+```python
+client = TextProcessorClient(router).with_options(
+    timeout=5.0,                 # 整个调用的时间预算（秒）
+    idle_timeout=2.0,            # 流条目之间的最大间隔
+    metadata={"trace-id": "abc"},
+    idempotency_key="op-1",      # 让写操作的一元调用可安全重试
+    instance="worker-1",         # 仅定向服务需要
+)
+chunk = await client.echo("hello")
+```
+
+```typescript
+const client = (await TextProcessorClient.connect(router)).withOptions({
+  timeoutMs: 5_000,
+  idleTimeoutMs: 2_000,
+  metadata: { "trace-id": "abc" },
+  idempotencyKey: "op-1",
+  instance: "worker-1",
+});
+const chunk = await client.echo("hello");
+```
+
+```go
+client := textclient.NewTextProcessorClient(router).WithOptions(meshcall.CallOptions{
+    Timeout:        5 * time.Second,
+    IdleTimeout:    2 * time.Second,
+    Metadata:       map[string]string{"trace-id": "abc"},
+    IdempotencyKey: "op-1",
+    Instance:       "worker-1",
+})
+chunk, err := client.Echo(ctx, "hello")
+_, _ = chunk, err
+```
+
+定向服务的生成客户端仍把 `instance` 作为编译期必填项（Python 的 keyword-only `instance`、TypeScript 的必填选项、Go 的位置参数），其余选项走 `with_options`。
+
 ### 从浏览器、边缘运行时或 curl 调用
 
 浏览器无法在 WebSocket 上设置 `Authorization` 头，因此 Web 与边缘代码调用 Router 的 HTTP API（同一端口，`/v1/` 路径下）。生成的 TypeScript 客户端可以用 `meshcall/web` 的 `MeshCallHttpClient`（不依赖 Node）代替 `MeshCallClient`；一元调用、流与订阅均可用，duplex 不可用。
@@ -283,7 +678,7 @@ import { MeshCallHttpClient } from "meshcall/web";
 import { TextProcessorClient } from "./generated/text-ts/src/index.js";
 
 const client = new TextProcessorClient(new MeshCallHttpClient("https://router.example", { token }));
-const chunk = await client.echo("hello", { timeoutMs: 5_000 });
+const chunk = await client.withOptions({ timeoutMs: 5_000 }).echo("hello");
 ```
 
 `token` 传入短期 Token（`mt_…`）或 API Key（`mk_…`）；其他源的页面需要 Router 以 `--http-cors-origin https://app.example` 启动。任何 HTTP 客户端都可以这样调用：
@@ -325,27 +720,27 @@ printf '{"text":"alpha"}\n{"text":"beta"}\n' | \
 
 ## 6. 无状态负载均衡 vs. 有状态实例定向调用 (`targeted`)
 
-**核心优势：** 无状态服务可通过 5 种策略按方法自动均衡流量；而有状态服务（如加载了特定权重的 GPU 推理节点、内存游戏房间、Actor 实例）则可通过 `targeted=True` 强制按 `instance_id` 精确寻址。
+**核心优势：** 无状态服务可通过多种策略按方法自动均衡流量；而有状态服务（如加载了特定权重的 GPU 推理节点、内存游戏房间、Actor 实例）则可通过 `targeted=True` 强制按 `instance_id` 精确寻址。
 
 ### 无状态负载均衡策略
 
 可在每个方法上单独指定策略（默认为 `round_robin` 轮询）：
 
 ```python
-from meshcall import Balance, method, service
+from meshcall import Balance, mutates, query, service
 
 @service("compute.v1.Worker")
 class Worker:
     """无状态计算与会话亲和计算服务。"""
 
     # 选择当前正在处理的并发请求数（in-flight）最少的实例
-    @method(read_only=True, balance=Balance.least_inflight())
+    @query(balance=Balance.least_inflight())
     async def heavy_compute(self, payload: str) -> Result:
         """将耗时计算调度给最空闲的节点。"""
         ...
 
     # 按请求中的 session_id 字段哈希路由到固定实例（优先命中本地内存缓存）
-    @method(idempotent=True, balance=Balance.sticky("session_id"))
+    @mutates(idempotent=True, balance=Balance.sticky("session_id"))
     async def step_session(self, session_id: str, prompt: str) -> Result:
         """在保持会话亲和性的前提下处理请求。"""
         ...
@@ -358,11 +753,13 @@ class Worker:
 - **编译期防呆**：生成的 Python 与 TypeScript 客户端会将 `instance` 生成为**必填参数**，一旦漏传，IDE 和类型检查器（`pyright` / `tsc`）在编写代码阶段就会报错！
 
 ```python
+from meshcall import RpcContext, query, service
+
 @service("gpu.v1.ModelRunner", targeted=True)
 class ModelRunner:
     """绑定特定 GPU 显存状态的推理节点。"""
 
-    @method(read_only=True)
+    @query
     async def infer(self, prompt: str, ctx: RpcContext) -> Output:
         """在当前指定的 GPU 实例上执行推理。"""
         return Output(text=f"Processed by {ctx.instance_id}: {prompt}")
@@ -372,7 +769,18 @@ class ModelRunner:
 
 ```python
 # 生成的客户端要求显式传入 instance= 参数：
-res = await client.infer("Hello!", instance="gpu-worker-1", timeout=10.0)
+res = await client.with_options(timeout=10.0).infer("Hello!", instance="gpu-worker-1")
+```
+
+```typescript
+// 生成的 TypeScript 方法要求在选项里传入 instance：
+const res = await client.infer("Hello!", { instance: "gpu-worker-1", timeoutMs: 10_000 });
+```
+
+```go
+// 生成的 Go 方法紧跟 ctx 之后接收 instance：
+res, err := client.Infer(ctx, "gpu-worker-1", "Hello!")
+_, _ = res, err
 ```
 
 或者通过 CLI 指定 `--instance`：
@@ -389,7 +797,7 @@ uv run meshcall call gpu.v1.ModelRunner.infer '{"prompt": "Hello!"}' --instance 
 
 ### 1. 三层相对超时机制（无需机器间时钟同步）
 
-调用时传入 `timeout=`（Python，单位秒）或 `timeoutMs`（TypeScript，单位毫秒）：
+调用时通过 `with_options(timeout=…)` / `withOptions({ timeoutMs })` / `WithOptions(CallOptions{Timeout: …})` 设置超时：
 - **第一层（Server）**：在 `T` 时刻触发，立即取消业务协程并返回 `deadline_exceeded`（`source: "server"`）。
 - **第二层（Router）**：在 `T + 500ms` 触发，防止某个服务实例假死卡住连接，自动向客户端返回 `deadline_exceeded`（`source: "router"`）并回收路由。
 - **第三层（Client）**：在 `T + max(1s, 10%)` 触发，防止网络黑洞或 Router 故障导致调用方永久挂起（`source: "client"`）。
@@ -397,19 +805,32 @@ uv run meshcall call gpu.v1.ModelRunner.infer '{"prompt": "Hello!"}' --instance 
 
 ### 2. 客户端自动重试（`RetryPolicy`）与幂等键（`idempotency_key`）
 
-为客户端配置 `RetryPolicy` 后，当**一元调用**遇到可重试错误（`retryable=True`，如实例断线 `unavailable` 或满载 `resource_exhausted`）且满足以下任一条件时，客户端会自动重发：
+在 Router（或客户端）上配置 `RetryPolicy` 后，当**一元调用**遇到可重试错误（`retryable=True`，如实例断线 `unavailable` 或满载 `resource_exhausted`）且满足以下任一条件时，客户端会自动重发：
 1. 方法在契约中标注了 `read_only=True` 或 `idempotent=True`；
 2. 或者调用时传入了 `idempotency_key`（如每个业务操作生成一个 UUID）。
 
 当一元调用携带 `idempotency_key` 时，Router 会按 `(service, method, idempotency_key, instance_id)` 自动合并同一时刻的并发重复请求，并在完成后将结果缓存 60 秒以供重试直接回放。
 
 ```python
-from meshcall import RetryPolicy
+from meshcall import RetryPolicy, Router
 
-client = CounterServiceClient(
-    driver,
-    retry=RetryPolicy(max_attempts=3, initial_backoff=0.05, max_backoff=1.0),
+router = Router(
+    "ws://127.0.0.1:8765",
+    retry=RetryPolicy(max_attempts=3, initial_delay=0.05, max_delay=1.0),
 )
+client = CounterServiceClient(router)
+```
+
+```go
+router := meshcall.NewRouter(meshcall.WithRetry(meshcall.RetryPolicy{
+    MaxAttempts:  3,
+    InitialDelay: 50 * time.Millisecond,
+    MaxDelay:     time.Second,
+    Multiplier:   2,
+    Jitter:       0.2,
+}))
+client := counterclient.NewCounterServiceClient(router)
+_ = client
 ```
 
 ### 3. 单实例并发限制（`max_inflight`）与自动熔断
@@ -417,27 +838,51 @@ client = CounterServiceClient(
 为有容量上限的服务实例（如数据库连接池、GPU 推理）设置 `max_inflight`，当该实例满载时 Router 会自动将新请求绕行到其他空闲实例：
 
 ```python
-server = RpcServer(services=[Worker()], driver=driver, max_inflight=32)
+async with serve(Worker(), router=router, max_inflight=32) as server:
+    ...
+```
+
+```typescript
+await using server = await serve(new Worker(), { router, maxInflight: 32 });
+```
+
+```go
+srv, err := meshcall.Serve(ctx, NewWorker(), meshcall.WithRouter(router), meshcall.WithMaxInflight(32))
+if err != nil {
+    return err
+}
+defer func() { _ = srv.Close() }()
 ```
 
 当某个实例连续超时或返回 `internal`/`unavailable` 达到阈值（默认连续 5 次）时，Router 的实例级熔断器会自动将其隔离 10 秒，随后放行 1 个半开探测请求（Probe），成功则恢复流量。
 
 ### 4. 多 Router 无状态双活容灾
 
-可以同时启动多个独立的 `meshcall-router` 进程，并将地址列表同时传给服务端与客户端——服务端会同时向**所有** Router 保持注册，客户端会在当前 Router 故障时自动切换到下一个可用 Router：
+可以同时启动多个独立的 `meshcall-router` 进程，并把同一份地址列表交给服务端与客户端共用的 `Router` 对象——服务端会同时向**所有** Router 保持注册，客户端会在当前 Router 故障时自动切换到下一个可用 Router：
 
 ```python
-routers = ["ws://router-1.internal:8765", "ws://router-2.internal:8765"]
-server_driver = WebSocketRouterServerDriver(routers, instance_id="worker-1")
-client_driver = WebSocketClientDriver(routers)
+router = Router(["ws://router-1.internal:8765", "ws://router-2.internal:8765"])
+client = CounterServiceClient(router)
+# 服务端：run(Worker(), router=router)  /  serve(Worker(), router=router)
+```
+
+```typescript
+const router = new Router({ url: ["ws://router-1.internal:8765", "ws://router-2.internal:8765"] });
+```
+
+```go
+router := meshcall.NewRouter(meshcall.WithRouterURLs(
+    "ws://router-1.internal:8765",
+    "ws://router-2.internal:8765",
+))
 ```
 
 ### 5. 零中断优雅停机（Graceful Drain）
 
-在服务滚动更新或收到 `SIGTERM` 信号时，启用 `drain=True`。服务实例会先通知 Router 将自己从负载均衡池中摘除（不再接收新请求），等待已在进行中的调用全部处理完毕后再关闭连接：
+`run` 在 `SIGINT` / `SIGTERM` 时会自动排空。使用 `serve` 时，通过句柄停止（或离开上下文管理器）：
 
 ```python
-# Python
+# Python：排空是默认行为；可用 drain_timeout 限定等待时间
 await server.stop(drain=True, drain_timeout=30.0)
 ```
 
@@ -446,11 +891,11 @@ await server.stop(drain=True, drain_timeout=30.0)
 await server.close({ drain: true, drainTimeoutMs: 30_000 });
 ```
 
-Go：`server.Drain(ctx)`，然后 `server.Close()`。
+Go：`srv.Close()` 会先排空；更底层的形式是 `server.Drain(ctx)`，然后 `server.Close()`。
 
-### 6. Router 停机、容量限制与指标
+### Router 停机、容量限制与指标
 
-用 SIGTERM（或 SIGINT）重启 Router 时，它会先排空：`/readyz` 返回 503，新调用收到可重试的 `unavailable`（`reason: "router_draining"`），空闲连接以 1001 关闭，客户端与服务随之转到其他 Router；超过 `--shutdown-timeout`（默认 10 秒）仍在进行的调用以可重试的 `unavailable`（`reason: "router_shutdown"`）结束。第二次信号跳过等待。由 Python 或 TypeScript 启动器托管的 Router 通过关闭 stdin 停止，会立即结束进行中的调用。
+用 SIGTERM（或 SIGINT）重启 Router 时，它会先排空：`/readyz` 返回 503，新调用收到可重试的 `unavailable`（`reason: "router_draining"`），空闲连接以 1001 关闭，客户端与服务随之转到其他 Router；超过 `--shutdown-timeout`（默认 10 秒）仍在进行的调用以可重试的 `unavailable`（`reason: "router_shutdown"`）结束。第二次信号跳过等待。由 SDK 拉起的 Router 通过关闭 stdin 停止，会立即结束进行中的调用。
 
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
@@ -459,13 +904,13 @@ Go：`server.Drain(ctx)`，然后 `server.Close()`。
 | `--outbox-size` | 256 MiB | Router 对停止读取的对端最多可欠多少数据，超出即断开 |
 | `--metrics-listen` | 关闭 | 在独立监听地址（如 `127.0.0.1:9464`）的 `http://ADDR/metrics` 提供 Prometheus 指标 |
 
-每个参数都有对应的 `MESHCALL_ROUTER_<FLAG>` 环境变量；启动器接受 `max_frame_size` / `maxFrameSize` 与 `outbox_size` / `outboxSize`。
+每个参数都有对应的 `MESHCALL_ROUTER_<FLAG>` 环境变量；`Router(...)` 接受 `run` / `serve` 传给本地内嵌 Router 的选项（`metrics_listen`、`max_frame_size`、`outbox_size`、`auth_file` 等）。
 
 ---
 
 ## 8. 安全鉴权、ACL 权限控制与临时范围 Token
 
-**核心优势：** 生产环境下可通过 `router-auth.json` 为不同服务和客户端配置最小权限 ACL（基于 PBKDF2-HMAC-SHA256 哈希），并通过内置的 `AuthService` 动态签发带过期时间和精确方法范围的临时 Token。
+**核心优势：** 生产环境下可通过 `router-auth.json` 为不同服务和客户端配置最小权限 ACL（基于 PBKDF2-HMAC-SHA256 哈希），并通过 `Router` 对象动态签发带过期时间和精确方法范围的临时 Token。
 
 ### 1. 生成密码哈希并配置 `router-auth.json`
 
@@ -502,30 +947,32 @@ python3 -c 'import getpass,sys; sys.stdout.write(getpass.getpass("Password: "))'
 }
 ```
 
-启动 Router 时传入 `WebSocketRouter(port=8765, auth_file="router-auth.json")`（或命令行 `--auth-file router-auth.json`）。
+启动 Router 时带上鉴权文件：把 `Router(..., auth_file="router-auth.json")` 传给 `run` / `serve`，让自动拉起的 Router 使用它；或直接用二进制 `--auth-file router-auth.json` 启动（也可使用 `WebSocketRouter(port=8765, auth_file="router-auth.json")`）。
 
 ### 2. 动态签发与吊销临时范围 Token
 
 ```python
-from meshcall import RouterAuthClient, RouterCredentials, RouterScope
-from meshcall.drivers import WebSocketClientDriver
+from meshcall import Router, RouterCredentials, RouterScope
 
-admin_creds = RouterCredentials(username="backend-app", password="...")
-async with RouterAuthClient(WebSocketClientDriver("ws://127.0.0.1:8765", auth=admin_creds)) as auth:
+admin = RouterCredentials(username="backend-app", password="...")
+async with Router.connect("ws://127.0.0.1:8765", auth=admin) as router:
     # 签发一个有效期 15 分钟、仅允许调用 `chat.v1.Chat/send` 的受限临时 Token
-    issued = await auth.issue_token(
-        ttl_seconds=900,
+    issued = await router.issue_token(
         scopes=[RouterScope(service="chat.v1.Chat", methods=["send"])],
+        ttl_seconds=900,
     )
 
 # 将 `issued.token` 交给下游客户端使用：
-scoped_driver = WebSocketClientDriver(
+downstream = await Router.connect(
     "ws://127.0.0.1:8765",
     auth=RouterCredentials(token=issued.token),
 )
+chat = ChatClient(downstream)
 ```
 
-### 3. 匿名调用方与 API Key
+`revoke_token(issued.token_id)`（TypeScript `revokeToken(tokenId)`，Go `RevokeToken(ctx, issued.TokenID)`）可让 Token 在到期前失效。
+
+### 匿名调用方与 API Key
 
 不发送 `Authorization` 头的调用方是保留用户 `anonymous`。它可以连接，但除非鉴权文件为它授予 `call` 规则，否则每个调用都返回 `permission_denied`；只有鉴权文件能让某个方法公开。
 
@@ -539,7 +986,7 @@ scoped_driver = WebSocketClientDriver(
 meshcall-router new-api-key ci-bot   # 只打印一次 Key，以及应加入 "api_keys" 的条目
 ```
 
-填好条目的 `call` 列表后重启 Router。调用方以 `Authorization: Bearer mk_…` 发送 Key：Python 为 `RouterCredentials(token="mk_…")`，TypeScript 为 `{ auth: { token: "mk_…" } }`，Go 为 `ClientOptions{Authorization: "Bearer mk_…"}`，curl 为 `-H 'Authorization: Bearer mk_…'`。校验 Key 只需一次哈希查找；轮换方式是先加新 Key 再删旧 Key。详见 [Router 架构与鉴权](router.md#连接时认证调用时授权)。
+填好条目的 `call` 列表后重启 Router。调用方以 `Authorization: Bearer mk_…` 发送 Key：Python 为 `Router(..., auth=RouterCredentials(token="mk_…"))`，TypeScript 为 `new Router({ url, auth: { token: "mk_…" } })`，Go 为 `meshcall.NewRouter(meshcall.WithAuth(meshcall.BearerToken("mk_…")))`，curl 为 `-H 'Authorization: Bearer mk_…'`。校验 Key 只需一次哈希查找；轮换方式是先加新 Key 再删旧 Key。详见 [Router 架构与鉴权](router.md#连接时认证调用时授权)。
 
 ---
 
@@ -550,7 +997,7 @@ meshcall-router new-api-key ci-bot   # 只打印一次 Key，以及应加入 "ap
 ### 客户端与服务端拦截器（Python）
 
 ```python
-from meshcall import ClientCallInfo, ClientCallNext, RpcContext, ServerCallNext
+from meshcall import ClientCallInfo, ClientCallNext, Router, RpcContext, ServerCallNext, serve
 
 # 客户端拦截器：自动为每次调用注入 trace-id 元数据
 async def trace_client_interceptor(info: ClientCallInfo, call_next: ClientCallNext):
@@ -564,6 +1011,12 @@ async def audit_server_interceptor(ctx: RpcContext, request: object, call_next: 
     trace_id = ctx.metadata.get("trace-id", "none")
     ctx.set_trailer("echo-trace-id", trace_id)
     return await call_next(ctx, request)
+
+router = Router("ws://127.0.0.1:8765", interceptors=[trace_client_interceptor])
+client = TextProcessorClient(router)
+
+async with serve(TextProcessor(), router=router, interceptors=[audit_server_interceptor]) as server:
+    ...
 ```
 
 ### OpenTelemetry 链路追踪
@@ -572,18 +1025,26 @@ async def audit_server_interceptor(ctx: RpcContext, request: object, call_next: 
 
 ```python
 # pip install "meshcall[otel]"
+from meshcall import Router, serve
 from meshcall.otel import client_interceptor, server_interceptor
 
-client = TextProcessorClient(driver, interceptors=[client_interceptor()])
-server = RpcServer(services=[TextProcessor()], driver=server_driver, interceptors=[server_interceptor()])
+router = Router("ws://127.0.0.1:8765", interceptors=[client_interceptor()])
+client = TextProcessorClient(router)
+
+async with serve(TextProcessor(), router=router, interceptors=[server_interceptor()]) as server:
+    ...
 ```
 
 ```typescript
 // 需要可选的 peer dependency @opentelemetry/api
+import { Router, serve } from "meshcall";
 import { otelClientInterceptor, otelServerInterceptor } from "meshcall/otel";
 
-const client = new MeshCallClient(url, undefined, { interceptors: [otelClientInterceptor()] });
-const server = new MeshCallServer({ services, router: { endpoint: url }, interceptors: [otelServerInterceptor()] });
+const router = new Router({ url, interceptors: [otelClientInterceptor()] });
+await using server = await serve(new TextProcessor(), {
+  router,
+  interceptors: [otelServerInterceptor()],
+});
 ```
 
 Go 没有 OpenTelemetry 包；`ClientInterceptor` / `ServerInterceptor` 可以自行读写 `traceparent` 元数据键。
@@ -596,7 +1057,7 @@ Go 没有 OpenTelemetry 包；`ClientInterceptor` / `ServerInterceptor` 可以�
 from meshcall import DeadlineExceededError, InvalidArgumentError, UnavailableError
 
 try:
-    await client.add(10, 20, timeout=2.0)
+    await client.with_options(timeout=2.0).add(10, 20)
 except InvalidArgumentError as err:
     # 遍历字段级参数校验失败详情（协议保证绝不回显敏感原始输入值）
     for v in err.violations:
@@ -627,4 +1088,3 @@ uv run meshcall init --agent all        # 以上全部目标，外加默认的 u
 ```
 
 指定 `--agent` 时只写入所列目标；若还想保留 `.agents/` 默认位置，请同时加上 `universal`。重复执行是幂等的；被修改过的技能文件会保留，除非传入 `--force`。
-

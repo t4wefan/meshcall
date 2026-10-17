@@ -25,10 +25,38 @@ Python RPC 事件循环 <---- 线程安全桥接 ----> 业务工作线程事件�
         +---- WebSocket Router 路由驱动 ---- 服务实例注册表 (Registry)
 ```
 
-- **契约层与网络传输解耦**：默认调用形状为一元调用（`unary`），通过显式装饰器声明推荐的服务端流（`server_stream`）、客户端流（`client_stream`）或订阅（`@method.subscription` / `subscriptionMethod`，线路上是可从 cursor 恢复的服务端流）。**函数参数即请求体（Parameters are the request）**：多个函数参数会被自动打包为一个合成的请求模型用于校验与传输，模型类型的参数只是其中一个字段。服务名自动规范化为包含一个版本段（如 `chat` → `chat.v0`）。
-- **双向流（duplex）是受限的最后手段**：必须显式声明（`@method.duplex(reason=…)` / `@method.duplex({ reason })`），Handler 拿到一个通道（`RpcDuplex` / `DuplexChannel`）迭代输入、`send` 输出，不返回值；该调用从不重试、不去重、不能通过 HTTP 调用。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
-- **依赖注入参数自动剥离**：名为 `logger`（类型 `RpcLogger`）和 `ctx` / `context`（类型 `RpcContext`）的参数属于服务端运行时依赖注入，在提取请求契约时会自动剔除，不会暴露在生成的客户端参数列表中。Docstring 与 `read_only` / `idempotent` / `destructive` / `deprecated` 选项作为 `description`、`annotations` 与 `deprecated` 写入契约。
+- **契约层与网络传输解耦**：默认调用形状为一元调用（`unary`），通过 `@query` / `@mutates` / `@stream`（TypeScript 为 `query` / `mutates` / `stream`，Go 为 `HandleUnary` / `HandleServerStream` / `HandleClientStream`）声明调用形状与语义（`read_only`、`idempotent`、`destructive`），这些选项作为 `annotations`、`description` 与 `deprecated` 写入契约。**函数参数即请求体（Parameters are the request）**：多个函数参数会被自动打包为一个合成的请求模型用于校验与传输，模型类型的参数只是其中一个字段。客户端流的入站迭代器排在所有普通业务参数之后。服务名自动规范化为包含一个版本段（如 `chat` → `chat.v0`）。订阅（`@method.subscription` / `method.subscription` / `HandleSubscription`）与 `Topic` 仍保留实现，但在 v0.3 中是**实验特性**：不在推荐路径中，API 可能变化。
+- **双向流（duplex）是受限的最后手段**：必须显式声明（`@method.duplex(reason=…)` / `@method.duplex({ reason })` / `HandleDuplex`），Handler 拿到一个通道（`RpcDuplex` / `DuplexChannel`）迭代输入、`send` 输出，不返回值；该调用从不重试、不去重、不能通过 HTTP 调用。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
+- **依赖注入参数自动剥离**：`@dependency` / `dependency()`、`Annotated[T, dependency(provider)]`、`meta("key")`、`ctx: RpcContext` 与 `logger: RpcLogger` 都属于服务端注入参数，在提取请求契约时会自动剔除，不会出现在生成的客户端参数列表中。注入在每个调用内解析：提供者最多执行一次并按提供者缓存；生成器提供者通过退出栈管理，调用结束时（成功、异常或取消）执行 `yield` 之后的清理逻辑。详见下文「依赖注入作用域」。
 - **逻辑帧与底层模式解耦**：运行时核心仅处理逻辑帧（Frame），无需关心底层是 Direct 直连还是经由 Router 转发；连接握手、角色声明、TCP 与本地传输（Unix 套接字或 Windows 命名管道：Python `unix_path=` / `pipe=`，TypeScript `unixPath` / `pipe`）绑定及服务注册均由 Driver 层封装。
+
+### 1.1 Router 对象与 run / serve / connect 生命周期
+
+统一的 `Router` 对象（Python / TypeScript 的 `Router`，Go 的 `NewRouter` / `ConnectRouter`）承担三种角色：
+
+1. **服务端配置**：传给 `run` / `serve`（Go `Run` / `Serve`），设置端点、凭据、重连与重试策略，以及本地内嵌 Router 的启动参数。
+2. **共享客户端连接**：`Router.connect(...)` 建立一条底层 WebSocket，多个生成客户端复用它；三种运行时也都支持通过 `with_options` / `withOptions` / `WithOptions` 设置调用默认值。
+3. **内置服务客户端**：`list_services` / `describe_service` / `whoami` / `issue_token` / `revoke_token`（TypeScript 为 camelCase，Go 为 `ListServices` / …）直接调用 Router 的 Registry 与 AuthService。
+
+`run` 是一行启动入口：它从 `MESHCALL_ROUTER_URL`（默认 `ws://127.0.0.1:8765`）解析端点，当目标是本地地址且无人监听时拉起内置 `meshcall-router`，注册传入的所有服务，并在 SIGINT / SIGTERM 时排空后退出。`serve` 是其下的异步构件：返回 `RunningServer`（`.url`、`.instance_id`、`.stop(drain=True)`），测试与演示用它把 Router 起在临时端口（`ws://127.0.0.1:0`），并可显式停止或排空。若本地拉起时在端口绑定竞争中失败，会回退为连接胜出的进程；`spawn_if_local=False` 关闭自动拉起。Python 生成的客户端提供 `MyClient.connect(router_or_url)`；TypeScript 的 `MyClient.connect(router)` 与 Go 的 `NewMyClient(router)` 包装一个已有的 `Router`，因此复用其连接而不是再开一条。
+
+单次调用控制参数刻意不进入生成的**业务**参数列表。`with_options` / `withOptions` / `WithOptions` 附加 `timeout`、`idle_timeout` / `timeoutMs`、`metadata`、`idempotency_key` / `idempotencyKey` 与 `instance`；生成的 TypeScript 与 Go 方法也接受一个可选的尾部 options / `opts ...` 参数用于同样目的。定向服务的生成客户端仍把 `instance` 作为必填参数（Python keyword-only、TypeScript 必填选项、Go 位置参数），由编译器强制。
+
+### 1.2 依赖注入作用域
+
+依赖注入在服务定义时编译、在每个调用中解析。Python 在 `@service` 注册阶段为每个提供者构建 `DependencyPlan`（含嵌套提供者与循环依赖检测），支持 `@dependency` 函数、默认参数写法（`user: str = current_user`）与 `Annotated[T, dependency(provider)]`。TypeScript 以 `dependency(provider, { inject })`、`meta("key")` 和每个调用新建的 `DependencyScope` 对应；Go 通过 `WithDependencies(...)` 注册 `Dependency(...)` 与 `Meta[T](...)`，反射 Handler 的参数类型命中注册表时即注入。
+
+每个调用拥有独立作用域：提供者在**每次调用中最多执行一次**，结果按提供者缓存在该作用域内，因此依赖同一提供者的多个参数共享同一个实例。生成器 / 异步生成器提供者通过退出栈进入：yield 出的值被注入，`yield` 之后（或 `finally` 中）的代码在调用结束时执行——无论成功、异常还是取消。这正是事务型依赖能够“成功提交、失败回滚”而无需 Handler 手工 `commit()` 的原因（见 `best-practice/src/best_practice/service.py`）。元数据在普通依赖之前解析，缺少必需 Header 时会在获取任何资源之前以 `invalid_argument` 失败。注入参数会从契约中剔除，生成的客户端只看到业务参数。
+
+### 1.3 请求绑定与生成签名
+
+每个方法契约都保存一份请求 JSON Schema。TypeScript 的方法装饰器可以用三种绑定模式声明它；Python 与 Go 则从 Handler 签名推导出等价的请求 Schema：
+
+- `request_object`：显式 `request` Schema（或 `@method` 的默认形式）。Handler 收到一个解析后的请求对象。
+- `positional`：`input: { a: z.string(), b: z.int() }`（无参数时为 `input: {}`）。这个具名对象成为请求 Schema，Handler 按位置收到 `a, b`；字段名与顺序被保留。
+- `single_schema`：`input: SomeSchema`。该 Schema 就是整个请求，Handler 将它作为一个值接收，不拆散其内部字段。
+
+Python 按签名顺序提取非注入参数，单个模型类型的参数保持完整；Go 反射服务使用 `ctx` 之后、剔除已注册依赖类型之后的导出方法参数，指针与 `omitempty` 字段视为可选。代码生成器读取请求 Schema 的属性顺序与参数名，在 Python、TypeScript 与 Go 中 1:1 镜像，因此生成方法接收的正是服务端的业务参数列表。客户端流方法把入站迭代器追加在最后；单次调用选项通过 `with_options`（或生成 TypeScript / Go 方法的可选尾部 options 参数）附加，不作为业务参数。
 
 ---
 
@@ -43,7 +71,7 @@ Python RPC 事件循环 <---- 线程安全桥接 ----> 业务工作线程事件�
 
 其他运行时：
 
-- **TypeScript**：运行在 Node.js 单线程事件循环上，Handler 不做工作线程隔离，应保持异步非阻塞。TypeScript 客户端支持一元、服务端流、客户端流、订阅与 duplex 调用；客户端、直连服务端与 Router 服务连接都支持 TCP 与本地传输。
+- **TypeScript**：运行在 Node.js 单线程事件循环上，Handler 不做工作线程隔离，应保持异步非阻塞。TypeScript 客户端支持一元、服务端流、客户端流、（实验性的）订阅与 duplex 调用；客户端、直连服务端与 Router 服务连接都支持 TCP 与本地传输。
 - **Go**（`meshcall-go`）：端点同样写作 `ws://`、`unix:///path` 与 `pipe://NAME`；每个 Handler 运行在自己的 goroutine 中，带一个随调用结束而结束的 `context.Context`。
 
 三种运行时使用同一个 Go Router；其进程由轻量的 Python/TypeScript 启动器拉起（Go 没有启动器）。Router 的注册表、账号鉴权、范围 Token RPC 与故障边界见 [Router 架构](router.md)。
@@ -89,9 +117,9 @@ Python RPC 事件循环 <---- 线程安全桥接 ----> 业务工作线程事件�
 - **类型化错误**：客户端为每个协议错误码提供一个子类（`InvalidArgumentError`、`DeadlineExceededError`、`UnavailableError` 等；`cancelled` 对应 `CallCancelledError`），由 `MeshCallError.from_code` / `fromCode` 构造；未知（业务）错误码保持为普通 `MeshCallError`。`error.source` 与 `error.reason` 读取对应的 `details` 字段。
 - **三层相对超时（Relative Timeouts）**：超时以相对毫秒数 `timeout_ms` 在线上传输，无需机器间时钟同步。Server（`timeout_ms`）、Router（`timeout_ms + 500ms`）和 Client（`timeout_ms + max(1s, 10%)`）依次在各自单调时钟上独立兜底。`idle_timeout_ms` 只由消费方执行。
 - **容量与熔断**：`max_inflight` 限制每个实例的并发调用数，服务端自身也会执行（`resource_exhausted`，`reason: "overloaded"`），Router 绕开满载实例；Router 的实例级熔断器在连续超时或 `internal`/`unavailable` 后排除实例，再放行一个探测调用。
-- **重试**：内置的 `RetryPolicy`（位于客户端拦截器链最外层）只在错误可重试、错误码在策略集合中，且方法按契约是幂等的或调用带有 `idempotency_key` 时重发失败的一元调用；各次尝试共享调用的超时，最终错误报告 `details.attempts`。流从不重试；订阅改为从最后一个 cursor 重新打开（见[订阅](protocol.md#订阅subscriptions)）。
-- **优雅排空**：`stop(drain=True)` / `close({ drain: true })` / Go `server.Drain(ctx)` 先停止接收新调用（向 Router 发送 `server.drain`，或关闭监听器），在排空超时内等待进行中的调用结束后再停止，进行中的调用不会失败。
-- **断线重连策略**：连接断开会立即终止该连接上的活跃调用。随后客户端在下次发起调用时按指数退避与随机抖动（`ReconnectPolicy`）自动重连，最多等待该调用的超时；Router 模式服务端则在后台以同样退避持续重连并重新注册。调用从不自动重放；订阅从最后一个 cursor 重新打开。客户端与 Router 模式服务端都接受多个 Router 端点：客户端故障转移到下一个端点，服务端在每个 Router 上各保持一个注册。
+- **重试**：内置的 `RetryPolicy`（位于客户端拦截器链最外层）只在错误可重试、错误码在策略集合中，且方法按契约是幂等的或调用带有 `idempotency_key` 时重发失败的一元调用；各次尝试共享调用的超时，最终错误报告 `details.attempts`。流从不重试；（实验性的）订阅改为从最后一个 cursor 重新打开（见[订阅](protocol.md#订阅subscriptions)）。
+- **优雅排空**：`run` / `serve` 在 SIGINT / SIGTERM 或退出上下文时自动排空；更底层的形式是 `stop(drain=True)` / `close({ drain: true })` / Go `server.Drain(ctx)`，它们先停止接收新调用（向 Router 发送 `server.drain`，或关闭监听器），在排空超时内等待进行中的调用结束后再停止，进行中的调用不会失败。
+- **断线重连策略**：连接断开会立即终止该连接上的活跃调用。随后客户端在下次发起调用时按指数退避与随机抖动（`ReconnectPolicy`）自动重连，最多等待该调用的超时；Router 模式服务端则在后台以同样退避持续重连并重新注册。调用从不自动重放；（实验性的）订阅从最后一个 cursor 重新打开。客户端与 Router 模式服务端都接受多个 Router 端点：客户端故障转移到下一个端点，服务端在每个 Router 上各保持一个注册。
 - **帧错误**：仍能对应到某个调用的畸形帧只使该调用以 `protocol_error` 失败；无法归属的帧会关闭连接。超大帧使发送它的调用以 `resource_exhausted` 失败。
 
 ---

@@ -1,10 +1,11 @@
-import { MeshCallServer } from "meshcall";
+import { serve } from "meshcall";
 
 import { TypeScriptGreetingService } from "./service.js";
 
-const server = new MeshCallServer({ services: [new TypeScriptGreetingService()] });
-await server.start();
-process.stdout.write(`${JSON.stringify({ port: server.boundPort })}\n`);
+// serve() starts a bundled Router for the local default address and registers
+// this instance with it; the printed URL is what clients connect to.
+const server = await serve(new TypeScriptGreetingService(), { accessLog: false });
+process.stdout.write(`${JSON.stringify({ url: server.url })}\n`);
 
 process.stdin.resume();
 await new Promise<void>((resolve) => process.stdin.once("data", () => resolve()));

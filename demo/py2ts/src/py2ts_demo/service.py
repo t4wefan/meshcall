@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-from meshcall import method, service
+from meshcall import query, service
 
 
 class GreetingResult(BaseModel):
@@ -16,7 +16,7 @@ class GreetingResult(BaseModel):
 class PythonGreetingService:
     """A Python service consumed by the generated TypeScript client."""
 
-    @method(read_only=True)
+    @query
     async def greet(
         self,
         name: str,

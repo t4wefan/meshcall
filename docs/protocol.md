@@ -387,7 +387,9 @@ two directions do not truly interleave.
 ## Subscriptions
 
 A subscription is a server stream that is meant to stay open (events,
-notifications, a live feed) and to be resumed after interruptions. It adds
+notifications, a live feed) and to be resumed after interruptions.
+Subscriptions and the runtimes' `Topic` helper are **experimental** in v0.3:
+supported and specified here, but outside the recommended core flow. It adds
 nothing to the wire: the call, credit, cancellation and errors are those of a
 server stream. What it adds is a contract entry the clients act on:
 

@@ -26,26 +26,125 @@ Logical Frame connection and fair scheduler
 ```
 
 The contract layer has no networking dependency. Unary is the default method
-shape; explicit stream decorators select the recommended server or client
-streaming shapes. Service parameters are the request: they are wrapped into one
-generated Pydantic request model for validation and transport, and a
-model-typed parameter is simply one field of it. Service names are normalised
-to carry exactly one version segment (`chat` → `chat.v0`). The Runtime operates on logical
-frames and doesn't know whether the connection is direct or routed. WebSocket
-drivers own connection setup, role handshakes, TCP and local (Unix socket /
-Windows named pipe, `unix_path=` / `pipe=`) endpoints, and server
-registration. Duplex (`@method.duplex(reason=…)` / `@method.duplex({ reason })`)
-is a restricted, opt-in shape of last resort: the handler gets a channel
+shape; `@query` / `@mutates` / `@stream` (`query` / `mutates` / `stream` in
+TypeScript; `HandleUnary` / `HandleServerStream` / `HandleClientStream` in Go)
+select the shape and its semantics — read-only, idempotent and destructive —
+and those options travel into the contract as `read_only`, `idempotent`,
+`destructive`, `description` and `deprecated`. Service parameters are the
+request: they are wrapped into one generated request model for validation and
+transport, and a model-typed parameter is simply one field of it. A client
+stream's inbound iterator comes last, after every ordinary business parameter.
+Service names are normalised to carry exactly one version segment (`chat` →
+`chat.v0`). The Runtime operates on logical frames and doesn't know whether the
+connection is direct or routed. WebSocket drivers own connection setup, role
+handshakes, TCP and local (Unix socket / Windows named pipe, `unix_path=` /
+`pipe=`) endpoints, and server registration. Duplex
+(`@method.duplex(reason=…)` / `@method.duplex({ reason })` / `HandleDuplex`) is
+a restricted, opt-in shape of last resort: the handler gets a channel
 (`RpcDuplex` / `DuplexChannel`) to iterate input and `send` output, returns
 nothing, and the call is never retried, deduplicated or reachable over HTTP;
-see protocol.md → Duplex calls.
+see protocol.md → Duplex calls. Subscriptions (`@method.subscription` /
+`method.subscription` / `HandleSubscription`) and `Topic` remain implemented
+but are **experimental** in v0.3: they are outside the recommended path and
+may change.
 
 Parameters named `logger` / typed `RpcLogger` and `ctx` / `context` / typed
-`RpcContext` are dependency injection, not RPC fields. They are removed while
-extracting the request model and supplied by the server per call, so generated
-clients do not expose them. Docstrings and the `read_only` / `idempotent` /
-`destructive` / `deprecated` method options are carried into the contract as
-`description`, `annotations` and `deprecated`.
+`RpcContext`, values declared with `@dependency` / `dependency()` and values
+declared with `meta("key")` are dependency injection, not RPC fields. They are
+removed while extracting the request model and supplied by the server per call,
+so generated clients do not expose them. Docstrings and the method options are
+carried into the contract as `description`, `annotations` and `deprecated`.
+
+## The Router object and the run / serve / connect lifecycle
+
+A single `Router` object (Python `Router`, TypeScript `Router`, Go
+`NewRouter` / `ConnectRouter`) covers three roles that used to need separate
+types:
+
+1. **Server configuration** — pass it to `run` / `serve` (Go `Run` / `Serve`)
+   to set endpoints, credentials, reconnect and retry policies, and the
+   options of a locally spawned Router.
+2. **A multiplexed client connection** — `Router.connect(...)` opens one
+   underlying WebSocket that any number of generated clients share. All three
+   runtimes also accept per-call defaults through `with_options` /
+   `withOptions` / `WithOptions`.
+3. **Typed built-in services** — `list_services` / `describe_service` /
+   `whoami` / `issue_token` / `revoke_token` (camelCase in TypeScript,
+   `ListServices` / … in Go) call the Router's Registry and AuthService
+   directly.
+
+`run` is the one-line entry point: it resolves the endpoint from
+`MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), starts a bundled
+`meshcall-router` when the target is a local address with nothing listening,
+registers every service passed to it, and drains on SIGINT / SIGTERM before
+exiting. `serve` is the async building block underneath: it returns a
+`RunningServer` (`.url`, `.instance_id`, `.stop(drain=True)`), which tests and
+demos use to start a Router on an ephemeral port (`ws://127.0.0.1:0`) and to
+stop or drain it explicitly. A spawn that loses a bind race falls back to
+connecting to the process that won; `spawn_if_local=False` turns auto-spawn
+off. Python generated clients offer `MyClient.connect(router_or_url)`;
+TypeScript's `MyClient.connect(router)` and Go's `NewMyClient(router)` wrap an
+existing `Router`, so its connection is shared instead of opening another.
+
+Per-call control parameters are deliberately kept out of the generated
+*business* parameter list. `with_options` / `withOptions` / `WithOptions`
+attach `timeout`, `idle_timeout` / `timeoutMs`, `metadata`,
+`idempotency_key` / `idempotencyKey` and `instance`; generated TypeScript and
+Go methods also accept an optional trailing options / `opts ...` argument for
+the same purpose. A targeted service's generated client keeps `instance` a
+required argument (Python keyword-only, TypeScript required option, Go
+positional parameter) so the compiler enforces it.
+
+## Dependency injection scope
+
+Dependency injection is compiled when a service is defined and resolved per
+call. Python builds a `DependencyPlan` for each provider at `@service`
+registration, including nested providers and a circular-dependency check; the
+same plan supports `@dependency` on a function, default-argument style
+(`user: str = current_user`) and `Annotated[T, dependency(provider)]`.
+TypeScript mirrors this with `dependency(provider, { inject })`,
+`meta("key")`, and a `DependencyScope` created for every call. Go's
+`WithDependencies(...)` registers `Dependency(...)` and `Meta[T](...)`
+providers; reflected handlers whose parameter types are registered are
+injected.
+
+Each call gets a fresh scope. A provider runs **at most once per call** and its
+value is cached in that scope, so two parameters that depend on the same
+provider share one instance. A provider that is a generator or async generator
+is entered through an exit stack: the yielded value is injected, and its
+`finally` / code after `yield` runs when the call ends — on success, on error
+and on cancellation. This is what makes a transaction dependency express
+commit-on-success and rollback-on-failure without handlers calling
+`commit()` by hand (`best-practice/src/best_practice/service.py`). Metadata
+entries are resolved before regular dependencies so a missing required header
+fails with `invalid_argument` before any resource is acquired. Injected
+parameters are stripped from the contract; the generated clients see only
+business parameters.
+
+## Request binding and generated signatures
+
+Every method contract stores one request JSON Schema. TypeScript's method
+decorators can declare it in three binding modes; Python and Go produce the
+equivalent request schema from their handler signatures:
+
+- `request_object` — an explicit `request` schema (or the `@method` default).
+  The handler receives one parsed request object.
+- `positional` — `input: { a: z.string(), b: z.int() }` (or `input: {}` for no
+  parameters). The named object becomes the request schema and the handler
+  receives `a, b` positionally; the names and order are kept.
+- `single_schema` — `input: SomeSchema`. That schema is the whole request and
+  the handler receives it as one value, without unpacking its fields.
+
+Python extracts the non-injected parameters in signature order; a single
+model-typed parameter stays whole. Go reflected services use the exported
+method parameters after `ctx` and after removing registered dependency types;
+pointer and `omitempty` fields are optional. The code generator reads the
+request schema's property order and parameter names and mirrors them 1:1 in
+Python, TypeScript and Go, so the generated method takes exactly the server's
+business parameter list. Client-stream methods append the inbound iterable
+last; per-call options are attached with `with_options` (or the optional
+trailing options argument of generated TypeScript and Go methods) and are not
+treated as business parameters.
 
 ## RPC and service loop isolation
 
@@ -59,9 +158,9 @@ Cross-loop operations use thread-safe future submission. A synchronously
 blocking handler can delay other work assigned to the current service worker,
 but it cannot prevent the RPC loop from enforcing a deadline or maintaining
 other connections. The TypeScript client consumes unary, server-streaming,
-client-streaming, subscription and duplex calls; TypeScript service handlers
-are still not worker-thread isolated and must avoid synchronously blocking
-Node's event loop.
+client-streaming, (experimental) subscription and duplex calls; TypeScript
+service handlers are still not worker-thread isolated and must avoid
+synchronously blocking Node's event loop.
 
 Access logging is also owned by the RPC loop. It is emitted at the single
 terminal-frame arbitration point, after a result or error status is known, so a
@@ -120,6 +219,13 @@ exclusive Driver binding. Any startup failure rolls the Server back to `IDLE` an
 releases the binding. `stop()` closes the Driver before releasing it, so a stale
 task can't operate through a newly acquired generation.
 
+`serve` wraps one `RpcServer` and a Router driver owned by the `Router` object;
+its `RunningServer.stop(drain=True)` drains the server and then stops a Router
+the handle spawned itself. `run` wraps `serve` with signal handling: SIGINT /
+SIGTERM trigger the same drain path and then exit. A generated client opened
+with `connect(router_or_url)` either shares the `Router`'s connection or owns
+the one it opened.
+
 ## Failure boundaries
 
 - Service exceptions become sanitized `internal` errors and are logged locally.
@@ -161,8 +267,8 @@ task can't operate through a newly acquired generation.
   re-sends failed unary calls when the error is retryable, the code is in the
   policy's set, and the method is idempotent per the contract or the call has
   an `idempotency_key`; attempts share the call's timeout and the final error
-  reports `details.attempts`. Streams are never retried; a subscription is
-  reopened from its last cursor instead (see
+  reports `details.attempts`. Streams are never retried; an (experimental)
+  subscription is reopened from its last cursor instead (see
   [Subscriptions](protocol.md#subscriptions)).
 - `stop(drain=True)` / `close({ drain: true })` first stops taking new calls
   (`server.drain` to the Router, or closing the listener) and waits up to the
@@ -175,8 +281,9 @@ task can't operate through a newly acquired generation.
   (`ReconnectPolicy`), waiting at most that call's timeout. Router-mode
   servers re-register with the same backoff while staying `RUNNING`; calls
   that arrive in between fail at the Router with retryable `unavailable`.
-  Calls are never replayed automatically; a subscription is reopened from its
-  last cursor instead (see [Subscriptions](protocol.md#subscriptions)).
+  Calls are never replayed automatically; an (experimental) subscription is
+  reopened from its last cursor instead (see
+  [Subscriptions](protocol.md#subscriptions)).
 - A malformed frame that still names a call fails only that call with
   `protocol_error`; a frame that cannot be attributed closes the connection.
   Oversize frames fail the sending call with `resource_exhausted`.

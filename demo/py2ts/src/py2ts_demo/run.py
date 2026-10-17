@@ -7,8 +7,7 @@ import json
 import shutil
 from pathlib import Path
 
-from meshcall import RpcServer
-from meshcall.drivers import WebSocketDirectServerDriver
+from meshcall import Router, serve
 from py2ts_demo.service import PythonGreetingService
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -36,23 +35,19 @@ async def run_demo() -> None:
     )
     await _run_process("yarn", "run", "build", cwd=TYPESCRIPT_CLIENT_ROOT)
 
-    server_driver = WebSocketDirectServerDriver(host="127.0.0.1", port=0)
-    server = RpcServer(
-        services=[PythonGreetingService],
-        driver=server_driver,
-    )
-    await server.start()
-    try:
+    async with serve(
+        PythonGreetingService(),
+        router=Router("ws://127.0.0.1:0"),
+        access_log=False,
+    ) as server:
         output = await _run_process(
             "node",
             "run.mjs",
-            f"ws://127.0.0.1:{server_driver.bound_port}",
+            server.url or "",
             cwd=TYPESCRIPT_CLIENT_ROOT,
         )
         result = json.loads(output)
         print(f"Python service -> TypeScript client: {result}")
-    finally:
-        await server.stop()
 
 
 def main() -> None:

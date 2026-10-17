@@ -129,6 +129,8 @@ validation, `diagnostics.go`, `transport.go`, `conformance/fixture`).
 | Conformance suite | `conformance/fixture.py` | `conformance/fixture.ts` | `conformance/` |
 | Auth, tokens | `router_auth.py` | `router-auth.ts` | `auth.go`, `management.go` |
 | Subscriptions, `Topic` | `topic.py` (`client.py` resubscribes) | `topic.ts`, `subscription.ts` | — |
+| Router object, `run`/`serve`/`connect` | `router.py` | `router.ts` | `router.go` |
+| Dependency injection, `meta` | `di.py` | `di.ts` | `di.go` |
 | OpenTelemetry, metrics | `otel.py` | `otel.ts` | `metrics.go` (Prometheus) |
 | HTTP client / API | — | `web.ts` (`MeshCallHttpClient`) | `httpapi.go`, `openapi.go` |
 

@@ -49,7 +49,7 @@ yarn add meshcall
 
 ```python
 from pydantic import BaseModel
-from meshcall import method, service
+from meshcall import query, service
 
 
 class Reply(BaseModel):
@@ -60,7 +60,7 @@ class Reply(BaseModel):
 class Greeter:
     """问候服务。"""
 
-    @method(read_only=True)
+    @query
     async def greet(self, name: str) -> Reply:
         """向指定名字返回问候语。"""
         return Reply(message=f"hello, {name}")
@@ -69,7 +69,7 @@ class Greeter:
 这里出现了 MeshCall 最基础的三个概念：
 
 - **服务（`@service("demo.v1.Greeter")`）**：将一组相关的远程能力组织在同一个服务名下（`v1` 为版本标识），作为注册和生成客户端的基本单元。
-- **方法（`@method(read_only=True)`）**：服务中对外暴露的可调用函数。`read_only=True` 声明该方法只读取数据、不修改业务状态。
+- **方法（`@query` / `@mutates` / `@stream`）**：服务中对外暴露的可调用函数。`@query` 声明纯读取（只读且幂等），`@mutates` 声明会修改状态，`@stream` 声明流式方法。
 - **服务契约（Contract）**：方法的参数（`name: str`）与返回模型（`Reply`）共同描述了请求与响应的数据结构。框架会据此自动提取契约，并在每次调用时自动校验入参和返回值——不合法的数据在进入业务函数前就会被直接拦截。
 
 ### 2. 从契约生成客户端代码
@@ -90,37 +90,22 @@ uv run meshcall generate service:Greeter --single-file --output greeter_client.p
 - **客户端**连向同一个 Router 发起调用，只需知道服务名（如 `demo.v1.Greeter`），无需关心目标服务运行在哪个端口或哪台机器上。
 - 因为所有节点都连向 Router，**任何一个节点都可以同时对外提供服务，并作为客户端调用其他服务**。
 
-新建 `server.py` 并运行，拉起内置的本地 Router 并注册 `Greeter` 服务的一个实例：
+新建 `server.py` 并运行：
 
 ```python
-import asyncio
-from meshcall import RpcServer, WebSocketRouter
-from meshcall.drivers import WebSocketRouterServerDriver
+from meshcall import run
 from service import Greeter
 
 
-async def main() -> None:
-    async with WebSocketRouter(host="127.0.0.1", port=8765):
-        server = RpcServer(
-            services=[Greeter()],
-            driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="greeter-1"),
-        )
-        await server.start()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            await server.stop(drain=True)
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    run(Greeter())
 ```
 
 ```bash
 uv run python server.py
 ```
 
-其中 `instance_id="greeter-1"` 是这次运行的服务实例名称；`drain=True` 表示停止服务时等待正在处理的请求完成后再退出。
+`run` 会解析 Router 地址（`MESHCALL_ROUTER_URL`，默认为 `ws://127.0.0.1:8765`）；当地址是本机且没有 Router 在监听时，自动拉起内置 Router，注册服务，并在收到 `SIGINT` / `SIGTERM` 时先排空再退出。需要鉴权、指标、多个 Router 端点，或想关闭自动拉起（`spawn_if_local=False`）时，传入显式的 `router=Router(...)`。
 
 ### 4. 像调本地函数一样调用服务
 
@@ -128,19 +113,24 @@ uv run python server.py
 
 ```python
 import asyncio
-from meshcall.drivers import WebSocketClientDriver
 from greeter_client import GreeterClient
 
 
 async def main() -> None:
-    async with GreeterClient(WebSocketClientDriver("ws://127.0.0.1:8765")) as client:
+    async with GreeterClient.connect() as client:
         reply = await client.greet("Alice")
         print(reply.message)  # hello, Alice
+
+        # 单次调用选项不进入业务方法签名，统一通过 with_options 设置
+        again = await client.with_options(timeout=5.0).greet("Bob")
+        print(again.message)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+`connect()` 解析 Router 的方式与 `run()` 完全一致。多个客户端可以复用一条连接：`router = await Router.connect(); GreeterClient(router); BillingClient(router)`。
 
 ```bash
 uv run python client.py
@@ -152,14 +142,14 @@ uv run python client.py
 
 ## 流式方法：把 `return` 换成 `yield`
 
-除了一问一答的普通方法（`@method`），MeshCall 还原生支持**流式方法**。当一个方法需要持续返回多条结果（例如 AI Token 流式生成、实时任务进度或日志流）时，只需用 `@method.server_stream` 装饰异步生成器（若需由客户端流式上传数据，则使用 `@method.client_stream`）。对于需要在断线后继续的事件与通知，`@method.subscription(cursor=…, resume=…)` 声明一个服务端流，客户端会自动从最后收到的条目之后恢复；`Topic[T]` 把事件分发给进程内的每个订阅者（见[订阅](docs/zh-CN/protocol.md#订阅subscriptions)）。
+除了一问一答的普通方法，MeshCall 还原生支持**流式方法**。服务端流就是被 `@stream` 装饰的异步生成器；客户端流把入站 `AsyncIterator` 作为最后一个参数，用 `@mutates` 声明（上传流同样是有副作用的调用）。两者都遵循 1:1 签名规则：生成的客户端接收相同的业务参数、顺序一致。对于需要在断线后继续的事件与通知，`@method.subscription(cursor=…, resume=…)` 声明一个服务端流，客户端会自动从最后收到的条目之后恢复；`Topic[T]` 把事件分发给进程内的每个订阅者。订阅与 `Topic` 在 v0.3 中是**实验特性**（见[订阅](docs/zh-CN/protocol.md#订阅subscriptions)）。
 
 修改 `service.py`，新增流式方法 `countdown`：
 
 ```python
 from collections.abc import AsyncIterator
 from pydantic import BaseModel
-from meshcall import method, service
+from meshcall import query, stream, service
 
 
 class Reply(BaseModel):
@@ -174,12 +164,12 @@ class Tick(BaseModel):
 class Greeter:
     """问候与倒计时服务。"""
 
-    @method(read_only=True)
+    @query
     async def greet(self, name: str) -> Reply:
         """向指定名字返回问候语。"""
         return Reply(message=f"hello, {name}")
 
-    @method.server_stream(read_only=True)
+    @stream
     async def countdown(self, start: int) -> AsyncIterator[Tick]:
         """从 start 倒数到 1 并逐项返回。"""
         for n in range(start, 0, -1):
@@ -193,7 +183,7 @@ uv run meshcall generate service:Greeter --single-file --output greeter_client.p
 ```
 
 ```python
-async with GreeterClient(WebSocketClientDriver("ws://127.0.0.1:8765")) as client:
+async with GreeterClient.connect() as client:
     async for tick in client.countdown(3):
         print(tick.step)  # 3, 2, 1
 ```
@@ -224,11 +214,11 @@ yarn add file:./greeter-ts
 3. 保持前面的 Python `server.py` 运行，在 TypeScript 中发起调用：
 
 ```typescript
-import { MeshCallClient } from "meshcall";
+import { Router } from "meshcall";
 import { GreeterClient } from "meshcall-demo-v1-greeter-client";
 
-const rpc = new MeshCallClient("ws://127.0.0.1:8765");
-const client = new GreeterClient(rpc);
+const router = await Router.connect("ws://127.0.0.1:8765");
+const client = await GreeterClient.connect(router);
 try {
   const reply = await client.greet("Alice");
   console.log(reply.message); // hello, Alice
@@ -237,9 +227,32 @@ try {
     console.log(tick.step); // 3, 2, 1
   }
 } finally {
-  await rpc.close();
+  await router.close();
 }
 ```
+
+`Router.connect` 会读取 `MESHCALL_ROUTER_URL`（默认为 `ws://127.0.0.1:8765`）；`withOptions({ timeoutMs, metadata, idempotencyKey, instance })` 用于设置单次调用选项，不改变业务方法签名。
+
+---
+
+## 依赖注入与元数据
+
+处理器可以声明只在服务端解析的依赖，而不把它们加进契约。依赖按调用解析（同一次调用内缓存），带 `yield` 的提供者在调用结束时执行清理——成功时提交，出错或被取消时回滚。`meta("x-caller-id")` 是给"以调用元数据而非业务字段到达的值"留的逃生舱：
+
+```python
+from typing import Annotated
+from meshcall import dependency, meta, query
+
+@dependency
+async def current_user(authorization: Annotated[str, meta("authorization")]) -> str:
+    return authorization.removeprefix("Bearer ")
+
+@query
+async def whoami(self, user: str = current_user) -> Reply:
+    return Reply(message=f"hello, {user}")
+```
+
+`user` 和 `authorization` 都不会出现在契约或生成的客户端里。[`best-practice/`](best-practice/) 用会话存储展示了事务式依赖，并附带 TypeScript CLI 和 Go 客户端。
 
 ---
 
@@ -308,11 +321,12 @@ uv run meshcall init
 git clone https://github.com/t4wefan/meshcall.git
 cd meshcall
 
-uv run --project demo/quickstart demo   # Python 最小调用示例
-uv run --project demo/showcase demo     # Python 完整特性演练
-uv run --project demo/router demo       # 多实例负载均衡与路由示例
-uv run --project demo/py2ts demo        # Python 服务 -> TypeScript 客户端调用
-uv run --project demo/ts2py demo        # TypeScript 服务 -> Python 客户端调用
+uv run --project demo/quickstart demo   # 最小服务、Router 与客户端
+uv run --project demo/showcase demo     # @query / @mutates / @stream、元数据、注册表
+uv run --project demo/router demo       # 独立 Router 进程与注册表
+uv run --project demo/py2ts demo        # Python 服务 -> TypeScript 客户端
+uv run --project demo/ts2py demo        # TypeScript 服务 -> Python 客户端
+uv run --project best-practice demo     # 依赖注入、TypeScript CLI 与 Go 客户端
 ```
 
 ---
