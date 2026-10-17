@@ -40,6 +40,19 @@ matching `meshcall-go/vX.Y.Z` tag.
   be defined by struct reflection.
 - `best-practice/` now shows a transactional session-store dependency, a
   TypeScript CLI and a Go client over one Router.
+- **An HTTP-only Router for clients in every runtime**. `meshcall.HTTPRouter`
+  (Python, `httpx`), `HTTPRouter` (TypeScript, `meshcall/web`, `fetch`) and
+  `meshcall.NewHTTPRouter` (Go, `net/http`) speak the Router's HTTP v1 API and
+  are passed to generated clients exactly like a WebSocket Router
+  (`ChatClient(http)` / `await ChatClient.connect(http)` /
+  `NewChatClient(httpRouter)`). Unary calls (with the idempotent retry),
+  server and client streams, subscriptions resumed from their cursor, and the
+  built-in Registry/AuthService calls work; duplex is WebSocket-only and
+  raises `method_not_found` with `reason: "duplex_over_http"`. Python
+  generated clients now build on a transport-neutral `MeshCallRpc` protocol
+  (`RpcClient`), and Go's `Caller` is a transport interface instead of a
+  `*Client` accessor, so `*Client`, `*Router` and `*HTTPRouter` are
+  interchangeable.
 
 ### Changed
 

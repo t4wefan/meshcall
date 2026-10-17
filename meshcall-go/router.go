@@ -390,6 +390,32 @@ func (r *Router) WithOptions(opts CallOptions) *Router {
 }
 
 // Close closes the underlying client connection and stops any locally spawned Router subprocess.
+// Caller implementation: a Router shares one WebSocket client across the
+// generated clients it is given.
+
+func (r *Router) unaryRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (json.RawMessage, map[string]string, error) {
+	return r.Client().unaryRaw(ctx, service, method, request, opts)
+}
+
+func (r *Router) serverStreamRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (streamSource, error) {
+	return r.Client().serverStreamRaw(ctx, service, method, request, opts)
+}
+
+func (r *Router) clientStreamRaw(ctx context.Context, service, method string, request json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error) {
+	return r.Client().clientStreamRaw(ctx, service, method, request, items, opts)
+}
+
+func (r *Router) duplexRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (rawDuplex, error) {
+	return r.Client().duplexRaw(ctx, service, method, request, opts)
+}
+
+func (r *Router) reconnectDelays() func() (time.Duration, bool) {
+	return r.Client().reconnectDelays()
+}
+
+func (r *Router) log() *slog.Logger                       { return r.Client().log() }
+func (r *Router) WithCallOptions(opts CallOptions) Caller { return r.WithOptions(opts) }
+
 func (r *Router) Close() error {
 	var err error
 	if r.client != nil {
@@ -405,14 +431,39 @@ func (r *Router) Close() error {
 
 // ListServices calls meshcall.router.v1.Registry/list to list all registered services.
 func (r *Router) ListServices(ctx context.Context, opts ...CallOption) ([]RegistryService, error) {
-	var req struct{}
+	return listServices(ctx, r.Client(), opts...)
+}
+
+// DescribeService calls meshcall.router.v1.Registry/describe for one service.
+func (r *Router) DescribeService(ctx context.Context, service string, opts ...CallOption) (RegistryServiceDetail, error) {
+	return describeService(ctx, r.Client(), service, opts...)
+}
+
+// Whoami calls meshcall.router.v1.AuthService/whoami to inspect the caller's identity and scopes.
+func (r *Router) Whoami(ctx context.Context, opts ...CallOption) (WhoamiResponse, error) {
+	return whoami(ctx, r.Client(), opts...)
+}
+
+// IssueToken calls meshcall.router.v1.AuthService/issue_token to mint a scoped bearer token.
+func (r *Router) IssueToken(ctx context.Context, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
+	return issueToken(ctx, r.Client(), scopes, ttlSeconds, opts...)
+}
+
+// RevokeToken calls meshcall.router.v1.AuthService/revoke_token to revoke a token by its ID.
+func (r *Router) RevokeToken(ctx context.Context, tokenID string, opts ...CallOption) (RevokeTokenResponse, error) {
+	return revokeToken(ctx, r.Client(), tokenID, opts...)
+}
+
+// The built-in calls take any transport, so Router and HTTPRouter share them.
+
+func listServices(ctx context.Context, c Caller, opts ...CallOption) ([]RegistryService, error) {
 	var resp struct {
 		Services []RegistryService `json:"services"`
 	}
 	callOpts := append([]CallOption{IdempotentCall()}, opts...)
 	resp, err := Unary[struct{}, struct {
 		Services []RegistryService `json:"services"`
-	}](ctx, r.Client(), routerRegistryService, "list", req, callOpts...)
+	}](ctx, c, routerRegistryService, "list", struct{}{}, callOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -422,31 +473,20 @@ func (r *Router) ListServices(ctx context.Context, opts ...CallOption) ([]Regist
 	return resp.Services, nil
 }
 
-// DescribeService calls meshcall.router.v1.Registry/describe for one service.
-func (r *Router) DescribeService(ctx context.Context, service string, opts ...CallOption) (RegistryServiceDetail, error) {
+func describeService(ctx context.Context, c Caller, service string, opts ...CallOption) (RegistryServiceDetail, error) {
 	type describeReq struct {
 		Service string `json:"service"`
 	}
 	callOpts := append([]CallOption{IdempotentCall()}, opts...)
-	return Unary[describeReq, RegistryServiceDetail](
-		ctx,
-		r.Client(),
-		routerRegistryService,
-		"describe",
-		describeReq{Service: service},
-		callOpts...,
-	)
+	return Unary[describeReq, RegistryServiceDetail](ctx, c, routerRegistryService, "describe", describeReq{Service: service}, callOpts...)
 }
 
-// Whoami calls meshcall.router.v1.AuthService/whoami to inspect the caller's identity and scopes.
-func (r *Router) Whoami(ctx context.Context, opts ...CallOption) (WhoamiResponse, error) {
-	var req struct{}
+func whoami(ctx context.Context, c Caller, opts ...CallOption) (WhoamiResponse, error) {
 	callOpts := append([]CallOption{IdempotentCall()}, opts...)
-	return Unary[struct{}, WhoamiResponse](ctx, r.Client(), routerAuthService, "whoami", req, callOpts...)
+	return Unary[struct{}, WhoamiResponse](ctx, c, routerAuthService, "whoami", struct{}{}, callOpts...)
 }
 
-// IssueToken calls meshcall.router.v1.AuthService/issue_token to mint a scoped bearer token.
-func (r *Router) IssueToken(ctx context.Context, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
+func issueToken(ctx context.Context, c Caller, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
 	if ttlSeconds <= 0 {
 		ttlSeconds = 900
 	}
@@ -454,29 +494,14 @@ func (r *Router) IssueToken(ctx context.Context, scopes []RouterScope, ttlSecond
 		Scopes     []RouterScope `json:"scopes"`
 		TTLSeconds int64         `json:"ttl_seconds"`
 	}
-	return Unary[issueReq, IssuedToken](
-		ctx,
-		r.Client(),
-		routerAuthService,
-		"issue_token",
-		issueReq{Scopes: scopes, TTLSeconds: ttlSeconds},
-		opts...,
-	)
+	return Unary[issueReq, IssuedToken](ctx, c, routerAuthService, "issue_token", issueReq{Scopes: scopes, TTLSeconds: ttlSeconds}, opts...)
 }
 
-// RevokeToken calls meshcall.router.v1.AuthService/revoke_token to revoke a token by its ID.
-func (r *Router) RevokeToken(ctx context.Context, tokenID string, opts ...CallOption) (RevokeTokenResponse, error) {
+func revokeToken(ctx context.Context, c Caller, tokenID string, opts ...CallOption) (RevokeTokenResponse, error) {
 	type revokeReq struct {
 		TokenID string `json:"token_id"`
 	}
-	return Unary[revokeReq, RevokeTokenResponse](
-		ctx,
-		r.Client(),
-		routerAuthService,
-		"revoke_token",
-		revokeReq{TokenID: tokenID},
-		opts...,
-	)
+	return Unary[revokeReq, RevokeTokenResponse](ctx, c, routerAuthService, "revoke_token", revokeReq{TokenID: tokenID}, opts...)
 }
 
 // --- Serve / Run & local Router launcher -----------------------------------

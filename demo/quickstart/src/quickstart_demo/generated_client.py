@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 from meshcall.streams import RpcServerStream
 
 
@@ -16,7 +16,7 @@ class CountItem(BaseModel):
     value: int
 
 
-class CounterServiceClient(ClientBase):
+class CounterServiceClient(RpcClient):
     """The smallest complete MeshCall service: one streaming method."""
 
     service_name = "example.v1.CounterService"
@@ -29,7 +29,7 @@ class CounterServiceClient(ClientBase):
         request = CounterServiceCountRequest(
             stop=stop,
         )
-        return self.call_server_stream(
+        return self._rpc.call_server_stream(
             self.service_name,
             "count",
             request,

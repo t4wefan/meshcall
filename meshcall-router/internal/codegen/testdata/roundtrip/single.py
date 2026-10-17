@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 from meshcall.streams import RpcServerStream
 
 
@@ -44,7 +44,7 @@ class ContractRoundTripUploadRequest(BaseModel):
     request: AliasRequest
 
 
-class ContractRoundTripClient(ClientBase):
+class ContractRoundTripClient(RpcClient):
     service_name = 'test.v1.ContractRoundTrip'
 
     async def echo(
@@ -54,7 +54,7 @@ class ContractRoundTripClient(ClientBase):
         request = ContractRoundTripEchoRequest(
             request=request,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             'echo',
             request,
@@ -68,7 +68,7 @@ class ContractRoundTripClient(ClientBase):
         request = ContractRoundTripDownloadRequest(
             request=request,
         )
-        return self.call_server_stream(
+        return self._rpc.call_server_stream(
             self.service_name,
             'download',
             request,
@@ -83,7 +83,7 @@ class ContractRoundTripClient(ClientBase):
         request = ContractRoundTripUploadRequest(
             request=request,
         )
-        return await self.call_client_stream(
+        return await self._rpc.call_client_stream(
             self.service_name,
             'upload',
             request,

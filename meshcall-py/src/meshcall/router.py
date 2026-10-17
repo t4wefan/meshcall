@@ -54,6 +54,7 @@ from meshcall.router_auth import (
 )
 from meshcall.router_install import find_router_binary
 from meshcall.server import RpcServer
+from meshcall.streams import RpcDuplexClient, RpcServerStream
 from meshcall.transport import DEFAULT_MAX_FRAME_SIZE
 
 DEFAULT_ROUTER_URL = "ws://127.0.0.1:8765"
@@ -570,6 +571,26 @@ class Router:
         await self.stop()
 
     # --- Built-in Router services (Registry & AuthService) -------------------
+
+    # -- MeshCallRpc -------------------------------------------------------
+    # Router is what a generated client receives; these delegate to the
+    # shared WebSocket client, so `ChatClient(router)` and a bare
+    # `ClientBase` behave the same.
+
+    async def call_unary(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._ensure_client().call_unary(*args, **kwargs)
+
+    def call_server_stream(self, *args: Any, **kwargs: Any) -> RpcServerStream[Any]:
+        return self._ensure_client().call_server_stream(*args, **kwargs)
+
+    def call_subscription(self, *args: Any, **kwargs: Any) -> RpcServerStream[Any]:
+        return self._ensure_client().call_subscription(*args, **kwargs)
+
+    async def call_client_stream(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._ensure_client().call_client_stream(*args, **kwargs)
+
+    def call_duplex(self, *args: Any, **kwargs: Any) -> RpcDuplexClient[Any, Any]:
+        return self._ensure_client().call_duplex(*args, **kwargs)
 
     async def list_services(self) -> list[RegistryService]:
         """List all services visible to this caller in the Router's Registry."""

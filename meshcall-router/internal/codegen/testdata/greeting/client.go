@@ -23,17 +23,17 @@ type GreetingResult struct {
 }
 
 type GreetingServiceClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewGreetingServiceClient wraps a meshcall.Client or meshcall.Router.
+// NewGreetingServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewGreetingServiceClient(rpc meshcall.Caller) *GreetingServiceClient {
-	return &GreetingServiceClient{rpc: rpc.Client()}
+	return &GreetingServiceClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *GreetingServiceClient) WithOptions(opts meshcall.CallOptions) *GreetingServiceClient {
-	return &GreetingServiceClient{rpc: c.rpc.WithOptions(opts)}
+	return &GreetingServiceClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

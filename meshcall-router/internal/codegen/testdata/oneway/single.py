@@ -6,7 +6,7 @@ from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 from meshcall.streams import RpcServerStream
 
 
@@ -26,7 +26,7 @@ class StreamResult(BaseModel):
     total: int
 
 
-class OneWayStreamServiceClient(ClientBase):
+class OneWayStreamServiceClient(RpcClient):
     service_name = 'test.v1.OneWayStreamService'
 
     def download(
@@ -36,7 +36,7 @@ class OneWayStreamServiceClient(ClientBase):
         request = OneWayStreamServiceDownloadRequest(
             start=start,
         )
-        return self.call_server_stream(
+        return self._rpc.call_server_stream(
             self.service_name,
             'download',
             request,
@@ -51,7 +51,7 @@ class OneWayStreamServiceClient(ClientBase):
         request = OneWayStreamServiceUploadRequest(
             offset=offset,
         )
-        return await self.call_client_stream(
+        return await self._rpc.call_client_stream(
             self.service_name,
             'upload',
             request,

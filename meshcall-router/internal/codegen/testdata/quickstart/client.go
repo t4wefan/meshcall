@@ -18,17 +18,17 @@ type CountItem struct {
 
 // The smallest complete MeshCall service: one streaming method.
 type CounterServiceClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewCounterServiceClient wraps a meshcall.Client or meshcall.Router.
+// NewCounterServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewCounterServiceClient(rpc meshcall.Caller) *CounterServiceClient {
-	return &CounterServiceClient{rpc: rpc.Client()}
+	return &CounterServiceClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *CounterServiceClient) WithOptions(opts meshcall.CallOptions) *CounterServiceClient {
-	return &CounterServiceClient{rpc: c.rpc.WithOptions(opts)}
+	return &CounterServiceClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

@@ -25,17 +25,17 @@ type StreamResult struct {
 }
 
 type OneWayStreamServiceClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewOneWayStreamServiceClient wraps a meshcall.Client or meshcall.Router.
+// NewOneWayStreamServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewOneWayStreamServiceClient(rpc meshcall.Caller) *OneWayStreamServiceClient {
-	return &OneWayStreamServiceClient{rpc: rpc.Client()}
+	return &OneWayStreamServiceClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *OneWayStreamServiceClient) WithOptions(opts meshcall.CallOptions) *OneWayStreamServiceClient {
-	return &OneWayStreamServiceClient{rpc: c.rpc.WithOptions(opts)}
+	return &OneWayStreamServiceClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

@@ -27,7 +27,7 @@ async def run_demo() -> None:
         access_log=False,
     ) as server:
         router = await Router.connect(server.url)
-        client = (await ShowcaseServiceClient.connect(router)).with_options(
+        client = (ShowcaseServiceClient.connect(router)).with_options(
             metadata={"x-caller-id": "showcase"},
             timeout=10,
         )

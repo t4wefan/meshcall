@@ -13,7 +13,7 @@ async def main() -> None:
     try:
         for service in await router.list_services():
             print(service.name)
-        client = await CounterServiceClient.connect(router)
+        client = CounterServiceClient.connect(router)
         async for item in client.with_options(timeout=5).count(10):
             print(item.value)
     finally:

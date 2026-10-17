@@ -6,7 +6,7 @@ from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 from meshcall.streams import RpcServerStream
 
 
@@ -65,7 +65,7 @@ class ChatChunk(BaseModel):
     index: int
 
 
-class LlmServiceClient(ClientBase):
+class LlmServiceClient(RpcClient):
     """A deterministic LLM facade with process-local session state."""
     service_name = 'best_practice.v1.LlmService'
 
@@ -77,7 +77,7 @@ class LlmServiceClient(ClientBase):
         request = LlmServiceNewSessionRequest(
             title=title,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             'new_session',
             request,
@@ -89,7 +89,7 @@ class LlmServiceClient(ClientBase):
     ) -> ListSessionsResponse:
         """List the sessions held in this process."""
         request = LlmServiceListSessionsRequest()
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             'list_sessions',
             request,
@@ -105,7 +105,7 @@ class LlmServiceClient(ClientBase):
         request = LlmServiceCountTokensRequest(
             text=text,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             'count_tokens',
             request,
@@ -119,7 +119,7 @@ class LlmServiceClient(ClientBase):
     ) -> PromptAssembly:
         """Collect prompt chunks to demonstrate client-to-server backpressure."""
         request = LlmServiceAssemblePromptRequest()
-        return await self.call_client_stream(
+        return await self._rpc.call_client_stream(
             self.service_name,
             'assemble_prompt',
             request,
@@ -140,7 +140,7 @@ class LlmServiceClient(ClientBase):
             prompt=prompt,
             max_tokens=max_tokens,
         )
-        return self.call_server_stream(
+        return self._rpc.call_server_stream(
             self.service_name,
             'stream_chat',
             request,

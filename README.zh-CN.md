@@ -289,7 +289,29 @@ curl http://127.0.0.1:8765/v1/services
 curl http://127.0.0.1:8765/v1/openapi.json
 ```
 
-在浏览器（或 Deno、Bun、边缘运行时）中，使用 TypeScript 包的 `meshcall/web` 入口：`new ChatClient(new MeshCallHttpClient("https://router.example", { token }))` 让生成的客户端通过 `fetch` 获得同样的类型化调用、错误、本地校验与订阅恢复（跨域时 Router 需要以 `--http-cors-origin https://app.example` 启动）。
+三端都提供**只用于客户端的 HTTP Router 对象**，生成的客户端可以直接切换传输，方法签名不变：
+
+```python
+from meshcall import HTTPRouter
+
+http = HTTPRouter("https://router.example", token="mk_…")
+client = ChatClient(http)                 # 或 ChatClient.connect(http)
+reply = await client.greet("Alice")
+```
+
+```typescript
+import { HTTPRouter } from "meshcall/web";
+
+const http = await HTTPRouter.connect("https://router.example", { token });
+const client = ChatClient.connect(http);
+```
+
+```go
+httpRouter := meshcall.NewHTTPRouter("https://router.example", meshcall.WithHTTPToken("mk_…"))
+chat := chatclient.NewChatClient(httpRouter)
+```
+
+在浏览器（以及 Deno、Bun、边缘运行时）里，TypeScript 的 `HTTPRouter` 使用 `fetch`，不依赖 Node 内置模块（跨域时给 Router 加 `--http-cors-origin https://app.example`）。Router 的内置方法（`list_services` / `ListServices` / `listServices`、`whoami` 等）也能通过它调用。
 
 一元调用与服务端流完整可用，客户端流使用 NDJSON 请求体，duplex 调用（作为最后手段的受限形状，见[双向流调用](docs/zh-CN/protocol.md#双向流调用duplex-calls)）只能走 WebSocket。账号、令牌、超时（`MeshCall-Timeout-Ms`）、幂等键（`Idempotency-Key`）与元数据（`MeshCall-Meta-*`）都通过请求头传递，详见 [HTTP 调用](docs/zh-CN/protocol.md#http-调用http-calls)。
 

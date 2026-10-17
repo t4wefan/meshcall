@@ -132,9 +132,29 @@ type ClientInterceptor func(ctx context.Context, info *CallInfo, next ClientCall
 
 // Caller is satisfied by both *Router and *Client so generated clients can be
 // constructed from either a shared Router or a standalone Client.
+// Caller is the transport a generated client speaks through: *Client
+// (WebSocket), *Router (its shared WebSocket client) or *HTTPRouter.
+//
+// The methods are raw JSON so the generic helpers below stay type-safe and
+// every transport only implements the wire mapping it supports. Duplex is
+// WebSocket-only; HTTPRouter returns a method_not_found error for it.
 type Caller interface {
-	Client() *Client
+	unaryRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (json.RawMessage, map[string]string, error)
+	serverStreamRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (streamSource, error)
+	clientStreamRaw(ctx context.Context, service, method string, request json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error)
+	duplexRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (rawDuplex, error)
+	// reconnectDelays drives subscription resume backoff; log receives the
+	// resubscribe warning.
+	reconnectDelays() func() (time.Duration, bool)
+	log() *slog.Logger
+	// withOptions backs the generated clients' WithOptions, which must keep
+	// the concrete transport type (so the next call still has it).
+	WithCallOptions(CallOptions) Caller
 }
+
+func (c *Client) reconnectDelays() func() (time.Duration, bool) { return c.opts.Reconnect.delays() }
+func (c *Client) log() *slog.Logger                             { return c.logger }
+func (c *Client) WithCallOptions(opts CallOptions) Caller       { return c.WithOptions(opts) }
 
 type clientState struct {
 	mu            sync.Mutex
@@ -802,76 +822,67 @@ func decodeReceived[T any](raw json.RawMessage, reason string) (T, error) {
 }
 
 // Unary makes a request–response call.
-func Unary[Req, Resp any](ctx context.Context, c *Client, service, method string, req Req, opts ...CallOption) (Resp, error) {
+func Unary[Req, Resp any](ctx context.Context, c Caller, service, method string, req Req, opts ...CallOption) (Resp, error) {
 	var resp Resp
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return resp, err
 	}
+	raw, _, err := c.unaryRaw(ctx, service, method, payload, opts)
+	if err != nil {
+		return resp, err
+	}
+	resp, err = decodeReceived[Resp](raw, "invalid_response")
+	return resp, err
+}
+
+// unaryRaw is *Client's WebSocket implementation of Caller.
+func (c *Client) unaryRaw(ctx context.Context, service, method string, payload json.RawMessage, opts []CallOption) (json.RawMessage, map[string]string, error) {
+	var result json.RawMessage
+	var trailers map[string]string
 	info := c.buildInfo(service, method, "unary", opts)
-	err = c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
+	err := c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
 		call, err := c.open(ctx, info, payload)
 		if err != nil {
 			return err
 		}
-		raw, trailers, err := call.result()
-		info.Trailers = trailers
-		if err != nil {
-			return err
-		}
-		resp, err = decodeReceived[Resp](raw, "invalid_response")
+		raw, terminal, err := call.result()
+		info.Trailers = terminal
+		trailers = terminal
+		result = raw
 		return err
 	})
-	return resp, err
+	return result, trailers, err
 }
 
 // ClientStream sends items and returns the server's single answer.
-func ClientStream[Req, Item, Resp any](ctx context.Context, c *Client, service, method string, req Req, items func(yield func(Item) bool), opts ...CallOption) (Resp, error) {
+func ClientStream[Req, Item, Resp any](ctx context.Context, c Caller, service, method string, req Req, items func(yield func(Item) bool), opts ...CallOption) (Resp, error) {
 	var resp Resp
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return resp, err
 	}
-	info := c.buildInfo(service, method, "client_stream", opts)
-	err = c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
-		call, err := c.open(ctx, info, payload)
-		if err != nil {
-			return err
-		}
-		pumpCtx, stopPump := context.WithCancel(ctx)
-		defer stopPump()
-		go func() {
-			for item := range items {
-				raw, err := json.Marshal(item)
-				if err != nil || call.sendInput(pumpCtx, raw) != nil {
-					if err != nil {
-						call.abort(err, "input_producer_failed")
-					}
-					return
-				}
+	raw, _, err := c.clientStreamRaw(ctx, service, method, payload, func(yield func(json.RawMessage) bool) {
+		for item := range items {
+			encoded, err := json.Marshal(item)
+			if err != nil || !yield(encoded) {
+				return
 			}
-			_ = call.closeInput()
-		}()
-		raw, trailers, err := call.result()
-		info.Trailers = trailers
-		if err != nil {
-			return err
 		}
-		resp, err = decodeReceived[Resp](raw, "invalid_response")
-		return err
-	})
+	}, opts)
+	if err != nil {
+		return resp, err
+	}
+	resp, err = decodeReceived[Resp](raw, "invalid_response")
 	return resp, err
 }
 
-// ClientStreamSeq sends items from an iter.Seq2[Item, error] and returns the server's single answer.
-func ClientStreamSeq[Req, Item, Resp any](ctx context.Context, c *Client, service, method string, req Req, items iter.Seq2[Item, error], opts ...CallOption) (Resp, error) {
-	var resp Resp
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return resp, err
-	}
+// clientStreamRaw is *Client's WebSocket implementation of Caller.
+func (c *Client) clientStreamRaw(ctx context.Context, service, method string, payload json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error) {
+	var result json.RawMessage
+	var trailers map[string]string
 	info := c.buildInfo(service, method, "client_stream", opts)
-	err = c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
+	err := c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
 		call, err := c.open(ctx, info, payload)
 		if err != nil {
 			return err
@@ -879,35 +890,74 @@ func ClientStreamSeq[Req, Item, Resp any](ctx context.Context, c *Client, servic
 		pumpCtx, stopPump := context.WithCancel(ctx)
 		defer stopPump()
 		go func() {
-			for item, itemErr := range items {
-				if itemErr != nil {
-					call.abort(itemErr, "input_producer_failed")
-					return
-				}
-				raw, err := json.Marshal(item)
-				if err != nil || call.sendInput(pumpCtx, raw) != nil {
-					if err != nil {
-						call.abort(err, "input_producer_failed")
-					}
+			for raw := range items {
+				if call.sendInput(pumpCtx, raw) != nil {
 					return
 				}
 			}
 			_ = call.closeInput()
 		}()
-		raw, trailers, err := call.result()
-		info.Trailers = trailers
-		if err != nil {
-			return err
-		}
-		resp, err = decodeReceived[Resp](raw, "invalid_response")
+		raw, terminal, err := call.result()
+		info.Trailers = terminal
+		trailers = terminal
+		result = raw
 		return err
 	})
+	return result, trailers, err
+}
+
+// ClientStreamSeq sends items from an iter.Seq2[Item, error] and returns the server's single answer.
+func ClientStreamSeq[Req, Item, Resp any](ctx context.Context, c Caller, service, method string, req Req, items iter.Seq2[Item, error], opts ...CallOption) (Resp, error) {
+	var resp Resp
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return resp, err
+	}
+	var producerErr error
+	raw, _, err := c.clientStreamRaw(ctx, service, method, payload, func(yield func(json.RawMessage) bool) {
+		for item, itemErr := range items {
+			if itemErr != nil {
+				producerErr = itemErr
+				return
+			}
+			encoded, err := json.Marshal(item)
+			if err != nil {
+				producerErr = err
+				return
+			}
+			if !yield(encoded) {
+				return
+			}
+		}
+	}, opts)
+	if err != nil {
+		return resp, err
+	}
+	if producerErr != nil {
+		return resp, producerErr
+	}
+	resp, err = decodeReceived[Resp](raw, "invalid_response")
 	return resp, err
+}
+
+// streamSource is what Stream needs from an open stream: the WebSocket
+// clientCall and the HTTP NDJSON reader both implement it.
+type streamSource interface {
+	next() (frame, error)
+	consumed()
+	abort(err error, reason string)
+}
+
+// rawDuplex is an open duplex call; WebSocket only.
+type rawDuplex interface {
+	streamSource
+	send(item json.RawMessage) error
+	closeSend() error
 }
 
 // Stream is a stream of items from the server.
 type Stream[Item any] struct {
-	call     *clientCall
+	source   streamSource
 	done     bool
 	trailers map[string]string
 }
@@ -920,7 +970,7 @@ func (s *Stream[Item]) Recv() (Item, error) {
 		return zero, io.EOF
 	}
 	for {
-		f, err := s.call.next()
+		f, err := s.source.next()
 		if err != nil {
 			s.done = true
 			return zero, err
@@ -929,11 +979,11 @@ func (s *Stream[Item]) Recv() (Item, error) {
 		case "stream.item":
 			item, err := decodeReceived[Item](f.Payload, "invalid_output_item")
 			if err != nil {
-				s.call.abort(err, "invalid_output_item")
+				s.source.abort(err, "invalid_output_item")
 				s.done = true
 				return zero, err
 			}
-			s.call.consumed()
+			s.source.consumed()
 			return item, nil
 		case "call.result":
 			s.done, s.trailers = true, f.Metadata
@@ -970,7 +1020,7 @@ func (s *Stream[Item]) Trailers() map[string]string { return s.trailers }
 func (s *Stream[Item]) Close() {
 	if !s.done {
 		s.done = true
-		s.call.abort(&Error{Code: CodeCancelled, Message: "Call was cancelled"}, "client_closed")
+		s.source.abort(&Error{Code: CodeCancelled, Message: "Call was cancelled"}, "client_closed")
 	}
 }
 
@@ -986,21 +1036,36 @@ func openStream[Item any](ctx context.Context, c *Client, service, method, shape
 }
 
 // ServerStream opens a call that streams items back.
-func ServerStream[Req, Item any](ctx context.Context, c *Client, service, method string, req Req, opts ...CallOption) (*Stream[Item], error) {
+func ServerStream[Req, Item any](ctx context.Context, c Caller, service, method string, req Req, opts ...CallOption) (*Stream[Item], error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	call, err := openStream[Item](ctx, c, service, method, "server_stream", payload, opts)
+	source, err := c.serverStreamRaw(ctx, service, method, payload, opts)
 	if err != nil {
 		return nil, err
 	}
-	return &Stream[Item]{call: call}, nil
+	return &Stream[Item]{source: source}, nil
+}
+
+// serverStreamRaw is *Client's WebSocket implementation of Caller.
+func (c *Client) serverStreamRaw(ctx context.Context, service, method string, payload json.RawMessage, opts []CallOption) (streamSource, error) {
+	info := c.buildInfo(service, method, "server_stream", opts)
+	var call *clientCall
+	err := c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
+		var err error
+		call, err = c.open(ctx, info, payload)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return call, nil
 }
 
 // ServerStreamSeq returns an iter.Seq2[Item, error] that opens a server-stream call
 // on first iteration and yields items until io.EOF or error.
-func ServerStreamSeq[Req, Item any](ctx context.Context, c *Client, service, method string, req Req, opts ...CallOption) iter.Seq2[Item, error] {
+func ServerStreamSeq[Req, Item any](ctx context.Context, c Caller, service, method string, req Req, opts ...CallOption) iter.Seq2[Item, error] {
 	return func(yield func(Item, error) bool) {
 		var zero Item
 		stream, err := ServerStream[Req, Item](ctx, c, service, method, req, opts...)
@@ -1026,7 +1091,7 @@ func ServerStreamSeq[Req, Item any](ctx context.Context, c *Client, service, met
 // once the server's output credit runs out.
 type DuplexCall[In, Out any] struct {
 	Stream[Out]
-	ctx context.Context
+	raw rawDuplex
 }
 
 // Send sends one input item, waiting for the server's credit.
@@ -1035,31 +1100,58 @@ func (d *DuplexCall[In, Out]) Send(item In) error {
 	if err != nil {
 		return err
 	}
-	return d.call.sendInput(d.ctx, raw)
+	return d.raw.send(raw)
 }
 
 // CloseSend half-closes the input.
-func (d *DuplexCall[In, Out]) CloseSend() error { return d.call.closeInput() }
+func (d *DuplexCall[In, Out]) CloseSend() error { return d.raw.closeSend() }
+
+// clientRawDuplex adapts an open WebSocket call to rawDuplex.
+type clientRawDuplex struct {
+	call *clientCall
+	ctx  context.Context
+}
+
+func (d *clientRawDuplex) next() (frame, error)            { return d.call.next() }
+func (d *clientRawDuplex) consumed()                       { d.call.consumed() }
+func (d *clientRawDuplex) abort(err error, reason string)  { d.call.abort(err, reason) }
+func (d *clientRawDuplex) send(item json.RawMessage) error { return d.call.sendInput(d.ctx, item) }
+func (d *clientRawDuplex) closeSend() error                { return d.call.closeInput() }
+
+// duplexRaw is *Client's WebSocket implementation of Caller.
+func (c *Client) duplexRaw(ctx context.Context, service, method string, payload json.RawMessage, opts []CallOption) (rawDuplex, error) {
+	info := c.buildInfo(service, method, "duplex", opts)
+	var call *clientCall
+	err := c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
+		var err error
+		call, err = c.open(ctx, info, payload)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &clientRawDuplex{call: call, ctx: ctx}, nil
+}
 
 // Duplex opens a duplex call (docs/protocol.md → Duplex calls). It is never
-// retried and takes no idempotency key.
-func Duplex[Req, In, Out any](ctx context.Context, c *Client, service, method string, req Req, opts ...CallOption) (*DuplexCall[In, Out], error) {
+// retried and takes no idempotency key; HTTP transports refuse it.
+func Duplex[Req, In, Out any](ctx context.Context, c Caller, service, method string, req Req, opts ...CallOption) (*DuplexCall[In, Out], error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	call, err := openStream[Out](ctx, c, service, method, "duplex", payload, opts)
+	raw, err := c.duplexRaw(ctx, service, method, payload, opts)
 	if err != nil {
 		return nil, err
 	}
-	return &DuplexCall[In, Out]{Stream: Stream[Out]{call: call}, ctx: ctx}, nil
+	return &DuplexCall[In, Out]{Stream: Stream[Out]{source: raw}, raw: raw}, nil
 }
 
 // Subscription is a server stream that is reopened after retryable failures,
 // resuming after the last item's cursor (docs/protocol.md → Subscriptions).
 type Subscription[Item any] struct {
 	ctx     context.Context
-	client  *Client
+	caller  Caller
 	service string
 	method  string
 	request map[string]any
@@ -1074,7 +1166,7 @@ type Subscription[Item any] struct {
 
 // Subscribe opens a subscription. Pass the method's cursor and resume fields
 // (generated clients do); an empty SubscriptionSpec resumes from "now".
-func Subscribe[Req, Item any](ctx context.Context, c *Client, service, method string, req Req, spec SubscriptionSpec, opts ...CallOption) (*Subscription[Item], error) {
+func Subscribe[Req, Item any](ctx context.Context, c Caller, service, method string, req Req, spec SubscriptionSpec, opts ...CallOption) (*Subscription[Item], error) {
 	raw, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -1083,7 +1175,7 @@ func Subscribe[Req, Item any](ctx context.Context, c *Client, service, method st
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, fmt.Errorf("meshcall: a subscription request must encode as a JSON object: %w", err)
 	}
-	return &Subscription[Item]{ctx: ctx, client: c, service: service, method: method, request: request, spec: spec, opts: opts}, nil
+	return &Subscription[Item]{ctx: ctx, caller: c, service: service, method: method, request: request, spec: spec, opts: opts}, nil
 }
 
 // Recv returns the next item, io.EOF once the server ends the stream, or the
@@ -1105,7 +1197,7 @@ func (s *Subscription[Item]) Recv() (Item, error) {
 				request[s.spec.Resume] = s.last
 			}
 			payload, _ := json.Marshal(request)
-			call, err := openStream[Item](s.ctx, s.client, s.service, s.method, "server_stream", payload, s.opts)
+			source, err := s.caller.serverStreamRaw(s.ctx, s.service, s.method, payload, s.opts)
 			if err != nil {
 				if !s.resumable(err) {
 					return zero, err
@@ -1115,7 +1207,7 @@ func (s *Subscription[Item]) Recv() (Item, error) {
 				}
 				continue
 			}
-			s.stream = &Stream[Item]{call: call}
+			s.stream = &Stream[Item]{source: source}
 		}
 		item, err := s.stream.Recv()
 		if err == io.EOF {
@@ -1152,14 +1244,14 @@ func (s *Subscription[Item]) resumable(err error) bool {
 
 func (s *Subscription[Item]) backoff(err error) error {
 	if s.next == nil {
-		s.next = s.client.opts.Reconnect.delays()
+		s.next = s.caller.reconnectDelays()
 	}
 	delay, ok := s.next()
 	if !ok {
 		s.closed = true
 		return err
 	}
-	s.client.logger.Warn("Subscription interrupted; resubscribing", "service", s.service, "method", s.method, "error", err, "delay", delay)
+	s.caller.log().Warn("Subscription interrupted; resubscribing", "service", s.service, "method", s.method, "error", err, "delay", delay)
 	select {
 	case <-time.After(delay):
 		return nil

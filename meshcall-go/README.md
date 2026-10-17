@@ -230,6 +230,20 @@ you; generated unary methods declared idempotent retry by default. Streams
 are read with `Recv()` (`io.EOF` at the end) or
 `for item, err := range stream.All()`.
 
+## HTTP transport
+
+`NewHTTPRouter` returns a client-only Router over the Router's HTTP API; generated clients accept it exactly like a WebSocket Router. It uses the standard library's `net/http`, and exposes the built-in Registry/AuthService calls.
+
+```go
+httpRouter := meshcall.NewHTTPRouter("https://router.example", meshcall.WithHTTPToken("mk_…"))
+defer httpRouter.Close()
+chat := chatclient.NewChatClient(httpRouter)
+reply, err := chat.Greet(ctx, "Alice")
+services, err := httpRouter.ListServices(ctx)
+```
+
+Duplex calls are WebSocket-only (`method_not_found`, reason `duplex_over_http`). Unary retries, server/client streams, subscriptions and the built-in calls work as over WebSocket.
+
 ## Credentials, interceptors and draining
 
 `WithAuth(BearerToken(…))` and `WithAuth(BasicAuth(…))` set the Router

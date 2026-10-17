@@ -289,7 +289,29 @@ curl http://127.0.0.1:8765/v1/services
 curl http://127.0.0.1:8765/v1/openapi.json
 ```
 
-From a browser (or Deno, Bun, an edge runtime), use the TypeScript package's `meshcall/web` entry: `new ChatClient(new MeshCallHttpClient("https://router.example", { token }))` gives a generated client the same typed calls, errors, local validation and subscription resume over `fetch` (start the Router with `--http-cors-origin https://app.example` for another origin).
+Every runtime also provides an **HTTP-only Router object** for generated clients, so the same typed client can switch transport without changing its methods:
+
+```python
+from meshcall import HTTPRouter
+
+http = HTTPRouter("https://router.example", token="mk_…")
+client = ChatClient(http)                 # or ChatClient.connect(http)
+reply = await client.greet("Alice")
+```
+
+```typescript
+import { HTTPRouter } from "meshcall/web";
+
+const http = await HTTPRouter.connect("https://router.example", { token });
+const client = ChatClient.connect(http);
+```
+
+```go
+httpRouter := meshcall.NewHTTPRouter("https://router.example", meshcall.WithHTTPToken("mk_…"))
+chat := chatclient.NewChatClient(httpRouter)
+```
+
+From a browser (or Deno, Bun, an edge runtime), the TypeScript `HTTPRouter` uses `fetch` and needs no Node imports (start the Router with `--http-cors-origin https://app.example` for another origin). The Router's built-ins (`list_services` / `ListServices` / `listServices`, `whoami`, …) work through it too.
 
 Unary calls and server streams work fully, client streams take an NDJSON body, and duplex calls (a restricted shape of last resort; see [Duplex calls](docs/protocol.md#duplex-calls)) stay WebSocket-only. Accounts, tokens, timeouts (`MeshCall-Timeout-Ms`), idempotency keys (`Idempotency-Key`) and metadata (`MeshCall-Meta-*`) work as headers; see [HTTP calls](docs/protocol.md#http-calls).
 

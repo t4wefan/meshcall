@@ -18,17 +18,17 @@ type ExpandedResult struct {
 }
 
 type ExpandedServiceClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewExpandedServiceClient wraps a meshcall.Client or meshcall.Router.
+// NewExpandedServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewExpandedServiceClient(rpc meshcall.Caller) *ExpandedServiceClient {
-	return &ExpandedServiceClient{rpc: rpc.Client()}
+	return &ExpandedServiceClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *ExpandedServiceClient) WithOptions(opts meshcall.CallOptions) *ExpandedServiceClient {
-	return &ExpandedServiceClient{rpc: c.rpc.WithOptions(opts)}
+	return &ExpandedServiceClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

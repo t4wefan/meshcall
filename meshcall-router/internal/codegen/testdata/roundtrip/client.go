@@ -41,17 +41,17 @@ type ContractRoundTripUploadRequest struct {
 }
 
 type ContractRoundTripClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewContractRoundTripClient wraps a meshcall.Client or meshcall.Router.
+// NewContractRoundTripClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewContractRoundTripClient(rpc meshcall.Caller) *ContractRoundTripClient {
-	return &ContractRoundTripClient{rpc: rpc.Client()}
+	return &ContractRoundTripClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *ContractRoundTripClient) WithOptions(opts meshcall.CallOptions) *ContractRoundTripClient {
-	return &ContractRoundTripClient{rpc: c.rpc.WithOptions(opts)}
+	return &ContractRoundTripClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
