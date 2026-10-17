@@ -9,6 +9,8 @@ from pathlib import Path
 
 from meshcall_demo_ts2py_client import TypeScriptGreetingServiceClient
 
+from meshcall import Mesh, Router
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = PROJECT_ROOT.parents[1]
 TYPESCRIPT_RUNTIME_ROOT = REPOSITORY_ROOT / "meshcall-ts"
@@ -35,9 +37,9 @@ async def run_demo() -> None:
     await _run_process("yarn", "run", "build", cwd=TYPESCRIPT_SERVER_ROOT)
 
     process, url = await _start_typescript_server()
-    client = TypeScriptGreetingServiceClient.connect(url)
     try:
-        async with client:
+        async with Mesh(Router(url)) as mesh:
+            client = TypeScriptGreetingServiceClient(mesh)
             response = await client.greet("Python", 2)
             items = [item async for item in client.count(40)]
 
@@ -51,7 +53,6 @@ async def run_demo() -> None:
         print(f"TypeScript service -> Python client: {response.model_dump()}")
         print(f"Streaming: received {len(items)} items, uploaded total={total.total}")
     finally:
-        await client.stop()
         await _stop_typescript_server(process)
 
 
@@ -83,7 +84,9 @@ async def _start_typescript_server() -> tuple[asyncio.subprocess.Process, str]:
         ready = json.loads(ready_line)
         return process, str(ready["url"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"Invalid TypeScript server readiness: {ready_line!r}") from exc
+        raise RuntimeError(
+            f"Invalid TypeScript server readiness: {ready_line!r}"
+        ) from exc
 
 
 async def _stop_typescript_server(process: asyncio.subprocess.Process) -> None:

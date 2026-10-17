@@ -1,8 +1,8 @@
 """Run the best-practice service end to end: TypeScript CLI and Go client.
 
-Starts the service with ``serve`` (an embedded Router on an ephemeral local
-port), builds the two clients, runs them against that Router, then drains and
-stops everything.
+Starts a ``LocalRouter`` on an ephemeral port, mounts and serves ``LlmService``
+on a ``Mesh``, builds the two clients, runs them against that Router, then
+drains and stops everything.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 import shutil
 from pathlib import Path
 
-from meshcall import Router, serve
+from meshcall import LocalRouter, Mesh
 
 from .service import LlmService
 
@@ -30,20 +30,17 @@ async def run_demo() -> None:
     go_binary.parent.mkdir(parents=True, exist_ok=True)
     await _run("go", "build", "-o", str(go_binary), ".", cwd=GO_CLIENT)
 
-    async with serve(
-        LlmService(),
-        router=Router("ws://127.0.0.1:0"),
-        access_log=False,
-    ) as server:
-        url = server.url
-        assert url is not None
-        env = {**os.environ, "MESHCALL_ROUTER_URL": url}
+    async with LocalRouter(port=0) as local_router:
+        server_mesh = Mesh(local_router).mount(LlmService())
+        async with server_mesh.serve(access_log=False):
+            url = local_router.url
+            env = {**os.environ, "MESHCALL_ROUTER_URL": url}
 
-        print(f"Router {url}")
-        print("1. TypeScript CLI")
-        print(await _run("node", "dist/cli.js", PROMPT, cwd=TS_CLIENT, env=env))
-        print("2. Go client")
-        print(await _run(str(go_binary), cwd=GO_CLIENT, env=env))
+            print(f"Router {url}")
+            print("1. TypeScript CLI")
+            print(await _run("node", "dist/cli.js", PROMPT, cwd=TS_CLIENT, env=env))
+            print("2. Go client")
+            print(await _run(str(go_binary), cwd=GO_CLIENT, env=env))
 
 
 def main() -> None:

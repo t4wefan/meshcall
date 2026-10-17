@@ -50,7 +50,7 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 | `ping` | `nonce` | 协议层心跳探测帧 |
 | `pong` | `nonce` | 原样回显 `nonce` 的心跳响应帧 |
 
-`services[]` 中每项为 `{name, methods[{name, stream, balance{kind, key?}}], contract?}`。`contract` 是服务的可移植契约条目（与 `*.meshcall.json` 文档中的对象相同：版本、描述、带 Schema 的方法、参数、注解；duplex 方法另含 `duplex_reason`，订阅方法另含 `subscription`）。它对路由不透明，Router 为每个服务保留首个注册的契约，并通过 `meshcall.router.v1.Registry` 服务（`list`、`describe {service}`）对外提供。`stream` 取值为 `unary`、`server_stream`、`client_stream`、`duplex`；`balance.kind` 取值为 `round_robin`、`least_inflight`、`random`、`sticky`、`disabled`。`capabilities` 保留给后续小版本协商可选特性，对端忽略不认识的条目。
+`services[]` 中每项为 `{name, methods[{name, stream, balance{kind, key?}}], contract?}`。`contract` 是服务的可移植契约条目（与 `*.meshcall.json` 文档中的对象相同：版本、描述、带 Schema 的方法、参数、注解；duplex 方法另含 `duplex_reason`）。它对路由不透明，Router 为每个服务保留首个注册的契约，并通过 `meshcall.router.v1.Registry` 服务（`list`、`describe {service}`）对外提供。`stream` 取值为 `unary`、`server_stream`、`client_stream`、`duplex`；`balance.kind` 取值为 `round_robin`、`least_inflight`、`random`、`sticky`、`disabled`。`capabilities` 保留给后续小版本协商可选特性，对端忽略不认识的条目。
 
 ### 帧大小（Frame size）
 
@@ -112,7 +112,7 @@ Router 收到停止请求（SIGTERM 或 SIGINT；第二次信号跳过等待）�
 | `client_stream`（客户端流） | 是 | 否 | 是 |
 | `duplex`（双向流，受限形状） | 是 | 是 | 否（`call.result` 不带负载） |
 
-`duplex` 是受支持但受限制的形状，规则见下文[双向流调用](#双向流调用duplex-calls)。订阅（subscription）在线路上就是 `server_stream`，见[订阅](#订阅subscriptions)。
+`duplex` 是受支持但受限制的形状，规则见下文[双向流调用](#双向流调用duplex-calls)。
 
 ---
 
@@ -180,7 +180,7 @@ Router 收到停止请求（SIGTERM 或 SIGINT；第二次信号跳过等待）�
 
 一个调用恰好由一个 `call.result` 或 `call.error` 终止。`call.cancel` 是终止请求，本身不是终止确认。运行时接受的第一个终止帧生效，之后的帧被忽略。
 
-Router 把客户端的 `call.cancel` 视为其对该路由兴趣的结束：转发取消帧、释放路由、丢弃该 `call_id` 之后的帧；实例仍会发送自己的终止帧，由 Router 丢弃。客户端发出取消后即可在本地以 `cancelled` 结束调用。连接断开会终止该连接上所有活跃调用；版本 1 不恢复流，也不在实例间迁移流。
+Router 把客户端的 `call.cancel` 视为其对该路由兴趣的结束：转发取消帧、释放路由、丢弃该 `call_id` 之后的帧；实例仍会发送自己的终止帧，由 Router 丢弃。客户端发出取消后即可在本地以 `cancelled` 结束调用。连接断开会终止该连接上所有活跃调用；协议不恢复流，也不在实例间迁移流。
 
 ---
 
@@ -197,28 +197,6 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 - 可能自我死锁：客户端只发送不读取输出时，服务端输出信用耗尽、停止读取输入，客户端输入信用也随之耗尽。请在发送的同时并发读取输出（或每个方向交替一条）。运行时不检测这种情况。
 
 只要两个方向并非真正交错，就优先使用"服务端流 + 一元调用"或客户端流。详见英文版 [Duplex calls](../protocol.md#duplex-calls)。
-
----
-
-## 订阅（Subscriptions）
-
-订阅是一种预期长期保持打开（事件、通知、实时数据）并在中断后恢复的服务端流。订阅与各运行时的 `Topic` 辅助类在 v0.3 中是**实验特性**：规范仍然有效、实现仍然受支持，但不在推荐的核心流程内。它不给线路协议增加任何东西：调用、信用、取消与错误都与服务端流相同，方法的 `stream` 就是 `server_stream`。它增加的是一个客户端据以行动的契约条目：
-
-```json
-"subscription": {"cursor": "seq", "resume": "since"}
-```
-
-- `cursor` 指定输出条目中标识位置的属性（序号、事件 ID、时间戳）；`resume` 指定一个可选请求参数，要求服务端从该位置*之后*继续。两者要么都给出，要么都不给（`{}`）：没有 cursor 的订阅只能从"现在"重新开始。工具与 Registry 将其显示为订阅。
-
-客户端运行时对订阅调用的处理与其他流不同：
-
-- 没有默认的 `timeout_ms` 与 `idle_timeout_ms`；
-- 遇到**可重试**失败（`unavailable`、`resource_exhausted` 或连接丢失）时，按重连退避重新打开调用；若声明了 cursor 且已收到过条目，则把 `resume` 设为最后一个条目的 cursor。对调用方而言条目始终来自同一个迭代器；
-- 不可重试的错误、调用方取消或服务端结束流都会结束订阅。
-
-每次重新打开都是普通的 `call.open`：可能到达不同实例，拦截器能看到它，由服务端负责遵守 `resume`。服务端无法做到时（历史已不覆盖该 cursor）应以不可重试错误结束调用，而不是悄悄跳过事件。Python 与 TypeScript 运行时的 `Topic[T]` 正是这样做的：落后太多的订阅者以可重试的 `resource_exhausted`（`reason: "slow_subscriber"`）被断开，其客户端随后从 cursor 处重新订阅；早于历史缓冲的 cursor 以不可重试的 `invalid_argument`（`reason: "cursor_expired"`）被拒绝。通过 HTTP 时订阅就是普通服务端流，调用方需自行携带 cursor 恢复。
-
-详见英文版 [Subscriptions](../protocol.md#subscriptions)。
 
 ---
 
@@ -264,7 +242,7 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 | `flow_control_violation` | `protocol_error` | 流条目超出消费方授予的信用（见[流量控制](#流方向与流量控制flow-control)） |
 | `router_draining` / `router_shutdown` | `unavailable` | Router 正在停止（见 [Router 停机](#router-停机router-shutdown)） |
 
-直连服务端使用同样的 reason，但 `source: "server"`；服务端执行自身 `max_inflight` 时返回 `resource_exhausted`（`source: "server"`，`reason: "overloaded"`）。服务端的 `Topic` 还会使用 `slow_subscriber` 与 `cursor_expired`（见[订阅](#订阅subscriptions)）。超过帧大小上限而未发出的帧，由客户端或服务端以不可重试的 `resource_exhausted`（`reason: "frame_too_large"`）报告，`source` 为拒绝发送的一方（见[帧大小](#帧大小frame-size)）。客户端重试策略在进行了多次尝试时向最终错误加入 `attempts`。
+直连服务端使用同样的 reason，但 `source: "server"`；服务端执行自身 `max_inflight` 时返回 `resource_exhausted`（`source: "server"`，`reason: "overloaded"`）。超过帧大小上限而未发出的帧，由客户端或服务端以不可重试的 `resource_exhausted`（`reason: "frame_too_large"`）报告，`source` 为拒绝发送的一方（见[帧大小](#帧大小frame-size)）。客户端重试策略在进行了多次尝试时向最终错误加入 `attempts`。
 
 ### 结构化校验错误（`details.violations`）
 
@@ -280,14 +258,14 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 
 ## HTTP 调用（HTTP calls）
 
-Router 在同一监听地址上也接受普通 HTTP 请求形式的调用，任何 HTTP 客户端无需 MeshCall 运行时即可调用网格。每个请求就是一次调用，Router 把它翻译成上述帧，因此权限检查、负载均衡、超时、熔断、去重与定向调用的行为与 WebSocket 调用方完全一致。HTTP **完整支持一元调用与服务端流，有限支持客户端流，不支持 duplex**。路径不以 `/v1/` 开头的请求仍是 WebSocket 升级（`/healthz` 与 `/readyz` 除外）。该映射在 `/v1` 下保持稳定，破坏性变更需要新的路径前缀。
+Router 在同一监听地址上也接受普通 HTTP 请求形式的调用，任何 HTTP 客户端无需 MeshCall 运行时即可调用网格。每个请求就是一次调用，Router 把它翻译成上述帧，因此权限检查、负载均衡、超时、熔断、去重与定向调用的行为与 WebSocket 调用方完全一致。HTTP **完整支持一元调用与服务端流，有限支持客户端流，不支持 duplex**。路径不以 `/v1/` 开头的请求是 WebSocket 升级（`/healthz` 与 `/readyz` 除外）。该映射在 `/v1` 下保持稳定，破坏性变更需要新的路径前缀。
 
 - **请求**：`POST /v1/call/{service}/{method}`。请求头 `Authorization`（`Basic …` 账号、`Bearer mk_…` API Key 或 `Bearer mt_…` 临时 Token；不带则为 `anonymous` 用户）、`MeshCall-Timeout-Ms`（不超过 `--http-max-timeout`）、`MeshCall-Idle-Timeout-Ms`、`Idempotency-Key`、`MeshCall-Instance`（定向调用）、`MeshCall-Meta-<key>`（元数据，key 转为小写）。未给出超时时，一元与客户端流调用使用 `--http-default-timeout`（默认 30 秒），服务端流没有默认超时。
 - **请求体**：一元与服务端流为 JSON 请求负载（空请求体即 `{}`，不检查 Content-Type）；客户端流为 `Content-Type: application/x-ndjson`，第一行是请求负载，其后每个非空行是一个输入条目，Router 只在实例授予信用后才读取下一行；duplex 返回 `405` 与 `method_not_found`（`details.reason = "duplex_over_http"`）。客户端断开请求即发送 `call.cancel`。
 - **响应**：一元调用为 `200` 与 JSON 结果，每个 Trailer 是一个 `MeshCall-Trailer-<key>` 响应头；服务端流为 `200` 与 `application/x-ndjson`，每行一个信封 `{"item": …}`，最后一行是 `{"end": {"trailers": …}}`，或在出错时为 `{"error": …, "trailers": …}`，缺少结束行说明响应被截断。
 - **错误状态码**：首个条目之前的错误以 `{"error": {...}}` 为响应体，`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`method_not_found` 404（`duplex_over_http` 为 405）、`resource_exhausted` 429、`cancelled` 499、`internal` / `protocol_error` / 业务错误码 500、`unavailable` 503、`deadline_exceeded` 504。超过 `--http-max-inflight` 的并发 HTTP 调用收到 `429`（`overloaded`）与 `Retry-After`。
 - **发现与健康**：`GET /v1/services`（Registry `list`）、`GET /v1/services/{service}`（`describe`）与 `GET /v1/openapi.json`（OpenAPI 3.1）需要 Registry 权限，且只显示调用方有权调用的内容；`GET /healthz` 与 `GET /readyz`（停机时 `503`）无需凭据。
-- **浏览器**：跨域调用只对 `--http-cors-origin` 列出的源开放；从不使用 Cookie。浏览器无法在 WebSocket 上设置 `Authorization` 头，因此 Web 客户端使用 HTTP：TypeScript 包的 `meshcall/web` 入口（`MeshCallHttpClient`）基于 `fetch` 实现该映射，生成的 TypeScript 客户端可直接使用它。
+- **浏览器**：跨域调用只对 `--http-cors-origin` 列出的源开放；从不使用 Cookie。浏览器无法在 WebSocket 上设置 `Authorization` 头，因此 Web 客户端使用 HTTP：TypeScript 包的 `meshcall/web` 入口（`new Mesh(new Router("https://…"), { token })`）基于 `fetch` 实现该映射，生成的 TypeScript 客户端可直接使用它。
 - **部署**：反向代理不应缓冲客户端流的请求体与服务端流的响应（nginx：`proxy_request_buffering off`、`proxy_buffering off`；Router 在流式响应上发送 `X-Accel-Buffering: no`）。
 
 完整映射详见英文版 [HTTP calls](../protocol.md#http-calls)。

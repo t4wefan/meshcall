@@ -23,7 +23,7 @@ type FeedClient struct {
 	rpc meshcall.Caller
 }
 
-// NewFeedClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewFeedClient wraps a Mesh (or any Caller).
 func NewFeedClient(rpc meshcall.Caller) *FeedClient {
 	return &FeedClient{rpc: rpc}
 }

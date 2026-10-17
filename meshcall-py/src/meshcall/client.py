@@ -6,16 +6,12 @@ import copy
 import inspect
 import time
 import uuid
-from collections.abc import AsyncIterable, Generator, Iterator, Mapping, Sequence
-from pathlib import Path
+from collections.abc import AsyncIterable, Generator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Self
 
-from loguru import logger as default_logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from meshcall.context import (
-    DEFAULT_PING_INTERVAL,
-    DEFAULT_PING_TIMEOUT,
     DEFAULT_RECONNECT,
     DEFAULT_RETRY,
     CallOptions,
@@ -49,20 +45,18 @@ from meshcall.protocol import (
 from meshcall.server import INITIAL_STREAM_CREDIT
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 from meshcall.transport import (
-    DEFAULT_MAX_FRAME_SIZE,
     FrameConnection,
     is_frame_too_large,
 )
 
 if TYPE_CHECKING:
-    from meshcall.router import Router
-    from meshcall.router_auth import RouterCredentials
+    from meshcall.router import Mesh
 
 _STREAM_END = object()
 
 
 class ClientBase:
-    """Runtime base class inherited by generated service clients.
+    """Runtime base class for low-level and manual service clients.
 
     ``deadline_grace`` is how long past a call's ``timeout`` the client keeps
     waiting for the peer's own ``deadline_exceeded`` before failing the call
@@ -76,7 +70,7 @@ class ClientBase:
 
     def __init__(
         self,
-        driver: ClientDriver | Router | ClientBase,
+        driver: ClientDriver | Mesh | ClientBase,
         *,
         deadline_grace: float | None = None,
         reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
@@ -97,16 +91,19 @@ class ClientBase:
             self.retry = self._root.retry
             self.interceptors = self._root.interceptors
         elif hasattr(driver, "_ensure_client"):
-            root: ClientBase = driver._ensure_client()  # type: ignore[union-attr]
-            self._root = root
+            peer: ClientBase = driver._ensure_client()  # type: ignore[union-attr]
+            self._root = peer._root
             self._owns_root = False
-            self.driver = root.driver
+            self._call_options = peer._call_options
+            self.driver = self._root.driver
             self.deadline_grace = (
-                deadline_grace if deadline_grace is not None else root.deadline_grace
+                deadline_grace
+                if deadline_grace is not None
+                else self._root.deadline_grace
             )
-            self.reconnect = root.reconnect
-            self.retry = root.retry
-            self.interceptors = root.interceptors
+            self.reconnect = self._root.reconnect
+            self.retry = self._root.retry
+            self.interceptors = self._root.interceptors
         else:
             self._root = self
             self._owns_root = True
@@ -120,53 +117,6 @@ class ClientBase:
         self._state_lock = asyncio.Lock()
         self._receive_task: asyncio.Task[None] | None = None
         self._ever_connected = False
-
-    @classmethod
-    def connect(
-        cls,
-        router: Router | str | Sequence[str] | None = None,
-        *,
-        url: str | Sequence[str] | None = None,
-        unix_path: str | Path | None = None,
-        pipe: str | None = None,
-        auth: RouterCredentials | None = None,
-        peer_id: str | None = None,
-        reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
-        retry: RetryPolicy = DEFAULT_RETRY,
-        ping_interval: float | None = DEFAULT_PING_INTERVAL,
-        ping_timeout: float = DEFAULT_PING_TIMEOUT,
-        deadline_grace: float | None = None,
-        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
-        interceptors: Sequence[ClientInterceptor] = (),
-    ) -> Self:
-        """Create and connect a service client.
-
-        May be used either as ``async with MyClient.connect(...) as client:`` or
-        ``client = MyClient.connect(...)``.
-        """
-        from meshcall.router import Router as RouterClass
-
-        if isinstance(router, RouterClass):
-            instance = cls(router)
-            instance._owns_root = not router.is_connected
-            return instance
-        router_obj = RouterClass(
-            url=url if url is not None else router,
-            unix_path=unix_path,
-            pipe=pipe,
-            auth=auth,
-            peer_id=peer_id,
-            reconnect=reconnect,
-            retry=retry,
-            ping_interval=ping_interval,
-            ping_timeout=ping_timeout,
-            deadline_grace=deadline_grace,
-            max_frame_size=max_frame_size,
-            interceptors=interceptors,
-        )
-        instance = cls(router_obj._ensure_client())
-        instance._owns_root = True
-        return instance
 
     def with_options(
         self,
@@ -388,48 +338,6 @@ class ClientBase:
             return await _stream_open_task(stream)
 
         return _ClientServerStream(_observed(asyncio.create_task(open())))
-
-    def call_subscription(
-        self,
-        service: str,
-        method: str,
-        request: BaseModel,
-        item_type: type[BaseModel],
-        *,
-        cursor: str | None = None,
-        resume: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        instance: str | None = None,
-    ) -> RpcServerStream[Any]:
-        """Open a subscription (docs/protocol.md → Subscriptions; Experimental).
-
-        A server stream that is reopened after a retryable failure with the
-        reconnect backoff, asking to resume after the last item's ``cursor``
-        through the ``resume`` request parameter. It has no default timeouts.
-        """
-        resolved = self._resolve_options(
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-        )
-        return _Subscription(
-            self._root,
-            service,
-            method,
-            request,
-            item_type,
-            cursor=cursor,
-            resume=resume,
-            options={
-                "timeout": resolved.timeout,
-                "idle_timeout": resolved.idle_timeout,
-                "metadata": resolved.metadata,
-                "instance": resolved.instance,
-            },
-        )
 
     async def call_client_stream(
         self,
@@ -1114,113 +1022,3 @@ class _ClientDuplex(_ClientServerStream, RpcDuplexClient[BaseModel, BaseModel]):
     async def close_send(self) -> None:
         call = await self._open_task
         await call.close_send()
-
-
-_RESUMABLE = frozenset({"unavailable", "resource_exhausted"})
-_NO_CURSOR = object()
-
-
-class _Subscription(RpcServerStream[BaseModel]):
-    """Successive server-stream calls presented as one iterator."""
-
-    def __init__(
-        self,
-        client: ClientBase,
-        service: str,
-        method: str,
-        request: BaseModel,
-        item_type: type[BaseModel],
-        *,
-        cursor: str | None,
-        resume: str | None,
-        options: dict[str, Any],
-    ) -> None:
-        self._client = client
-        self._service = service
-        self._method = method
-        self._request = request
-        self._item_type = item_type
-        self._resume = resume
-        self._options = options
-        # The cursor names a JSON property; read it through the field it maps to.
-        self._cursor_field = next(
-            (
-                name
-                for name, field in item_type.model_fields.items()
-                if cursor in (name, field.alias)
-            ),
-            None,
-        )
-        self._last: Any = _NO_CURSOR
-        self._stream: RpcServerStream[BaseModel] | None = None
-        self._delays: Iterator[float] | None = None
-        self._done = False
-        self._trailers: Mapping[str, str] = {}
-
-    def __aiter__(self) -> _Subscription:
-        return self
-
-    async def __anext__(self) -> BaseModel:
-        while True:
-            if self._done:
-                raise StopAsyncIteration
-            stream = self._stream
-            if stream is None:
-                request = self._request
-                if self._resume is not None and self._last is not _NO_CURSOR:
-                    request = request.model_copy(update={self._resume: self._last})
-                stream = self._stream = self._client.call_server_stream(
-                    self._service,
-                    self._method,
-                    request,
-                    self._item_type,
-                    **self._options,
-                )
-            try:
-                item = await anext(stream)
-            except StopAsyncIteration:
-                self._trailers = stream.trailers
-                self._done = True
-                raise
-            except (MeshCallError, OSError, ConnectionError) as exc:
-                self._trailers = stream.trailers
-                self._stream = None
-                if isinstance(exc, MeshCallError) and not (
-                    exc.retryable and exc.code in _RESUMABLE
-                ):
-                    self._done = True
-                    raise
-                await self._backoff(exc)
-                continue
-            self._delays = None  # an item arrived: the next failure starts over
-            if self._cursor_field is not None:
-                self._last = getattr(item, self._cursor_field)
-            return item
-
-    async def _backoff(self, error: BaseException) -> None:
-        policy = self._client.reconnect
-        if self._delays is None:
-            self._delays = policy.delays()
-        delay = next(self._delays, None) if policy.enabled else None
-        if delay is None:
-            self._done = True
-            raise error
-        default_logger.warning(
-            "Subscription {}.{} interrupted ({}); resubscribing in {:.2f}s{}",
-            self._service,
-            self._method,
-            error,
-            delay,
-            "" if self._last is _NO_CURSOR else f" after {self._last!r}",
-        )
-        await asyncio.sleep(delay)
-
-    @property
-    def trailers(self) -> Mapping[str, str]:
-        return self._stream.trailers if self._stream is not None else self._trailers
-
-    async def cancel(self, reason: str = "client_closed") -> None:
-        self._done = True
-        stream, self._stream = self._stream, None
-        if stream is not None:
-            await stream.cancel(reason)

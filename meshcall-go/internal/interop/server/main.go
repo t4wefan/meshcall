@@ -34,14 +34,6 @@ type Item struct {
 	HandledBy string `json:"handled_by"`
 }
 
-type Ticks struct {
-	Since *int `json:"since"`
-}
-
-type Tick struct {
-	Seq int `json:"seq"`
-}
-
 func main() {
 	if len(os.Args) != 3 {
 		fmt.Fprintln(os.Stderr, "usage: server <router-url> <contract.json>")
@@ -69,18 +61,6 @@ func main() {
 		}
 		return Result{Product: product, HandledBy: "go"}, nil
 	}, meshcall.Doc("Add every item times factor to value."), meshcall.Idempotent())
-	meshcall.HandleSubscription(svc, "ticks", "seq", "since", func(ctx *meshcall.Context, req Ticks, send func(Tick) error) error {
-		start := 0
-		if req.Since != nil {
-			start = *req.Since + 1
-		}
-		for seq := start; seq < 5; seq++ {
-			if err := send(Tick{Seq: seq}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}, meshcall.Doc("Ticks 0..4 after since."), meshcall.ReadOnly())
 	meshcall.HandleDuplex(svc, "exchange", "interop: answers each item as it arrives",
 		func(ctx *meshcall.Context, req Request, ch *meshcall.Channel[Item, Item]) error {
 			for {

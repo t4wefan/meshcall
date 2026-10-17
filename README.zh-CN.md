@@ -10,15 +10,15 @@
 
 **用写普通 Python / TypeScript / Go 函数的方式，编写跨语言流式 RPC。**
 
-在构建跨进程或跨语言应用（例如 Python 算法/AI 后端与 TypeScript 业务应用协同）时，你不必在繁重的 `.proto` 编译工具链与脆弱的手写 WebSocket / JSON 胶水代码之间妥协。
+在构建跨进程或跨语言应用（例如 Python 算法/AI 后端与 TypeScript 或 Go 业务应用协同）时，你不必在繁重的 `.proto` 编译工具链与脆弱的手写 WebSocket / JSON 胶水代码之间妥协。
 
 MeshCall 是一个面向 **Python**、**TypeScript** 与 **Go** 的异步流式 RPC 框架——**写远程服务就像写普通异步函数，调远程接口就像调本地方法：**
 
 - **代码即契约，告别手写协议与裸传字典** —— 直接用函数参数声明输入、用返回模型声明输出，无需维护 `.proto` 文件；生成的客户端提供完整的类型签名与 IDE 自动补全，调用方无需手拼字典或翻阅服务端源码查字段
-- **接口变更在静态检查阶段暴露，运行时双向校验** —— 一条命令即可从 Python 服务生成 TypeScript 客户端（反之亦然）。服务端修改参数或字段后，调用方在静态检查与编译阶段即可发现不匹配；运行时还会自动校验入参和返回值，非法数据在进入业务函数前即被拦截
+- **接口变更在静态检查阶段暴露，运行时双向校验** —— 一条命令即可从服务生成 TypeScript、Python 或 Go 客户端。服务端修改参数或字段后，调用方在静态检查与编译阶段即可发现不匹配；运行时还会自动校验入参和返回值，非法数据在进入业务函数前即被拦截
 - **像写循环一样写流式通信** —— 服务端流只需 `yield`，客户端消费只需 `async for`，天然契合进度推送、实时数据流与 AI 流式输出
 - **专注业务逻辑** —— 框架负责连接管理、请求路由、超时取消和流量控制，业务函数无需关心底层网络细节
-- **需要时即可观测** —— 可选的 OpenTelemetry 拦截器（Python `meshcall[otel]`、TypeScript `meshcall/otel`）跨语言、穿过 Router 传递 W3C trace context；Router 通过 `--metrics-listen` 提供 Prometheus 指标
+- **需要时即可观测** —— 可选的 OpenTelemetry 拦截器（Python `meshcall[otel]`、TypeScript `meshcall/otel`）跨语言与服务传递 W3C trace context，并内置 Prometheus 指标支持
 - **对人类与 AI 同样透明** —— 在线服务自带接口描述，无需翻阅源码或编写临时脚本，在终端即可直接查看签名并发起调试调用
 
 ---
@@ -33,9 +33,22 @@ uv add meshcall
 # TypeScript / Node.js (20+)
 yarn add meshcall
 # 或: npm install meshcall
+
+# Go (1.22+)
+go get github.com/t4wefan/meshcall/meshcall-go
 ```
 
-安装包已内置路由进程（`Router`）与 `meshcall` 命令行工具，开箱即用，无需额外安装其他组件。
+Python 与 TypeScript 安装包已内置本地路由二进制（`meshcall-router`）与 `meshcall` 命令行工具，开箱即用，无需额外安装其他组件。
+
+### 使用 AI 编程助手协作？
+
+安装完成后，在项目根目录执行一次 `meshcall init`：
+
+```bash
+uv run meshcall init      # 或: npx meshcall init / meshcall init
+```
+
+这会在项目中写入 `.agents/skills/meshcall/SKILL.md` 并更新 `AGENTS.md`，让 AI 助手一键掌握如何定义服务、生成客户端、通过 `Router` 与 `Mesh` 组装连接，以及使用 `meshcall router inspect` 和 `meshcall call` 探索与验证在线接口。（可通过 `--agent claude|cursor|copilot|windsurf|all` 生成特定工具的规则文件。）
 
 ---
 
@@ -82,46 +95,53 @@ uv run meshcall generate service:Greeter --single-file --output greeter_client.p
 
 这样调用方无需手写方法名字符串或拼装字典，在编辑器中即可获得完整的方法与字段自动补全，并由类型检查器对参数和返回值做静态检查。
 
-### 3. 通过“Router”启动并注册服务
+### 3. 通过 `LocalRouter` / `Router` 与 `Mesh` 启动服务
 
-服务端与客户端如何找到彼此？在 MeshCall 中，我们推荐所有节点统一通过 **Router（路由中转进程）** 通信，而不是让客户端直接连接各个服务端的端口：
+服务端与客户端如何找到彼此？MeshCall 将网络拓扑与进程内运行时清晰地分为两层：
 
-- **服务端**连向 Router 并注册自己的**服务实例**（`instance_id`）；同一个服务可以启动多个实例，由 Router 自动负责请求转发与负载均衡。
-- **客户端**连向同一个 Router 发起调用，只需知道服务名（如 `demo.v1.Greeter`），无需关心目标服务运行在哪个端口或哪台机器上。
-- 因为所有节点都连向 Router，**任何一个节点都可以同时对外提供服务，并作为客户端调用其他服务**。
+1. **Router（`Router` / `LocalRouter`）—— 节点之间的路由中转进程**：
+   所有节点统一连向 **Router**（默认地址 `ws://127.0.0.1:8765`），而不是让客户端直接连接各个服务端的端口。
+   - `LocalRouter(port=8765)` 会在本机自动拉起并托管一个 `meshcall-router` 子进程，非常适合本地开发、教程与单测。
+   - `Router()` 则指向一个已经在运行的外部 Router 进程（读取 `MESHCALL_ROUTER_URL`，默认为 `ws://127.0.0.1:8765`）。
+2. **Mesh（`Mesh(router)`）—— 当前进程的对等运行时**：
+   `Mesh` 负责连向 Router、挂载本地服务（`mesh.mount(Greeter())`）以便接收转发来的请求，同时作为生成的客户端共享的连接句柄。同一个服务可以启动多个实例，由 Router 自动负责请求转发与负载均衡；而且因为每个节点都通过 `Mesh` 接入，**任何一个进程都可以同时对外提供服务，并作为客户端调用其他服务**。
 
-新建 `server.py` 并运行：
+新建 `server.py` 并在终端 1 中运行：
 
 ```python
-from meshcall import run
+from meshcall import LocalRouter, Mesh
 from service import Greeter
 
 
 if __name__ == "__main__":
-    run(Greeter())
+    mesh = Mesh(LocalRouter(port=8765))
+    mesh.mount(Greeter())
+    mesh.run()
 ```
 
 ```bash
 uv run python server.py
 ```
 
-`run` 会解析 Router 地址（`MESHCALL_ROUTER_URL`，默认为 `ws://127.0.0.1:8765`）；当地址是本机且没有 Router 在监听时，自动拉起内置 Router，注册服务，并在收到 `SIGINT` / `SIGTERM` 时先排空再退出。需要鉴权、指标、多个 Router 端点，或想关闭自动拉起（`spawn_if_local=False`）时，传入显式的 `router=Router(...)`。
+`Mesh(LocalRouter(port=8765))` 会在 `8765` 端口自动拉起本地 Router 子进程，`mesh.mount(Greeter())` 挂载本地服务，`mesh.run()` 连接 Router、注册 `demo.v1.Greeter`，并在收到 `SIGINT` / `SIGTERM` 时先排空在途请求再退出。（若连接已独立运行的 `meshcall-router`，把 `LocalRouter(port=8765)` 换成 `Router()` 即可。）
 
 ### 4. 像调本地函数一样调用服务
 
-保持 `server.py` 运行，新建 `client.py` 并在另一个终端执行：
+保持 `server.py` 运行，新建 `client.py` 并在终端 2 中执行：
 
 ```python
 import asyncio
+from meshcall import Mesh, Router
 from greeter_client import GreeterClient
 
 
 async def main() -> None:
-    async with GreeterClient.connect() as client:
+    async with Mesh(Router()) as mesh:
+        client = GreeterClient(mesh)
         reply = await client.greet("Alice")
         print(reply.message)  # hello, Alice
 
-        # 单次调用选项不进入业务方法签名，统一通过 with_options 设置
+        # 单次调用选项不进入业务方法签名，统一通过 with_options 设置：
         again = await client.with_options(timeout=5.0).greet("Bob")
         print(again.message)
 
@@ -130,26 +150,24 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-`connect()` 解析 Router 的方式与 `run()` 完全一致。多个客户端可以复用一条连接：`router = await Router.connect(); GreeterClient(router); BillingClient(router)`。
-
 ```bash
 uv run python client.py
 ```
 
-`client.greet` 的入参与返回值均具备完整类型签名，支持 IDE 自动补全与静态类型检查，参数缺失或类型不匹配会在编辑阶段直接暴露。
+`Router()` 默认连接监听在 `ws://127.0.0.1:8765` 的 Router。多个生成的客户端可以共享同一个 `Mesh` 连接（`GreeterClient(mesh)`、`BillingClient(mesh)`），并且 `mesh` 还通过 `mesh.registry`（查询在线服务列表与契约）和 `mesh.auth`（查看当前身份、签发与吊销令牌）直接暴露 Router 的内置能力。`client.greet` 的入参与返回值均具备完整类型签名，参数缺失或类型不匹配会在编辑阶段直接暴露。
 
 ---
 
 ## 流式方法：把 `return` 换成 `yield`
 
-除了一问一答的普通方法，MeshCall 还原生支持**流式方法**。服务端流就是被 `@stream` 装饰的异步生成器；客户端流把入站 `AsyncIterator` 作为最后一个参数，用 `@mutates` 声明（上传流同样是有副作用的调用）。两者都遵循 1:1 签名规则：生成的客户端接收相同的业务参数、顺序一致。对于需要在断线后继续的事件与通知，`@method.subscription(cursor=…, resume=…)` 声明一个服务端流，客户端会自动从最后收到的条目之后恢复；`Topic[T]` 把事件分发给进程内的每个订阅者。订阅与 `Topic` 在 v0.3 中是**实验特性**（见[订阅](docs/zh-CN/protocol.md#订阅subscriptions)）。
+除了一问一答的普通方法，MeshCall 还原生支持**流式方法**。服务端流就是被 `@stream` 装饰的异步生成器；客户端流把入站 `AsyncIterator` 作为最后一个参数，用 `@mutates` 声明（上传流同样是有副作用的调用）。两者都遵循 1:1 签名规则：生成的客户端接收相同的业务参数、顺序一致。
 
 修改 `service.py`，新增流式方法 `countdown`：
 
 ```python
 from collections.abc import AsyncIterator
 from pydantic import BaseModel
-from meshcall import query, stream, service
+from meshcall import query, service, stream
 
 
 class Reply(BaseModel):
@@ -183,7 +201,8 @@ uv run meshcall generate service:Greeter --single-file --output greeter_client.p
 ```
 
 ```python
-async with GreeterClient.connect() as client:
+async with Mesh(Router()) as mesh:
+    client = GreeterClient(mesh)
     async for tick in client.countdown(3):
         print(tick.step)  # 3, 2, 1
 ```
@@ -214,30 +233,27 @@ yarn add file:./greeter-ts
 3. 保持前面的 Python `server.py` 运行，在 TypeScript 中发起调用：
 
 ```typescript
-import { Router } from "meshcall";
+import { Mesh, Router } from "meshcall";
 import { GreeterClient } from "meshcall-demo-v1-greeter-client";
 
-const router = await Router.connect("ws://127.0.0.1:8765");
-const client = await GreeterClient.connect(router);
-try {
-  const reply = await client.greet("Alice");
-  console.log(reply.message); // hello, Alice
+await using mesh = await Mesh.connect(new Router("ws://127.0.0.1:8765"));
+const client = new GreeterClient(mesh);
 
-  for await (const tick of client.countdown(3)) {
-    console.log(tick.step); // 3, 2, 1
-  }
-} finally {
-  await router.close();
+const reply = await client.greet("Alice");
+console.log(reply.message); // hello, Alice
+
+for await (const tick of client.countdown(3)) {
+  console.log(tick.step); // 3, 2, 1
 }
 ```
 
-`Router.connect` 会读取 `MESHCALL_ROUTER_URL`（默认为 `ws://127.0.0.1:8765`）；`withOptions({ timeoutMs, metadata, idempotencyKey, instance })` 用于设置单次调用选项，不改变业务方法签名。
+`await using mesh = await Mesh.connect(...)` 是 TypeScript 中与 Python `async with Mesh(...) as mesh:` 对应的异步资源管理写法。`new Router()` 会读取 `MESHCALL_ROUTER_URL`（默认为 `ws://127.0.0.1:8765`）；`withOptions({ timeoutMs, metadata, idempotencyKey, instance })` 用于设置单次调用选项，不改变业务方法签名。
 
 ---
 
 ## 依赖注入与元数据
 
-处理器可以声明只在服务端解析的依赖，而不把它们加进契约。依赖按调用解析（同一次调用内缓存），带 `yield` 的提供者在调用结束时执行清理——成功时提交，出错或被取消时回滚。`meta("x-caller-id")` 是给"以调用元数据而非业务字段到达的值"留的逃生舱：
+处理器可以声明只在服务端解析的依赖，而不把它们加进契约。依赖按调用解析（同一次调用内缓存），带 `yield` 的提供者在调用结束时执行清理——成功时提交，出错或被取消时回滚。`meta("x-caller-id")` 是给“以调用元数据而非业务字段到达的值”留的声明方式：
 
 ```python
 from typing import Annotated
@@ -289,49 +305,37 @@ curl http://127.0.0.1:8765/v1/services
 curl http://127.0.0.1:8765/v1/openapi.json
 ```
 
-三端都提供**只用于客户端的 HTTP Router 对象**，生成的客户端可以直接切换传输，方法签名不变：
+当给 `Router` 传入 `http://` 或 `https://` 地址时，`Mesh` 会在底层自动选用 HTTP 客户端传输，因此同一个生成的客户端无需改动任何方法即可切换传输方式：
 
 ```python
-from meshcall import HTTPRouter
+from meshcall import Mesh, Router
 
-http = HTTPRouter("https://router.example", token="mk_…")
-client = ChatClient(http)                 # 或 ChatClient.connect(http)
+mesh = Mesh(Router("https://router.example"), token="mk_…")
+client = GreeterClient(mesh)
 reply = await client.greet("Alice")
 ```
 
 ```typescript
-import { HTTPRouter } from "meshcall/web";
+import { Mesh, Router } from "meshcall/web";
 
-const http = await HTTPRouter.connect("https://router.example", { token });
-const client = ChatClient.connect(http);
+const mesh = new Mesh(new Router("https://router.example"), { token });
+const client = new GreeterClient(mesh);
 ```
 
 ```go
-httpRouter := meshcall.NewHTTPRouter("https://router.example", meshcall.WithHTTPToken("mk_…"))
-chat := chatclient.NewChatClient(httpRouter)
+mesh := meshcall.NewMesh(meshcall.NewRouter("https://router.example"), meshcall.WithToken("mk_…"))
+greeter := greeterclient.NewGreeterClient(mesh)
 ```
 
-在浏览器（以及 Deno、Bun、边缘运行时）里，TypeScript 的 `HTTPRouter` 使用 `fetch`，不依赖 Node 内置模块（跨域时给 Router 加 `--http-cors-origin https://app.example`）。Router 的内置方法（`list_services` / `ListServices` / `listServices`、`whoami` 等）也能通过它调用。
+在浏览器（以及 Deno、Bun、边缘运行时）里，`meshcall/web` 导出了仅依赖 `fetch`、不含 Node 内置模块的 `Mesh` 与 `Router`（跨域时给 Router 加 `--http-cors-origin https://app.example`）。Router 的内置能力（`mesh.registry.list()` / `mesh.Registry().List(ctx)`、`mesh.auth.whoami()` 等）同样可以通过它调用。
 
-一元调用与服务端流完整可用，客户端流使用 NDJSON 请求体，duplex 调用（作为最后手段的受限形状，见[双向流调用](docs/zh-CN/protocol.md#双向流调用duplex-calls)）只能走 WebSocket。账号、令牌、超时（`MeshCall-Timeout-Ms`）、幂等键（`Idempotency-Key`）与元数据（`MeshCall-Meta-*`）都通过请求头传递，详见 [HTTP 调用](docs/zh-CN/protocol.md#http-调用http-calls)。
+一元调用与服务端流完整可用，客户端流使用 NDJSON 请求体，双向流调用（duplex，即客户端与服务端同时并发收发条目的流，见[双向流调用](docs/zh-CN/protocol.md#双向流调用duplex-calls)）仅支持 WebSocket。账号、令牌、超时（`MeshCall-Timeout-Ms`）、幂等键（`Idempotency-Key`）与元数据（`MeshCall-Meta-*`）都通过请求头传递，详见 [HTTP 调用](docs/zh-CN/protocol.md#http-调用http-calls)。
 
 ---
 
 ## Go
 
-Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)：同样的调用、错误、超时、流、订阅与 Router 特性，并通过同一套一致性测试（conformance suite）验证。`meshcall generate service.meshcall.json --language go --output internal/chatclient` 可为任一语言编写的服务生成类型化的 Go 客户端，`meshcall.WriteContract` 则导出 Go 服务的契约，供 Python 与 TypeScript 客户端使用。
-
----
-
-## 让 AI 编程助手看懂你的服务
-
-如果你使用 AI 编程助手协助开发，在项目根目录执行一次 `meshcall init`：
-
-```bash
-uv run meshcall init
-```
-
-这会安装供 AI 助手参考的开发说明（`.agents/skills/meshcall/SKILL.md` 并更新 `AGENTS.md`），让 AI 了解如何定义服务与方法、生成客户端，以及通过 `meshcall router inspect` 和 `meshcall call` 探索与验证在线接口。针对 Claude Code、Cursor 等特定工具的配置方式详见[快速上手与实战指南](docs/zh-CN/guide.md)。
+Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)：同样的调用、错误、超时、流与 Router 特性，并通过同一套一致性测试（conformance suite）验证。`meshcall generate service.meshcall.json --language go --output internal/chatclient` 可为任一语言编写的服务生成类型化的 Go 客户端，`meshcall.WriteContract` 则导出 Go 服务的契约，供 Python 与 TypeScript 客户端使用。
 
 ---
 

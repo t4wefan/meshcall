@@ -185,16 +185,8 @@ type method struct {
 	reflected       bool
 	opts            methodOptions
 	duplexReason    string
-	subscription    *SubscriptionSpec
 	schemas         struct{ request, response, input, output *orderedObject }
 	invoke          func(ctx *Context, call *serverCall, request json.RawMessage) (any, error)
-}
-
-// SubscriptionSpec says how a subscription resumes (docs/protocol.md →
-// Subscriptions): Cursor is an item field, Resume an optional request field.
-type SubscriptionSpec struct {
-	Cursor string
-	Resume string
 }
 
 type methodOptions struct {
@@ -265,18 +257,6 @@ func (s *Service) add(m *method, opts []MethodOption) {
 			s.module = structType(m.request).PkgPath()
 		}
 	}
-	if spec := m.subscription; spec != nil && spec.Cursor != "" {
-		if !hasField(m.output, spec.Cursor) {
-			panic(fmt.Sprintf("meshcall: subscription %s.%s: cursor %q is not a field of %s", s.name, m.name, spec.Cursor, m.output))
-		}
-		f, ok := field(m.request, spec.Resume)
-		if !ok {
-			panic(fmt.Sprintf("meshcall: subscription %s.%s: resume %q is not a request field", s.name, m.name, spec.Resume))
-		}
-		if f.required {
-			panic(fmt.Sprintf("meshcall: subscription %s.%s: request field %q must be optional (a pointer or omitempty): the first call has no cursor yet", s.name, m.name, spec.Resume))
-		}
-	}
 	s.methods = append(s.methods, m)
 	s.byName[m.name] = m
 }
@@ -289,20 +269,6 @@ func structType(t reflect.Type) reflect.Type {
 		return nil
 	}
 	return t
-}
-
-func field(t reflect.Type, name string) (structField, bool) {
-	for _, f := range fieldsOf(structType(t)) {
-		if f.name == name {
-			return f, true
-		}
-	}
-	return structField{}, false
-}
-
-func hasField(t reflect.Type, name string) bool {
-	_, ok := field(t, name)
-	return ok
 }
 
 func typeOf[T any]() reflect.Type { return reflect.TypeOf((*T)(nil)).Elem() }
@@ -358,21 +324,7 @@ func HandleUnary[Req, Resp any](s *Service, name string, handler func(ctx *Conte
 // handler sends items with send, which waits for the caller's credit, and
 // returns when the stream is complete.
 func HandleServerStream[Req, Item any](s *Service, name string, handler func(ctx *Context, req Req, send func(Item) error) error, opts ...MethodOption) {
-	s.add(serverStreamMethod(name, nil, handler), opts)
-}
-
-// HandleSubscription adds a subscription: a server stream clients resume
-// after interruptions, passing the last item's cursor field as the resume
-// request field. Pass "", "" for a subscription without a cursor.
-func HandleSubscription[Req, Item any](s *Service, name, cursor, resume string, handler func(ctx *Context, req Req, send func(Item) error) error, opts ...MethodOption) {
-	if (cursor == "") != (resume == "") {
-		panic("meshcall: HandleSubscription takes cursor and resume together (or neither)")
-	}
-	s.add(serverStreamMethod(name, &SubscriptionSpec{Cursor: cursor, Resume: resume}, handler), opts)
-}
-
-func serverStreamMethod[Req, Item any](name string, spec *SubscriptionSpec, handler func(ctx *Context, req Req, send func(Item) error) error) *method {
-	m := &method{name: name, stream: serverStreamShape, request: typeOf[Req](), output: typeOf[Item](), subscription: spec}
+	m := &method{name: name, stream: serverStreamShape, request: typeOf[Req](), output: typeOf[Item]()}
 	m.invoke = func(ctx *Context, call *serverCall, raw json.RawMessage) (any, error) {
 		req, err := decodeInto[Req](m.schemas.request, raw, "request", "Invalid request")
 		if err != nil {
@@ -382,7 +334,7 @@ func serverStreamMethod[Req, Item any](name string, spec *SubscriptionSpec, hand
 			return nil, handler(ctx, req, func(item Item) error { return call.sendOutput(item) })
 		})
 	}
-	return m
+	s.add(m, opts)
 }
 
 // Input is the stream of items a client-stream or duplex handler reads.
@@ -540,15 +492,6 @@ func (s *Service) Contract() json.RawMessage {
 			entry.set("duplex_reason", m.duplexReason)
 		} else {
 			entry.set("duplex_reason", nil)
-		}
-		if spec := m.subscription; spec != nil {
-			sub := newObject().set("cursor", nil).set("resume", nil)
-			if spec.Cursor != "" {
-				sub.set("cursor", spec.Cursor).set("resume", spec.Resume)
-			}
-			entry.set("subscription", sub)
-		} else {
-			entry.set("subscription", nil)
 		}
 		methods = append(methods, entry)
 	}

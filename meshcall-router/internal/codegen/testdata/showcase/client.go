@@ -58,7 +58,7 @@ type ShowcaseServiceClient struct {
 	rpc meshcall.Caller
 }
 
-// NewShowcaseServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewShowcaseServiceClient wraps a Mesh (or any Caller).
 func NewShowcaseServiceClient(rpc meshcall.Caller) *ShowcaseServiceClient {
 	return &ShowcaseServiceClient{rpc: rpc}
 }

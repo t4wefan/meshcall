@@ -40,7 +40,7 @@ type TestServiceClient struct {
 	rpc meshcall.Caller
 }
 
-// NewTestServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewTestServiceClient wraps a Mesh (or any Caller).
 func NewTestServiceClient(rpc meshcall.Caller) *TestServiceClient {
 	return &TestServiceClient{rpc: rpc}
 }

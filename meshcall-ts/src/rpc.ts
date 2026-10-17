@@ -1,12 +1,10 @@
 /**
- * What generated clients need from a client runtime. `MeshCallClient`
- * (WebSocket), `Router` (WebSocket) and `MeshCallHttpClient` (fetch over HTTP
- * v1, from `meshcall/web`) satisfy it; duplex calls need `MeshCallClient` or
- * `Router`.
+ * What generated clients need from a client runtime. `Mesh` (from `meshcall`
+ * or `meshcall/web`) and `MeshCallClient` satisfy it; duplex calls need a
+ * WebSocket `Mesh` or `MeshCallClient`.
  */
-import type { CallOptions, DuplexCallOptions, MeshCallDuplexCall, SubscriptionOptions } from "./client.js";
+import type { CallOptions, DuplexCallOptions, MeshCallDuplexCall } from "./client.js";
 import type { Metadata } from "./protocol.js";
-import type { MeshCallSubscription } from "./subscription.js";
 
 declare global {
   interface SymbolConstructor {
@@ -43,9 +41,6 @@ export interface MeshCallRpc {
   clientStream<Request, Item, Response>(
     service: string, method: string, request: Request, items: AsyncIterable<Item>, options?: CallOptions,
   ): Promise<Response>;
-  subscribe<Request extends object, Item>(
-    service: string, method: string, request: Request, options?: SubscriptionOptions,
-  ): MeshCallSubscription<Item>;
   duplex?<Request, InputItem, OutputItem>(
     service: string, method: string, request: Request, options?: DuplexCallOptions,
   ): MeshCallDuplexCall<InputItem, OutputItem>;

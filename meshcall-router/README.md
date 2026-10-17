@@ -2,8 +2,10 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
-The standalone Go implementation of MeshCall's Router. Python and TypeScript
-start this executable as a child process; they do not implement routing.
+The standalone Go implementation of MeshCall's Router. Python, TypeScript
+and Go (`LocalRouter` / `StartLocalRouter`) start this executable as a child
+process when managing a local Router; the language SDKs do not implement
+routing.
 
 ## Build and run
 
@@ -21,7 +23,7 @@ a `checksums.txt`, and the
 same binaries are bundled into the SDK packages (`scripts/release/bundle.sh`):
 a PyPI platform wheel per target and an npm `meshcall-router-<os>-<cpu>`
 package that `meshcall` lists as an optional dependency. Installing the SDK
-therefore installs the binaries. The download path remains as a fallback for
+therefore installs the binaries. The download path is used as a fallback for
 platforms without a bundle; it fetches the release that matches the SDK
 version into the per-user cache (`~/.cache/meshcall/router/<version>/`,
 honouring `XDG_CACHE_HOME`), verifying the SHA-256 first:
@@ -53,7 +55,7 @@ ends them at once) end with retryable `unavailable`
 (`reason: "router_shutdown"`). A second signal skips the
 wait. See [Router shutdown](../docs/protocol.md#router-shutdown). SDKs additionally use
 `--shutdown-on-stdin-close` so an abruptly terminated parent does not leave a
-Router running. Both launchers wait for readiness, bound startup/shutdown waits,
+Router running. `LocalRouter` / `StartLocalRouter` wait for readiness, bound startup/shutdown waits,
 reap failed children, and can restart after a failed bind.
 
 `--metrics-listen 127.0.0.1:9464` serves Prometheus metrics on a separate
@@ -83,7 +85,7 @@ counted; `--http-max-inflight` bounds them. `--max-calls-per-connection`
 flight; past it a call fails with retryable `resource_exhausted`
 (`reason: "overloaded"`). `--max-frame-size` (default and maximum 64 MiB)
 bounds a frame, and `--outbox-size` (default 256 MiB, at least the frame
-size; launchers `outbox_size` / `outboxSize`) bounds the bytes queued for a
+size; `LocalRouter` options `outbox_size` / `outboxSize`) bounds the bytes queued for a
 peer that is not reading before it is disconnected. HTTP
 request bodies must keep arriving within `--idle-timeout` while the Router
 is reading them.
@@ -102,8 +104,8 @@ Every flag can be set as `MESHCALL_ROUTER_<FLAG>`: upper case, `-` becomes
 line wins over its variable; an invalid value fails startup and names the
 variable. `MESHCALL_ROUTER_AUTH` holds the auth document itself (the JSON an
 auth file would contain), for platforms that inject secrets as variables;
-setting it together with an auth file is an error. Routers started by the
-Python and TypeScript launchers inherit the launching process's
+setting it together with an auth file is an error. Routers started by
+`LocalRouter` / `StartLocalRouter` inherit the launching process's
 environment, so these variables apply to them too.
 
 ## Authentication
@@ -112,7 +114,7 @@ Use `--auth-file /path/to/router-auth.json` (or `MESHCALL_ROUTER_AUTH_FILE`,
 or the document inline in `MESHCALL_ROUTER_AUTH`) to enable account
 authentication.
 See [Router authentication and RPC management](../docs/router.md) for the
-configuration format, scoped temporary tokens, and Python/TypeScript examples.
+configuration format, scoped temporary tokens, and Python, TypeScript and Go examples.
 Without an auth file, the listener is in development mode; AuthService cannot
 issue tokens. An invalid or empty supplied auth file fails startup.
 
@@ -165,5 +167,5 @@ go -C meshcall-router test -race ./...
 
 Go tests cover ownership, route cleanup, authentication, scope delegation,
 expiry/revocation, frame scheduling, sticky canonicalization and socket cleanup.
-The Python/TypeScript suites and cross-language suite use the same executable.
+The Python, TypeScript and Go runtime suites and cross-language suite use the same executable.
 CI builds it once and distributes that exact artifact to all runtime jobs.

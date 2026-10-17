@@ -20,7 +20,6 @@ import {
 } from "./liveness.js";
 import { ConsoleRpcLogger, type RpcLogger } from "./logging.js";
 import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
-import { MeshCallSubscription } from "./subscription.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter, isFrameTooLarge } from "./transport.js";
 import { checkReceived } from "./validation.js";
 import {
@@ -42,7 +41,6 @@ import type { RouterCredentials } from "./router-auth.js";
 
 export { INITIAL_STREAM_CREDIT } from "./flow.js";
 export { mergeCallOptions } from "./rpc.js";
-export { MeshCallSubscription } from "./subscription.js";
 
 export interface CallOptions {
   /** Total budget for the call, including connecting. */
@@ -76,15 +74,6 @@ export interface CallOptions {
  */
 export type DuplexCallOptions = Omit<CallOptions, "idempotencyKey" | "idempotent" | "responseSchema">;
 
-/**
- * Options for a subscription (docs/protocol.md → Subscriptions): `cursor` and
- * `resume` come from the contract; generated clients fill them in.
- */
-export type SubscriptionOptions = Omit<CallOptions, "idempotent" | "responseSchema"> & {
-  readonly cursor?: string;
-  readonly resume?: string;
-};
-
 export interface MeshCallClientOptions {
   readonly auth?: RouterCredentials;
   readonly maxFrameSize?: number;
@@ -107,7 +96,7 @@ export interface MeshCallClientOptions {
   readonly interceptors?: ReadonlyArray<ClientInterceptor>;
   /** Built-in retry for unary calls; `false` disables. */
   readonly retry?: RetryPolicy | false;
-  /** Where the client reports what callers cannot see, such as a resubscription. */
+  /** Where the client reports background events that callers cannot see. */
   readonly logger?: RpcLogger;
 }
 
@@ -465,34 +454,6 @@ export class MeshCallClient implements MeshCallRpc {
       }
       return (stream as MeshCallServerStream<Item>).opened;
     }));
-  }
-
-  /**
-   * Opens a subscription (docs/protocol.md → Subscriptions): a server stream
-   * reopened after retryable failures, resuming after the last item's
-   * `cursor` via the `resume` request property. No default timeouts.
-   */
-  public subscribe<Request extends object, Item>(
-    service: string,
-    method: string,
-    request: Request,
-    options: SubscriptionOptions = {},
-  ): MeshCallSubscription<Item> {
-    const { idempotent: _i, responseSchema: _r, ...baseSub } = this.defaultCallOptions;
-    const merged = mergeCallOptions(baseSub, options);
-    if (this.root !== this) {
-      return this.root.subscribe(service, method, request, merged);
-    }
-    const { cursor, resume, ...callOptions } = merged;
-    this.validateOptions(callOptions);
-    return new MeshCallSubscription<Item>(
-      (payload) => this.serverStream<Record<string, unknown>, Item>(service, method, payload, callOptions),
-      request as Record<string, unknown>,
-      { ...(cursor === undefined ? {} : { cursor }), ...(resume === undefined ? {} : { resume }) },
-      this.options.reconnect ?? {},
-      this.options.logger ?? new ConsoleRpcLogger(),
-      service + "." + method,
-    );
   }
 
   /**

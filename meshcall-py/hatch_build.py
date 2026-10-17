@@ -32,7 +32,12 @@ class BundleBinaries(BuildHookInterface):
             raise RuntimeError("set both MESHCALL_BUNDLE_DIR and MESHCALL_WHEEL_TAG")
         source = Path(bundle)
         found = 0
-        for name in ("meshcall-router", "meshcall", "meshcall-router.exe", "meshcall.exe"):
+        for name in (
+            "meshcall-router",
+            "meshcall",
+            "meshcall-router.exe",
+            "meshcall.exe",
+        ):
             binary = source / name
             if binary.is_file():
                 build_data["force_include"][str(binary)] = f"meshcall/bin/{name}"

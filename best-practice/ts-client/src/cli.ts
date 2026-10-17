@@ -2,18 +2,18 @@
 
 import { createInterface } from "node:readline/promises";
 
-import { Router } from "meshcall";
+import { Mesh, Router } from "meshcall";
 
 import { LlmServiceClient } from "./index.js";
 
 const defaultPrompt =
   "Why should a server stream tokens instead of waiting for one big answer?";
-// Router.connect resolves MESHCALL_ROUTER_URL (default ws://127.0.0.1:8765).
-const router = await Router.connect();
-// Connect the typed client to the Router and make the caller's identity and
+// new Router() resolves MESHCALL_ROUTER_URL (default ws://127.0.0.1:8765).
+const mesh = await Mesh.connect(new Router());
+// Attach the typed client to the Mesh and make the caller's identity and
 // a time budget defaults for every call, without touching the business
 // method signatures.
-const client = (await LlmServiceClient.connect(router)).withOptions({
+const client = new LlmServiceClient(mesh).withOptions({
   metadata: { "x-caller-id": "best-practice-cli" },
   timeoutMs: 30_000,
 });
@@ -137,5 +137,5 @@ try {
   console.error(`meshcall cli: ${message}`);
   process.exitCode = 1;
 } finally {
-  await router.close();
+  await mesh.close();
 }

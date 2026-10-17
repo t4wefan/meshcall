@@ -238,8 +238,6 @@ type registryMethod struct {
 	Parameters  []string        `json:"parameters,omitempty"`
 	// DuplexReason is why a duplex method needs the shape (from the contract).
 	DuplexReason *string `json:"duplex_reason,omitempty"`
-	// Subscription is the contract's {cursor, resume} for a subscription.
-	Subscription json.RawMessage `json:"subscription,omitempty"`
 	// Instances lists the ids serving this method; during a rolling upgrade
 	// a new method is served by a subset of the service's instances.
 	Instances []string `json:"instances"`
@@ -265,7 +263,6 @@ type contractEntry struct {
 		Deprecated   *string         `json:"deprecated"`
 		Parameters   []string        `json:"parameters"`
 		DuplexReason *string         `json:"duplex_reason"`
-		Subscription json.RawMessage `json:"subscription"`
 	} `json:"methods"`
 }
 
@@ -399,9 +396,6 @@ func (r *Router) describeService(name string, u *User) registryService {
 			if cm.Name == m.Name {
 				rm.Description, rm.Annotations, rm.Deprecated, rm.Parameters = cm.Description, cm.Annotations, cm.Deprecated, cm.Parameters
 				rm.DuplexReason = cm.DuplexReason
-				if len(cm.Subscription) > 0 && string(cm.Subscription) != "null" {
-					rm.Subscription = cm.Subscription
-				}
 			}
 		}
 		out.Methods = append(out.Methods, rm)

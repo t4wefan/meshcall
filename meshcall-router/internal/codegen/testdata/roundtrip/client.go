@@ -44,7 +44,7 @@ type ContractRoundTripClient struct {
 	rpc meshcall.Caller
 }
 
-// NewContractRoundTripClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewContractRoundTripClient wraps a Mesh (or any Caller).
 func NewContractRoundTripClient(rpc meshcall.Caller) *ContractRoundTripClient {
 	return &ContractRoundTripClient{rpc: rpc}
 }

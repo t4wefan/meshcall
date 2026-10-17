@@ -22,8 +22,6 @@ const Metadata = z.object({ metadata: z.record(z.string(), z.string()) }).meta({
 const Instance = z.object({ instance: z.string() }).meta({ id: "Instance" });
 const Chat = z.object({ prefix: z.string().default("") }).meta({ id: "Chat" });
 const Text = z.object({ text: z.string() }).meta({ id: "Text" });
-const Ticks = z.object({ count: z.int(), since: z.int().nullable().default(null) }).meta({ id: "Ticks" });
-const Seq = z.object({ seq: z.int() }).meta({ id: "Seq" });
 const Size = z.object({ bytes: z.int() }).meta({ id: "Size" });
 const Drain = z.object({ delay_ms: z.int().default(0) }).meta({ id: "Drain" });
 
@@ -100,14 +98,6 @@ class Fixture {
     ctx.setTrailer("echoed", "yes");
     ctx.setTrailer("count", String(Object.keys(ctx.metadata).length));
     return { metadata: { ...ctx.metadata } };
-  }
-
-  @method.subscription({
-    description: "Yield seq 0..count-1, or only those after since.", readOnly: true,
-    cursor: "seq", resume: "since", request: Ticks, outputItem: Seq,
-  })
-  async *ticks({ count, since }: z.infer<typeof Ticks>) {
-    for (let seq = since === null ? 0 : since + 1; seq < count; seq += 1) yield { seq };
   }
 
   @method({ description: "Return a text of bytes bytes.", readOnly: true, request: Size, response: Text })

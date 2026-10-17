@@ -1,14 +1,4 @@
-"""An HTTP-only Router for clients.
-
-``HTTPRouter`` speaks the Router's HTTP v1 API instead of a WebSocket. It is a
-drop-in client transport: pass it to a generated client
-(``ChatClient(http_router)`` / ``await ChatClient.connect(http_router)``) and
-the same typed methods work over HTTP. It has no server side: it cannot
-register services, and duplex methods are unavailable (the Router answers
-405).
-
-Requires ``httpx``; install ``meshcall[http]``.
-"""
+"""Internal HTTP v1 transport used by :class:`meshcall.Mesh` for ``http(s)://`` Router endpoints."""
 
 from __future__ import annotations
 
@@ -25,21 +15,7 @@ from pydantic import BaseModel, ValidationError
 
 from meshcall.context import DEFAULT_RETRY, RetryPolicy
 from meshcall.errors import MeshCallError, ProtocolError
-from meshcall.router_auth import (
-    AUTH_SERVICE,
-    REGISTRY_SERVICE,
-    IssuedToken,
-    RegistryService,
-    RouterCredentials,
-    RouterIdentity,
-    _DescribeServiceRequest,
-    _Empty,
-    _IssueRequest,
-    _ListServicesResult,
-    _normalize_scope_service,
-    _RevokeRequest,
-    _RevokeResult,
-)
+from meshcall.router_auth import RouterCredentials
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 
 
@@ -122,14 +98,8 @@ def _error_from(status: int, body: Any) -> MeshCallError:
     )
 
 
-class HTTPRouter:
-    """A client-only Router that talks HTTP instead of WebSocket.
-
-    ``url`` is the Router's origin (``http://``, ``https://``, or ``ws(s)://``,
-    which is converted). ``credentials`` (or ``token``) authenticate every
-    request. ``headers`` add request headers (for a gateway in front of the
-    Router).
-    """
+class _HttpTransport:
+    """Internal HTTP v1 client transport used by :class:`Mesh`."""
 
     def __init__(
         self,
@@ -145,12 +115,8 @@ class HTTPRouter:
         if credentials is not None and token is not None:
             raise ValueError("Pass credentials or token, not both")
         self.base = url.rstrip("/")
-        if self.base.startswith("ws://"):
-            self.base = "http://" + self.base.removeprefix("ws://")
-        elif self.base.startswith("wss://"):
-            self.base = "https://" + self.base.removeprefix("wss://")
         if not self.base.startswith(("http://", "https://")):
-            raise ValueError("HTTPRouter needs an http(s):// Router URL")
+            raise ValueError("HTTP transport needs an http(s):// Router URL")
         self.credentials = credentials or (
             RouterCredentials.bearer(token) if token is not None else None
         )
@@ -163,11 +129,6 @@ class HTTPRouter:
         self._closed = False
 
     # -- lifecycle ---------------------------------------------------------
-
-    @classmethod
-    async def connect(cls, url: str, **options: Any) -> Self:
-        """Construct a client; HTTP connects per request."""
-        return cls(url, **options)
 
     @property
     def is_connected(self) -> bool:
@@ -365,38 +326,6 @@ class HTTPRouter:
             options,
         )
 
-    def call_subscription(
-        self,
-        service: str,
-        method: str,
-        request: BaseModel,
-        item_type: type[BaseModel | str | bytes],
-        *,
-        cursor: str | None = None,
-        resume: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        instance: str | None = None,
-    ) -> RpcServerStream[Any]:
-        options = _merge_options(
-            self._options,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-        )
-        return _HTTPSubscription(
-            self,
-            service,
-            method,
-            request,
-            item_type,
-            options,
-            cursor=cursor,
-            resume=resume,
-        )
-
     async def call_client_stream(
         self,
         service: str,
@@ -462,54 +391,6 @@ class HTTPRouter:
             details={"source": "client", "reason": "duplex_over_http"},
         )
 
-    # -- built-in Router services -----------------------------------------
-
-    async def list_services(self) -> list[RegistryService]:
-        result = await self.call_unary(
-            REGISTRY_SERVICE, "list", _Empty(), _ListServicesResult
-        )
-        return result.services
-
-    async def describe_service(self, service: str) -> RegistryService:
-        from meshcall.contract import normalize_service_name
-
-        try:
-            normalized = normalize_service_name(service)[0]
-        except Exception:  # noqa: BLE001
-            normalized = service
-        return await self.call_unary(
-            REGISTRY_SERVICE,
-            "describe",
-            _DescribeServiceRequest(service=normalized),
-            RegistryService,
-        )
-
-    async def whoami(self) -> RouterIdentity:
-        return await self.call_unary(AUTH_SERVICE, "whoami", _Empty(), RouterIdentity)
-
-    async def issue_token(self, scopes: Any, ttl_seconds: int = 900) -> IssuedToken:
-        normalized = [
-            scope.model_copy(
-                update={"service": _normalize_scope_service(scope.service)}
-            )
-            for scope in scopes
-        ]
-        return await self.call_unary(
-            AUTH_SERVICE,
-            "issue_token",
-            _IssueRequest(ttl_seconds=ttl_seconds, scopes=normalized),
-            IssuedToken,
-        )
-
-    async def revoke_token(self, token_id: str) -> bool:
-        result = await self.call_unary(
-            AUTH_SERVICE,
-            "revoke_token",
-            _RevokeRequest(token_id=token_id),
-            _RevokeResult,
-        )
-        return result.revoked
-
 
 def _dump_item(input_type: type[BaseModel | str | bytes], item: Any) -> Any:
     if isinstance(item, BaseModel):
@@ -527,7 +408,7 @@ class _HTTPServerStream(RpcServerStream[Any]):
 
     def __init__(
         self,
-        router: HTTPRouter,
+        router: _HttpTransport,
         service: str,
         method: str,
         request: BaseModel,
@@ -566,7 +447,7 @@ class _HTTPServerStream(RpcServerStream[Any]):
             body = await response.aread()
             await self._context.__aexit__(None, None, None)
             self._response = None
-            raise _error_from(response.status_code, HTTPRouter._env(body))
+            raise _error_from(response.status_code, _HttpTransport._env(body))
         self._lines = response.aiter_lines()
 
     def __aiter__(self) -> Self:
@@ -626,89 +507,6 @@ class _HTTPServerStream(RpcServerStream[Any]):
 
     async def cancel(self, reason: str = "client_closed") -> None:
         await self._finish()
-
-    @property
-    def trailers(self) -> Mapping[str, str]:
-        return self._trailers
-
-
-class _HTTPSubscription(RpcServerStream[Any]):
-    """A server stream reopened from its cursor after a retryable failure."""
-
-    def __init__(
-        self,
-        router: HTTPRouter,
-        service: str,
-        method: str,
-        request: BaseModel,
-        item_type: type[BaseModel | str | bytes],
-        options: _Options,
-        *,
-        cursor: str | None,
-        resume: str | None,
-    ) -> None:
-        self._router = router
-        self._service = service
-        self._method = method
-        self._request = request
-        self._item_type = item_type
-        self._options = options
-        self._cursor = cursor
-        self._resume = resume
-        self._stream: _HTTPServerStream | None = None
-        self._attempt = 0
-        self._last: Any = None
-        self._done = False
-        self._trailers: dict[str, str] = {}
-
-    def __aiter__(self) -> Self:
-        return self
-
-    async def __anext__(self) -> Any:
-        while True:
-            if self._stream is None:
-                self._stream = self._router.call_server_stream(  # type: ignore[assignment]
-                    self._service,
-                    self._method,
-                    self._request,
-                    self._item_type,
-                    timeout=self._options.timeout,
-                    idle_timeout=self._options.idle_timeout,
-                    metadata=self._options.metadata,
-                    instance=self._options.instance,
-                )
-            stream = self._stream
-            assert stream is not None
-            try:
-                item = await stream.__anext__()
-            except StopAsyncIteration:
-                self._trailers = dict(stream.trailers)
-                self._done = True
-                raise
-            except MeshCallError as exc:
-                self._stream = None
-                if (
-                    not exc.retryable
-                    or self._cursor is None
-                    or self._resume is None
-                    or self._attempt >= self._router.retry.max_attempts
-                ):
-                    raise
-                self._attempt += 1
-                await asyncio.sleep(self._router.retry.delay(self._attempt))
-                if self._last is not None:
-                    cursor_value = getattr(self._last, self._cursor, None)
-                    self._request = self._request.model_copy(
-                        update={self._resume: cursor_value}
-                    )
-                continue
-            self._last = item
-            return item
-
-    async def cancel(self, reason: str = "client_closed") -> None:
-        if self._stream is not None:
-            await self._stream.cancel(reason)
-        self._done = True
 
     @property
     def trailers(self) -> Mapping[str, str]:

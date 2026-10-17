@@ -7,7 +7,7 @@ import json
 import shutil
 from pathlib import Path
 
-from meshcall import Router, serve
+from meshcall import LocalRouter, Mesh
 from py2ts_demo.service import PythonGreetingService
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -35,19 +35,17 @@ async def run_demo() -> None:
     )
     await _run_process("yarn", "run", "build", cwd=TYPESCRIPT_CLIENT_ROOT)
 
-    async with serve(
-        PythonGreetingService(),
-        router=Router("ws://127.0.0.1:0"),
-        access_log=False,
-    ) as server:
-        output = await _run_process(
-            "node",
-            "run.mjs",
-            server.url or "",
-            cwd=TYPESCRIPT_CLIENT_ROOT,
-        )
-        result = json.loads(output)
-        print(f"Python service -> TypeScript client: {result}")
+    async with LocalRouter(port=0) as local_router:
+        server_mesh = Mesh(local_router).mount(PythonGreetingService())
+        async with server_mesh.serve(access_log=False):
+            output = await _run_process(
+                "node",
+                "run.mjs",
+                local_router.url,
+                cwd=TYPESCRIPT_CLIENT_ROOT,
+            )
+            result = json.loads(output)
+            print(f"Python service -> TypeScript client: {result}")
 
 
 def main() -> None:

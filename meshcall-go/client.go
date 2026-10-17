@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"iter"
 	"log/slog"
@@ -30,7 +29,7 @@ type ClientOptions struct {
 	// own deadline error before failing locally (default max(1s, 10%)).
 	DeadlineGrace    time.Duration
 	HandshakeTimeout time.Duration
-	// Reconnect paces reconnecting after a lost connection and resubscribing.
+	// Reconnect paces reconnecting after a lost connection.
 	Reconnect ReconnectPolicy
 	// Retry re-sends unary calls that failed with a retryable error, when the
 	// method is idempotent or the call has an idempotency key.
@@ -143,18 +142,12 @@ type Caller interface {
 	serverStreamRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (streamSource, error)
 	clientStreamRaw(ctx context.Context, service, method string, request json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error)
 	duplexRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (rawDuplex, error)
-	// reconnectDelays drives subscription resume backoff; log receives the
-	// resubscribe warning.
-	reconnectDelays() func() (time.Duration, bool)
-	log() *slog.Logger
 	// withOptions backs the generated clients' WithOptions, which must keep
 	// the concrete transport type (so the next call still has it).
 	WithCallOptions(CallOptions) Caller
 }
 
-func (c *Client) reconnectDelays() func() (time.Duration, bool) { return c.opts.Reconnect.delays() }
-func (c *Client) log() *slog.Logger                             { return c.logger }
-func (c *Client) WithCallOptions(opts CallOptions) Caller       { return c.WithOptions(opts) }
+func (c *Client) WithCallOptions(opts CallOptions) Caller { return c.WithOptions(opts) }
 
 type clientState struct {
 	mu            sync.Mutex
@@ -1145,144 +1138,4 @@ func Duplex[Req, In, Out any](ctx context.Context, c Caller, service, method str
 		return nil, err
 	}
 	return &DuplexCall[In, Out]{Stream: Stream[Out]{source: raw}, raw: raw}, nil
-}
-
-// Subscription is a server stream that is reopened after retryable failures,
-// resuming after the last item's cursor (docs/protocol.md → Subscriptions).
-type Subscription[Item any] struct {
-	ctx     context.Context
-	caller  Caller
-	service string
-	method  string
-	request map[string]any
-	spec    SubscriptionSpec
-	opts    []CallOption
-	stream  *Stream[Item]
-	last    any
-	seen    bool
-	next    func() (time.Duration, bool)
-	closed  bool
-}
-
-// Subscribe opens a subscription. Pass the method's cursor and resume fields
-// (generated clients do); an empty SubscriptionSpec resumes from "now".
-func Subscribe[Req, Item any](ctx context.Context, c Caller, service, method string, req Req, spec SubscriptionSpec, opts ...CallOption) (*Subscription[Item], error) {
-	raw, err := json.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
-	request := map[string]any{}
-	if err := json.Unmarshal(raw, &request); err != nil {
-		return nil, fmt.Errorf("meshcall: a subscription request must encode as a JSON object: %w", err)
-	}
-	return &Subscription[Item]{ctx: ctx, caller: c, service: service, method: method, request: request, spec: spec, opts: opts}, nil
-}
-
-// Recv returns the next item, io.EOF once the server ends the stream, or the
-// error that ended the subscription (non-retryable, cancelled, or reconnect
-// attempts exhausted).
-func (s *Subscription[Item]) Recv() (Item, error) {
-	var zero Item
-	for {
-		if s.closed {
-			return zero, io.EOF
-		}
-		if s.stream == nil {
-			request := s.request
-			if s.spec.Resume != "" && s.seen {
-				request = map[string]any{}
-				for k, v := range s.request {
-					request[k] = v
-				}
-				request[s.spec.Resume] = s.last
-			}
-			payload, _ := json.Marshal(request)
-			source, err := s.caller.serverStreamRaw(s.ctx, s.service, s.method, payload, s.opts)
-			if err != nil {
-				if !s.resumable(err) {
-					return zero, err
-				}
-				if err := s.backoff(err); err != nil {
-					return zero, err
-				}
-				continue
-			}
-			s.stream = &Stream[Item]{source: source}
-		}
-		item, err := s.stream.Recv()
-		if err == io.EOF {
-			s.closed = true
-			return zero, io.EOF
-		}
-		if err != nil {
-			s.stream = nil
-			if !s.resumable(err) {
-				s.closed = true
-				return zero, err
-			}
-			if err := s.backoff(err); err != nil {
-				return zero, err
-			}
-			continue
-		}
-		s.next = nil // an item arrived: the next failure starts the backoff over
-		if s.spec.Cursor != "" {
-			raw, _ := json.Marshal(item)
-			var fields map[string]any
-			if json.Unmarshal(raw, &fields) == nil {
-				s.last, s.seen = fields[s.spec.Cursor], true
-			}
-		}
-		return item, nil
-	}
-}
-
-func (s *Subscription[Item]) resumable(err error) bool {
-	e, ok := AsError(err)
-	return ok && e.Retryable && (e.Code == CodeUnavailable || e.Code == CodeResourceExhausted) && s.ctx.Err() == nil
-}
-
-func (s *Subscription[Item]) backoff(err error) error {
-	if s.next == nil {
-		s.next = s.caller.reconnectDelays()
-	}
-	delay, ok := s.next()
-	if !ok {
-		s.closed = true
-		return err
-	}
-	s.caller.log().Warn("Subscription interrupted; resubscribing", "service", s.service, "method", s.method, "error", err, "delay", delay)
-	select {
-	case <-time.After(delay):
-		return nil
-	case <-s.ctx.Done():
-		s.closed = true
-		return contextError(s.ctx)
-	}
-}
-
-// All ranges over the subscription.
-func (s *Subscription[Item]) All() func(yield func(Item, error) bool) {
-	return func(yield func(Item, error) bool) {
-		for {
-			item, err := s.Recv()
-			if err == io.EOF {
-				return
-			}
-			if !yield(item, err) || err != nil {
-				if err == nil {
-					s.Close()
-				}
-				return
-			}
-		}
-	}
-}
-
-// Close ends the subscription.
-func (s *Subscription[Item]) Close() {
-	s.closed = true
-	if s.stream != nil {
-		s.stream.Close()
-	}
 }

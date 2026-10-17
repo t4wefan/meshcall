@@ -64,7 +64,7 @@ type LlmServiceClient struct {
 	rpc meshcall.Caller
 }
 
-// NewLlmServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewLlmServiceClient wraps a Mesh (or any Caller).
 func NewLlmServiceClient(rpc meshcall.Caller) *LlmServiceClient {
 	return &LlmServiceClient{rpc: rpc}
 }

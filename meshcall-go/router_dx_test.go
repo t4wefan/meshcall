@@ -16,7 +16,7 @@ import (
 	meshcall "github.com/t4wefan/meshcall/meshcall-go"
 )
 
-func TestServeAndRouterDX(t *testing.T) {
+func TestLocalRouterAndMeshDX(t *testing.T) {
 	if os.Getenv("MESHCALL_ROUTER_BINARY") == "" {
 		t.Skip("set MESHCALL_ROUTER_BINARY to run Router DX tests")
 	}
@@ -49,26 +49,34 @@ func TestServeAndRouterDX(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	routerCfg := meshcall.NewRouter(
-		meshcall.WithRouterURLs("ws://127.0.0.1:0"),
+	router, err := meshcall.StartLocalRouter(
+		ctx,
+		meshcall.WithPort(0),
 		meshcall.WithHTTPConfig(15*time.Second, "https://app.example.com"),
 	)
+	if err != nil {
+		t.Fatalf("StartLocalRouter failed: %v", err)
+	}
+	defer func() { _ = router.Stop() }()
 
-	running, err := meshcall.Serve(
+	if !router.IsRunning() || router.BoundPort() <= 0 || router.PID() <= 0 {
+		t.Fatalf("unexpected LocalRouter state: running=%v port=%d pid=%d", router.IsRunning(), router.BoundPort(), router.PID())
+	}
+
+	serverMesh := meshcall.NewMesh(router)
+	serverMesh.Mount(mathSvc, echoSvc)
+	running, err := serverMesh.StartServing(
 		ctx,
-		mathSvc,
-		echoSvc,
-		meshcall.WithRouter(routerCfg),
 		meshcall.WithInstanceID("go-dx-node-1"),
 		meshcall.WithStrict(true),
 	)
 	if err != nil {
-		t.Fatalf("Serve failed: %v", err)
+		t.Fatalf("StartServing failed: %v", err)
 	}
 	defer func() { _ = running.Close() }()
 
 	// Verify HTTP and WebSocket share the exact same Router port.
-	httpBase := strings.Replace(running.RouterURL, "ws://", "http://", 1)
+	httpBase := router.HTTPURL()
 	healthResp, err := http.Get(httpBase + "/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz failed: %v", err)
@@ -89,46 +97,46 @@ func TestServeAndRouterDX(t *testing.T) {
 		t.Fatalf("unexpected HTTP call output: %+v, err=%v", httpAddOut, err)
 	}
 
-	// Connect client-side Router and call built-in Registry + multiplex services.
-	router, err := meshcall.ConnectRouter(ctx, meshcall.WithRouterURLs(running.RouterURL))
+	// Connect client-side Mesh via Router(url) and call built-in Registry + multiplex services.
+	clientMesh, err := meshcall.ConnectMesh(ctx, meshcall.NewRouter(router.URL()))
 	if err != nil {
-		t.Fatalf("ConnectRouter failed: %v", err)
+		t.Fatalf("ConnectMesh failed: %v", err)
 	}
-	defer func() { _ = router.Close() }()
+	defer func() { _ = clientMesh.Close() }()
 
-	services, err := router.ListServices(ctx)
+	services, err := clientMesh.Registry().List(ctx)
 	if err != nil {
-		t.Fatalf("ListServices failed: %v", err)
+		t.Fatalf("Registry().List failed: %v", err)
 	}
 	if len(services) < 2 {
 		t.Fatalf("expected at least 2 services, got %+v", services)
 	}
 
-	detail, err := router.DescribeService(ctx, "test.v1.Math")
+	detail, err := clientMesh.Registry().Describe(ctx, "test.v1.Math")
 	if err != nil {
-		t.Fatalf("DescribeService failed: %v", err)
+		t.Fatalf("Registry().Describe failed: %v", err)
 	}
 	if detail.Name != "test.v1.Math" || len(detail.Instances) != 1 || detail.Instances[0].ID != "go-dx-node-1" {
 		t.Fatalf("unexpected service detail: %+v", detail)
 	}
 
-	// Call both services over the shared Router client and verify WithOptions.
-	sumResp, err := meshcall.Unary[AddReq, AddResp](ctx, router.Client(), "test.v1.Math", "add", AddReq{A: 19, B: 23})
+	// Call both services over the shared Mesh and verify WithOptions.
+	sumResp, err := meshcall.Unary[AddReq, AddResp](ctx, clientMesh, "test.v1.Math", "add", AddReq{A: 19, B: 23})
 	if err != nil || sumResp.Sum != 42 {
 		t.Fatalf("Math.add failed: %+v, err=%v", sumResp, err)
 	}
 
-	scopedRouter := router.WithOptions(meshcall.CallOptions{
+	scopedMesh := clientMesh.WithOptions(meshcall.CallOptions{
 		Timeout:  5 * time.Second,
 		Metadata: map[string]string{"x-prefix": "hi:"},
 	})
-	echoResp, err := meshcall.Unary[EchoReq, EchoResp](ctx, scopedRouter.Client(), "test.v1.Echo", "ping", EchoReq{Msg: "world"})
+	echoResp, err := meshcall.Unary[EchoReq, EchoResp](ctx, scopedMesh, "test.v1.Echo", "ping", EchoReq{Msg: "world"})
 	if err != nil || echoResp.Echoed != "hi:world" {
 		t.Fatalf("Echo.ping with WithOptions failed: %+v, err=%v", echoResp, err)
 	}
 }
 
-func TestRouterAuthBuiltinsDX(t *testing.T) {
+func TestMeshAuthBuiltinsDX(t *testing.T) {
 	bin := os.Getenv("MESHCALL_ROUTER_BINARY")
 	if bin == "" {
 		t.Skip("set MESHCALL_ROUTER_BINARY to run Router DX tests")
@@ -171,59 +179,64 @@ func TestRouterAuthBuiltinsDX(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	adminAuth := meshcall.BasicAuth("admin", "secret")
-	running, err := meshcall.Serve(
+	router, err := meshcall.StartLocalRouter(
 		ctx,
-		svc,
-		meshcall.WithRouterURLs("ws://127.0.0.1:0"),
+		meshcall.WithPort(0),
 		meshcall.WithAuthFile(authFile),
-		meshcall.WithAuth(adminAuth),
-		meshcall.WithStrict(true),
 	)
 	if err != nil {
-		t.Fatalf("Serve with auth failed: %v", err)
+		t.Fatalf("StartLocalRouter with auth failed: %v", err)
+	}
+	defer func() { _ = router.Stop() }()
+
+	adminAuth := meshcall.BasicAuth("admin", "secret")
+	serverMesh := meshcall.NewMesh(router, meshcall.WithAuth(adminAuth))
+	serverMesh.Mount(svc)
+	running, err := serverMesh.StartServing(ctx, meshcall.WithStrict(true))
+	if err != nil {
+		t.Fatalf("StartServing with auth failed: %v", err)
 	}
 	defer func() { _ = running.Close() }()
 
-	adminRouter, err := meshcall.ConnectRouter(
+	adminMesh, err := meshcall.ConnectMesh(
 		ctx,
-		meshcall.WithRouterURLs(running.RouterURL),
+		meshcall.NewRouter(router.URL()),
 		meshcall.WithAuth(adminAuth),
 	)
 	if err != nil {
-		t.Fatalf("ConnectRouter admin failed: %v", err)
+		t.Fatalf("ConnectMesh admin failed: %v", err)
 	}
-	defer func() { _ = adminRouter.Close() }()
+	defer func() { _ = adminMesh.Close() }()
 
-	me, err := adminRouter.Whoami(ctx)
+	me, err := adminMesh.Auth().Whoami(ctx)
 	if err != nil || me.Username != "admin" {
-		t.Fatalf("Whoami admin failed: %+v, err=%v", me, err)
+		t.Fatalf("Auth().Whoami admin failed: %+v, err=%v", me, err)
 	}
 
-	issued, err := adminRouter.IssueToken(ctx, []meshcall.RouterScope{
+	issued, err := adminMesh.Auth().IssueToken(ctx, []meshcall.RouterScope{
 		{Service: "test.v1.Echo", Methods: []string{"ping"}},
 	}, 600)
 	if err != nil || !strings.HasPrefix(issued.Token, "mt_") || issued.TokenID == "" {
-		t.Fatalf("IssueToken failed: %+v, err=%v", issued, err)
+		t.Fatalf("Auth().IssueToken failed: %+v, err=%v", issued, err)
 	}
 
-	scopedRouter, err := meshcall.ConnectRouter(
+	scopedMesh, err := meshcall.ConnectMesh(
 		ctx,
-		meshcall.WithRouterURLs(running.RouterURL),
-		meshcall.WithAuth(meshcall.BearerToken(issued.Token)),
+		meshcall.NewRouter(router.URL()),
+		meshcall.WithToken(issued.Token),
 	)
 	if err != nil {
-		t.Fatalf("ConnectRouter scoped failed: %v", err)
+		t.Fatalf("ConnectMesh scoped failed: %v", err)
 	}
-	defer func() { _ = scopedRouter.Close() }()
+	defer func() { _ = scopedMesh.Close() }()
 
-	scopedMe, err := scopedRouter.Whoami(ctx)
+	scopedMe, err := scopedMesh.Auth().Whoami(ctx)
 	if err != nil || scopedMe.Username != "admin" || len(scopedMe.Call) != 1 || scopedMe.Call[0] != "test.v1.Echo/ping" {
-		t.Fatalf("Whoami scoped failed: %+v, err=%v", scopedMe, err)
+		t.Fatalf("Auth().Whoami scoped failed: %+v, err=%v", scopedMe, err)
 	}
 
-	revoked, err := adminRouter.RevokeToken(ctx, issued.TokenID)
+	revoked, err := adminMesh.Auth().RevokeToken(ctx, issued.TokenID)
 	if err != nil || !revoked.Revoked {
-		t.Fatalf("RevokeToken failed: %+v, err=%v", revoked, err)
+		t.Fatalf("Auth().RevokeToken failed: %+v, err=%v", revoked, err)
 	}
 }

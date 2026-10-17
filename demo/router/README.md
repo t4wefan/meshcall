@@ -7,10 +7,10 @@ standalone-Router flow with:
 uv run demo
 ```
 
-It starts a `WebSocketRouter` process, registers the service with
-`meshcall.serve(..., router=Router(url))`, connects a client with
-`Router.connect`, prints the registry (`list_services`) and calls the service
-through the generated client.
+It starts a `LocalRouter` process, registers the service with
+`Mesh(local_router).mount(CounterService(), instance_id=...).serve()`, connects
+a client with `Mesh(Router(local_router.url))`, prints the registry
+(`mesh.registry.list()`) and calls the service through `CounterServiceClient(mesh)`.
 
 For the deployment-shaped version, use three terminals (Router on
 `ws://127.0.0.1:8765`, the default every entry point resolves):

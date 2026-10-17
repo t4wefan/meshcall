@@ -107,8 +107,9 @@ for you. When running tools directly:
 
 Rows below cover Python, TypeScript and the Go *Router* module; the Go
 runtime lives in `meshcall-go/` (`frame.go`, `client.go`, `server.go`,
-`service.go` for definitions and contracts, `schema.go` for JSON Schema and
-validation, `diagnostics.go`, `transport.go`, `conformance/fixture`).
+`router.go` for `Router`, `LocalRouter` and `Mesh`, `service.go` for
+definitions and contracts, `schema.go` for JSON Schema and validation,
+`diagnostics.go`, `transport.go`, `conformance/fixture`).
 
 | Concern | Python | TypeScript | Go |
 | --- | --- | --- | --- |
@@ -128,11 +129,10 @@ validation, `diagnostics.go`, `transport.go`, `conformance/fixture`).
 | `init` (agent skill installer) | — | — | `internal/skill`; source `skills/meshcall/SKILL.md` |
 | Conformance suite | `conformance/fixture.py` | `conformance/fixture.ts` | `conformance/` |
 | Auth, tokens | `router_auth.py` | `router-auth.ts` | `auth.go`, `management.go` |
-| Subscriptions, `Topic` | `topic.py` (`client.py` resubscribes) | `topic.ts`, `subscription.ts` | — |
-| Router object, `run`/`serve`/`connect` | `router.py` | `router.ts` | `router.go` |
+| `Router`, `LocalRouter` & `Mesh` | `router.py` | `router.ts` | `router.go` |
 | Dependency injection, `meta` | `di.py` | `di.ts` | `di.go` |
 | OpenTelemetry, metrics | `otel.py` | `otel.ts` | `metrics.go` (Prometheus) |
-| HTTP client / API | — | `web.ts` (`MeshCallHttpClient`) | `httpapi.go`, `openapi.go` |
+| HTTP client / API | — | `web.ts` (`Mesh`, `Router`) | `httpapi.go`, `openapi.go` |
 
 Tests: `meshcall-py/tests/test_*.py` (one topic per file; `test_timing.py`,
 `test_interceptors.py` are good templates), `meshcall-ts/tests/*.test.ts`,

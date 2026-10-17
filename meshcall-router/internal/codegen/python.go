@@ -135,8 +135,7 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 		}
 		lines = append(lines, "")
 		var idempotent []string
-		// Subscriptions are never retried as calls; they resubscribe instead.
-		if m.Annotations.Idempotent && m.Subscription == nil {
+		if m.Annotations.Idempotent {
 			idempotent = []string{"            idempotent=True,"}
 		}
 		// Per-call options (timeout, metadata, instance, idempotency key) come
@@ -176,15 +175,7 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 			lines = append(lines, "    ) -> RpcServerStream["+output+"]:")
 			lines = append(lines, pyDocstringLines(m.Description, "        ")...)
 			lines = append(lines, pyRequestLines(m, request)...)
-			if s := m.Subscription; s != nil {
-				args := []string{output}
-				if s.Cursor != nil {
-					args = append(args, "cursor="+pyStringRepr(*s.Cursor), "resume="+pyStringRepr(*s.Resume))
-				}
-				lines = append(lines, tail("        return self._rpc.call_subscription(", args...)...)
-			} else {
-				lines = append(lines, tail("        return self._rpc.call_server_stream(", output)...)
-			}
+			lines = append(lines, tail("        return self._rpc.call_server_stream(", output)...)
 		case "client_stream":
 			input := registry.Name(requiredRef(m.InputItem, m.Name+" input item"))
 			response := registry.Name(requiredRef(m.Response, m.Name+" response"))

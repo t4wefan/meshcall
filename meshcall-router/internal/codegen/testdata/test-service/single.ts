@@ -61,14 +61,6 @@ export interface TestServiceDuplexRequest {
 export class TestServiceClient {
   public constructor(private readonly rpc: MeshCallClient) {}
 
-  /** Connect the Router or client it is given (when it can) and return this typed client. */
-  public static async connect(rpc: MeshCallClient): Promise<TestServiceClient> {
-    const opener = rpc as unknown as { connect?: () => Promise<void>; open?: () => Promise<unknown> };
-    if (typeof opener.connect === "function") await opener.connect();
-    else if (typeof opener.open === "function") await opener.open();
-    return new TestServiceClient(rpc);
-  }
-
   public withOptions(options: CallOptions): TestServiceClient {
     return new TestServiceClient(this.rpc.withOptions(options));
   }

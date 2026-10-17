@@ -87,7 +87,7 @@ func registry(conn *wire.Conn, service string) (map[string]any, error) {
 			if service != "" {
 				hint = "nothing is registered under that name; run `meshcall router inspect` to list services (names carry a version, e.g. chat.v1)"
 			} else {
-				hint = "this Router predates the Registry service; upgrade meshcall-router"
+				hint = "the connected endpoint does not expose the Registry service"
 			}
 		case "permission_denied":
 			hint = "the account needs a call permission on " + registryService + "/*"
@@ -145,9 +145,6 @@ func FormatInspect(result map[string]any, w io.Writer) {
 				names = append(names, fmt.Sprint(p))
 			}
 			tags := annotationTags(m["annotations"])
-			if m["subscription"] != nil {
-				tags = append([]string{"subscription"}, tags...)
-			}
 			if dep, ok := m["deprecated"].(string); ok {
 				tags = append(tags, "deprecated→"+dep)
 			}

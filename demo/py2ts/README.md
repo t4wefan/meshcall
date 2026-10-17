@@ -9,9 +9,9 @@ uv run demo
 ```
 
 The command builds the local TypeScript runtime and generated client package,
-starts the Python service with `meshcall.serve` (an embedded Router), invokes it
-from Node through `Router.connect` + `PythonGreetingServiceClient.connect`, and
-shuts the service down.
+starts a `LocalRouter` and mounts the Python service on a `Mesh`
+(`server_mesh.serve()`), invokes it from Node through `Mesh.connect(new Router(url))`
++ `new PythonGreetingServiceClient(mesh)`, and shuts the service down.
 
 The generated TypeScript package is in `ts-client/`. To regenerate it after
 changing the Python service:

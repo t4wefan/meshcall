@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from meshcall import run
+import os
+
+from meshcall import LocalRouter, Mesh, Router
 from quickstart_demo.service import CounterService
 
 
 def main() -> None:
-    # run() resolves MESHCALL_ROUTER_URL (default ws://127.0.0.1:8765), starts a
-    # bundled Router when the address is local and nothing listens, and drains
-    # on SIGINT/SIGTERM.
-    run(CounterService())
+    router = (
+        Router()
+        if os.environ.get("MESHCALL_ROUTER_URL")
+        else LocalRouter(port=8765)
+    )
+    Mesh(router).mount(CounterService()).run()
 
 
 if __name__ == "__main__":

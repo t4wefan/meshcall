@@ -247,7 +247,7 @@ func RenderGoClient(service *contract.Service, opts GoOptions) string {
 	var client strings.Builder
 	client.WriteString(goComment(service.Description, ""))
 	client.WriteString("type " + className + " struct {\n\trpc meshcall.Caller\n}\n\n")
-	client.WriteString("// New" + className + " wraps a WebSocket client, a Router or an HTTPRouter.\n")
+	client.WriteString("// New" + className + " wraps a Mesh (or any Caller).\n")
 	client.WriteString("func New" + className + "(rpc meshcall.Caller) *" + className + " {\n\treturn &" + className + "{rpc: rpc}\n}\n\n")
 	client.WriteString("// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.\n")
 	client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithCallOptions(opts)}\n}\n\n")
@@ -432,15 +432,6 @@ func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m 
 	case "server_stream":
 		item := reg.Name(requiredRef(m.OutputItem, m.Name+" output item"))
 		fullSig := append(append([]string{}, sigParams...), "opts ...meshcall.CallOption")
-		if s := m.Subscription; s != nil {
-			spec := "meshcall.SubscriptionSpec{}"
-			if s.Cursor != nil {
-				spec = "meshcall.SubscriptionSpec{Cursor: " + jsonDumps(*s.Cursor) + ", Resume: " + jsonDumps(*s.Resume) + "}"
-			}
-			b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (*meshcall.Subscription[" + item + "], error) {\n")
-			b.WriteString("\treturn " + call("Subscribe", request+", "+item, reqExpr, spec) + "\n}\n")
-			return
-		}
 		b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (*meshcall.Stream[" + item + "], error) {\n")
 		b.WriteString("\treturn " + call("ServerStream", request+", "+item, reqExpr) + "\n}\n")
 	case "client_stream":

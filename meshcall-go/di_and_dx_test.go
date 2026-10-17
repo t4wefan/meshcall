@@ -182,29 +182,33 @@ func TestGoDIAndReflectService(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	router := meshcall.NewRouter(meshcall.WithRouterURLs("ws://127.0.0.1:0"), meshcall.WithSpawnIfLocal(true))
+	router, err := meshcall.StartLocalRouter(ctx, meshcall.WithPort(0))
+	if err != nil {
+		t.Fatalf("StartLocalRouter failed: %v", err)
+	}
+	defer router.Stop()
 
-	handle, err := meshcall.Serve(
-		ctx,
+	serverMesh := meshcall.NewMesh(router)
+	serverMesh.Mount(
 		newTestWorkspace(),
-		meshcall.WithRouter(router),
 		meshcall.WithDependencies(dbDep, repoDep, callerDep, tenantDep),
 	)
+	handle, err := serverMesh.StartServing(ctx)
 	if err != nil {
-		t.Fatalf("Serve failed: %v", err)
+		t.Fatalf("StartServing failed: %v", err)
 	}
 	defer handle.Close()
 
-	conn, err := meshcall.ConnectRouter(ctx, meshcall.WithRouterURLs(handle.RouterURL), meshcall.WithSpawnIfLocal(false))
+	conn, err := meshcall.ConnectMesh(ctx, meshcall.NewRouter(router.URL()))
 	if err != nil {
-		t.Fatalf("ConnectRouter failed: %v", err)
+		t.Fatalf("ConnectMesh failed: %v", err)
 	}
 	defer conn.Close()
 
 	// 1. Missing required Meta ("x-user-id") fails BEFORE acquiring dbDep
 	_, err = meshcall.Unary[map[string]any, testFileStat](
 		ctx,
-		conn.Client(),
+		conn,
 		svc.Name(),
 		"write_file",
 		map[string]any{"path": "/a.txt", "content": "hello"},
@@ -221,7 +225,7 @@ func TestGoDIAndReflectService(t *testing.T) {
 		ctx,
 		conn.WithOptions(meshcall.CallOptions{
 			Metadata: map[string]string{"x-user-id": "u_42"},
-		}).Client(),
+		}),
 		svc.Name(),
 		"write_file",
 		map[string]any{"path": "/a.txt", "content": "hello world"},
@@ -240,7 +244,7 @@ func TestGoDIAndReflectService(t *testing.T) {
 	var lines []string
 	for line, err := range meshcall.ServerStreamSeq[map[string]any, string](
 		ctx,
-		conn.Client(),
+		conn,
 		svc.Name(),
 		"tail_file",
 		map[string]any{"path": "/a.txt", "lines": 3},
@@ -259,7 +263,7 @@ func TestGoDIAndReflectService(t *testing.T) {
 		ctx,
 		conn.WithOptions(meshcall.CallOptions{
 			Metadata: map[string]string{"x-user-id": "u_99"},
-		}).Client(),
+		}),
 		svc.Name(),
 		"upload_file",
 		map[string]any{"path": "/blob.bin"},
@@ -275,7 +279,7 @@ func TestGoDIAndReflectService(t *testing.T) {
 	// 5. Duplex via DuplexChannel
 	term, err := meshcall.Duplex[map[string]any, testTermIn, testTermOut](
 		ctx,
-		conn.Client(),
+		conn,
 		svc.Name(),
 		"open_terminal",
 		map[string]any{"shell": "zsh"},

@@ -8,12 +8,13 @@
 | --- | --- | --- |
 | `meshcall-py/` | Python runtime, contract exporter, `meshcall` launcher | uv, ruff, pyright, pytest |
 | `meshcall-ts/` | TypeScript runtime, `meshcall` launcher | Yarn 1, tsc, `node --test` |
+| `meshcall-go/` | Go runtime (services, clients, DI, conformance fixture) | Go 1.26, `go test -race` |
 | `meshcall-router/` | Go Router, `meshcall` CLI & codegen, conformance runner | Go 1.26, `go test -race` |
 | `skills/meshcall/` | Agent skill installed by `meshcall init` | — |
-| `docs/` | Protocol, architecture and Router guide | — |
-| `demo/`, `best-practice/` | Runnable examples, each its own uv / Yarn project | — |
+| `docs/` | Protocol, architecture, Router and user guide | — |
+| `demo/`, `best-practice/` | Runnable examples, each its own uv / Yarn / Go project | — |
 
-`docs/protocol.md` is the contract between the three implementations. Change
+`docs/protocol.md` is the contract between the three runtimes and the Router. Change
 it first, then the implementations, then the conformance and interop tests.
 
 ## Running everything locally

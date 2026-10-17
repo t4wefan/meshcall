@@ -3,10 +3,8 @@ export {
   MeshCallClient,
   MeshCallDuplexCall,
   MeshCallServerStream,
-  MeshCallSubscription,
   type CallOptions,
   type DuplexCallOptions,
-  type SubscriptionOptions,
   type ClientCallInfo,
   type ClientCallNext,
   type ClientInterceptor,
@@ -34,7 +32,6 @@ export {
   type ServerStreamOptions,
   type ServiceOptions,
   type StreamOptions,
-  type SubscriptionOptions as SubscriptionMethodOptions,
   type UnaryOptions,
 } from "./contract.js";
 export {
@@ -86,19 +83,25 @@ export {
 } from "./server.js";
 
 export {
+  AuthClient,
   DEFAULT_ROUTER_URL,
   findCliBinary,
   findRouterBinary,
   installRouter,
+  LocalRouter,
+  Mesh,
   platformPackageName,
+  RegistryClient,
   Router,
   routerCacheDir,
   routerVersion,
-  run,
   RunningServer,
-  serve,
   WebSocketRouter,
   type InstallRouterOptions,
+  type LocalRouterOptions,
+  type MeshOptions,
+  type MountOptions,
+  type RouterEndpoint,
   type RouterOptions,
   type ServeOptions,
   type WebSocketRouterOptions,
@@ -116,5 +119,4 @@ export {
   type RouterIdentity,
   type RouterScope,
 } from "./router-auth.js";
-export { Topic, type TopicOptions } from "./topic.js";
 export { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
