@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"iter"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -183,8 +182,7 @@ func TestGoDIAndReflectService(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	sock := filepath.Join(t.TempDir(), "di.sock")
-	router := meshcall.NewRouter(meshcall.WithUnixSocket(sock), meshcall.WithSpawnIfLocal(true))
+	router := meshcall.NewRouter(meshcall.WithRouterURLs("ws://127.0.0.1:0"), meshcall.WithSpawnIfLocal(true))
 
 	handle, err := meshcall.Serve(
 		ctx,
@@ -197,7 +195,7 @@ func TestGoDIAndReflectService(t *testing.T) {
 	}
 	defer handle.Close()
 
-	conn, err := meshcall.ConnectRouter(ctx, meshcall.WithUnixSocket(sock), meshcall.WithSpawnIfLocal(false))
+	conn, err := meshcall.ConnectRouter(ctx, meshcall.WithRouterURLs(handle.RouterURL), meshcall.WithSpawnIfLocal(false))
 	if err != nil {
 		t.Fatalf("ConnectRouter failed: %v", err)
 	}
