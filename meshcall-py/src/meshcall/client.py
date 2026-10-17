@@ -91,16 +91,19 @@ class ClientBase:
             self.retry = self._root.retry
             self.interceptors = self._root.interceptors
         elif hasattr(driver, "_ensure_client"):
-            root: ClientBase = driver._ensure_client()  # type: ignore[union-attr]
-            self._root = root
+            peer: ClientBase = driver._ensure_client()  # type: ignore[union-attr]
+            self._root = peer._root
             self._owns_root = False
-            self.driver = root.driver
+            self._call_options = peer._call_options
+            self.driver = self._root.driver
             self.deadline_grace = (
-                deadline_grace if deadline_grace is not None else root.deadline_grace
+                deadline_grace
+                if deadline_grace is not None
+                else self._root.deadline_grace
             )
-            self.reconnect = root.reconnect
-            self.retry = root.retry
-            self.interceptors = root.interceptors
+            self.reconnect = self._root.reconnect
+            self.retry = self._root.retry
+            self.interceptors = self._root.interceptors
         else:
             self._root = self
             self._owns_root = True

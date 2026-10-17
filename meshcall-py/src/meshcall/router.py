@@ -698,6 +698,7 @@ class Mesh:
         self.logger = logger
         self._http_client = http_client
         self._client: Any | None = None
+        self._owns_client = True
         self._mounted_services: list[object] = []
         self._instance_id: str | None = None
         self._max_inflight: int | None = None
@@ -765,6 +766,7 @@ class Mesh:
                 )
                 if self.timeout is not None:
                     client = client.with_options(timeout=self.timeout)
+                    client._owns_root = True
                 self._client = client
         return self._client
 
@@ -780,6 +782,7 @@ class Mesh:
         """Return a shallow view of this Mesh with per-call options applied."""
         clone = copy.copy(self)
         clone._owns_local_router = False
+        clone._owns_client = False
         clone._client = self._ensure_client().with_options(
             timeout=timeout,
             idle_timeout=idle_timeout,
@@ -804,9 +807,12 @@ class Mesh:
                 await self._running_server.stop(drain=True)
             if self._client is not None:
                 client, self._client = self._client, None
-                stop = getattr(client, "close", None) or getattr(client, "stop", None)
-                if stop is not None:
-                    await stop()
+                if self._owns_client:
+                    stop = getattr(client, "close", None) or getattr(
+                        client, "stop", None
+                    )
+                    if stop is not None:
+                        await stop()
         finally:
             if self._owns_local_router and isinstance(self.router, LocalRouter):
                 self._owns_local_router = False

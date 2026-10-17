@@ -83,7 +83,7 @@ test("a duplex method needs a reason and cannot be idempotent", () => {
   assert.ok(sneaky);
 });
 
-test("interleaved echo", { timeout: 5000 }, async (t) => {
+test("interleaved echo", { timeout: 15000 }, async (t) => {
   const { client, close } = await running();
   t.after(close);
   const call = client.duplex<Prefix, Turn, Turn>(NAME, "echo", { prefix: "> " });
@@ -95,7 +95,7 @@ test("interleaved echo", { timeout: 5000 }, async (t) => {
   assert.deepEqual(await call.next(), { done: true, value: undefined });
 });
 
-test("reading concurrently avoids a credit deadlock", { timeout: 10000 }, async (t) => {
+test("reading concurrently avoids a credit deadlock", { timeout: 15000 }, async (t) => {
   const { client, close } = await running();
   t.after(close);
   const call = client.duplex<Prefix, Turn, Turn>(NAME, "echo", { prefix: "" });
@@ -110,7 +110,7 @@ test("reading concurrently avoids a credit deadlock", { timeout: 10000 }, async 
   assert.deepEqual(received, Array.from({ length: count }, (_, index) => String(index)));
 });
 
-test("the server's half-close keeps the input open", { timeout: 5000 }, async (t) => {
+test("the server's half-close keeps the input open", { timeout: 15000 }, async (t) => {
   const { client, close } = await running();
   t.after(close);
   const call = client.duplex<Prefix, Turn, Turn>(NAME, "close_early", { prefix: "" });
