@@ -142,7 +142,7 @@ class ClientBase:
         """Create and connect a service client.
 
         May be used either as ``async with MyClient.connect(...) as client:`` or
-        ``client = await MyClient.connect(...)``.
+        ``client = MyClient.connect(...)``.
         """
         from meshcall.router import Router as RouterClass
 

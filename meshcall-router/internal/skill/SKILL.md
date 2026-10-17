@@ -216,14 +216,14 @@ business method signatures stay 100% identical to the server handler:
 router = Router("ws://127.0.0.1:8765", auth=RouterCredentials.bearer("..."))
 async with router:
     services = await router.list_services()
-    chat = await ChatClient.connect(router)
+    chat = ChatClient.connect(router)
     reply = await chat.with_options(timeout=5.0, idempotency_key="k1").send("s1", "hello")
 ```
 
 TypeScript:
 ```typescript
 const router = new Router("ws://127.0.0.1:8765", { token: "..." });
-const chat = await ChatClient.connect(router);
+const chat = ChatClient.connect(router);
 const reply = await chat.withOptions({ timeoutMs: 5000, idempotencyKey: "k1" }).send("s1", "hello");
 ```
 

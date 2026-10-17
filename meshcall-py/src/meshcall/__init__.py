@@ -40,6 +40,7 @@ from meshcall.errors import (
     UnavailableError,
     Violation,
 )
+from meshcall.http import HTTPRouter
 from meshcall.ir import (
     BalanceKind,
     BalancePolicy,
@@ -87,6 +88,7 @@ __all__ = [
     "DeadlineExceededError",
     "DuplexChannel",
     "ErrorCode",
+    "HTTPRouter",
     "InternalError",
     "InvalidArgumentError",
     "IssuedToken",

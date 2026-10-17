@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 from meshcall.streams import RpcServerStream
 
 
@@ -20,7 +20,7 @@ class FeedBrokenRequest(BaseModel):
     pass
 
 
-class FeedClient(ClientBase):
+class FeedClient(RpcClient):
     """Subscription fixtures."""
     service_name = 'test.v1.Feed'
 
@@ -32,7 +32,7 @@ class FeedClient(ClientBase):
         request = FeedTicksRequest(
             since=since,
         )
-        return self.call_subscription(
+        return self._rpc.call_subscription(
             self.service_name,
             'ticks',
             request,
@@ -46,7 +46,7 @@ class FeedClient(ClientBase):
     ) -> RpcServerStream[Tick]:
         """Fails for good after one item."""
         request = FeedBrokenRequest()
-        return self.call_subscription(
+        return self._rpc.call_subscription(
             self.service_name,
             'broken',
             request,

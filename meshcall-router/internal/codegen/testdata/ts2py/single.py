@@ -6,7 +6,7 @@ from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 from meshcall.streams import RpcServerStream
 
 
@@ -36,7 +36,7 @@ class GreetingResult(BaseModel):
     handled_by: str
 
 
-class TypeScriptGreetingServiceClient(ClientBase):
+class TypeScriptGreetingServiceClient(RpcClient):
     """A TypeScript service consumed by the generated Python client."""
     service_name = 'demo.v1.TypeScriptGreetingService'
 
@@ -48,7 +48,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         request = CountRequest(
             count=count,
         )
-        return self.call_server_stream(
+        return self._rpc.call_server_stream(
             self.service_name,
             'count',
             request,
@@ -65,7 +65,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
         request = SumRequest(
             offset=offset,
         )
-        return await self.call_client_stream(
+        return await self._rpc.call_client_stream(
             self.service_name,
             'sum',
             request,
@@ -85,7 +85,7 @@ class TypeScriptGreetingServiceClient(ClientBase):
             name=name,
             repeat=repeat,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             'greet',
             request,

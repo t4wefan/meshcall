@@ -20,17 +20,17 @@ type FeedBrokenRequest struct{}
 
 // Subscription fixtures.
 type FeedClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewFeedClient wraps a meshcall.Client or meshcall.Router.
+// NewFeedClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewFeedClient(rpc meshcall.Caller) *FeedClient {
-	return &FeedClient{rpc: rpc.Client()}
+	return &FeedClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *FeedClient) WithOptions(opts meshcall.CallOptions) *FeedClient {
-	return &FeedClient{rpc: c.rpc.WithOptions(opts)}
+	return &FeedClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

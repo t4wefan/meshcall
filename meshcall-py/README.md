@@ -294,6 +294,21 @@ needed. The low-level `WebSocketClientDriver` and
 `WebSocketRouterServerDriver` remain available for custom wiring and accept
 `unix_path=` / `pipe=` as well.
 
+## HTTP client
+
+`HTTPRouter` is a client-only Router that speaks HTTP: pass it to a generated client like any other Router. It needs `httpx`, which is a default dependency.
+
+```python
+from meshcall import HTTPRouter
+
+http = HTTPRouter("https://router.example", token="mk_…")
+chat = ChatClient(http)                    # or ChatClient.connect(http)
+reply = await chat.with_options(timeout=5).greet("Alice")
+services = await http.list_services()
+```
+
+Duplex methods are WebSocket-only (they raise `method_not_found`, `reason: "duplex_over_http"`). Everything else works as over WebSocket: unary calls with the usual idempotent retry, server and client streams, subscriptions (resumed from their cursor), and the built-in Registry/AuthService calls.
+
 ## Router authentication
 
 Pass `RouterCredentials(username=..., password=...)` or

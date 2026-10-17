@@ -161,6 +161,22 @@ await router.close();
 
 `MeshCallClient` is the lower-level connection (`new MeshCallClient(url, peerId?, options?)`); `Router` wraps one. `MeshCallServer` likewise remains the explicit server (`start()` / `close()`) that `serve` builds on.
 
+## HTTP Router
+
+`HTTPRouter` (from `meshcall/web`) is a client-only Router over `fetch`; pass it to a generated client exactly like a WebSocket Router. It runs in Node, browsers, Deno, Bun and edge runtimes, and exposes the built-in Registry/AuthService calls.
+
+```ts
+import { HTTPRouter } from "meshcall/web";
+import { ChatClient } from "my-chat-client";
+
+const http = await HTTPRouter.connect("https://router.example", { token: "mk_…" });
+const chat = await ChatClient.connect(http);
+console.log(await chat.withOptions({ timeoutMs: 5000 }).greet("Alice"));
+console.log(await http.listServices());
+```
+
+Duplex methods are WebSocket-only (`method_not_found`, `reason: "duplex_over_http"`); unary retries, streams, subscriptions and the built-ins work as over WebSocket.
+
 ## Explore, Call, and Generate Clients with the CLI
 
 ```bash

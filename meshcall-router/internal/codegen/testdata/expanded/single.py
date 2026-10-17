@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 
 
 class ExpandedServiceAddRequest(BaseModel):
@@ -16,7 +16,7 @@ class ExpandedResult(BaseModel):
     total: int
 
 
-class ExpandedServiceClient(ClientBase):
+class ExpandedServiceClient(RpcClient):
     service_name = 'test.v1.ExpandedService'
 
     async def add(
@@ -28,7 +28,7 @@ class ExpandedServiceClient(ClientBase):
             left=left,
             right=right,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             'add',
             request,

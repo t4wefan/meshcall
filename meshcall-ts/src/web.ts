@@ -14,7 +14,7 @@
  * items are collected and sent as one NDJSON body. Duplex is WebSocket-only.
  * Calling from another origin needs `--http-cors-origin` on the Router.
  */
-import type { CallOptions, SubscriptionOptions } from "./client.js";
+import type { CallOptions, DuplexCallOptions, MeshCallDuplexCall, SubscriptionOptions } from "./client.js";
 import { CallCancelledError, DeadlineExceededError, MeshCallError, ProtocolError, UnavailableError } from "./errors.js";
 import type { RpcLogger } from "./log.js";
 import {
@@ -22,6 +22,9 @@ import {
 } from "./policy.js";
 import type { Metadata } from "./protocol.js";
 import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
+// Types only: importing router-auth's values would pull contract.ts (and Node's
+// crypto/fs/path) into browser bundles.
+import type { IssuedToken, RegistryService, RouterIdentity, RouterScope } from "./router-auth.js";
 import { MeshCallSubscription } from "./subscription.js";
 import { checkReceived } from "./validation.js";
 
@@ -48,6 +51,15 @@ export interface MeshCallHttpClientOptions {
   /** Extra time past `timeoutMs` before failing locally. Defaults to `max(1s, 10%)`. */
   readonly deadlineGraceMs?: number;
   readonly logger?: RpcLogger;
+}
+
+const REGISTRY_SERVICE = "meshcall.router.v1.Registry";
+const ROUTER_AUTH_SERVICE = "meshcall.router.v1.AuthService";
+
+/** The Router normalises a service name without a version segment to `.v0`. */
+function normalizeScopeService(service: string): string {
+  if (service === "*" || service === "" || /\.v\d/u.test(service)) return service;
+  return `${service}.v0`;
 }
 
 const consoleLogger: RpcLogger = {
@@ -354,3 +366,95 @@ class HttpServerStream<Item> implements RpcStream<Item> {
   }
 }
 
+
+/**
+ * A client-only Router that speaks HTTP. Pass it to generated clients exactly
+ * like a WebSocket `Router` (`await ChatClient.connect(httpRouter)` or
+ * `new ChatClient(httpRouter)`); duplex methods are WebSocket-only and throw
+ * `method_not_found` with `reason: "duplex_over_http"`. It also exposes the
+ * built-in Registry and AuthService calls.
+ */
+export class HTTPRouter implements MeshCallRpc {
+  public constructor(private readonly client: MeshCallHttpClient) {}
+
+  /** Connect to the Router at `url` (`http(s)://` or `ws(s)://`). */
+  public static async connect(url: string, options: MeshCallHttpClientOptions = {}): Promise<HTTPRouter> {
+    return new HTTPRouter(new MeshCallHttpClient(url, options));
+  }
+
+  public withOptions(options: CallOptions): this {
+    const clone = Object.create(HTTPRouter.prototype) as this;
+    Object.assign(clone, { client: this.client.withOptions(options) });
+    return clone;
+  }
+
+  /** HTTP has no connection to open; present so generated `connect` is uniform. */
+  public async open(): Promise<this> {
+    return this;
+  }
+
+  public async close(): Promise<void> {
+    // fetch keeps no persistent connection.
+  }
+
+  public unary<Request, Response>(service: string, method: string, request: Request, options?: CallOptions): Promise<Response> {
+    return this.client.unary(service, method, request, options);
+  }
+
+  public serverStream<Request, Item>(service: string, method: string, request: Request, options?: CallOptions): RpcStream<Item> {
+    return this.client.serverStream(service, method, request, options);
+  }
+
+  public clientStream<Request, Item, Response>(
+    service: string, method: string, request: Request, items: AsyncIterable<Item>, options?: CallOptions,
+  ): Promise<Response> {
+    return this.client.clientStream(service, method, request, items, options);
+  }
+
+  public subscribe<Request extends object, Item>(
+    service: string, method: string, request: Request, options?: SubscriptionOptions,
+  ): MeshCallSubscription<Item> {
+    return this.client.subscribe(service, method, request, options);
+  }
+
+  public duplex<Request, InputItem, OutputItem>(
+    service: string, method: string, request: Request, options?: DuplexCallOptions,
+  ): MeshCallDuplexCall<InputItem, OutputItem> {
+    throw new MeshCallError("method_not_found", "duplex methods are WebSocket-only", {
+      details: { source: "client", reason: "duplex_over_http" },
+    });
+  }
+
+  // -- built-in Router services -----------------------------------------
+
+  public async listServices(options?: CallOptions): Promise<RegistryService[]> {
+    const result = await this.unary<Record<string, never>, { services: RegistryService[] }>(
+      REGISTRY_SERVICE, "list", {}, { idempotent: true, ...options },
+    );
+    return result.services ?? [];
+  }
+
+  public describeService(service: string, options?: CallOptions): Promise<RegistryService> {
+    return this.unary(REGISTRY_SERVICE, "describe", { service: normalizeScopeService(service) }, { idempotent: true, ...options });
+  }
+
+  public whoami(options?: CallOptions): Promise<RouterIdentity> {
+    return this.unary(ROUTER_AUTH_SERVICE, "whoami", {}, { idempotent: true, ...options });
+  }
+
+  public issueToken(
+    scopes: ReadonlyArray<RouterScope>, ttlSeconds = 900, options?: CallOptions,
+  ): Promise<IssuedToken> {
+    return this.unary(ROUTER_AUTH_SERVICE, "issue_token", {
+      scopes: scopes.map((scope) => ({ ...scope, service: normalizeScopeService(scope.service) })),
+      ttl_seconds: ttlSeconds,
+    }, options);
+  }
+
+  public async revokeToken(tokenId: string, options?: CallOptions): Promise<boolean> {
+    const result = await this.unary<{ token_id: string }, { revoked: boolean }>(
+      ROUTER_AUTH_SERVICE, "revoke_token", { token_id: tokenId }, { idempotent: true, ...options },
+    );
+    return result.revoked;
+  }
+}

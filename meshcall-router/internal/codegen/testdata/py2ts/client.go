@@ -20,17 +20,17 @@ type GreetingResult struct {
 
 // A Python service consumed by the generated TypeScript client.
 type PythonGreetingServiceClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewPythonGreetingServiceClient wraps a meshcall.Client or meshcall.Router.
+// NewPythonGreetingServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewPythonGreetingServiceClient(rpc meshcall.Caller) *PythonGreetingServiceClient {
-	return &PythonGreetingServiceClient{rpc: rpc.Client()}
+	return &PythonGreetingServiceClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *PythonGreetingServiceClient) WithOptions(opts meshcall.CallOptions) *PythonGreetingServiceClient {
-	return &PythonGreetingServiceClient{rpc: c.rpc.WithOptions(opts)}
+	return &PythonGreetingServiceClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

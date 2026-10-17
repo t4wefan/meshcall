@@ -61,17 +61,17 @@ type ChatChunk struct {
 
 // A deterministic LLM facade with process-local session state.
 type LlmServiceClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewLlmServiceClient wraps a meshcall.Client or meshcall.Router.
+// NewLlmServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewLlmServiceClient(rpc meshcall.Caller) *LlmServiceClient {
-	return &LlmServiceClient{rpc: rpc.Client()}
+	return &LlmServiceClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *LlmServiceClient) WithOptions(opts meshcall.CallOptions) *LlmServiceClient {
-	return &LlmServiceClient{rpc: c.rpc.WithOptions(opts)}
+	return &LlmServiceClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

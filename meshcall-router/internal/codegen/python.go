@@ -52,7 +52,7 @@ func RenderPythonClient(service *contract.Service, opts PythonOptions) string {
 		lines = append(lines, "", abc)
 	}
 	lines = append(lines, pyModelImportLines(modelLines)...)
-	lines = append(lines, "", "from meshcall.client import ClientBase")
+	lines = append(lines, "", "from meshcall.rpc import RpcClient")
 	if imports := pyStreamImports(service); len(imports) > 0 {
 		lines = append(lines, "from meshcall.streams import "+strings.Join(imports, ", "))
 	}
@@ -92,7 +92,7 @@ func RenderPythonClientModule(service *contract.Service, opts PythonOptions) str
 	if abc := pyAbcImportLine(service); abc != "" {
 		lines = append(lines, "", abc)
 	}
-	lines = append(lines, "", "from meshcall.client import ClientBase")
+	lines = append(lines, "", "from meshcall.rpc import RpcClient")
 	if imports := pyStreamImports(service); len(imports) > 0 {
 		lines = append(lines, "from meshcall.streams import "+strings.Join(imports, ", "))
 	}
@@ -124,7 +124,7 @@ func pyStreamImports(service *contract.Service) []string {
 }
 
 func renderPythonClientClass(service *contract.Service, registry *typeRegistry, className string) []string {
-	lines := []string{"class " + className + "(ClientBase):"}
+	lines := []string{"class " + className + "(RpcClient):"}
 	lines = append(lines, pyDocstringLines(service.Description, "    ")...)
 	lines = append(lines, "    service_name = "+pyStringRepr(service.Name))
 	for _, m := range service.Methods {
@@ -140,7 +140,7 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 			idempotent = []string{"            idempotent=True,"}
 		}
 		// Per-call options (timeout, metadata, instance, idempotency key) come
-		// from ClientBase.with_options(), so the signature matches the server
+		// from RpcClient.with_options(), so the signature matches the server
 		// handler exactly.
 		tail := func(call string, args ...string) []string {
 			out := []string{call, "            self.service_name,", "            " + pyStringRepr(m.Name) + ",", "            request,"}
@@ -168,7 +168,7 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 			lines = append(lines, "    ) -> "+response+":")
 			lines = append(lines, pyDocstringLines(m.Description, "        ")...)
 			lines = append(lines, pyRequestLines(m, request)...)
-			lines = append(lines, tail("        return await self.call_unary(", response)...)
+			lines = append(lines, tail("        return await self._rpc.call_unary(", response)...)
 		case "server_stream":
 			output := registry.Name(requiredRef(m.OutputItem, m.Name+" output item"))
 			lines = append(lines, "    def "+m.Name+"(", "        self,")
@@ -181,9 +181,9 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 				if s.Cursor != nil {
 					args = append(args, "cursor="+pyStringRepr(*s.Cursor), "resume="+pyStringRepr(*s.Resume))
 				}
-				lines = append(lines, tail("        return self.call_subscription(", args...)...)
+				lines = append(lines, tail("        return self._rpc.call_subscription(", args...)...)
 			} else {
-				lines = append(lines, tail("        return self.call_server_stream(", output)...)
+				lines = append(lines, tail("        return self._rpc.call_server_stream(", output)...)
 			}
 		case "client_stream":
 			input := registry.Name(requiredRef(m.InputItem, m.Name+" input item"))
@@ -194,7 +194,7 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 			lines = append(lines, "    ) -> "+response+":")
 			lines = append(lines, pyDocstringLines(m.Description, "        ")...)
 			lines = append(lines, pyRequestLines(m, request)...)
-			lines = append(lines, tail("        return await self.call_client_stream(", "items", input, response)...)
+			lines = append(lines, tail("        return await self._rpc.call_client_stream(", "items", input, response)...)
 		default: // duplex
 			input := registry.Name(requiredRef(m.InputItem, m.Name+" input item"))
 			output := registry.Name(requiredRef(m.OutputItem, m.Name+" output item"))
@@ -203,7 +203,7 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 			lines = append(lines, "    ) -> RpcDuplexClient["+input+", "+output+"]:")
 			lines = append(lines, pyDocstringLines(m.Description, "        ")...)
 			lines = append(lines, pyRequestLines(m, request)...)
-			lines = append(lines, tail("        return self.call_duplex(", input, output)...)
+			lines = append(lines, tail("        return self._rpc.call_duplex(", input, output)...)
 		}
 	}
 	return lines

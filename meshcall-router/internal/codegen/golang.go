@@ -246,11 +246,11 @@ func RenderGoClient(service *contract.Service, opts GoOptions) string {
 	className += "Client"
 	var client strings.Builder
 	client.WriteString(goComment(service.Description, ""))
-	client.WriteString("type " + className + " struct {\n\trpc *meshcall.Client\n}\n\n")
-	client.WriteString("// New" + className + " wraps a meshcall.Client or meshcall.Router.\n")
-	client.WriteString("func New" + className + "(rpc meshcall.Caller) *" + className + " {\n\treturn &" + className + "{rpc: rpc.Client()}\n}\n\n")
+	client.WriteString("type " + className + " struct {\n\trpc meshcall.Caller\n}\n\n")
+	client.WriteString("// New" + className + " wraps a WebSocket client, a Router or an HTTPRouter.\n")
+	client.WriteString("func New" + className + "(rpc meshcall.Caller) *" + className + " {\n\treturn &" + className + "{rpc: rpc}\n}\n\n")
 	client.WriteString("// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.\n")
-	client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithOptions(opts)}\n}\n\n")
+	client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithCallOptions(opts)}\n}\n\n")
 	client.WriteString("// ServiceName is the service these calls address.\nconst ServiceName = " + jsonDumps(service.Name) + "\n")
 	for _, m := range service.Methods {
 		g.writeMethod(&client, service, m, className)

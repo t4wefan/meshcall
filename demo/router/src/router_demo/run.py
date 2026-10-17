@@ -24,7 +24,7 @@ async def run_demo() -> None:
         ):
             services = await router.list_services()
             print(f"registry={[service.name for service in services]}")
-            client = await CounterServiceClient.connect(router)
+            client = CounterServiceClient.connect(router)
             values = [item.value async for item in client.count(5)]
             print(f"routed count={values}")
 

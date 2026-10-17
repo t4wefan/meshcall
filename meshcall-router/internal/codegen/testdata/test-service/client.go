@@ -37,17 +37,17 @@ type TestServiceDuplexRequest struct {
 }
 
 type TestServiceClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewTestServiceClient wraps a meshcall.Client or meshcall.Router.
+// NewTestServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewTestServiceClient(rpc meshcall.Caller) *TestServiceClient {
-	return &TestServiceClient{rpc: rpc.Client()}
+	return &TestServiceClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *TestServiceClient) WithOptions(opts meshcall.CallOptions) *TestServiceClient {
-	return &TestServiceClient{rpc: c.rpc.WithOptions(opts)}
+	return &TestServiceClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

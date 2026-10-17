@@ -55,17 +55,17 @@ type NumberItem struct {
 
 // Stateful service using the recommended MeshCall Python API.
 type ShowcaseServiceClient struct {
-	rpc *meshcall.Client
+	rpc meshcall.Caller
 }
 
-// NewShowcaseServiceClient wraps a meshcall.Client or meshcall.Router.
+// NewShowcaseServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
 func NewShowcaseServiceClient(rpc meshcall.Caller) *ShowcaseServiceClient {
-	return &ShowcaseServiceClient{rpc: rpc.Client()}
+	return &ShowcaseServiceClient{rpc: rpc}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *ShowcaseServiceClient) WithOptions(opts meshcall.CallOptions) *ShowcaseServiceClient {
-	return &ShowcaseServiceClient{rpc: c.rpc.WithOptions(opts)}
+	return &ShowcaseServiceClient{rpc: c.rpc.WithCallOptions(opts)}
 }
 
 // ServiceName is the service these calls address.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 
 
 class PythonGreetingServiceGreetRequest(BaseModel):
@@ -17,7 +17,7 @@ class GreetingResult(BaseModel):
     handled_by: str
 
 
-class PythonGreetingServiceClient(ClientBase):
+class PythonGreetingServiceClient(RpcClient):
     """A Python service consumed by the generated TypeScript client."""
     service_name = 'demo.v1.PythonGreetingService'
 
@@ -31,7 +31,7 @@ class PythonGreetingServiceClient(ClientBase):
             name=name,
             repeat=repeat,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             'greet',
             request,

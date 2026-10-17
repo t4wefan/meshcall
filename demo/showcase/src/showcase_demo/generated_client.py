@@ -6,7 +6,7 @@ from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 from meshcall.streams import RpcServerStream
 
 
@@ -64,7 +64,7 @@ class NumberItem(BaseModel):
     value: int
 
 
-class ShowcaseServiceClient(ClientBase):
+class ShowcaseServiceClient(RpcClient):
     """Stateful service using the recommended MeshCall Python API."""
 
     service_name = "demo.v1.ShowcaseService"
@@ -82,7 +82,7 @@ class ShowcaseServiceClient(ClientBase):
             name=name,
             repeat=repeat,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             "greet",
             request,
@@ -98,7 +98,7 @@ class ShowcaseServiceClient(ClientBase):
         request = ShowcaseServiceWelcomeRequest(
             profile=profile,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             "welcome",
             request,
@@ -114,7 +114,7 @@ class ShowcaseServiceClient(ClientBase):
         request = ShowcaseServiceVisitRequest(
             name=name,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             "visit",
             request,
@@ -131,7 +131,7 @@ class ShowcaseServiceClient(ClientBase):
             start=start,
             stop=stop,
         )
-        return self.call_server_stream(
+        return self._rpc.call_server_stream(
             self.service_name,
             "count",
             request,
@@ -148,7 +148,7 @@ class ShowcaseServiceClient(ClientBase):
         request = ShowcaseServiceSumValuesRequest(
             offset=offset,
         )
-        return await self.call_client_stream(
+        return await self._rpc.call_client_stream(
             self.service_name,
             "sum_values",
             request,

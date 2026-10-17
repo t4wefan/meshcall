@@ -161,6 +161,22 @@ await router.close();
 
 `MeshCallClient` 是更底层的连接（`new MeshCallClient(url, peerId?, options?)`），`Router` 在它之上封装。`MeshCallServer` 同样是显式的服务器（`start()` / `close()`），`serve` 构建于其上。
 
+## HTTP Router
+
+`HTTPRouter`（来自 `meshcall/web`）是使用 `fetch` 的客户端 Router；像 WebSocket Router 一样传给生成的客户端即可。它可在 Node、浏览器、Deno、Bun 和边缘运行时中使用，并提供内置的 Registry/AuthService 调用。
+
+```ts
+import { HTTPRouter } from "meshcall/web";
+import { ChatClient } from "my-chat-client";
+
+const http = await HTTPRouter.connect("https://router.example", { token: "mk_…" });
+const chat = await ChatClient.connect(http);
+console.log(await chat.withOptions({ timeoutMs: 5000 }).greet("Alice"));
+console.log(await http.listServices());
+```
+
+duplex 方法只能走 WebSocket（`method_not_found`，`reason: "duplex_over_http"`）；一元重试、流、订阅与内置方法的行为都与 WebSocket 一致。
+
 ## 使用 CLI 探索、调用与生成客户端
 
 ```bash

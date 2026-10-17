@@ -6,7 +6,7 @@ from collections.abc import AsyncIterable
 
 from pydantic import BaseModel
 
-from meshcall.client import ClientBase
+from meshcall.rpc import RpcClient
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 
 
@@ -38,7 +38,7 @@ class TestServiceDuplexRequest(BaseModel):
     request: Request
 
 
-class TestServiceClient(ClientBase):
+class TestServiceClient(RpcClient):
     service_name = 'test.v1.TestService'
 
     async def unary(
@@ -48,7 +48,7 @@ class TestServiceClient(ClientBase):
         request = TestServiceUnaryRequest(
             request=request,
         )
-        return await self.call_unary(
+        return await self._rpc.call_unary(
             self.service_name,
             'unary',
             request,
@@ -62,7 +62,7 @@ class TestServiceClient(ClientBase):
         request = TestServiceDownloadRequest(
             request=request,
         )
-        return self.call_server_stream(
+        return self._rpc.call_server_stream(
             self.service_name,
             'download',
             request,
@@ -77,7 +77,7 @@ class TestServiceClient(ClientBase):
         request = TestServiceUploadRequest(
             request=request,
         )
-        return await self.call_client_stream(
+        return await self._rpc.call_client_stream(
             self.service_name,
             'upload',
             request,
@@ -93,7 +93,7 @@ class TestServiceClient(ClientBase):
         request = TestServiceDuplexRequest(
             request=request,
         )
-        return self.call_duplex(
+        return self._rpc.call_duplex(
             self.service_name,
             'duplex',
             request,

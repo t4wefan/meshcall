@@ -35,7 +35,7 @@ async def run_demo() -> None:
     await _run_process("yarn", "run", "build", cwd=TYPESCRIPT_SERVER_ROOT)
 
     process, url = await _start_typescript_server()
-    client = await TypeScriptGreetingServiceClient.connect(url)
+    client = TypeScriptGreetingServiceClient.connect(url)
     try:
         async with client:
             response = await client.greet("Python", 2)

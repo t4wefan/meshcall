@@ -223,6 +223,21 @@ Router 的内置服务可直接调用：`await router.list_services()`、`await 
 
 需要自己管理 Router 进程时，`WebSocketRouter` 仍然可用：`host` / `port`、`unix_path`、`pipe`、`max_frame_size`（默认且最大 64 MiB）、`outbox_size`（为不读取数据的对端排队的字节数，默认使用 Router 的 256 MiB，不得小于 `max_frame_size`）、`max_connections`、`binary_path`、`auth_file` 与就绪超时。它提供 `pid`、`is_running`、`bound_port`、`wait_closed()` 以及异步上下文管理器（`async with`）。如需覆盖内置二进制，可设置环境变量 `MESHCALL_ROUTER_BINARY`。底层 `WebSocketClientDriver` 与 `WebSocketRouterServerDriver` 仍可用于自定义接线，并同样接受 `unix_path=` / `pipe=`。
 
+## HTTP 客户端
+
+`HTTPRouter` 是只用 HTTP 通信的客户端 Router：像普通 Router 一样传给生成的客户端即可。它依赖 `httpx`（默认依赖）。
+
+```python
+from meshcall import HTTPRouter
+
+http = HTTPRouter("https://router.example", token="mk_…")
+chat = ChatClient(http)                    # 或 ChatClient.connect(http)
+reply = await chat.with_options(timeout=5).greet("Alice")
+services = await http.list_services()
+```
+
+duplex 方法只能走 WebSocket（会抛出 `method_not_found`，`reason: "duplex_over_http"`）。其余能力与 WebSocket 一致：一元调用及其幂等重试、服务端流、客户端流、订阅（按 cursor 恢复），以及内置的 Registry/AuthService 调用。
+
 ## Router 鉴权
 
 向 `Router(...)` / `Router.connect(...)` 的 `auth` 参数传入 `RouterCredentials(username=..., password=...)` 或 `RouterCredentials(token=...)`（直接使用驱动时，则传给 `WebSocketClientDriver` / `WebSocketRouterServerDriver`）。Router 提供 `whoami()`、`issue_token(scopes=..., ...)` 与 `revoke_token(...)`；`RouterAuthClient` 是同一个内置服务的类型化客户端。使用 `RouterScope(service=..., methods=[...])` 限制令牌权限范围，或为临时服务实例开启 `register_service=True`。
