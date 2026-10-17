@@ -58,30 +58,35 @@ type ShowcaseServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewShowcaseServiceClient wraps a meshcall.Client.
-func NewShowcaseServiceClient(rpc *meshcall.Client) *ShowcaseServiceClient {
-	return &ShowcaseServiceClient{rpc: rpc}
+// NewShowcaseServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewShowcaseServiceClient(rpc meshcall.Caller) *ShowcaseServiceClient {
+	return &ShowcaseServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *ShowcaseServiceClient) WithOptions(opts meshcall.CallOptions) *ShowcaseServiceClient {
+	return &ShowcaseServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "demo.v1.ShowcaseService"
 
 // Parameters are the request: “name“ and “repeat“ are its fields.
-func (c *ShowcaseServiceClient) Greet(ctx context.Context, req ShowcaseServiceGreetRequest, opts ...meshcall.CallOption) (GreetingResult, error) {
-	return meshcall.Unary[ShowcaseServiceGreetRequest, GreetingResult](ctx, c.rpc, ServiceName, "greet", req, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
+func (c *ShowcaseServiceClient) Greet(ctx context.Context, name string, repeat *int64, opts ...meshcall.CallOption) (GreetingResult, error) {
+	return meshcall.Unary[ShowcaseServiceGreetRequest, GreetingResult](ctx, c.rpc, ServiceName, "greet", ShowcaseServiceGreetRequest{Name: name, Repeat: repeat}, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
 }
 
 // A model-typed parameter is just one field of the request.
-func (c *ShowcaseServiceClient) Welcome(ctx context.Context, req ShowcaseServiceWelcomeRequest, opts ...meshcall.CallOption) (WelcomeResult, error) {
-	return meshcall.Unary[ShowcaseServiceWelcomeRequest, WelcomeResult](ctx, c.rpc, ServiceName, "welcome", req, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
+func (c *ShowcaseServiceClient) Welcome(ctx context.Context, profile WelcomeRequest, opts ...meshcall.CallOption) (WelcomeResult, error) {
+	return meshcall.Unary[ShowcaseServiceWelcomeRequest, WelcomeResult](ctx, c.rpc, ServiceName, "welcome", ShowcaseServiceWelcomeRequest{Profile: profile}, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
 }
 
 // Server stream: the client receives typed items asynchronously.
-func (c *ShowcaseServiceClient) Count(ctx context.Context, req ShowcaseServiceCountRequest, opts ...meshcall.CallOption) (*meshcall.Stream[CountItem], error) {
-	return meshcall.ServerStream[ShowcaseServiceCountRequest, CountItem](ctx, c.rpc, ServiceName, "count", req, opts...)
+func (c *ShowcaseServiceClient) Count(ctx context.Context, start int64, stop int64, opts ...meshcall.CallOption) (*meshcall.Stream[CountItem], error) {
+	return meshcall.ServerStream[ShowcaseServiceCountRequest, CountItem](ctx, c.rpc, ServiceName, "count", ShowcaseServiceCountRequest{Start: start, Stop: stop}, opts...)
 }
 
 // Client stream: the service consumes a typed inbound stream.
-func (c *ShowcaseServiceClient) SumValues(ctx context.Context, req ShowcaseServiceSumValuesRequest, items func(yield func(NumberItem) bool), opts ...meshcall.CallOption) (TotalResult, error) {
-	return meshcall.ClientStream[ShowcaseServiceSumValuesRequest, NumberItem, TotalResult](ctx, c.rpc, ServiceName, "sum_values", req, items, opts...)
+func (c *ShowcaseServiceClient) SumValues(ctx context.Context, offset int64, items func(yield func(NumberItem) bool), opts ...meshcall.CallOption) (TotalResult, error) {
+	return meshcall.ClientStream[ShowcaseServiceSumValuesRequest, NumberItem, TotalResult](ctx, c.rpc, ServiceName, "sum_values", ShowcaseServiceSumValuesRequest{Offset: offset}, items, opts...)
 }

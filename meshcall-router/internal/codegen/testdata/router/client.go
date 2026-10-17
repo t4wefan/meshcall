@@ -21,15 +21,20 @@ type CounterServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewCounterServiceClient wraps a meshcall.Client.
-func NewCounterServiceClient(rpc *meshcall.Client) *CounterServiceClient {
-	return &CounterServiceClient{rpc: rpc}
+// NewCounterServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewCounterServiceClient(rpc meshcall.Caller) *CounterServiceClient {
+	return &CounterServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *CounterServiceClient) WithOptions(opts meshcall.CallOptions) *CounterServiceClient {
+	return &CounterServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "example.v1.CounterService"
 
 // Stream the integers from 0 up to, but not including, “stop“.
-func (c *CounterServiceClient) Count(ctx context.Context, req CounterServiceCountRequest, opts ...meshcall.CallOption) (*meshcall.Stream[CountItem], error) {
-	return meshcall.ServerStream[CounterServiceCountRequest, CountItem](ctx, c.rpc, ServiceName, "count", req, opts...)
+func (c *CounterServiceClient) Count(ctx context.Context, stop int64, opts ...meshcall.CallOption) (*meshcall.Stream[CountItem], error) {
+	return meshcall.ServerStream[CounterServiceCountRequest, CountItem](ctx, c.rpc, ServiceName, "count", CounterServiceCountRequest{Stop: stop}, opts...)
 }

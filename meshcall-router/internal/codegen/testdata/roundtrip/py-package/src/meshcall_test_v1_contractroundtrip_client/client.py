@@ -62,8 +62,8 @@ class ContractRoundTripClient(ClientBase):
 
     async def upload(
         self,
-        items: AsyncIterable[AliasItem],
         request: AliasRequest,
+        items: AsyncIterable[AliasItem],
         *,
         instance: str | None = None,
         timeout: float | None = None,

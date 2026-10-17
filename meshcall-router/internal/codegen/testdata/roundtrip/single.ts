@@ -92,6 +92,10 @@ export interface ContractRoundTripUploadRequest {
 export class ContractRoundTripClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): ContractRoundTripClient {
+    return new ContractRoundTripClient(this.rpc.withOptions(options));
+  }
+
   public echo(
     request: AliasRequest,
     options?: CallOptions,
@@ -121,8 +125,8 @@ export class ContractRoundTripClient {
   }
 
   public upload(
-    items: AsyncIterable<AliasItem>,
     request: AliasRequest,
+    items: AsyncIterable<AliasItem>,
     options?: CallOptions,
   ): Promise<AliasResult> {
     return this.rpc.clientStream<ContractRoundTripUploadRequest, AliasItem, AliasResult>(

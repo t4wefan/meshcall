@@ -662,7 +662,7 @@ class RunningServer:
         return self.server.instance_id
 
     @property
-    def url(self) -> str:
+    def url(self) -> str | None:
         return self.router.url
 
     async def start(self) -> None:

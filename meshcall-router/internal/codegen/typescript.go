@@ -176,7 +176,11 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 	lines := tsDocLines(service.Description, "")
 	lines = append(lines,
 		"export class "+className+" {",
-		"  public constructor(private readonly rpc: "+tsRpcType(service)+") {}")
+		"  public constructor(private readonly rpc: "+tsRpcType(service)+") {}",
+		"",
+		"  public withOptions(options: CallOptions): "+className+" {",
+		"    return new "+className+"(this.rpc.withOptions(options));",
+		"  }")
 	for _, m := range service.Methods {
 		request := registry.Name(m.Request)
 		var resultType, rpcCall string
@@ -217,11 +221,10 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 		lines = append(lines, "")
 		lines = append(lines, tsDocLines(m.Description, "  ")...)
 		lines = append(lines, "  public "+m.Name+"(")
-		// The input stream comes first: always required, unlike parameters with defaults.
-		for _, p := range extraParams {
+		for _, p := range tsParameters(m, registry) {
 			lines = append(lines, "    "+p+",")
 		}
-		for _, p := range tsParameters(m, registry) {
+		for _, p := range extraParams {
 			lines = append(lines, "    "+p+",")
 		}
 		if service.Targeted {
@@ -286,7 +289,7 @@ func tsParameters(m *contract.Method, registry *typeRegistry) []string {
 		}
 		t := tsType(prop, defNames)
 		switch {
-		case required[field]:
+		case required[field] || m.Stream == "client_stream":
 			params = append(params, field+": "+t)
 		case prop.Has("default"):
 			params = append(params, field+": "+t+" = "+jsonDumps(prop.Values["default"]))

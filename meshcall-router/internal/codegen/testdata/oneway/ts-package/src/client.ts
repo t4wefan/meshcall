@@ -6,6 +6,10 @@ import { StreamItemSchema, StreamResultSchema } from "./models.js";
 export class OneWayStreamServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): OneWayStreamServiceClient {
+    return new OneWayStreamServiceClient(this.rpc.withOptions(options));
+  }
+
   public download(
     start: number,
     options?: CallOptions,
@@ -21,8 +25,8 @@ export class OneWayStreamServiceClient {
   }
 
   public upload(
-    items: AsyncIterable<StreamItem>,
     offset: number,
+    items: AsyncIterable<StreamItem>,
     options?: CallOptions,
   ): Promise<StreamResult> {
     return this.rpc.clientStream<OneWayStreamServiceUploadRequest, StreamItem, StreamResult>(

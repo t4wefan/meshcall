@@ -44,22 +44,27 @@ type ContractRoundTripClient struct {
 	rpc *meshcall.Client
 }
 
-// NewContractRoundTripClient wraps a meshcall.Client.
-func NewContractRoundTripClient(rpc *meshcall.Client) *ContractRoundTripClient {
-	return &ContractRoundTripClient{rpc: rpc}
+// NewContractRoundTripClient wraps a meshcall.Client or meshcall.Router.
+func NewContractRoundTripClient(rpc meshcall.Caller) *ContractRoundTripClient {
+	return &ContractRoundTripClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *ContractRoundTripClient) WithOptions(opts meshcall.CallOptions) *ContractRoundTripClient {
+	return &ContractRoundTripClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "test.v1.ContractRoundTrip"
 
-func (c *ContractRoundTripClient) Echo(ctx context.Context, req ContractRoundTripEchoRequest, opts ...meshcall.CallOption) (AliasResult, error) {
-	return meshcall.Unary[ContractRoundTripEchoRequest, AliasResult](ctx, c.rpc, ServiceName, "echo", req, opts...)
+func (c *ContractRoundTripClient) Echo(ctx context.Context, request AliasRequest, opts ...meshcall.CallOption) (AliasResult, error) {
+	return meshcall.Unary[ContractRoundTripEchoRequest, AliasResult](ctx, c.rpc, ServiceName, "echo", ContractRoundTripEchoRequest{Request: request}, opts...)
 }
 
-func (c *ContractRoundTripClient) Download(ctx context.Context, req ContractRoundTripDownloadRequest, opts ...meshcall.CallOption) (*meshcall.Stream[AliasItem], error) {
-	return meshcall.ServerStream[ContractRoundTripDownloadRequest, AliasItem](ctx, c.rpc, ServiceName, "download", req, opts...)
+func (c *ContractRoundTripClient) Download(ctx context.Context, request AliasRequest, opts ...meshcall.CallOption) (*meshcall.Stream[AliasItem], error) {
+	return meshcall.ServerStream[ContractRoundTripDownloadRequest, AliasItem](ctx, c.rpc, ServiceName, "download", ContractRoundTripDownloadRequest{Request: request}, opts...)
 }
 
-func (c *ContractRoundTripClient) Upload(ctx context.Context, req ContractRoundTripUploadRequest, items func(yield func(AliasItem) bool), opts ...meshcall.CallOption) (AliasResult, error) {
-	return meshcall.ClientStream[ContractRoundTripUploadRequest, AliasItem, AliasResult](ctx, c.rpc, ServiceName, "upload", req, items, opts...)
+func (c *ContractRoundTripClient) Upload(ctx context.Context, request AliasRequest, items func(yield func(AliasItem) bool), opts ...meshcall.CallOption) (AliasResult, error) {
+	return meshcall.ClientStream[ContractRoundTripUploadRequest, AliasItem, AliasResult](ctx, c.rpc, ServiceName, "upload", ContractRoundTripUploadRequest{Request: request}, items, opts...)
 }

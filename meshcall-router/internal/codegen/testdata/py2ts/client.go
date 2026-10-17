@@ -23,15 +23,20 @@ type PythonGreetingServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewPythonGreetingServiceClient wraps a meshcall.Client.
-func NewPythonGreetingServiceClient(rpc *meshcall.Client) *PythonGreetingServiceClient {
-	return &PythonGreetingServiceClient{rpc: rpc}
+// NewPythonGreetingServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewPythonGreetingServiceClient(rpc meshcall.Caller) *PythonGreetingServiceClient {
+	return &PythonGreetingServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *PythonGreetingServiceClient) WithOptions(opts meshcall.CallOptions) *PythonGreetingServiceClient {
+	return &PythonGreetingServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "demo.v1.PythonGreetingService"
 
 // Greet “name“ “repeat“ times and say which runtime answered.
-func (c *PythonGreetingServiceClient) Greet(ctx context.Context, req PythonGreetingServiceGreetRequest, opts ...meshcall.CallOption) (GreetingResult, error) {
-	return meshcall.Unary[PythonGreetingServiceGreetRequest, GreetingResult](ctx, c.rpc, ServiceName, "greet", req, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
+func (c *PythonGreetingServiceClient) Greet(ctx context.Context, name string, repeat *int64, opts ...meshcall.CallOption) (GreetingResult, error) {
+	return meshcall.Unary[PythonGreetingServiceGreetRequest, GreetingResult](ctx, c.rpc, ServiceName, "greet", PythonGreetingServiceGreetRequest{Name: name, Repeat: repeat}, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
 }

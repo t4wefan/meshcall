@@ -90,7 +90,11 @@ class MetaPlan:
                 return self.default_value
             raise InvalidArgumentError(
                 f"Missing required metadata {self.key!r}",
-                details={"source": "server", "reason": "missing_metadata", "key": self.key},
+                details={
+                    "source": "server",
+                    "reason": "missing_metadata",
+                    "key": self.key,
+                },
             )
         if self.target_type in (Any, str, object):
             return raw
@@ -183,7 +187,7 @@ def extract_injected_plan(
         provider = dep_marker.provider
         if provider is None:
             if inspect.isclass(base_type) and hasattr(base_type, "_provider"):
-                provider_factory = base_type._provider
+                provider_factory = getattr(base_type, "_provider", None)
                 provider = provider_factory() if callable(provider_factory) else None
             elif inspect.isclass(base_type):
                 provider = base_type
@@ -227,7 +231,10 @@ def _compile_dependency_plan(
     sig = inspect.signature(provider)
     specs: list[DependencyParamSpec] = []
     for param in sig.parameters.values():
-        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
             continue
         pos_only = param.kind is inspect.Parameter.POSITIONAL_ONLY
         ann = hints.get(param.name, param.annotation)

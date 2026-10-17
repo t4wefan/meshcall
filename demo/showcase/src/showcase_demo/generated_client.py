@@ -145,8 +145,8 @@ class ShowcaseServiceClient(ClientBase):
 
     async def sum_values(
         self,
-        items: AsyncIterable[NumberItem],
         offset: int,
+        items: AsyncIterable[NumberItem],
         *,
         instance: str | None = None,
         timeout: float | None = None,

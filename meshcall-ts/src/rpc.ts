@@ -49,7 +49,7 @@ export interface MeshCallRpc {
   duplex?<Request, InputItem, OutputItem>(
     service: string, method: string, request: Request, options?: DuplexCallOptions,
   ): MeshCallDuplexCall<InputItem, OutputItem>;
-  withOptions(options: CallOptions): MeshCallRpc;
+  withOptions(options: CallOptions): this;
   close?(): Promise<void>;
   [Symbol.asyncDispose]?(): Promise<void>;
 }

@@ -9,6 +9,10 @@ import { CountItemSchema } from "./models.js";
 export class CounterServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): CounterServiceClient {
+    return new CounterServiceClient(this.rpc.withOptions(options));
+  }
+
   /**
    * Stream the integers from 0 up to, but not including, ``stop``.
    */

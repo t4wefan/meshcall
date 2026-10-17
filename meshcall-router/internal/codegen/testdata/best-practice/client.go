@@ -64,35 +64,40 @@ type LlmServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewLlmServiceClient wraps a meshcall.Client.
-func NewLlmServiceClient(rpc *meshcall.Client) *LlmServiceClient {
-	return &LlmServiceClient{rpc: rpc}
+// NewLlmServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewLlmServiceClient(rpc meshcall.Caller) *LlmServiceClient {
+	return &LlmServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *LlmServiceClient) WithOptions(opts meshcall.CallOptions) *LlmServiceClient {
+	return &LlmServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "best_practice.v1.LlmService"
 
 // Create a session and return it; each call creates a new one.
-func (c *LlmServiceClient) NewSession(ctx context.Context, req LlmServiceNewSessionRequest, opts ...meshcall.CallOption) (NewSessionResponse, error) {
-	return meshcall.Unary[LlmServiceNewSessionRequest, NewSessionResponse](ctx, c.rpc, ServiceName, "new_session", req, opts...)
+func (c *LlmServiceClient) NewSession(ctx context.Context, title *string, opts ...meshcall.CallOption) (NewSessionResponse, error) {
+	return meshcall.Unary[LlmServiceNewSessionRequest, NewSessionResponse](ctx, c.rpc, ServiceName, "new_session", LlmServiceNewSessionRequest{Title: title}, opts...)
 }
 
 // List the sessions held in this process.
-func (c *LlmServiceClient) ListSessions(ctx context.Context, req LlmServiceListSessionsRequest, opts ...meshcall.CallOption) (ListSessionsResponse, error) {
-	return meshcall.Unary[LlmServiceListSessionsRequest, ListSessionsResponse](ctx, c.rpc, ServiceName, "list_sessions", req, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
+func (c *LlmServiceClient) ListSessions(ctx context.Context, opts ...meshcall.CallOption) (ListSessionsResponse, error) {
+	return meshcall.Unary[LlmServiceListSessionsRequest, ListSessionsResponse](ctx, c.rpc, ServiceName, "list_sessions", LlmServiceListSessionsRequest{}, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
 }
 
 // Count simple lexical tokens; this deliberately is not a model tokenizer.
-func (c *LlmServiceClient) CountTokens(ctx context.Context, req LlmServiceCountTokensRequest, opts ...meshcall.CallOption) (TokenCountResponse, error) {
-	return meshcall.Unary[LlmServiceCountTokensRequest, TokenCountResponse](ctx, c.rpc, ServiceName, "count_tokens", req, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
+func (c *LlmServiceClient) CountTokens(ctx context.Context, text string, opts ...meshcall.CallOption) (TokenCountResponse, error) {
+	return meshcall.Unary[LlmServiceCountTokensRequest, TokenCountResponse](ctx, c.rpc, ServiceName, "count_tokens", LlmServiceCountTokensRequest{Text: text}, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
 }
 
 // Collect prompt chunks to demonstrate client-to-server backpressure.
-func (c *LlmServiceClient) AssemblePrompt(ctx context.Context, req LlmServiceAssemblePromptRequest, items func(yield func(PromptChunk) bool), opts ...meshcall.CallOption) (PromptAssembly, error) {
-	return meshcall.ClientStream[LlmServiceAssemblePromptRequest, PromptChunk, PromptAssembly](ctx, c.rpc, ServiceName, "assemble_prompt", req, items, opts...)
+func (c *LlmServiceClient) AssemblePrompt(ctx context.Context, items func(yield func(PromptChunk) bool), opts ...meshcall.CallOption) (PromptAssembly, error) {
+	return meshcall.ClientStream[LlmServiceAssemblePromptRequest, PromptChunk, PromptAssembly](ctx, c.rpc, ServiceName, "assemble_prompt", LlmServiceAssemblePromptRequest{}, items, opts...)
 }
 
 // Stream a deterministic reply for “prompt“ into “session_id“.
-func (c *LlmServiceClient) StreamChat(ctx context.Context, req LlmServiceStreamChatRequest, opts ...meshcall.CallOption) (*meshcall.Stream[ChatChunk], error) {
-	return meshcall.ServerStream[LlmServiceStreamChatRequest, ChatChunk](ctx, c.rpc, ServiceName, "stream_chat", req, opts...)
+func (c *LlmServiceClient) StreamChat(ctx context.Context, sessionID string, prompt string, maxTokens *int64, opts ...meshcall.CallOption) (*meshcall.Stream[ChatChunk], error) {
+	return meshcall.ServerStream[LlmServiceStreamChatRequest, ChatChunk](ctx, c.rpc, ServiceName, "stream_chat", LlmServiceStreamChatRequest{SessionID: sessionID, Prompt: prompt, MaxTokens: maxTokens}, opts...)
 }

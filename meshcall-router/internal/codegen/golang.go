@@ -247,8 +247,10 @@ func RenderGoClient(service *contract.Service, opts GoOptions) string {
 	var client strings.Builder
 	client.WriteString(goComment(service.Description, ""))
 	client.WriteString("type " + className + " struct {\n\trpc *meshcall.Client\n}\n\n")
-	client.WriteString("// New" + className + " wraps a meshcall.Client.\n")
-	client.WriteString("func New" + className + "(rpc *meshcall.Client) *" + className + " {\n\treturn &" + className + "{rpc: rpc}\n}\n\n")
+	client.WriteString("// New" + className + " wraps a meshcall.Client or meshcall.Router.\n")
+	client.WriteString("func New" + className + "(rpc meshcall.Caller) *" + className + " {\n\treturn &" + className + "{rpc: rpc.Client()}\n}\n\n")
+	client.WriteString("// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.\n")
+	client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithOptions(opts)}\n}\n\n")
 	client.WriteString("// ServiceName is the service these calls address.\nconst ServiceName = " + jsonDumps(service.Name) + "\n")
 	for _, m := range service.Methods {
 		g.writeMethod(&client, service, m, className)
@@ -303,6 +305,90 @@ func (g *goWriter) writeType(b *strings.Builder, name string, schema *contract.O
 	b.WriteString("type " + name + " " + g.structBody(schema, defNames, "") + "\n\n")
 }
 
+var goReservedParams = map[string]bool{
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
+	"any": true, "bool": true, "byte": true, "comparable": true, "complex64": true,
+	"complex128": true, "error": true, "float32": true, "float64": true, "int": true,
+	"int8": true, "int16": true, "int32": true, "int64": true, "nil": true,
+	"rune": true, "string": true, "true": true, "false": true, "uint": true,
+	"uint8": true, "uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	"c": true, "ctx": true, "instance": true, "items": true, "opts": true,
+	"context": true, "meshcall": true, "json": true,
+}
+
+func goLowerIdentifier(value, fallback string) string {
+	id := goIdentifier(value, fallback)
+	runes := []rune(id)
+	upperCount := 0
+	for upperCount < len(runes) && unicode.IsUpper(runes[upperCount]) {
+		upperCount++
+	}
+	switch {
+	case upperCount == 0:
+		return id
+	case upperCount == len(runes):
+		return strings.ToLower(id)
+	case upperCount > 1:
+		for i := 0; i < upperCount-1; i++ {
+			runes[i] = unicode.ToLower(runes[i])
+		}
+	default:
+		runes[0] = unicode.ToLower(runes[0])
+	}
+	return string(runes)
+}
+
+func goStructFieldNames(schema *contract.Object) map[string]string {
+	out := map[string]string{}
+	props := schema.Obj("properties")
+	if props == nil {
+		return out
+	}
+	used := map[string]int{}
+	for _, key := range props.Keys {
+		name := goIdentifier(key, "Field")
+		if used[name]++; used[name] > 1 {
+			name += itoa(used[name])
+		}
+		out[key] = name
+	}
+	return out
+}
+
+func (g *goWriter) goMethodParams(m *contract.Method, requestType string) ([]string, string) {
+	if len(m.Parameters) == 0 {
+		return nil, requestType + "{}"
+	}
+	props := m.Request.Schema.Obj("properties")
+	required := stringSet(m.Request.Schema.Strings("required"))
+	defNames := g.registry.DefinitionNames(m.Request)
+	fieldNames := goStructFieldNames(m.Request.Schema)
+	used := map[string]int{}
+	var decls []string
+	var fields []string
+	for _, field := range m.Parameters {
+		prop := props.Obj(field)
+		if prop == nil {
+			panic(genError("Request parameter " + pyStringRepr(field) + " is missing from " + m.Request.Qualname))
+		}
+		paramName := goLowerIdentifier(field, "param")
+		if goReservedParams[paramName] {
+			paramName += "Param"
+		}
+		if used[paramName]++; used[paramName] > 1 {
+			paramName += itoa(used[paramName])
+		}
+		paramType := g.goType(prop, defNames, !required[field])
+		decls = append(decls, paramName+" "+paramType)
+		fields = append(fields, fieldNames[field]+": "+paramName)
+	}
+	return decls, requestType + "{" + strings.Join(fields, ", ") + "}"
+}
+
 func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m *contract.Method, className string) {
 	reg := g.registry
 	request := reg.Name(m.Request)
@@ -316,10 +402,12 @@ func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m 
 		}
 		b.WriteString("//\n// Deprecated: " + note + ".\n")
 	}
-	params := "ctx context.Context"
+	sigParams := []string{"ctx context.Context"}
 	if service.Targeted {
-		params += ", instance string"
+		sigParams = append(sigParams, "instance string")
 	}
+	paramDecls, reqExpr := g.goMethodParams(m, request)
+	sigParams = append(sigParams, paramDecls...)
 	var defaults []string
 	if service.Targeted {
 		defaults = append(defaults, "meshcall.WithInstance(instance)")
@@ -338,30 +426,34 @@ func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m 
 	switch m.Stream {
 	case "unary":
 		response := reg.Name(requiredRef(m.Response, m.Name+" response"))
-		b.WriteString("func (c *" + className + ") " + name + "(" + params + ", req " + request + ", opts ...meshcall.CallOption) (" + response + ", error) {\n")
-		b.WriteString("\treturn " + call("Unary", request+", "+response, "req") + "\n}\n")
+		fullSig := append(append([]string{}, sigParams...), "opts ...meshcall.CallOption")
+		b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (" + response + ", error) {\n")
+		b.WriteString("\treturn " + call("Unary", request+", "+response, reqExpr) + "\n}\n")
 	case "server_stream":
 		item := reg.Name(requiredRef(m.OutputItem, m.Name+" output item"))
+		fullSig := append(append([]string{}, sigParams...), "opts ...meshcall.CallOption")
 		if s := m.Subscription; s != nil {
 			spec := "meshcall.SubscriptionSpec{}"
 			if s.Cursor != nil {
 				spec = "meshcall.SubscriptionSpec{Cursor: " + jsonDumps(*s.Cursor) + ", Resume: " + jsonDumps(*s.Resume) + "}"
 			}
-			b.WriteString("func (c *" + className + ") " + name + "(" + params + ", req " + request + ", opts ...meshcall.CallOption) (*meshcall.Subscription[" + item + "], error) {\n")
-			b.WriteString("\treturn " + call("Subscribe", request+", "+item, "req", spec) + "\n}\n")
+			b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (*meshcall.Subscription[" + item + "], error) {\n")
+			b.WriteString("\treturn " + call("Subscribe", request+", "+item, reqExpr, spec) + "\n}\n")
 			return
 		}
-		b.WriteString("func (c *" + className + ") " + name + "(" + params + ", req " + request + ", opts ...meshcall.CallOption) (*meshcall.Stream[" + item + "], error) {\n")
-		b.WriteString("\treturn " + call("ServerStream", request+", "+item, "req") + "\n}\n")
+		b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (*meshcall.Stream[" + item + "], error) {\n")
+		b.WriteString("\treturn " + call("ServerStream", request+", "+item, reqExpr) + "\n}\n")
 	case "client_stream":
 		input := reg.Name(requiredRef(m.InputItem, m.Name+" input item"))
 		response := reg.Name(requiredRef(m.Response, m.Name+" response"))
-		b.WriteString("func (c *" + className + ") " + name + "(" + params + ", req " + request + ", items func(yield func(" + input + ") bool), opts ...meshcall.CallOption) (" + response + ", error) {\n")
-		b.WriteString("\treturn " + call("ClientStream", request+", "+input+", "+response, "req", "items") + "\n}\n")
+		fullSig := append(append([]string{}, sigParams...), "items func(yield func("+input+") bool)", "opts ...meshcall.CallOption")
+		b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (" + response + ", error) {\n")
+		b.WriteString("\treturn " + call("ClientStream", request+", "+input+", "+response, reqExpr, "items") + "\n}\n")
 	case "duplex":
 		input := reg.Name(requiredRef(m.InputItem, m.Name+" input item"))
 		output := reg.Name(requiredRef(m.OutputItem, m.Name+" output item"))
-		b.WriteString("func (c *" + className + ") " + name + "(" + params + ", req " + request + ", opts ...meshcall.CallOption) (*meshcall.DuplexCall[" + input + ", " + output + "], error) {\n")
-		b.WriteString("\treturn " + call("Duplex", request+", "+input+", "+output, "req") + "\n}\n")
+		fullSig := append(append([]string{}, sigParams...), "opts ...meshcall.CallOption")
+		b.WriteString("func (c *" + className + ") " + name + "(" + strings.Join(fullSig, ", ") + ") (*meshcall.DuplexCall[" + input + ", " + output + "], error) {\n")
+		b.WriteString("\treturn " + call("Duplex", request+", "+input+", "+output, reqExpr) + "\n}\n")
 	}
 }

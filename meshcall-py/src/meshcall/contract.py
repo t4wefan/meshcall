@@ -447,7 +447,9 @@ def mutates(
         read_only=False,
         destructive=resolved_destructive,
         deprecated=deprecated,
-        duplex_reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
+        duplex_reason=reason.strip()
+        if isinstance(reason, str) and reason.strip()
+        else None,
         allow_duplex_infer=True,
     )
     return decl(func) if func is not None else decl
@@ -775,7 +777,9 @@ def _extract_method(
         else:
             request_parameters.append(parameter)
 
-    stream_origin = get_origin(stream_annotation) if stream_annotation is not None else None
+    stream_origin = (
+        get_origin(stream_annotation) if stream_annotation is not None else None
+    )
     if (
         stream_origin is RpcDuplex
         and declared_stream is None
@@ -936,9 +940,7 @@ def _extract_method(
             contract,
             declared_stream,
             func,
-            replace(
-                method_binding, input_type=input_type, output_type=output_type
-            ),
+            replace(method_binding, input_type=input_type, output_type=output_type),
         )
 
     raise ContractError(f"Unsupported stream annotation on {func.__qualname__}")
@@ -1076,9 +1078,7 @@ def _require_model(annotation: Any, context: str) -> None:
 def _type_ref(annotation: Any) -> TypeRef:
     qualname = getattr(annotation, "__qualname__", None) or str(annotation)
     if "<locals>" in qualname:
-        raise ContractError(
-            f"Type {qualname} is local and cannot be generated"
-        )
+        raise ContractError(f"Type {qualname} is local and cannot be generated")
     module = getattr(annotation, "__module__", "builtins")
     return TypeRef(
         module=module,

@@ -73,4 +73,3 @@ class RpcDuplexClient(RpcServerStream[OutputT], ABC, Generic[InputT, OutputT]):
 
 
 DuplexChannel = RpcDuplex
-

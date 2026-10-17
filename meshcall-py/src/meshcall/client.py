@@ -344,7 +344,7 @@ class ClientBase:
         service: str,
         method: str,
         request: BaseModel,
-        item_type: type[BaseModel],
+        item_type: type[BaseModel | str | bytes],
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
@@ -436,8 +436,8 @@ class ClientBase:
         service: str,
         method: str,
         request: BaseModel,
-        items: AsyncIterable[BaseModel],
-        input_type: type[BaseModel],
+        items: AsyncIterable[Any],
+        input_type: type[BaseModel | str | bytes],
         response_type: type[BaseModel],
         *,
         timeout: float | None = None,
@@ -495,8 +495,8 @@ class ClientBase:
         service: str,
         method: str,
         request: BaseModel,
-        input_type: type[BaseModel],
-        output_type: type[BaseModel],
+        input_type: type[BaseModel | str | bytes],
+        output_type: type[BaseModel | str | bytes],
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
@@ -576,8 +576,8 @@ class ClientBase:
         request: BaseModel,
         *,
         response_type: type[BaseModel] | None = None,
-        input_type: type[BaseModel] | None = None,
-        output_type: type[BaseModel] | None = None,
+        input_type: type[BaseModel | str | bytes] | None = None,
+        output_type: type[BaseModel | str | bytes] | None = None,
         options: CallOptions,
     ) -> _ClientCall:
         # The local budget covers connecting and the handshake as well as the
@@ -660,7 +660,7 @@ class ClientBase:
     async def _pump_input(
         self,
         call: _ClientCall,
-        items: AsyncIterable[BaseModel],
+        items: AsyncIterable[Any],
     ) -> None:
         try:
             async for item in items:
@@ -820,8 +820,8 @@ class _ClientCall:
         connection: FrameConnection,
         call_id: str,
         response_type: type[BaseModel] | None,
-        input_type: type[BaseModel] | None,
-        output_type: type[BaseModel] | None,
+        input_type: type[BaseModel | str | bytes] | None,
+        output_type: type[BaseModel | str | bytes] | None,
         idle_timeout: float | None = None,
     ) -> None:
         self.client = client

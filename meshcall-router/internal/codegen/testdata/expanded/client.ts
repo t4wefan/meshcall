@@ -6,6 +6,10 @@ import { ExpandedResultSchema } from "./models.js";
 export class ExpandedServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): ExpandedServiceClient {
+    return new ExpandedServiceClient(this.rpc.withOptions(options));
+  }
+
   public add(
     left: number,
     right: number = 1,

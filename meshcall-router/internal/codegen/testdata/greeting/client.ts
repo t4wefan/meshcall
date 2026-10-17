@@ -6,6 +6,10 @@ import { GreetingResultSchema } from "./models.js";
 export class GreetingServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): GreetingServiceClient {
+    return new GreetingServiceClient(this.rpc.withOptions(options));
+  }
+
   public greet(
     request: GreetingRequest,
     options?: CallOptions,

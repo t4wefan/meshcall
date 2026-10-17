@@ -207,9 +207,8 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 			input := registry.Name(requiredRef(m.InputItem, m.Name+" input item"))
 			response := registry.Name(requiredRef(m.Response, m.Name+" response"))
 			lines = append(lines, "    async def "+m.Name+"(", "        self,")
-			// The stream comes first: it is always required, while parameters may carry defaults.
-			lines = append(lines, "        items: AsyncIterable["+input+"],")
 			lines = append(lines, indented(params)...)
+			lines = append(lines, "        items: AsyncIterable["+input+"],")
 			lines = append(lines, kwargs()...)
 			lines = append(lines, "    ) -> "+response+":")
 			lines = append(lines, pyDocstringLines(m.Description, "        ")...)
@@ -258,7 +257,7 @@ func pyParameters(m *contract.Method, registry *typeRegistry) []string {
 		}
 		t := pyType(prop, defNames)
 		switch {
-		case required[field]:
+		case required[field] || m.Stream == "client_stream":
 			params = append(params, field+": "+t)
 		case prop.Has("default"):
 			params = append(params, field+": "+t+" = "+pyRepr(prop.Values["default"]))

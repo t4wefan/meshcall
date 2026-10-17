@@ -259,8 +259,8 @@ export class MeshCallClient implements MeshCallRpc {
   /**
    * Return a shallow view sharing this client's connection with overridden per-call options.
    */
-  public withOptions(options: CallOptions): MeshCallClient {
-    const clone = Object.create(MeshCallClient.prototype) as MeshCallClient;
+  public withOptions(options: CallOptions): this {
+    const clone = Object.create(MeshCallClient.prototype) as this;
     clone.root = this.root;
     clone.ownsRoot = false;
     clone.defaultCallOptions = mergeCallOptions(this.defaultCallOptions, options);

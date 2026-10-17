@@ -37,8 +37,8 @@ class OneWayStreamServiceClient(ClientBase):
 
     async def upload(
         self,
-        items: AsyncIterable[StreamItem],
         offset: int,
+        items: AsyncIterable[StreamItem],
         *,
         instance: str | None = None,
         timeout: float | None = None,

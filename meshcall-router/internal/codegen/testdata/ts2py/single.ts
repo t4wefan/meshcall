@@ -77,6 +77,10 @@ export const GreetingResultSchema: JsonSchema = {
 export class TypeScriptGreetingServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): TypeScriptGreetingServiceClient {
+    return new TypeScriptGreetingServiceClient(this.rpc.withOptions(options));
+  }
+
   /**
    * Stream the integers from 0 up to, but not including, count.
    */
@@ -98,8 +102,8 @@ export class TypeScriptGreetingServiceClient {
    * Add every streamed value to offset and return the total.
    */
   public sum(
+    offset: number,
     items: AsyncIterable<NumberItem>,
-    offset: number = 0,
     options?: CallOptions,
   ): Promise<SumResult> {
     return this.rpc.clientStream<SumRequest, NumberItem, SumResult>(

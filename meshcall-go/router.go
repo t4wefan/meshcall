@@ -25,9 +25,9 @@ import (
 )
 
 const (
-	DefaultRouterURL       = "ws://127.0.0.1:8765"
-	routerRegistryService  = "meshcall.router.v1.Registry"
-	routerAuthService      = "meshcall.router.v1.AuthService"
+	DefaultRouterURL      = "ws://127.0.0.1:8765"
+	routerRegistryService = "meshcall.router.v1.Registry"
+	routerAuthService     = "meshcall.router.v1.AuthService"
 )
 
 // BearerToken formats an Authorization header value for a bearer token ("Bearer …").
@@ -752,9 +752,9 @@ func resolveRouterEndpoints(cfg routerConfig) []string {
 }
 
 type spawnedRouter struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	once   sync.Once
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	once  sync.Once
 }
 
 func (s *spawnedRouter) close() {

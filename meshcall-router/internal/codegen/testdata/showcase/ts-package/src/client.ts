@@ -9,6 +9,10 @@ import { GreetingResultSchema, WelcomeResultSchema, CountItemSchema, TotalResult
 export class ShowcaseServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): ShowcaseServiceClient {
+    return new ShowcaseServiceClient(this.rpc.withOptions(options));
+  }
+
   /**
    * Parameters are the request: ``name`` and ``repeat`` are its fields.
    */
@@ -68,8 +72,8 @@ export class ShowcaseServiceClient {
    * Client stream: the service consumes a typed inbound stream.
    */
   public sum_values(
-    items: AsyncIterable<NumberItem>,
     offset: number,
+    items: AsyncIterable<NumberItem>,
     options?: CallOptions,
   ): Promise<TotalResult> {
     return this.rpc.clientStream<ShowcaseServiceSumValuesRequest, NumberItem, TotalResult>(

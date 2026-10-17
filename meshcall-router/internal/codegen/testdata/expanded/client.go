@@ -21,14 +21,19 @@ type ExpandedServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewExpandedServiceClient wraps a meshcall.Client.
-func NewExpandedServiceClient(rpc *meshcall.Client) *ExpandedServiceClient {
-	return &ExpandedServiceClient{rpc: rpc}
+// NewExpandedServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewExpandedServiceClient(rpc meshcall.Caller) *ExpandedServiceClient {
+	return &ExpandedServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *ExpandedServiceClient) WithOptions(opts meshcall.CallOptions) *ExpandedServiceClient {
+	return &ExpandedServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "test.v1.ExpandedService"
 
-func (c *ExpandedServiceClient) Add(ctx context.Context, req ExpandedServiceAddRequest, opts ...meshcall.CallOption) (ExpandedResult, error) {
-	return meshcall.Unary[ExpandedServiceAddRequest, ExpandedResult](ctx, c.rpc, ServiceName, "add", req, opts...)
+func (c *ExpandedServiceClient) Add(ctx context.Context, left int64, right *int64, opts ...meshcall.CallOption) (ExpandedResult, error) {
+	return meshcall.Unary[ExpandedServiceAddRequest, ExpandedResult](ctx, c.rpc, ServiceName, "add", ExpandedServiceAddRequest{Left: left, Right: right}, opts...)
 }

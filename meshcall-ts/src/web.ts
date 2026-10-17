@@ -124,8 +124,8 @@ export class MeshCallHttpClient implements MeshCallRpc {
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
-  public withOptions(options: CallOptions): MeshCallHttpClient {
-    const clone = Object.create(MeshCallHttpClient.prototype) as MeshCallHttpClient;
+  public withOptions(options: CallOptions): this {
+    const clone = Object.create(MeshCallHttpClient.prototype) as this;
     Object.assign(clone, {
       base: this.base,
       fetcher: this.fetcher,

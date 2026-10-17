@@ -23,20 +23,25 @@ type FeedClient struct {
 	rpc *meshcall.Client
 }
 
-// NewFeedClient wraps a meshcall.Client.
-func NewFeedClient(rpc *meshcall.Client) *FeedClient {
-	return &FeedClient{rpc: rpc}
+// NewFeedClient wraps a meshcall.Client or meshcall.Router.
+func NewFeedClient(rpc meshcall.Caller) *FeedClient {
+	return &FeedClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *FeedClient) WithOptions(opts meshcall.CallOptions) *FeedClient {
+	return &FeedClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "test.v1.Feed"
 
 // Every tick after “since“.
-func (c *FeedClient) Ticks(ctx context.Context, req FeedTicksRequest, opts ...meshcall.CallOption) (*meshcall.Subscription[Tick], error) {
-	return meshcall.Subscribe[FeedTicksRequest, Tick](ctx, c.rpc, ServiceName, "ticks", req, meshcall.SubscriptionSpec{Cursor: "seq", Resume: "since"}, opts...)
+func (c *FeedClient) Ticks(ctx context.Context, since *int64, opts ...meshcall.CallOption) (*meshcall.Subscription[Tick], error) {
+	return meshcall.Subscribe[FeedTicksRequest, Tick](ctx, c.rpc, ServiceName, "ticks", FeedTicksRequest{Since: since}, meshcall.SubscriptionSpec{Cursor: "seq", Resume: "since"}, opts...)
 }
 
 // Fails for good after one item.
-func (c *FeedClient) Broken(ctx context.Context, req FeedBrokenRequest, opts ...meshcall.CallOption) (*meshcall.Subscription[Tick], error) {
-	return meshcall.Subscribe[FeedBrokenRequest, Tick](ctx, c.rpc, ServiceName, "broken", req, meshcall.SubscriptionSpec{}, opts...)
+func (c *FeedClient) Broken(ctx context.Context, opts ...meshcall.CallOption) (*meshcall.Subscription[Tick], error) {
+	return meshcall.Subscribe[FeedBrokenRequest, Tick](ctx, c.rpc, ServiceName, "broken", FeedBrokenRequest{}, meshcall.SubscriptionSpec{}, opts...)
 }

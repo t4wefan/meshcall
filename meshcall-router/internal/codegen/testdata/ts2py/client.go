@@ -39,25 +39,30 @@ type TypeScriptGreetingServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewTypeScriptGreetingServiceClient wraps a meshcall.Client.
-func NewTypeScriptGreetingServiceClient(rpc *meshcall.Client) *TypeScriptGreetingServiceClient {
-	return &TypeScriptGreetingServiceClient{rpc: rpc}
+// NewTypeScriptGreetingServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewTypeScriptGreetingServiceClient(rpc meshcall.Caller) *TypeScriptGreetingServiceClient {
+	return &TypeScriptGreetingServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *TypeScriptGreetingServiceClient) WithOptions(opts meshcall.CallOptions) *TypeScriptGreetingServiceClient {
+	return &TypeScriptGreetingServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "demo.v1.TypeScriptGreetingService"
 
 // Stream the integers from 0 up to, but not including, count.
-func (c *TypeScriptGreetingServiceClient) Count(ctx context.Context, req CountRequest, opts ...meshcall.CallOption) (*meshcall.Stream[NumberItem], error) {
-	return meshcall.ServerStream[CountRequest, NumberItem](ctx, c.rpc, ServiceName, "count", req, opts...)
+func (c *TypeScriptGreetingServiceClient) Count(ctx context.Context, count int64, opts ...meshcall.CallOption) (*meshcall.Stream[NumberItem], error) {
+	return meshcall.ServerStream[CountRequest, NumberItem](ctx, c.rpc, ServiceName, "count", CountRequest{Count: count}, opts...)
 }
 
 // Add every streamed value to offset and return the total.
-func (c *TypeScriptGreetingServiceClient) Sum(ctx context.Context, req SumRequest, items func(yield func(NumberItem) bool), opts ...meshcall.CallOption) (SumResult, error) {
-	return meshcall.ClientStream[SumRequest, NumberItem, SumResult](ctx, c.rpc, ServiceName, "sum", req, items, opts...)
+func (c *TypeScriptGreetingServiceClient) Sum(ctx context.Context, offset *int64, items func(yield func(NumberItem) bool), opts ...meshcall.CallOption) (SumResult, error) {
+	return meshcall.ClientStream[SumRequest, NumberItem, SumResult](ctx, c.rpc, ServiceName, "sum", SumRequest{Offset: offset}, items, opts...)
 }
 
 // Greet name repeat times and say which runtime answered.
-func (c *TypeScriptGreetingServiceClient) Greet(ctx context.Context, req GreetingRequest, opts ...meshcall.CallOption) (GreetingResult, error) {
-	return meshcall.Unary[GreetingRequest, GreetingResult](ctx, c.rpc, ServiceName, "greet", req, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
+func (c *TypeScriptGreetingServiceClient) Greet(ctx context.Context, name string, repeat int64, opts ...meshcall.CallOption) (GreetingResult, error) {
+	return meshcall.Unary[GreetingRequest, GreetingResult](ctx, c.rpc, ServiceName, "greet", GreetingRequest{Name: name, Repeat: repeat}, append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...)...)
 }

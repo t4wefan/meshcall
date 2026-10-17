@@ -61,6 +61,10 @@ export interface TestServiceDuplexRequest {
 export class TestServiceClient {
   public constructor(private readonly rpc: MeshCallClient) {}
 
+  public withOptions(options: CallOptions): TestServiceClient {
+    return new TestServiceClient(this.rpc.withOptions(options));
+  }
+
   public unary(
     request: Request,
     options?: CallOptions,
@@ -90,8 +94,8 @@ export class TestServiceClient {
   }
 
   public upload(
-    items: AsyncIterable<Item>,
     request: Request,
+    items: AsyncIterable<Item>,
     options?: CallOptions,
   ): Promise<Result> {
     return this.rpc.clientStream<TestServiceUploadRequest, Item, Result>(

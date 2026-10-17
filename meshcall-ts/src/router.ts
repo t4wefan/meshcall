@@ -575,8 +575,8 @@ export class Router implements MeshCallRpc {
       : active;
   }
 
-  public withOptions(options: CallOptions): Router {
-    const clone = Object.create(Router.prototype) as Router;
+  public withOptions(options: CallOptions): this {
+    const clone = Object.create(Router.prototype) as this;
     Object.assign(clone, {
       options: this.root.options,
       _endpoints: this.root._endpoints,
