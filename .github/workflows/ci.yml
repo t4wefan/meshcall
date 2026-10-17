@@ -100,6 +100,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: meshcall-router/go.mod
       - run: uv run --locked demo
         working-directory: demo/quickstart
       - run: uv run --locked demo
@@ -110,6 +113,8 @@ jobs:
         working-directory: demo/router
       - run: uv run --locked demo
         working-directory: demo/ts2py
+      - run: uv run --locked demo
+        working-directory: best-practice
       - name: Start Go from the installed TypeScript package
         working-directory: demo/ts2py/ts-server
         run: |

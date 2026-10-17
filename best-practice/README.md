@@ -1,19 +1,65 @@
 # MeshCall best practice
 
-This is a small, complete application with a real process boundary:
+This is a small, complete application with real process boundaries and three
+languages:
 
-- `src/best_practice/service.py` implements an in-memory Python LLM-shaped
-  service;
-- `src/best_practice/server.py` is the Python RPC server entry point;
+- `src/best_practice/service.py` implements an in-memory, LLM-shaped Python
+  service with the recommended v0.3 API;
+- `src/best_practice/server.py` starts it through the Router (`meshcall.run`);
+- `src/best_practice/demo.py` runs the whole example: it starts the service
+  with an embedded Router, then runs the TypeScript CLI and the Go client
+  against it;
 - `ts-client/` is a generated TypeScript client package plus an interactive
-  CLI.
+  CLI;
+- `go-client/` is a generated Go client plus a small program that exercises
+  unary, client-streaming and server-streaming calls.
 
 The service exposes `new_session`, `list_sessions`, `count_tokens`, a
-client-streaming `assemble_prompt`, and the server-streaming `stream_chat`.
-The response is deterministic fake data, so the application needs no model
+client-streaming `assemble_prompt`, and the server-streaming `stream_chat`. The
+response is deterministic fake data, so the application needs no model
 credentials and keeps all state in the Python server process.
 
-## Start the server
+## What it demonstrates
+
+**One entry point.** `server.py` is `meshcall.run(LlmService())`: it resolves
+`MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), starts a bundled Router
+when that address is local and nothing listens there, registers the service,
+and drains on `SIGINT` / `SIGTERM`.
+
+**Method shorthands.** `@query` for pure reads (`list_sessions`,
+`count_tokens`), `@mutates` for `new_session` and the client-streaming
+`assemble_prompt`, and `@stream` for `stream_chat`. Generated clients take the
+same business parameters, in the same order.
+
+**A transactional dependency.** Every call gets a `SessionUnit` from the
+`@dependency` provider `transaction()`. Handlers stage writes on it; the
+provider commits them when the call succeeds and rolls them back when it
+raises or is cancelled. A `stream_chat` the caller cancels halfway leaves no
+half-written turn. Injected parameters never appear in the contract or in
+generated clients.
+
+**Metadata as an escape hatch.** `caller_id = meta("x-caller-id")` reads a
+value that arrives as call metadata, not as a business field. The TypeScript
+and Go clients set it with `withOptions({ metadata })` /
+`WithOptions(CallOptions{Metadata})`.
+
+**One Router connection, several clients.** The TypeScript CLI connects with
+`Router.connect()` and wraps the generated client in
+`await LlmServiceClient.connect(router)`; the Go client passes
+`meshcall.NewRouter()` to `NewLlmServiceClient`. Both share one connection and
+call `with_options` / `WithOptions` for per-call settings.
+
+## Run it
+
+Everything at once (builds the clients, starts the service and an embedded
+Router, runs the TypeScript CLI once and the Go client, then stops):
+
+```bash
+cd best-practice
+uv run demo
+```
+
+## Run it by hand
 
 In the first terminal:
 
@@ -22,31 +68,22 @@ cd best-practice
 uv run server
 ```
 
-The server listens on `ws://127.0.0.1:8765` by default. Set
-`MESHCALL_BEST_PRACTICE_PORT` to use another port.
-
-The Python server writes one access log after every completed call. Each entry
-contains the service method, status, elapsed milliseconds, and `call_id`. The
-service methods also demonstrate an injected `logger: RpcLogger` parameter for
-application logs. Startup logging can be adjusted without editing the demo:
+The server registers with the Router from `MESHCALL_ROUTER_URL` (default
+`ws://127.0.0.1:8765`, started locally when missing). Access logging can be
+adjusted without editing the demo:
 
 ```bash
 MESHCALL_LOG_LEVEL=DEBUG MESHCALL_LOG_COLOR=1 uv run server
 MESHCALL_ACCESS_LOG=0 uv run server
 ```
 
-The library equivalent is `RpcServer(..., access_log=False)`; `log_level` and
-`colorize` are also available as server options.
-
-## Start the interactive CLI
-
-In a second terminal:
+In a second terminal, run the TypeScript CLI:
 
 ```bash
 cd best-practice/ts-client
 yarn install --frozen-lockfile
 yarn build
-MESHCALL_SERVER_URL=ws://127.0.0.1:8765 yarn cli
+yarn cli
 ```
 
 The CLI creates one session and then waits at `you> `. Type a prompt and watch
@@ -63,17 +100,22 @@ the fake assistant response arrive chunk by chunk. The small command set is:
 For a non-interactive smoke test, pass a prompt directly:
 
 ```bash
-MESHCALL_SERVER_URL=ws://127.0.0.1:8765 node dist/cli.js "Hello MeshCall"
+node dist/cli.js "Hello MeshCall"
 ```
 
-The CLI calls the generated client. `assemble_prompt` exercises client-to-
-server streaming, while `stream_chat` exercises server-to-client streaming.
-The fake server waits briefly between output chunks with `asyncio.sleep`, so
-the streaming behavior is visible without blocking the RPC loop.
+Both entry points read `MESHCALL_ROUTER_URL`; point them at a remote Router when
+needed. The Go client does the same:
 
-## Regenerate the TypeScript package
+```bash
+go -C go-client run . "Hello MeshCall"
+```
 
-The checked-in TypeScript client is generated from the Python service:
+## Regenerate the clients
+
+The checked-in clients are generated from the Python service; do not edit
+`ts-client/src/client.ts`, `ts-client/src/models.ts` or
+`go-client/llmclient/client.go` by hand. `src/cli.ts`, `src/index.ts` and
+`go-client/main.go` are the handwritten application layer.
 
 ```bash
 cd best-practice
@@ -83,7 +125,9 @@ uv run --locked --reinstall-package meshcall meshcall generate \
   --runtime-version file:../../meshcall-ts \
   --package-name meshcall-best-practice-client \
   --output ts-client
+uv run --locked --reinstall-package meshcall meshcall generate \
+  best_practice.service:LlmService \
+  --language go --package-name llmclient --output go-client/llmclient
 ```
 
-Do not edit `ts-client/src/client.ts` or `ts-client/src/models.ts` manually;
-`ts-client/src/cli.ts` is the intentionally handwritten application layer.
+`scripts/regenerate.sh best-practice` does both and is checked by CI.

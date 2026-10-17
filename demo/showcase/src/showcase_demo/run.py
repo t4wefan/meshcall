@@ -1,12 +1,11 @@
-"""Run the complete MeshCall showcase without a separately managed server."""
+"""Run the complete MeshCall showcase against an embedded Router."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
 
-from meshcall import RpcServer
-from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
+from meshcall import Router, serve
 from showcase_demo.generated_client import (
     NumberItem,
     ShowcaseServiceClient,
@@ -21,44 +20,45 @@ async def number_items() -> AsyncIterator[NumberItem]:
 
 
 async def run_demo() -> None:
-    """Start a short-lived local server and exercise the recommended API."""
-    server_driver = WebSocketDirectServerDriver(host="127.0.0.1", port=0)
-    server = RpcServer(
-        services=[ShowcaseService(greeting_prefix="Hi")],
-        driver=server_driver,
-    )
-    await server.start()
-
-    client = ShowcaseServiceClient(
-        WebSocketClientDriver(
-            f"ws://127.0.0.1:{server_driver.bound_port}"
+    """Serve the service, then call it with one generated client."""
+    async with serve(
+        ShowcaseService(greeting_prefix="Hi"),
+        router=Router("ws://127.0.0.1:0"),
+        access_log=False,
+    ) as server:
+        router = await Router.connect(server.url)
+        client = (await ShowcaseServiceClient.connect(router)).with_options(
+            metadata={"x-caller-id": "showcase"},
+            timeout=10,
         )
-    )
-    try:
-        print("1. default unary with expanded parameters")
-        greeting = await client.greet("MeshCall", repeat=2)
-        print(f"   {greeting.message}")
+        try:
+            print("0. Router registry")
+            services = await router.list_services()
+            print(f"   services={[service.name for service in services]}")
 
-        print("2. unary with a request object")
-        welcome = await client.welcome(
-            WelcomeRequest(name="Python", tags=["typed", "easy"])
-        )
-        print(f"   {welcome.message} tags={welcome.tags}")
+            print("1. query with expanded parameters")
+            greeting = await client.greet("MeshCall", repeat=2)
+            print(f"   {greeting.message}")
 
-        print("3. server stream")
-        values = [item.value async for item in client.count(3, 7)]
-        print(f"   received={values}")
+            print("2. query with a request object")
+            welcome = await client.welcome(
+                WelcomeRequest(name="Python", tags=["typed", "easy"])
+            )
+            print(f"   {welcome.message} tags={welcome.tags}")
 
-        print("4. client stream")
-        total = await client.sum_values(10, number_items())
-        print(f"   total={total.total}")
+            print("3. mutating call with metadata injection")
+            visit = await client.visit("MeshCall")
+            print(f"   visits={visit.visits} caller={visit.caller}")
 
-        print("5. generated client models and signatures")
-        print("   all request/response payloads were validated by Pydantic")
-        print("   all four methods came from the generated client module")
-    finally:
-        await client.stop()
-        await server.stop()
+            print("4. server stream")
+            values = [item.value async for item in client.count(3, 7)]
+            print(f"   received={values}")
+
+            print("5. client stream")
+            total = await client.sum_values(10, number_items())
+            print(f"   total={total.total}")
+        finally:
+            await router.close()
 
 
 def main() -> None:

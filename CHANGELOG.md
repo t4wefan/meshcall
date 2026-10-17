@@ -10,8 +10,44 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **One-line services and Router-first startup** (#53, #54). `meshcall.run(...)`,
+  `await meshcall.serve(...)` (Python), `serve(...)` / `run(...)` (TypeScript)
+  and `meshcall.Serve(...)` / `meshcall.Run(...)` (Go) resolve the Router from
+  `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), start a bundled Router
+  when the address is local and nothing listens there, register the services,
+  and drain on `SIGINT` / `SIGTERM`. Generated clients connect with
+  `Client.connect(...)` (Python `await Client.connect(router_or_url)`,
+  TypeScript `await Client.connect(rpc)`, Go `NewClient(router)`).
+- **A unified `Router` object**: pass it to `serve`/`run` for configuration,
+  connect once and share the connection across several generated clients, and
+  call the built-in services directly: `list_services`, `describe_service`,
+  `whoami`, `issue_token`, `revoke_token`.
+- **Method shorthands and dependency injection** (#53). `@query`, `@mutates`
+  and `@stream` (Python/TypeScript) and `Query`, `Mutates`, `StreamServer`,
+  `StreamClient` (Go) declare the four call shapes with less ceremony.
+  Dependencies (`@dependency` / `dependency()` / `Provide`) and metadata
+  parameters (`meta("key")` / `FromMeta`) are resolved per call, cached within
+  the call, cleaned up through `yield`, and stripped from contracts and
+  generated clients; a provider that yields runs its cleanup when the call
+  ends (commit on success, rollback on error or cancellation).
+- **1:1 generated signatures**: generated clients take the same business
+  parameters as the server handler, in the same order (client streams put the
+  stream last); per-call options move to `.with_options(...)` /
+  `.withOptions(...)` / `.WithOptions(...)`. TypeScript services can declare
+  parameters inline (`input: { session_id: z.string() }`) and Go services can
+  be defined by struct reflection.
+- `best-practice/` now shows a transactional session-store dependency, a
+  TypeScript CLI and a Go client over one Router.
+
 ### Changed
 
+- **Generated clients take options only through `with_options`** (#55).
+  Python generated methods no longer end with `timeout` / `idle_timeout` /
+  `metadata` / `idempotency_key` keywords (a targeted service's client still
+  requires `instance`, so naming an instance stays a compile-time rule).
+  TypeScript generated clients gained `static async connect(rpc)`.
 - **TypeScript services are classes with zod schemas** (#49), like Python's
   `@service` classes with Pydantic models. `defineService`, `defineType` and
   the `unaryMethod` / `serverStreamMethod` / `clientStreamMethod` /

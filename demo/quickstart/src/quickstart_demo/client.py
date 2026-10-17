@@ -1,18 +1,16 @@
+"""Call the quickstart service through the Router."""
+
 from __future__ import annotations
 
 import asyncio
 
-from meshcall.drivers import WebSocketClientDriver
 from quickstart_demo.generated_client import CounterServiceClient
 
 
 async def main() -> None:
-    client = CounterServiceClient(
-        WebSocketClientDriver("ws://127.0.0.1:8765")
-    )
-    async with client:
-        stream = client.with_options(timeout=5).count(10)
-        async for item in stream:
+    # connect() resolves the Router like run() does; no driver is built by hand.
+    async with CounterServiceClient.connect() as client:
+        async for item in client.count(10):
             print(item.value)
 
 

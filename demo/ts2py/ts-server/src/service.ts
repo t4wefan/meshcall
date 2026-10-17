@@ -1,4 +1,4 @@
-import { method, service, z, type RpcContext } from "meshcall";
+import { mutates, query, service, stream, z, type RpcContext } from "meshcall";
 
 const GreetingRequest = z.object({
   name: z.string(),
@@ -19,9 +19,9 @@ const SumResult = z.object({ total: z.int() }).meta({ id: "SumResult" });
   description: "A TypeScript service consumed by the generated Python client.",
 })
 export class TypeScriptGreetingService {
-  @method.serverStream({
+  @stream({
     description: "Stream the integers from 0 up to, but not including, count.",
-    readOnly: true, request: CountRequest, outputItem: NumberItem,
+    request: CountRequest, outputItem: NumberItem,
   })
   async *count({ count }: z.infer<typeof CountRequest>, { signal }: RpcContext) {
     for (let value = 0; value < count; value += 1) {
@@ -30,7 +30,7 @@ export class TypeScriptGreetingService {
     }
   }
 
-  @method.clientStream({
+  @mutates({
     description: "Add every streamed value to offset and return the total.",
     idempotent: true, request: SumRequest, inputItem: NumberItem, response: SumResult,
   })
@@ -41,9 +41,9 @@ export class TypeScriptGreetingService {
     return { total };
   }
 
-  @method({
+  @query({
     description: "Greet name repeat times and say which runtime answered.",
-    readOnly: true, request: GreetingRequest, response: GreetingResult,
+    request: GreetingRequest, response: GreetingResult,
   })
   async greet({ name, repeat }: z.infer<typeof GreetingRequest>) {
     return {

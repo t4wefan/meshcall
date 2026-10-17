@@ -34,6 +34,15 @@ class WelcomeResult(BaseModel):
     tags: list[str]
 
 
+class ShowcaseServiceVisitRequest(BaseModel):
+    name: str
+
+
+class VisitResult(BaseModel):
+    visits: int
+    caller: str
+
+
 class ShowcaseServiceCountRequest(BaseModel):
     start: int
     stop: int
@@ -65,7 +74,10 @@ class ShowcaseServiceClient(ClientBase):
         name: str,
         repeat: int = 1,
     ) -> GreetingResult:
-        """Parameters are the request: ``name`` and ``repeat`` are its fields."""
+        """Parameters are the request: ``name`` and ``repeat`` are its fields.
+
+        ``@query`` marks a pure read (read-only and idempotent).
+        """
         request = ShowcaseServiceGreetRequest(
             name=name,
             repeat=repeat,
@@ -82,7 +94,7 @@ class ShowcaseServiceClient(ClientBase):
         self,
         profile: WelcomeRequest,
     ) -> WelcomeResult:
-        """A model-typed parameter is just one field of the request."""
+        """A model-typed parameter is one field of the request, kept whole."""
         request = ShowcaseServiceWelcomeRequest(
             profile=profile,
         )
@@ -92,6 +104,21 @@ class ShowcaseServiceClient(ClientBase):
             request,
             WelcomeResult,
             idempotent=True,
+        )
+
+    async def visit(
+        self,
+        name: str,
+    ) -> VisitResult:
+        """Record a visit; ``caller`` is injected from call metadata, not sent by the client."""
+        request = ShowcaseServiceVisitRequest(
+            name=name,
+        )
+        return await self.call_unary(
+            self.service_name,
+            "visit",
+            request,
+            VisitResult,
         )
 
     def count(
@@ -117,7 +144,7 @@ class ShowcaseServiceClient(ClientBase):
         offset: int,
         items: AsyncIterable[NumberItem],
     ) -> TotalResult:
-        """Client stream: the service consumes a typed inbound stream."""
+        """Client stream: ordinary parameters first, the inbound stream last."""
         request = ShowcaseServiceSumValuesRequest(
             offset=offset,
         )

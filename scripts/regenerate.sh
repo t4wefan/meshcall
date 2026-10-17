@@ -78,6 +78,14 @@ ts_package() { # ts_package <target> <dir> <module:Class> <package-name> <runtim
 ts_package py2ts demo/py2ts py2ts_demo.service:PythonGreetingService meshcall-demo-py2ts-client file:../../../meshcall-ts ts-client
 ts_package best-practice best-practice best_practice.service:LlmService meshcall-best-practice-client file:../../meshcall-ts ts-client
 
+# --- Go client generated from the best-practice Python service --------------
+if wanted best-practice; then
+  mkdir -p "$SCRATCH/best-practice-go"
+  py best-practice meshcall generate best_practice.service:LlmService --language go \
+    --package-name llmclient --output "$SCRATCH/best-practice-go/llmclient"
+  compare "$SCRATCH/best-practice-go/llmclient/client.go" best-practice/go-client/llmclient/client.go
+fi
+
 # --- Python package generated from a TypeScript service's contract ----------
 if wanted ts2py; then
 (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s build) >/dev/null

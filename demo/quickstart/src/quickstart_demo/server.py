@@ -1,23 +1,17 @@
+"""Serve the quickstart service through a Router until interrupted."""
+
 from __future__ import annotations
 
-import asyncio
-
-from meshcall import RpcServer
-from meshcall.drivers import WebSocketDirectServerDriver
+from meshcall import run
 from quickstart_demo.service import CounterService
 
 
-async def main() -> None:
-    server = RpcServer(
-        services=[CounterService],
-        driver=WebSocketDirectServerDriver(host="127.0.0.1", port=8765),
-    )
-    await server.start()
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await server.stop()
+def main() -> None:
+    # run() resolves MESHCALL_ROUTER_URL (default ws://127.0.0.1:8765), starts a
+    # bundled Router when the address is local and nothing listens, and drains
+    # on SIGINT/SIGTERM.
+    run(CounterService())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

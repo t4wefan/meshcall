@@ -768,24 +768,24 @@ func runClient(ctx context.Context) error {
 - [x] **Experimental 边界整理**：将 `subscription` 与 `Topic` 标记为实验特性（Experimental），从核心推荐路径与默认主推导出中降级。
 
 ### Phase 2: 服务端签名统一与样板消除
-- [ ] **Client Stream / Duplex 参数顺序统一**：三端统一支持“普通业务参数在前，流（`chunks`）或双向通道（`channel`）在最后”。
-- [ ] **TypeScript 装饰器减负**：提供 `@mutates` / `@query` / `@stream` 简洁装饰器与内联 `input: { ... }` / `output: ...` 定义，免除重复手写参数 TS 类型标注与 `.meta({ id })`。
-- [ ] **Go 结构体反射服务定义**：支持直接传入结构体实例（如 `NewWorkspace()`）通过反射提取方法、参数与返回值，支持 `iter.Seq2[T, error]` 服务端流与客户端流，免除手工组装 `Method{}` / `Param{}` 注册表。
+- [x] **Client Stream / Duplex 参数顺序统一**：三端统一支持“普通业务参数在前，流（`chunks`）或双向通道（`channel`）在最后”。
+- [x] **TypeScript 装饰器减负**：提供 `@mutates` / `@query` / `@stream` 简洁装饰器与内联 `input: { ... }` / `output: ...` 定义，免除重复手写参数 TS 类型标注与 `.meta({ id })`。
+- [x] **Go 结构体反射服务定义**：支持直接传入结构体实例（如 `NewWorkspace()`）通过反射提取方法、参数与返回值，支持 `iter.Seq2[T, error]` 服务端流与客户端流，免除手工组装 `Method{}` / `Param{}` 注册表。
 
 ### Phase 3: 依赖注入 (DI) 与 `meta` 逃生舱
-- [ ] **Python DI**：实现 `@dependency`、`_provider()`、`meta("...")`、`DependencyScope`（请求级缓存 + `yield` 生命周期清理 + 注册期静态循环依赖检测），并在契约导出时自动剔除 DI 参数。
-- [ ] **TypeScript DI**：实现 `dependency(...)`、`meta("...")` 与方法装饰器 `inject: [...]` 注入计划及契约剥离。
-- [ ] **Go DI**：实现 `meshcall.Dependency(...)`、`meshcall.Meta[T]("...")`、`meshcall.WithDependencies(...)` 类型注入与契约剥离。
+- [x] **Python DI**：实现 `@dependency`、`_provider()`、`meta("...")`、`DependencyScope`（请求级缓存 + `yield` 生命周期清理 + 注册期静态循环依赖检测），并在契约导出时自动剔除 DI 参数。
+- [x] **TypeScript DI**：实现 `dependency(...)`、`meta("...")` 与方法装饰器 `inject: [...]` 注入计划及契约剥离。
+- [x] **Go DI**：实现 `meshcall.Dependency(...)`、`meshcall.Meta[T]("...")`、`meshcall.WithDependencies(...)` 类型注入与契约剥离。
 
 ### Phase 4: 客户端 `.with_options` 与 Codegen 全面对齐
-- [ ] **三端 Client Runtime**：新增 `.with_options(...)`（Python）、`.withOptions(...)`（TS）、`.WithOptions(...)`（Go）链式调用选项；支持 `GeneratedClient(router)` 复用 `Router` 连接与 `GeneratedClient.connect(...)` 极简连接；TS Server Stream 支持直接 `for await`，Client/Duplex 支持 `await using`；Go Stream 支持返回 `iter.Seq2[T, error]` 直接 `for range`。
-- [ ] **Go CLI Codegen (`meshcall-router/internal/codegen`)**：
-  - 生成 `GeneratedClient.connect(...)` / `Connect(ctx, ...)` 静态入口与接收 `Router` 的构造函数。
-  - 三端（含 Go）统一按 `parameters` 生成与服务端 1:1 镜像的纯业务参数签名（不暴露合成的 `<Service><Method>Request` 结构体，移除尾随 `timeout`、`metadata` 等杂项参数；Client Stream / Duplex 普通参数在前、流在后）。
-  - 支持 `--naming preserve|idiomatic` 跨语言惯用命名转换。
-  - 更新 `internal/codegen/testdata/*` 黄金测试文件。
+- [x] **三端 Client Runtime**：新增 `.with_options(...)`（Python）、`.withOptions(...)`（TS）、`.WithOptions(...)`（Go）链式调用选项；支持 `GeneratedClient(router)` 复用 `Router` 连接与 `GeneratedClient.connect(...)` 极简连接；TS Server Stream 支持直接 `for await`，Client/Duplex 支持 `await using`；Go Stream 支持返回 `iter.Seq2[T, error]` 直接 `for range`。
+- [x] **Go CLI Codegen (`meshcall-router/internal/codegen`)**：
+  - [x] 生成 `GeneratedClient.connect(...)` / `Connect(ctx, ...)` 静态入口与接收 `Router` 的构造函数。
+  - [x] 三端（含 Go）统一按 `parameters` 生成与服务端 1:1 镜像的纯业务参数签名（不暴露合成的 `<Service><Method>Request` 结构体，移除尾随 `timeout`、`metadata` 等杂项参数；Client Stream / Duplex 普通参数在前、流在后）。
+  - [ ] 支持 `--naming preserve|idiomatic` 跨语言惯用命名转换（尚未实现）。
+  - [x] 更新 `internal/codegen/testdata/*` 黄金测试文件。
 
 ### Phase 5: Demo、文档与 Agent Skill 刷新
-- [ ] 使用新接口重写 `demo/*` 与 `best-practice/*`，执行 `scripts/regenerate.sh`。
-- [ ] 更新 `README.md`、`README.zh-CN.md`、`docs/guide.md`、`docs/architecture.md`、`skills/meshcall/SKILL.md` 及 `CHANGELOG.md`。
-- [ ] 全量通过 `scripts/check.sh`（`go`、`py`、`ts`、`demos`、`drift`、`conformance`）。
+- [x] 使用新接口重写 `demo/*` 与 `best-practice/*`，执行 `scripts/regenerate.sh`。
+- [x] 更新 `README.md`、`README.zh-CN.md`、`docs/guide.md`、`docs/architecture.md`、`skills/meshcall/SKILL.md` 及 `CHANGELOG.md`。
+- [x] 全量通过 `scripts/check.sh`（`go`、`py`、`ts`、`demos`、`drift`、`conformance`）。

@@ -7,11 +7,14 @@ with:
 uv run demo
 ```
 
-The command starts a short-lived direct WebSocket server, calls it through the
-generated client, prints the typed stream, and shuts everything down. To see
-the two-process form instead:
+The command starts the service with an embedded Router (`meshcall.serve`),
+calls it through the generated client, prints the typed stream, and shuts
+everything down. The two-process form is:
 
 ```bash
-uv run python -m quickstart_demo.server
-uv run python -m quickstart_demo.client
+uv run python -m quickstart_demo.server   # meshcall.run(CounterService())
+uv run python -m quickstart_demo.client   # CounterServiceClient.connect()
 ```
+
+Both resolve `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`); the first
+one starts a bundled Router if the address is local and nothing listens there.

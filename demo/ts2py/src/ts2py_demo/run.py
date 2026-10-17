@@ -9,8 +9,6 @@ from pathlib import Path
 
 from meshcall_demo_ts2py_client import TypeScriptGreetingServiceClient
 
-from meshcall.drivers import WebSocketClientDriver
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = PROJECT_ROOT.parents[1]
 TYPESCRIPT_RUNTIME_ROOT = REPOSITORY_ROOT / "meshcall-ts"
@@ -36,10 +34,8 @@ async def run_demo() -> None:
     )
     await _run_process("yarn", "run", "build", cwd=TYPESCRIPT_SERVER_ROOT)
 
-    process, port = await _start_typescript_server()
-    client = TypeScriptGreetingServiceClient(
-        WebSocketClientDriver(f"ws://127.0.0.1:{port}")
-    )
+    process, url = await _start_typescript_server()
+    client = await TypeScriptGreetingServiceClient.connect(url)
     try:
         async with client:
             response = await client.greet("Python", 2)
@@ -70,7 +66,7 @@ def _require_node_tools() -> None:
         raise RuntimeError(f"ts2py demo requires these executables: {joined}")
 
 
-async def _start_typescript_server() -> tuple[asyncio.subprocess.Process, int]:
+async def _start_typescript_server() -> tuple[asyncio.subprocess.Process, str]:
     process = await asyncio.create_subprocess_exec(
         "node",
         "dist/server.js",
@@ -85,7 +81,7 @@ async def _start_typescript_server() -> tuple[asyncio.subprocess.Process, int]:
         raise RuntimeError(await _process_failure(process))
     try:
         ready = json.loads(ready_line)
-        return process, int(ready["port"])
+        return process, str(ready["url"])
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(f"Invalid TypeScript server readiness: {ready_line!r}") from exc
 

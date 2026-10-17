@@ -8,38 +8,19 @@ cross-language round trip with:
 uv run demo
 ```
 
-The command builds the local TypeScript runtime and service, starts the
-TypeScript server, calls it from Python with the generated Pydantic client,
-and shuts the server down. It demonstrates unary `greet`, server-streaming
-`count`, and client-streaming `sum`. The streaming calls exchange 40 items,
-exceeding the initial credit window. The Python subprocess orchestration uses asyncio
-subprocess APIs and does not block the event loop.
-
-TypeScript method contracts validate payloads at runtime. The same service can
-register with the shared Go Router by configuring
-`router: { endpoint: "ws://127.0.0.1:8765", instanceId: "greeting-ts-1" }` on
-`MeshCallServer`; see [Router architecture](../../docs/router.md).
+The command builds the local TypeScript runtime and service, starts it with
+`serve(...)` (which starts a bundled Router and registers there), calls it from
+Python through the generated client's `connect`, and shuts the server down. It
+demonstrates unary `greet`, server-streaming `count`, and client-streaming
+`sum`. The streaming calls exchange 40 items, exceeding the initial credit
+window.
 
 The portable contract is in `ts-server/service.meshcall.json`. The generated
 Python uv client package is in `py-client/`. To regenerate it after changing
 the TypeScript service:
 
 ```bash
-cd ts-server
-yarn run export-contract
-cd ..
-uv run meshcall generate \
-  ts-server/service.meshcall.json \
-  --language python \
-  --package-name meshcall-demo-ts2py-client \
-  --output py-client
-```
-
-For this repository-local copy, keep the following override in the generated
-`py-client/pyproject.toml`, and format generated imports with the Python project's
-Ruff configuration before committing:
-
-```toml
-[tool.uv.sources]
-meshcall = { path = "../../../meshcall-py" }
+cd ts-server && yarn run export-contract
+uv run meshcall generate ts-server/service.meshcall.json --language python \
+  --package-name meshcall-demo-ts2py-client --output py-client
 ```

@@ -22,7 +22,117 @@ Request, response and item types are structs; their JSON Schema (the
 contract other languages generate clients from) comes from the struct
 fields: `json` tags name properties, a field is required unless it is a
 pointer or `omitempty`, and `doc:"…"`, `enum:"a,b"`, `default:"<json>"` tags
-add a description, an enumeration and a default.
+add a description, an enumeration and a default. The server validates
+requests against that schema before the handler runs; clients validate what
+they receive.
+
+The recommended service is a struct embedding `meshcall.ServiceMeta`: the
+runtime reflects its exported methods, derives the contract from their
+parameters and return types, and injects dependencies, so there is no
+registration boilerplate.
+
+```go
+type Database struct{}
+
+func (db *Database) Save(path, content string) int { return len(content) }
+
+type CallerID string
+
+var (
+	dbDep = meshcall.Dependency(func(ctx context.Context) (*Database, error) {
+		return &Database{}, nil
+	})
+	callerDep = meshcall.Meta[CallerID]("x-user-id", meshcall.WithMetaRequired())
+)
+
+type FileStat struct {
+	Path string `json:"path"`
+	Size int    `json:"size"`
+}
+
+type Workspace struct {
+	meshcall.ServiceMeta `name:"workspace.v1" description:"Remote workspace."`
+}
+
+// Write a file and return its new stat.
+func (w *Workspace) WriteFile(ctx context.Context, path, content string, db *Database, caller CallerID) (FileStat, error) {
+	return FileStat{Path: path, Size: db.Save(path, content)}, nil
+}
+
+// Stream a file's lines.
+func (w *Workspace) TailFile(ctx context.Context, path string, lines int) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) { /* … */ }
+}
+```
+
+The first parameter after the receiver must be `context.Context` or
+`*meshcall.Context`; the Go method name becomes the RPC name in snake_case.
+Ordinary parameters become request properties in declaration order, keeping
+the Go parameter names on the wire, and pointer parameters are optional.
+The return shape picks the method kind: `(Resp, error)` or `Resp` is unary,
+`iter.Seq2[T, error]` is a server stream, a trailing `iter.Seq2[T, error]`
+parameter is a client stream, and a trailing
+`*meshcall.DuplexChannel[In, Out]` parameter (returning `error`) is duplex.
+The doc comment becomes the method description; a line `@idempotent`,
+`@readonly` or `@destructive` in it sets the annotation, and
+`WithMethodOptions` attaches options programmatically. The `ServiceMeta`
+tags also accept `targeted:"true"`,
+`balance:"round_robin|least_inflight|random|disabled|sticky:<field>"` and
+`module:"…"`; a `name` without a version segment gets `.v0`.
+
+Any parameter whose type is registered with `WithDependencies` is injected
+per call and stripped from the contract. `Dependency` providers may take
+`context.Context` or `*meshcall.Context` plus other dependencies, and return
+`T`, `(T, error)` or `(T, cleanup, error)` where `cleanup` is `func()` or
+`func() error`; each type is built once per call and its cleanup runs when
+the call ends. `Meta[T]("header")` injects a
+metadata header — define a distinct type per header, such as `type CallerID
+string`. A missing `WithMetaRequired()` header fails with `invalid_argument`
+before any other dependency is acquired; `WithMetaDefault(v)` supplies a
+fallback. Circular dependencies fail at registration.
+
+Start the service with `meshcall.Run`, which blocks until SIGINT or SIGTERM
+and then drains in-flight calls:
+
+```go
+err := meshcall.Run(
+	&Workspace{},
+	meshcall.WithDependencies(dbDep, callerDep),
+	meshcall.WithRouterURLs("ws://127.0.0.1:8765"),
+)
+```
+
+Or keep a handle with `meshcall.Serve`; `Close` drains in-flight calls
+(bounded by `WithDrainTimeout`, default 10s) and stops any Router it started:
+
+```go
+running, err := meshcall.Serve(ctx,
+	&Workspace{},
+	meshcall.WithDependencies(dbDep, callerDep),
+	meshcall.WithInstanceID("workspace-1"),
+	meshcall.WithStrict(true),
+)
+defer running.Close()
+```
+
+Both accept `*Service`, `[]*Service`, `ServiceMeta` structs (or pointers),
+`*Router`, `ServeOption` and `RouterOption` values; `ctx` in `Serve` bounds
+startup (spawning and connecting), and the returned handle owns the
+lifecycle. `meshcall.ReflectService` (and panicking `MustReflectService`)
+produce the same `*Service` from a struct when you need to pass it to
+`NewServer` or `WriteContract` directly. With no endpoint configured the
+endpoint is `MESHCALL_ROUTER_URL`, else `ws://127.0.0.1:8765`. When that
+single endpoint is local and nothing is listening, a local
+`meshcall-router` is started automatically, found through
+`WithRouterBinary`, `MESHCALL_ROUTER_BINARY`, the repository's
+`meshcall-router/bin`, or `PATH`; `WithSpawnIfLocal(false)` disables this,
+and `WithDirectListen("127.0.0.1:9000")` serves clients directly without a
+Router. `WithInstanceID`, `WithMaxInflight`, `WithAccessLog`,
+`WithServerInterceptors`, `WithServerLogger` and `WithStrict` configure the
+server instance.
+
+Services built by hand are still first-class — use this form when methods
+are registered dynamically or need subscription cursors:
 
 ```go
 type SendRequest struct {
@@ -59,46 +169,87 @@ any other error becomes a sanitised `internal`, and a panic is recovered and
 logged. `ctx` is a `context.Context` that ends with the call's deadline or
 cancellation, and carries metadata, the idempotency key, trailers
 (`ctx.SetTrailer`) and a call-scoped `slog` logger. Contract warnings
-(W001–W006) are logged at start and fail `NewServer` with `Strict: true` or
-`MESHCALL_STRICT=1`. `meshcall.WriteContract(path, chat)` writes the
-contract document for `meshcall generate`.
+(W001–W006) are logged at start and fail startup with `WithStrict(true)`,
+`Strict: true` or `MESHCALL_STRICT=1`. `meshcall.WriteContract(path, chat)`
+writes the contract document for `meshcall generate`.
 
 ## A client
 
 Generate a typed client from any service's contract — written in Python,
-TypeScript or Go:
+TypeScript or Go. For Go, `meshcall generate` writes a single `client.go`:
 
 ```bash
 meshcall generate chat.meshcall.json --language go --package-name chatclient --output internal/chatclient
 ```
 
+The file holds every payload type and a typed client whose methods mirror
+the contract's business parameters one for one — injected dependencies and
+metadata never appear — plus `opts ...meshcall.CallOption`. Construct it
+from a `*meshcall.Router` or a `*meshcall.Client` (both are
+`meshcall.Caller`); `WithOptions` returns a copy that applies default call
+options to every call:
+
 ```go
-rpc, err := meshcall.NewClient(meshcall.ClientOptions{}, "ws://127.0.0.1:8765")
-chat := chatclient.NewChatClient(rpc)
-reply, err := chat.Send(ctx, chatclient.ChatSendRequest{SessionID: "s1", Text: "hi"}, meshcall.WithTimeout(5*time.Second))
+router, err := meshcall.ConnectRouter(ctx,
+	meshcall.WithRouterURLs("ws://127.0.0.1:8765"),
+	meshcall.WithAuth(meshcall.BearerToken("mk_…")),
+)
+defer router.Close()
+
+workspace := workspaceclient.NewWorkspaceClient(router).WithOptions(meshcall.CallOptions{
+	Metadata: map[string]string{"x-user-id": "u_42"},
+	Timeout:  5 * time.Second,
+})
+stat, err := workspace.WriteFile(ctx, "/notes.txt", "hello")
 ```
 
+A `Router` multiplexes every generated client over one connection and is a
+`meshcall.Caller`, so pass it wherever a client is expected. It also exposes
+the Router's built-in services: `ListServices` and `DescribeService`
+(`meshcall.router.v1.Registry/list` and `/describe`), and `Whoami`,
+`IssueToken` and `RevokeToken` (`meshcall.router.v1.AuthService/whoami`,
+`/issue_token` and `/revoke_token`). `NewRouter(opts...)` builds a lazy
+Router from `RouterOption`s (`WithRouterURLs`, `WithUnixSocket`,
+`WithPipe`, `WithAuth`, `WithPing`, `WithReconnect`, `WithRetry`,
+`WithMaxFrameSize`, …); it does no I/O until the first call.
+`ConnectRouter` connects eagerly and, like `Serve`, can start a local
+Router.
+
 Without generation, the typed helpers are `meshcall.Unary`,
-`ServerStream`, `ClientStream`, `Duplex` and `Subscribe`. Clients connect
-lazily, reconnect with backoff, fail over between several endpoints, retry
-unary calls that are idempotent (or carry `WithIdempotencyKey`) on
-retryable errors, validate what they receive against their own types, and
-take call options `WithTimeout`, `WithIdleTimeout`, `WithMetadata` and
-`WithInstance` (required for targeted services). Streams are read with
-`Recv()` (`io.EOF` at the end) or `for item, err := range stream.All()`.
+`ServerStream`, `ClientStream`, `Duplex` and `Subscribe` (plus
+`ServerStreamSeq`, `ClientStreamSeq`, `SliceSeq` and `SliceItems` for
+iterators); they take a `*meshcall.Client`, which a Router hands out with
+`router.Client()`. Clients connect lazily, reconnect with backoff, fail
+over between several endpoints, retry unary calls that are idempotent (or
+carry `WithIdempotencyKey`) on retryable errors, validate what they receive
+against their own types, and take call options `WithTimeout`,
+`WithIdleTimeout`, `WithMetadata`, `WithInstance` (required for targeted
+services) and `IdempotentCall`. Generated clients for targeted services
+take the instance ID as their second parameter and add `WithInstance` for
+you; generated unary methods declared idempotent retry by default. Streams
+are read with `Recv()` (`io.EOF` at the end) or
+`for item, err := range stream.All()`.
 
 ## Credentials, interceptors and draining
 
-`ClientOptions.Authorization` and `ServerOptions.Authorization` are sent
-with the WebSocket upgrade (`"Basic …"` or `"Bearer mk_…"`; see
-[Router authentication](../docs/router.md)). `ClientOptions.Interceptors`
-(`[]meshcall.ClientInterceptor`) and `ServerOptions.Interceptors`
-(`[]meshcall.ServerInterceptor`) wrap every call, the first one outermost;
-call metadata carries what they add, such as a W3C `traceparent`.
+`WithAuth(BearerToken(…))` and `WithAuth(BasicAuth(…))` set the Router
+credential on `NewRouter`, `ConnectRouter`, `Serve` and `Run`;
+`ClientOptions.Authorization` and `ServerOptions.Authorization` do the same
+for hand-built clients and servers. The value is sent with the WebSocket
+upgrade (see [Router authentication](../docs/router.md)).
 
-For a rolling restart call `server.Drain(ctx)`: in Router mode the instance
-leaves every pool, in direct mode the listener closes, and it waits for the
-calls in flight to finish or `ctx` to end. Call `server.Close()` afterwards.
+`WithClientInterceptors` and `WithServerInterceptors` attach interceptors to
+a Router and to a `Serve`/`Run` configuration respectively;
+`ClientOptions.Interceptors` (`[]meshcall.ClientInterceptor`) and
+`ServerOptions.Interceptors` (`[]meshcall.ServerInterceptor`) do the same on
+hand-built values. They wrap every call, the first one outermost; call
+metadata carries what they add, such as a W3C `traceparent`.
+
+`RunningServer.Close` (and therefore `Run` on SIGINT/SIGTERM) drains first:
+in Router mode the instance leaves every pool, in direct mode the listener
+closes, and it waits for the calls in flight to finish or
+`WithDrainTimeout` to end. With a hand-built server, call `server.Drain(ctx)`
+for a rolling restart and `server.Close()` afterwards.
 
 ## Documentation
 

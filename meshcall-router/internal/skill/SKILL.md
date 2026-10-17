@@ -125,7 +125,7 @@ class Chat:
         async for item in items: ...
         return Message(text="ok")
 
-    @stream(reason="Interactive voice/chat turn")
+    @mutates(reason="Interactive voice/chat turn")
     async def talk(self, session_id: str, channel: DuplexChannel[Message, Message]) -> None:
         """Duplex stream (`DuplexChannel[In, Out]` parameter, returns `None`)."""
         async for msg in channel:
@@ -141,17 +141,20 @@ TypeScript (`@query`, `@stream`, `@mutates`, `dependency`, `meta`, `serve`, `Rou
 import { dependency, meta, mutates, query, Router, serve, service, stream, z, type DuplexChannel } from "meshcall";
 
 const Message = z.object({ text: z.string() }).meta({ id: "Message" });
-const Send = z.object({ session_id: z.string(), text: z.string() });
 
 const currentUser = dependency(
-  { authorization: meta("authorization") },
-  async ({ authorization }) => (authorization ?? "").replace(/^Bearer\s+/, ""),
+  (authorization: string) => authorization.replace(/^Bearer\s+/, ""),
+  { inject: [meta("authorization", { default: "" })] },
 );
 
 @service("chat.v1.Chat", { description: "Chat sessions." })
 export class Chat {
-  @query({ description: "Append a message and return the reply.", request: Send, response: Message, inject: { user: currentUser } })
-  async send(session_id: string, text: string, { user }: { user: string }) {
+  @mutates({
+    description: "Append a message from the caller.", idempotent: true,
+    input: { session_id: z.string(), text: z.string() }, response: Message,
+    inject: [currentUser],
+  })
+  async send(session_id: string, text: string, user: string) {
     return { text: `${user}: ${text}` };
   }
 }
@@ -159,12 +162,12 @@ export class Chat {
 await serve(new Chat(), { router: new Router("ws://127.0.0.1:8765") });
 ```
 
-Go (`github.com/t4wefan/meshcall/meshcall-go`; `Query`, `Mutates`, `StreamServer`,
-`StreamClient`, `StreamDuplex`, `Provide`, `FromMeta`, `Serve`, `NewRouter`):
+Go (`github.com/t4wefan/meshcall/meshcall-go`; `HandleUnary` and friends,
+`Dependency`, `Meta[T]`, `WithDependencies`, `Serve`, `NewRouter`):
 
 ```go
 chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
-meshcall.Mutates(chat, "send", func(ctx *meshcall.Context, req SendRequest) (Message, error) {
+meshcall.HandleUnary(chat, "send", func(ctx *meshcall.Context, req SendRequest) (Message, error) {
 	return Message{Text: "echo " + req.Text}, nil
 }, meshcall.Doc("Append a message and return the reply."), meshcall.Idempotent())
 
@@ -210,17 +213,17 @@ are configured via `.with_options(...)` / `.withOptions(...)` / `.WithOptions(..
 business method signatures stay 100% identical to the server handler:
 
 ```python
-router = Router("ws://127.0.0.1:8765", auth_token="...")
+router = Router("ws://127.0.0.1:8765", auth=RouterCredentials.bearer("..."))
 async with router:
     services = await router.list_services()
-    chat = ChatClient.connect(router)
+    chat = await ChatClient.connect(router)
     reply = await chat.with_options(timeout=5.0, idempotency_key="k1").send("s1", "hello")
 ```
 
 TypeScript:
 ```typescript
 const router = new Router("ws://127.0.0.1:8765", { token: "..." });
-const chat = ChatClient.connect(router);
+const chat = await ChatClient.connect(router);
 const reply = await chat.withOptions({ timeoutMs: 5000, idempotencyKey: "k1" }).send("s1", "hello");
 ```
 

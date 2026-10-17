@@ -4,24 +4,31 @@
 
 This guide is designed for both **human engineers** and **AI coding agents**. Each section explains **when and why** to use a MeshCall capability, followed by complete, copy-pasteable recipes in **Python** and **TypeScript**, and in **Go** (`meshcall-go`) where the Go runtime differs.
 
+The examples use the v0.3 API: services are written with `@query` / `@mutates` / `@stream`, servers start with `run` / `serve`, and clients connect through `Router` and generated `.connect(...)` / `.with_options(...)` methods. Subscriptions and `Topic` remain available but are **experimental** in v0.3 and stay out of the main teaching flow.
+
 ---
 
 ## Table of Contents
 
 1. [Router-First Architecture: Why Every Node Connects Through the Router](#1-router-first-architecture-why-every-node-connects-through-the-router)
+   - [The Router Object: One Handle for Serving, Sharing and Built-ins](#the-router-object-one-handle-for-serving-sharing-and-built-ins)
+   - [One-Line Startup: `run` and `serve`](#one-line-startup-run-and-serve)
    - [Local Transports: Unix Sockets and Named Pipes](#local-transports-unix-sockets-and-named-pipes)
 2. [Service Contracts & Strict Mode (`MESHCALL_STRICT=1`)](#2-service-contracts--strict-mode-meshcall_strict1)
+   - [Declaring Methods: `@query`, `@mutates`, `@stream`](#declaring-methods-query-mutates-stream)
+   - [Dependency Injection and `meta()`](#dependency-injection-and-meta)
 3. [The Three Call Shapes: Unary, Server Stream, Client Stream](#3-the-three-call-shapes-unary-server-stream-client-stream)
-   - [Subscriptions: Streams That Resume](#subscriptions-streams-that-resume)
+   - [Subscriptions: Streams That Resume (Experimental)](#subscriptions-streams-that-resume-experimental)
    - [Duplex: The Shape of Last Resort](#duplex-the-shape-of-last-resort)
 4. [Generating & Using Typed Clients](#4-generating--using-typed-clients)
+   - [Per-Call Options with `with_options`](#per-call-options-with-with_options)
    - [Calling from a Browser, an Edge Runtime or curl](#calling-from-a-browser-an-edge-runtime-or-curl)
 5. [Exploring & Debugging Live Services from the CLI](#5-exploring--debugging-live-services-from-the-cli)
 6. [Load Balancing vs. Targeted Stateful Instances](#6-load-balancing-vs-targeted-stateful-instances)
 7. [Production Reliability: Timeouts, Retries, Idempotency & Drain](#7-production-reliability-timeouts-retries-idempotency--drain)
-   - [Router Shutdown, Limits & Metrics](#6-router-shutdown-limits--metrics)
+   - [Router Shutdown, Limits and Metrics](#router-shutdown-limits-and-metrics)
 8. [Authentication & Temporary Scoped Tokens](#8-authentication--temporary-scoped-tokens)
-   - [Anonymous Callers & API Keys](#3-anonymous-callers--api-keys)
+   - [Anonymous Callers and API Keys](#anonymous-callers-and-api-keys)
 9. [Interceptors, Metadata & Structured Errors](#9-interceptors-metadata--structured-errors)
    - [OpenTelemetry Tracing](#opentelemetry-tracing)
 10. [AI Coding Assistant Integration (`meshcall init`)](#10-ai-coding-assistant-integration-meshcall-init)
@@ -36,60 +43,136 @@ Why go through the Router in all cases?
 
 1. **Every node can be both a service provider and a client** — In traditional point-to-point RPC, every service must allocate and listen on its own inbound port, and callers must track every peer's address. With the Router, there is only one endpoint (`ws://127.0.0.1:8765`). Any Python or TypeScript process connects outbound to the Router, registers the `@service`s it provides, and simultaneously uses clients to call other services in the mesh.
 2. **Full CLI and AI visibility** — `meshcall router inspect` and `meshcall call` can discover and test every service in your system at any time.
-3. **Seamless scaling and fault tolerance** — Starting a second worker instance automatically load-balances traffic, enforces deadlines, and supports zero-downtime rolling drains (`drain=True`).
+3. **Seamless scaling and fault tolerance** — Starting a second worker instance automatically load-balances traffic, enforces deadlines, and supports zero-downtime rolling drains.
 
-### Python: Serving and Calling Through the Router
+### The Router Object: One Handle for Serving, Sharing and Built-ins
+
+v0.3 unifies Router access in one `Router` object. It plays three roles:
+
+1. **Configuration for `run` / `serve`** — endpoints, credentials, reconnect/retry policies and the options of a locally spawned Router.
+2. **A shared client connection** — `Router.connect(...)` opens one multiplexed WebSocket; every generated client you pass it uses that same connection.
+3. **A typed client for the Router's built-in services** — `list_services`, `describe_service`, `whoami`, `issue_token`, `revoke_token` (TypeScript: `listServices`, `describeService`, `whoami`, `issueToken`, `revokeToken`; Go: `ListServices`, `DescribeService`, `Whoami`, `IssueToken`, `RevokeToken`).
 
 ```python
-from meshcall import RpcServer, WebSocketRouter
-from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
+from meshcall import Router, RouterScope
 
-# 1. Start the bundled Go Router (or run `meshcall-router --port 8765` externally)
-router = WebSocketRouter(host="127.0.0.1", port=8765)
-await router.start()
+async with Router.connect("ws://127.0.0.1:8765") as router:
+    services = await router.list_services()
+    info = await router.describe_service("chat.v1.Chat")
+    me = await router.whoami()
+    issued = await router.issue_token(
+        scopes=[RouterScope(service="chat.v1.Chat", methods=["send"])],
+        ttl_seconds=900,
+    )
+    await router.revoke_token(issued.token_id)
 
-# 2. Any node can register its own services AND create clients to call other services
-other_service_client = OtherServiceClient(WebSocketClientDriver("ws://127.0.0.1:8765"))
-
-server = RpcServer(
-    services=[MyService(downstream=other_service_client)],
-    driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="worker-1"),
-)
-await server.start()
+# Generated clients share the same connection:
+chat = ChatClient(router)
+billing = BillingClient(router)
 ```
-
-### TypeScript: Serving and Calling Through the Router
 
 ```typescript
-import { MeshCallClient, MeshCallServer, WebSocketRouter } from "meshcall";
+import { Router } from "meshcall";
 
-// 1. Start the bundled Go Router (or connect to an existing one)
-const router = new WebSocketRouter({ host: "127.0.0.1", port: 8765 });
-await router.start();
-
-// 2. Register services on this node while also calling other services through the Router
-const client = new MeshCallClient("ws://127.0.0.1:8765");
-
-const server = new MeshCallServer({
-  services: [myService],
-  router: { endpoint: "ws://127.0.0.1:8765", instanceId: "worker-ts-1" },
-});
-await server.start();
+const router = await Router.connect("ws://127.0.0.1:8765");
+const services = await router.listServices();
+const info = await router.describeService("chat.v1.Chat");
+const me = await router.whoami();
+const issued = await router.issueToken(
+  [{ service: "chat.v1.Chat", methods: ["send"] }],
+  900,
+);
+await router.revokeToken(issued.token_id);
+await router.close();
 ```
-
-### Go: Serving and Calling Through the Router
-
-The Go runtime has no Router launcher: run `meshcall-router --port 8765` (or use a deployed Router) and connect to it.
 
 ```go
-chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
-// meshcall.HandleUnary(chat, "send", handler, meshcall.Doc("…"), meshcall.Idempotent())
+router, err := meshcall.ConnectRouter(ctx, meshcall.WithRouterURLs("ws://127.0.0.1:8765"))
+if err != nil {
+    return err
+}
+defer func() { _ = router.Close() }()
 
-server, err := meshcall.NewServer(meshcall.ServerOptions{Services: []*meshcall.Service{chat}, InstanceID: "worker-go-1"})
-err = server.ConnectRouter(ctx, "ws://127.0.0.1:8765")
-
-rpc, err := meshcall.NewClient(meshcall.ClientOptions{}, "ws://127.0.0.1:8765")
+services, err := router.ListServices(ctx)
+if err != nil {
+    return err
+}
+info, err := router.DescribeService(ctx, "chat.v1.Chat")
+if err != nil {
+    return err
+}
+me, err := router.Whoami(ctx)
+if err != nil {
+    return err
+}
+issued, err := router.IssueToken(ctx,
+    []meshcall.RouterScope{{Service: "chat.v1.Chat", Methods: []string{"send"}}}, 900)
+if err != nil {
+    return err
+}
+revoked, err := router.RevokeToken(ctx, issued.TokenID)
+if err != nil {
+    return err
+}
+_, _, _ = services, info, me
+_, _ = issued, revoked
 ```
+
+The Go calls return typed values (`[]meshcall.RegistryService`, `RegistryServiceDetail`, `WhoamiResponse`, `IssuedToken`, `RevokeTokenResponse`); the result assignments above are illustrative.
+
+### One-Line Startup: `run` and `serve`
+
+`run` is the production entry point: it resolves the Router address (`MESHCALL_ROUTER_URL`, default `ws://127.0.0.1:8765`), starts a bundled Router when the address is local and nothing listens there, registers every service you pass, and drains on `SIGINT` / `SIGTERM` before exiting. `serve` is the async building block behind it: it returns a `RunningServer` (`.url`, `.instance_id`, `.stop(drain=True)`) and is what tests and multi-client demos use.
+
+```python
+from meshcall import run
+from my_app.service import MyService
+
+if __name__ == "__main__":
+    run(MyService())                    # several services: run(Chat(), Billing())
+    # explicit configuration:
+    # run(MyService(), router=Router("ws://127.0.0.1:8765", auth=...))
+```
+
+```python
+from meshcall import Router, serve
+
+async with serve(MyService(), router=Router("ws://127.0.0.1:0")) as server:
+    print(server.url)                   # ws://127.0.0.1:<bound port>
+    ...
+# leaving the block drains in-flight calls and stops a Router it spawned itself
+```
+
+```typescript
+import { run } from "meshcall";
+
+await run(new MyService());
+```
+
+```typescript
+import { Router, serve } from "meshcall";
+
+await using server = await serve(new MyService(), {
+  router: new Router("ws://127.0.0.1:0"),
+});
+console.log(server.url);
+```
+
+```go
+// Blocking entry point: returns when SIGINT / SIGTERM arrives, after draining.
+if err := meshcall.Run(NewMyService(), meshcall.WithInstanceID("worker-go-1")); err != nil {
+    log.Fatal(err)
+}
+
+// Non-blocking alternative:
+srv, err := meshcall.Serve(ctx, NewMyService(), meshcall.WithRouter(meshcall.NewRouter()))
+if err != nil {
+    return err
+}
+defer func() { _ = srv.Close() }()      // Close drains first
+```
+
+Pass `router=Router(..., spawn_if_local=False)` (TypeScript `spawnIfLocal: false`, Go `meshcall.WithSpawnIfLocal(false)`) if a missing local Router should be an error instead of being spawned. `serve` also accepts server-level options (`instance_id`, `max_inflight`, `strict`, `access_log`, `interceptors`).
 
 ### Local Transports: Unix Sockets and Named Pipes
 
@@ -100,11 +183,11 @@ meshcall-router --unix-socket /tmp/mesh.sock               # Windows: --pipe mes
 meshcall --router unix:///tmp/mesh.sock router inspect     # Windows: pipe://mesh
 ```
 
-- **Python**: `WebSocketRouter(unix_path="/tmp/mesh.sock")`, `WebSocketClientDriver(unix_path=...)`, `WebSocketRouterServerDriver(unix_path=...)`; on Windows `pipe="mesh"`.
-- **TypeScript**: `new WebSocketRouter({ unixPath })`, `new MeshCallClient({ unixPath: "/tmp/mesh.sock" })`, `router: { endpoint: { unixPath } }`; on Windows `{ pipe: "mesh" }`.
-- **Go** and the CLI: the endpoint strings `unix:///tmp/mesh.sock` and `pipe://mesh`.
+- **Python**: `Router(unix_path="/tmp/mesh.sock")` or `Router(pipe="mesh")` — the same object goes to `run` / `serve` and to generated clients.
+- **TypeScript**: `new Router({ unixPath: "/tmp/mesh.sock" })` or `new Router({ pipe: "mesh" })`.
+- **Go** and the CLI: the endpoint strings `unix:///tmp/mesh.sock` and `pipe://mesh` (`meshcall.WithUnixSocket(path)` / `meshcall.WithPipe(name)`).
 
-> **Note on Direct Mode (`WebSocketDirectServerDriver` / `MeshCallServer({ port })`):** Point-to-point direct mode is retained only as an early evolutionary artifact and low-level compatibility fallback. It is **not recommended** for application use, as it requires manual port management, prevents symmetric peer-to-peer service/client sharing through a single mesh endpoint, and disables `meshcall router inspect`.
+> **Note on Direct Mode (`WebSocketDirectServerDriver` / `MeshCallServer({ port })` / TypeScript `serve(..., { listen })`):** Point-to-point direct mode is retained only as an early evolutionary artifact and low-level compatibility fallback. It is **not recommended** for application use, as it requires manual port management, prevents symmetric peer-to-peer service/client sharing through a single mesh endpoint, and disables `meshcall router inspect`.
 
 ---
 
@@ -119,12 +202,163 @@ meshcall --router unix:///tmp/mesh.sock router inspect     # Windows: pipe://mes
 3. **Return a model**: Always return a Pydantic `BaseModel` (Python) or object `TypeContract` (TypeScript) rather than bare primitives so contracts can evolve safely.
 4. **Always run with `MESHCALL_STRICT=1` in dev/CI**: Strict mode turns contract warnings (`W001`–`W006`) into immediate startup errors with a `hint` telling you exactly what to add.
 
-| Annotation | Meaning | Auto-retried by `RetryPolicy`? |
+### Declaring Methods: `@query`, `@mutates`, `@stream`
+
+The method decorator states the method's semantics once; the same contract drives validation, retries, `meshcall inspect` and generated clients.
+
+```python
+from collections.abc import AsyncIterator
+from meshcall import mutates, query, service, stream
+
+
+@service("billing.v1.Invoices")
+class Invoices:
+    """Invoice operations."""
+
+    @query
+    async def get(self, invoice_id: str) -> Invoice:
+        """Read one invoice (read-only and idempotent)."""
+        ...
+
+    @mutates(idempotent=True)
+    async def rename(self, invoice_id: str, title: str) -> Invoice:
+        """Change the title; repeating the same call is safe."""
+        ...
+
+    @mutates(destructive=True)
+    async def delete(self, invoice_id: str) -> Deleted:
+        """Delete an invoice (never retried without an idempotency key)."""
+        ...
+
+    @stream
+    async def export(self, account_id: str) -> AsyncIterator[Row]:
+        """Stream export rows; ordinary `@stream` methods are read-only."""
+        ...
+```
+
+| Decorator | Meaning | Auto-retried by `RetryPolicy`? |
 | --- | --- | --- |
-| `read_only=True` (`readOnly: true`) | Pure query with no state mutation (implies `idempotent`) | Yes |
-| `idempotent=True` (`idempotent: true`) | Mutates state, but repeating the exact call has the same effect | Yes |
-| `destructive=True` (`destructive: true`) | Non-idempotent mutation (e.g., charge card, append log, delete) | Only if caller supplies `idempotency_key` |
+| `@query` | Pure read; implies `read_only=True, idempotent=True` | Yes |
+| `@mutates(idempotent=True)` | Mutates state, but repeating the exact call has the same effect | Yes |
+| `@mutates(destructive=True)` or bare `@mutates` | Non-idempotent mutation (e.g., charge card, append log) | Only if caller supplies `idempotency_key` |
+| `@stream` | Server stream; read-only/idempotent by default, unless you pass `read_only=False` / `idempotent=False` or the method name looks mutating (`delete_*`, …) | Streams are never retried |
 | `deprecated="use_v2"` | Marks the method as deprecated in generated clients (`@deprecated`) | Depends on other flags |
+
+TypeScript uses the same shapes with explicit schemas:
+
+```typescript
+import { mutates, query, service, stream, z } from "meshcall";
+
+const Invoice = z.object({ id: z.string(), title: z.string() }).meta({ id: "Invoice" });
+
+@service("billing.v1.Invoices", { description: "Invoice operations." })
+class Invoices {
+  @query({ description: "Read one invoice.", input: { invoice_id: z.string() }, output: Invoice })
+  async get(invoice_id: string) { ... }
+
+  @mutates({ description: "Delete an invoice.", input: { invoice_id: z.string() }, output: Invoice, destructive: true })
+  async delete(invoice_id: string) { ... }
+
+  @stream({ description: "Stream export rows.", input: { account_id: z.string() }, outputItem: z.object({ line: z.string() }) })
+  async *export(account_id: string) { ... }
+}
+```
+
+Go handlers are registered with `HandleUnary`, `HandleServerStream`, `HandleClientStream` and `HandleDuplex`, and annotated with `Doc(...)`, `ReadOnly()`, `Idempotent()` or `Destructive()`:
+
+```go
+chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
+
+meshcall.HandleUnary(chat, "send", func(ctx *meshcall.Context, req SendRequest) (Message, error) {
+    return Message{Text: "echo " + req.Text}, nil
+}, meshcall.Doc("Append a message and return the reply."), meshcall.Idempotent())
+```
+
+### Dependency Injection and `meta()`
+
+Handlers can ask for server-only values without adding parameters to the contract. A dependency provider runs **once per call** and is cached for that call; a provider that `yield`s (a generator or async generator) runs its cleanup when the call ends, which makes commit-on-success / rollback-on-error easy to express. Injected parameters — dependencies, `meta("key")` values, `ctx: RpcContext` and `logger: RpcLogger` — are stripped from the contract and therefore from every generated client.
+
+```python
+from collections.abc import AsyncIterator
+from typing import Annotated
+from meshcall import dependency, meta, mutates
+
+@dependency
+async def transaction() -> AsyncIterator[SessionUnit]:
+    """One unit of work per call; commit on success, drop on error or cancel."""
+    unit = SessionUnit(store)
+    try:
+        yield unit
+    except BaseException:
+        await unit.rollback()
+        raise
+    else:
+        await unit.commit()
+
+Tx = Annotated[SessionUnit, transaction._provider()]   # or Annotated[T, dependency(provider)]
+CallerId = Annotated[str | None, meta("x-caller-id")]
+
+@mutates(idempotent=True)
+async def send(self, session_id: str, text: str, *, tx: Tx, caller: CallerId) -> Message:
+    """`tx` and `caller` are injected on the server only."""
+    ...
+```
+
+Dependencies may themselves declare dependencies or metadata:
+
+```python
+@dependency
+async def current_user(authorization: Annotated[str, meta("authorization")]) -> str:
+    return authorization.removeprefix("Bearer ")
+```
+
+TypeScript declares them with `dependency(provider, { inject })` and passes them to a method with `inject`:
+
+```typescript
+import { dependency, meta, mutates } from "meshcall";
+
+const CurrentUser = dependency(
+  async function* (authorization: string | undefined) {
+    yield authorization?.replace(/^Bearer\s+/, "") ?? "";
+  },
+  { inject: [meta("authorization")] },
+);
+
+@mutates({
+  description: "Append a message.",
+  input: { session_id: z.string(), text: z.string() },
+  output: Message,
+  inject: [CurrentUser],
+})
+async send(session_id: string, text: string, user: string) {
+  return { text: `${user}: ${text}` };
+}
+```
+
+Go registers providers once with `WithDependencies`; parameters whose types are registered are injected and removed from the contract:
+
+```go
+type CallerID string
+
+func NewWorkspace() *Workspace { return &Workspace{} }
+
+type Workspace struct {
+    meshcall.ServiceMeta `name:"workspace.v1.Workspace" description:"Remote workspace."`
+}
+
+func (w *Workspace) WriteFile(ctx *meshcall.Context, path, content string, caller CallerID) (FileStat, error) {
+    return FileStat{Path: path, Bytes: len(content), Caller: string(caller)}, nil
+}
+
+err := meshcall.Run(NewWorkspace(), meshcall.WithDependencies(
+    meshcall.Meta[CallerID]("x-caller-id", meshcall.WithMetaDefault(CallerID("anonymous"))),
+))
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+`meta()` reads a call metadata entry (case-insensitively, as headers usually arrive); use it for gateways and CLI identities, not for business parameters.
 
 ---
 
@@ -132,12 +366,14 @@ meshcall --router unix:///tmp/mesh.sock router inspect     # Windows: pipe://mes
 
 **Benefit:** Stream items are flow-controlled per call (initial window of 16 items). A slow consumer naturally throttles the producer without buffering unbounded data in memory, and other calls on the same WebSocket connection continue fairly.
 
+The rule is the same in all three runtimes: **ordinary business parameters come first; a client stream's inbound iterator comes last.** Generated clients mirror that list 1:1.
+
 ### Python Service & Client
 
 ```python
 from collections.abc import AsyncIterator
 from pydantic import BaseModel
-from meshcall import RpcContext, RpcInputStream, RpcLogger, method, service
+from meshcall import RpcContext, RpcInputStream, RpcLogger, mutates, query, service, stream
 
 
 class Chunk(BaseModel):
@@ -154,30 +390,30 @@ class TextProcessor:
     """Process text via unary, server-stream, and client-stream RPCs."""
 
     # 1. Unary: parameters -> Model
-    @method(read_only=True)
+    @query
     async def echo(self, text: str, ctx: RpcContext) -> Chunk:
         """Echo the input text and attach a response trailer."""
         ctx.set_trailer("length", str(len(text)))
         return Chunk(text=text)
 
     # 2. Server Stream: parameters -> AsyncIterator[Model]
-    @method.server_stream(read_only=True)
+    @stream
     async def tokenize(self, sentence: str, logger: RpcLogger) -> AsyncIterator[Chunk]:
         """Yield each word in sentence as a separate stream item."""
         logger.info("tokenizing sentence")
         for word in sentence.split():
             yield Chunk(text=word)
 
-    # 3. Client Stream: RpcInputStream[Model] + parameters -> Model
-    @method.client_stream(idempotent=True)
+    # 3. Client Stream: inbound stream last + parameters -> Model; declared with @mutates
+    @mutates(idempotent=True)
     async def join_chunks(
         self,
-        chunks: RpcInputStream[Chunk],
-        separator: str = " ",
+        separator: str,
+        items: RpcInputStream[Chunk],
     ) -> Summary:
         """Consume a stream of Chunk items and join them with separator."""
         parts: list[str] = []
-        async for chunk in chunks:
+        async for chunk in items:
             parts.append(chunk.text)
         return Summary(count=len(parts), combined=separator.join(parts))
 ```
@@ -185,38 +421,98 @@ class TextProcessor:
 **Calling all 3 shapes from a generated Python client:**
 
 ```python
-async with TextProcessorClient(driver) as client:
+from text_client import TextProcessorClient
+
+async with TextProcessorClient.connect("ws://127.0.0.1:8765") as client:
     # Unary
-    chunk = await client.echo("hello", timeout=5.0)
+    chunk = await client.echo("hello")
 
     # Server stream (use `async with` if you might break early so it cancels cleanly)
-    async with client.tokenize("one two three", timeout=10.0, idle_timeout=3.0) as stream:
+    async with client.with_options(timeout=10.0, idle_timeout=3.0).tokenize("one two three") as stream:
         async for item in stream:
             print(item.text)
 
-    # Client stream
-    call = await client.join_chunks(separator="-", timeout=10.0)
-    await call.send(Chunk(text="a"))
-    await call.send(Chunk(text="b"))
-    await call.close_send()
-    summary = await call
+    # Client stream: the generated method takes an AsyncIterable of items, last
+    async def chunks() -> AsyncIterator[Chunk]:
+        yield Chunk(text="a")
+        yield Chunk(text="b")
+
+    summary = await client.with_options(timeout=10.0).join_chunks("-", chunks())
     print(summary.combined)  # "a-b"
 ```
 
-### Subscriptions: Streams That Resume
+### TypeScript Service & Client
+
+```typescript
+import { mutates, query, serve, service, stream, z, Router } from "meshcall";
+
+const Chunk = z.object({ text: z.string() }).meta({ id: "Chunk" });
+const Summary = z.object({ count: z.int(), combined: z.string() }).meta({ id: "Summary" });
+
+@service("text.v1.TextProcessor", { description: "Process text via unary, server-stream, and client-stream RPCs." })
+class TextProcessor {
+  @query({ description: "Echo the input text.", input: { text: z.string() }, output: Chunk })
+  async echo(text: string) {
+    return { text };
+  }
+
+  @stream({ description: "Yield each word in sentence.", input: { sentence: z.string() }, outputItem: Chunk })
+  async *tokenize(sentence: string) {
+    for (const word of sentence.split(" ")) yield { text: word };
+  }
+
+  @mutates({
+    description: "Join a stream of chunks.",
+    input: { separator: z.string().default(" ") },
+    streamInput: Chunk,
+    output: Summary,
+    idempotent: true,
+  })
+  async join_chunks(separator: string, items: AsyncIterable<{ text: string }>) {
+    const parts: string[] = [];
+    for await (const chunk of items) parts.push(chunk.text);
+    return { count: parts.length, combined: parts.join(separator) };
+  }
+}
+
+await serve(new TextProcessor(), { router: new Router("ws://127.0.0.1:8765") });
+```
+
+```typescript
+import { Router } from "meshcall";
+import { TextProcessorClient } from "./generated/text-ts/src/index.js";
+
+const router = await Router.connect("ws://127.0.0.1:8765");
+const client = await TextProcessorClient.connect(router);
+try {
+  const chunk = await client.echo("hello");
+  for await (const item of client.withOptions({ timeoutMs: 10_000, idleTimeoutMs: 3_000 }).tokenize("one two three")) {
+    console.log(item.text);
+  }
+  async function* chunks() { yield { text: "a" }; yield { text: "b" }; }
+  const summary = await client.join_chunks("-", chunks());
+  console.log(summary.combined); // "a-b"
+} finally {
+  await router.close();
+}
+```
+
+### Subscriptions: Streams That Resume (Experimental)
+
+> **Experimental in v0.3.** Subscriptions and `Topic` keep their underlying implementation, but they are outside the recommended teaching flow and their API may change. For new code that only needs a long result, use a plain `@stream` / `@stream(...)` server stream.
 
 For events, notifications and live feeds, declare a **subscription**: a server stream whose item carries an ordered cursor (`seq`) and whose request takes an optional resume parameter (`since`). Generated clients reopen it on their own after a dropped connection or a retryable error, passing the last `seq` as `since`, and keep yielding items as one iterator; subscriptions have no default timeouts. The handler must yield only items after `since`.
 
 `Topic` (Python and TypeScript) fans items out to every subscriber in one process and keeps a bounded history to replay from. A subscriber that falls too far behind is cut off with retryable `resource_exhausted` (`reason: "slow_subscriber"`) and resubscribes; a cursor older than the history fails with `invalid_argument` (`reason: "cursor_expired"`) instead of silently skipping events. Across instances, make the producing service `targeted` or bridge a broker into each instance's Topic: the Router is not a broker.
 
 ```python
-from meshcall import Topic
-
+from collections.abc import AsyncIterator
+from pydantic import BaseModel
+from meshcall import Topic, method, service
 
 class Event(BaseModel):
     seq: int
     text: str
-
 
 @service("feed.v1.Feed")
 class Feed:
@@ -258,17 +554,21 @@ class Feed {
 // Consume: for await (const event of client.events()) { ... }
 ```
 
-In Go, `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` declares the same contract (Go has no `Topic`); generated Go clients return a `*meshcall.Subscription` that resubscribes the same way.
+In Go, `meshcall.HandleSubscription(svc, "events", "seq", "since", handler)` declares the same contract (Go has no `Topic`); generated Go clients return a `*meshcall.Subscription` that resubscribes the same way. These APIs are experimental.
 
 ### Duplex: The Shape of Last Resort
 
-A duplex method (`@method.duplex(reason="…")` with a `channel: RpcDuplex[In, Out]` parameter, TypeScript `@method.duplex({ reason, … })`, Go `meshcall.HandleDuplex(svc, name, reason, handler)`) streams input and output at the same time. Use it only when output must interleave with input that keeps arriving within one call, such as a voice turn answered while the user is still speaking. It is never retried or deduplicated, takes no idempotency key, cannot be `idempotent` / `read_only`, is unreachable over HTTP and pins one instance for its whole life; the `reason` goes into the contract. A side that only sends stalls once the other side's credit runs out, so read output concurrently with sending. Try a server stream plus unary calls, or a client stream, first.
+A duplex method streams input and output at the same time. Use it only when output must interleave with input that keeps arriving within one call, such as a voice turn answered while the user is still speaking. It is never retried or deduplicated, takes no idempotency key, cannot be `idempotent` / `read_only`, is unreachable over HTTP and pins one instance for its whole life; the `reason` goes into the contract. A side that only sends stalls once the other side's credit runs out, so read output concurrently with sending. Try a server stream plus unary calls, or a client stream, first.
+
+- **Python**: `@method.duplex(reason="…")` with a `channel: DuplexChannel[In, Out]` parameter; the handler returns `None`.
+- **TypeScript**: `@method.duplex({ reason, input, streamInput, outputItem, … })` (or `@mutates` with `streamInput` and `streamOutput`), handler takes the channel and returns nothing.
+- **Go**: `meshcall.HandleDuplex(svc, name, reason, handler)` with a trailing `*meshcall.DuplexChannel[In, Out]` parameter.
 
 ---
 
 ## 4. Generating & Using Typed Clients
 
-**Benefit:** One Go CLI (`meshcall generate`) generates Python, TypeScript and Go clients from either a Python `module:Class` or a portable `.meshcall.json` file. Generated clients validate both requests **and** responses against the contract schema.
+**Benefit:** One Go CLI (`meshcall generate`) generates Python, TypeScript and Go clients from either a Python `module:Class` or a portable `.meshcall.json` file. Generated clients validate both requests **and** responses against the contract schema, and their method signatures mirror the server's business parameters 1:1 (generated TypeScript and Go methods additionally take an optional trailing options/opts argument).
 
 ```bash
 # From a Python service -> Python uv package
@@ -297,6 +597,76 @@ meshcall generate contract.meshcall.json \
   --output internal/textclient
 ```
 
+Generated clients connect through one line. In Python, `connect()` resolves the default Router (`MESHCALL_ROUTER_URL`, then `ws://127.0.0.1:8765`) or takes a `Router` / URL. In TypeScript, `MyClient.connect(router)` wraps an existing `Router` (create one with `Router.connect(...)`); Go wraps the `*Router` with the generated `NewMyClient(router)` constructor.
+
+```python
+from meshcall import Router
+from text_client import TextProcessorClient
+
+async with TextProcessorClient.connect() as client:          # default Router
+    chunk = await client.echo("hello")
+
+router = await Router.connect("ws://127.0.0.1:8765")
+text = TextProcessorClient(router)                           # shared connection
+```
+
+```typescript
+import { Router } from "meshcall";
+import { TextProcessorClient } from "./generated/text-ts/src/index.js";
+
+const router = await Router.connect();
+const client = await TextProcessorClient.connect(router);
+const chunk = await client.echo("hello");
+```
+
+```go
+router := meshcall.NewRouter()                               // MESHCALL_ROUTER_URL
+defer func() { _ = router.Close() }()
+client := textclient.NewTextProcessorClient(router)
+chunk, err := client.Echo(ctx, "hello")
+_, _ = chunk, err
+```
+
+### Per-Call Options with `with_options`
+
+Control parameters never enter the business method signature. Chain them once and call the method normally (generated TypeScript and Go methods also accept an optional trailing options/opts argument; `with_options` keeps call sites uniform across runtimes):
+
+```python
+client = TextProcessorClient(router).with_options(
+    timeout=5.0,                 # whole-call budget, seconds
+    idle_timeout=2.0,            # gap between stream items
+    metadata={"trace-id": "abc"},
+    idempotency_key="op-1",      # makes a mutating unary call retry-safe
+    instance="worker-1",         # only for targeted services
+)
+chunk = await client.echo("hello")
+```
+
+```typescript
+const client = (await TextProcessorClient.connect(router)).withOptions({
+  timeoutMs: 5_000,
+  idleTimeoutMs: 2_000,
+  metadata: { "trace-id": "abc" },
+  idempotencyKey: "op-1",
+  instance: "worker-1",
+});
+const chunk = await client.echo("hello");
+```
+
+```go
+client := textclient.NewTextProcessorClient(router).WithOptions(meshcall.CallOptions{
+    Timeout:        5 * time.Second,
+    IdleTimeout:    2 * time.Second,
+    Metadata:       map[string]string{"trace-id": "abc"},
+    IdempotencyKey: "op-1",
+    Instance:       "worker-1",
+})
+chunk, err := client.Echo(ctx, "hello")
+_, _ = chunk, err
+```
+
+A targeted service's generated client keeps `instance` a compile-time requirement (Python keyword-only `instance`, TypeScript required option, Go positional argument) even though other options come from `with_options`.
+
 ### Calling from a Browser, an Edge Runtime or curl
 
 Browsers cannot set the `Authorization` header on a WebSocket, so web and edge code calls the Router's HTTP API (same port, under `/v1/`). Generated TypeScript clients accept `MeshCallHttpClient` from `meshcall/web` (no Node dependency) in place of `MeshCallClient`; unary calls, streams and subscriptions work, duplex does not.
@@ -306,7 +676,7 @@ import { MeshCallHttpClient } from "meshcall/web";
 import { TextProcessorClient } from "./generated/text-ts/src/index.js";
 
 const client = new TextProcessorClient(new MeshCallHttpClient("https://router.example", { token }));
-const chunk = await client.echo("hello", { timeoutMs: 5_000 });
+const chunk = await client.withOptions({ timeoutMs: 5_000 }).echo("hello");
 ```
 
 Pass a short-lived token (`mt_…`) or an API key (`mk_…`) as `token`, and start the Router with `--http-cors-origin https://app.example` for other origins. Any HTTP client works the same way:
@@ -353,20 +723,20 @@ If you pass an invalid field or wrong type, `meshcall call` automatically querie
 Configure balancing per method (`round_robin` is the default):
 
 ```python
-from meshcall import Balance, method, service
+from meshcall import Balance, mutates, query, service
 
 @service("compute.v1.Worker")
 class Worker:
     """Stateless and session-affine compute methods."""
 
     # Route to the instance with the fewest active in-flight calls
-    @method(read_only=True, balance=Balance.least_inflight())
+    @query(balance=Balance.least_inflight())
     async def heavy_compute(self, payload: str) -> Result:
         """Run CPU/GPU-intensive task on the least busy worker."""
         ...
 
     # Route calls with the same session_id to the same instance when pool is stable
-    @method(idempotent=True, balance=Balance.sticky("session_id"))
+    @mutates(idempotent=True, balance=Balance.sticky("session_id"))
     async def step_session(self, session_id: str, prompt: str) -> Result:
         """Run a session step with soft cache affinity."""
         ...
@@ -379,11 +749,13 @@ When every instance holds distinct state (e.g., `gpu-worker-0` holds Model A and
 - Generated Python and TypeScript clients make `instance` a **required compile-time parameter**, so forgetting to specify the target worker is caught by `pyright` / `tsc` before code ever runs!
 
 ```python
+from meshcall import RpcContext, query, service
+
 @service("gpu.v1.ModelRunner", targeted=True)
 class ModelRunner:
     """Stateful GPU worker holding a specific loaded model."""
 
-    @method(read_only=True)
+    @query
     async def infer(self, prompt: str, ctx: RpcContext) -> Output:
         """Run inference on this specific GPU instance."""
         return Output(text=f"Processed by {ctx.instance_id}: {prompt}")
@@ -393,7 +765,18 @@ Calling a targeted service:
 
 ```python
 # `instance=` is required by the generated client signature:
-res = await client.infer("Hello!", instance="gpu-worker-1", timeout=10.0)
+res = await client.with_options(timeout=10.0).infer("Hello!", instance="gpu-worker-1")
+```
+
+```typescript
+// The generated TypeScript method requires `instance` in its options:
+const res = await client.infer("Hello!", { instance: "gpu-worker-1", timeoutMs: 10_000 });
+```
+
+```go
+// The generated Go method takes instance right after ctx:
+res, err := client.Infer(ctx, "gpu-worker-1", "Hello!")
+_, _ = res, err
 ```
 
 Or from the CLI:
@@ -410,7 +793,7 @@ uv run meshcall call gpu.v1.ModelRunner.infer '{"prompt": "Hello!"}' --instance 
 
 ### 1. Three-Layer Relative Deadlines
 
-Always pass `timeout=` (Python, seconds) or `timeoutMs` (TypeScript, milliseconds).
+Always set a timeout with `with_options(timeout=…)` / `withOptions({ timeoutMs })` / `WithOptions(CallOptions{Timeout: …})`.
 - **Server** enforces at `T` (cancels handler task).
 - **Router** enforces at `T + 500ms` (protects caller if server hangs).
 - **Client** enforces at `T + max(1s, 10%)` (protects caller if network/Router hangs).
@@ -418,48 +801,84 @@ Always pass `timeout=` (Python, seconds) or `timeoutMs` (TypeScript, millisecond
 
 ### 2. Automatic Retries & Idempotency Keys
 
-Configure `RetryPolicy` on the client. It automatically retries failed **unary** calls when:
+Configure `RetryPolicy` on the Router (or the client). It automatically retries failed **unary** calls when:
 1. The error is marked `retryable=True` (e.g. `unavailable` when an instance disconnects, or `resource_exhausted` when overloaded), **AND**
 2. Either the method is annotated `read_only=True` / `idempotent=True` in the contract, **OR** the caller supplies an `idempotency_key`.
 
 When a unary call carries an `idempotency_key`, the Router deduplicates concurrent calls with the same key and replays the cached terminal result for 60 seconds.
 
 ```python
-from meshcall import RetryPolicy
+from meshcall import RetryPolicy, Router
 
-# Enable automatic retries on the generated client (max 3 attempts, exponential backoff)
-client = CounterServiceClient(
-    driver,
-    retry=RetryPolicy(max_attempts=3, initial_backoff=0.05, max_backoff=1.0),
+router = Router(
+    "ws://127.0.0.1:8765",
+    retry=RetryPolicy(max_attempts=3, initial_delay=0.05, max_delay=1.0),
 )
+client = CounterServiceClient(router)
+```
+
+```go
+router := meshcall.NewRouter(meshcall.WithRetry(meshcall.RetryPolicy{
+    MaxAttempts:  3,
+    InitialDelay: 50 * time.Millisecond,
+    MaxDelay:     time.Second,
+    Multiplier:   2,
+    Jitter:       0.2,
+}))
+client := counterclient.NewCounterServiceClient(router)
+_ = client
 ```
 
 ### 3. Backpressure (`max_inflight`) & Circuit Breaking
 
-Set `max_inflight` on your server so the Router routes around saturated workers instead of piling up queues:
+Set `max_inflight` on the server so the Router routes around saturated workers instead of piling up queues:
 
 ```python
-server = RpcServer(services=[Worker()], driver=driver, max_inflight=32)
+async with serve(Worker(), router=router, max_inflight=32) as server:
+    ...
+```
+
+```typescript
+await using server = await serve(new Worker(), { router, maxInflight: 32 });
+```
+
+```go
+srv, err := meshcall.Serve(ctx, NewWorker(), meshcall.WithRouter(router), meshcall.WithMaxInflight(32))
+if err != nil {
+    return err
+}
+defer func() { _ = srv.Close() }()
 ```
 
 If an instance repeatedly times out or returns `internal`/`unavailable` (default: 5 consecutive failures), the Router's per-instance circuit breaker trips for 10 seconds and probes with a single call before restoring traffic.
 
 ### 4. Multi-Router High Availability
 
-Run two or more independent `meshcall-router` processes. Pass the list of URLs to both servers and clients—servers register with **all** Routers simultaneously, and clients fail over automatically when one Router goes down:
+Run two or more independent `meshcall-router` processes. Give the same endpoint list to the `Router` object used by servers and clients—servers register with **all** Routers simultaneously, and clients fail over automatically when one Router goes down:
 
 ```python
-routers = ["ws://router-1.internal:8765", "ws://router-2.internal:8765"]
-server_driver = WebSocketRouterServerDriver(routers, instance_id="worker-1")
-client_driver = WebSocketClientDriver(routers)
+router = Router(["ws://router-1.internal:8765", "ws://router-2.internal:8765"])
+client = CounterServiceClient(router)
+# server: run(Worker(), router=router)  /  serve(Worker(), router=router)
+```
+
+```typescript
+const router = new Router({ url: ["ws://router-1.internal:8765", "ws://router-2.internal:8765"] });
+```
+
+```go
+router := meshcall.NewRouter(meshcall.WithRouterURLs(
+    "ws://router-1.internal:8765",
+    "ws://router-2.internal:8765",
+))
 ```
 
 ### 5. Zero-Downtime Rolling Restarts (`drain=True`)
 
-When shutting down a server (e.g., on `SIGTERM`), drain it so the Router immediately stops sending new calls while in-flight calls finish cleanly:
+`run` drains on `SIGINT` / `SIGTERM` automatically. With `serve`, stop through the handle (or leave its context manager):
 
 ```python
-# Python
+# Python: draining is the default; pass drain_timeout to bound it
 await server.stop(drain=True, drain_timeout=30.0)
 ```
 
@@ -468,11 +887,11 @@ await server.stop(drain=True, drain_timeout=30.0)
 await server.close({ drain: true, drainTimeoutMs: 30_000 });
 ```
 
-Go: `server.Drain(ctx)`, then `server.Close()`.
+Go: `srv.Close()` drains first; the lower-level form is `server.Drain(ctx)`, then `server.Close()`.
 
-### 6. Router Shutdown, Limits & Metrics
+### Router Shutdown, Limits and Metrics
 
-Restart a Router with SIGTERM (or SIGINT): it drains first. `/readyz` answers 503, new calls get retryable `unavailable` (`reason: "router_draining"`), idle connections close with 1001 so clients and services move to another Router, and calls still in flight after `--shutdown-timeout` (default 10 s) end with retryable `unavailable` (`reason: "router_shutdown"`). A second signal skips the wait. A Router owned by the Python or TypeScript launcher is stopped by closing its stdin, which ends calls in flight at once.
+Restart a Router with SIGTERM (or SIGINT): it drains first. `/readyz` answers 503, new calls get retryable `unavailable` (`reason: "router_draining"`), idle connections close with 1001 so clients and services move to another Router, and calls still in flight after `--shutdown-timeout` (default 10 s) end with retryable `unavailable` (`reason: "router_shutdown"`). A second signal skips the wait. A Router spawned by an SDK is stopped by closing its stdin, which ends calls in flight at once.
 
 | Flag | Default | Effect |
 | --- | --- | --- |
@@ -481,13 +900,13 @@ Restart a Router with SIGTERM (or SIGINT): it drains first. `/readyz` answers 50
 | `--outbox-size` | 256 MiB | how much the Router may owe a peer that stops reading before disconnecting it |
 | `--metrics-listen` | off | Prometheus text at `http://ADDR/metrics` on a separate listener, e.g. `127.0.0.1:9464` |
 
-Every flag also has a `MESHCALL_ROUTER_<FLAG>` environment variable; the launchers take `max_frame_size` / `maxFrameSize` and `outbox_size` / `outboxSize`.
+Every flag also has a `MESHCALL_ROUTER_<FLAG>` environment variable; `Router(...)` accepts the embedded-Router options (`metrics_listen`, `max_frame_size`, `outbox_size`, `auth_file`, …) that `run` / `serve` pass to a locally spawned Router.
 
 ---
 
 ## 8. Authentication & Temporary Scoped Tokens
 
-**Benefit:** Lock down production Routers with PBKDF2-hashed account ACLs (`router-auth.json`), and mint short-lived, least-privilege bearer tokens (`RouterAuthClient`) for untrusted callers or ephemeral workers.
+**Benefit:** Lock down production Routers with PBKDF2-hashed account ACLs (`router-auth.json`), and mint short-lived, least-privilege bearer tokens through the `Router` object for untrusted callers or ephemeral workers.
 
 ### 1. Create `router-auth.json`
 
@@ -524,30 +943,32 @@ Configure accounts and ACLs in `router-auth.json`:
 }
 ```
 
-Start the Router with `WebSocketRouter(port=8765, auth_file="router-auth.json")` (or `--auth-file router-auth.json`).
+Start the Router with the auth file: pass `Router(..., auth_file="router-auth.json")` to `run` / `serve` so the spawned Router uses it, or start the binary with `--auth-file router-auth.json` (or use `WebSocketRouter(port=8765, auth_file="router-auth.json")`).
 
 ### 2. Issue & Use Temporary Scoped Tokens
 
 ```python
-from meshcall import RouterAuthClient, RouterCredentials, RouterScope
-from meshcall.drivers import WebSocketClientDriver
+from meshcall import Router, RouterCredentials, RouterScope
 
-admin_creds = RouterCredentials(username="backend-app", password="...")
-async with RouterAuthClient(WebSocketClientDriver("ws://127.0.0.1:8765", auth=admin_creds)) as auth:
+admin = RouterCredentials(username="backend-app", password="...")
+async with Router.connect("ws://127.0.0.1:8765", auth=admin) as router:
     # Mint a 15-minute token restricted to calling only `chat.v1.Chat/send`
-    issued = await auth.issue_token(
-        ttl_seconds=900,
+    issued = await router.issue_token(
         scopes=[RouterScope(service="chat.v1.Chat", methods=["send"])],
+        ttl_seconds=900,
     )
 
 # Hand `issued.token` to a downstream caller:
-scoped_driver = WebSocketClientDriver(
+downstream = await Router.connect(
     "ws://127.0.0.1:8765",
     auth=RouterCredentials(token=issued.token),
 )
+chat = ChatClient(downstream)
 ```
 
-### 3. Anonymous Callers & API Keys
+`revoke_token(issued.token_id)` (TypeScript `revokeToken(tokenId)`, Go `RevokeToken(ctx, issued.TokenID)`) invalidates a token before it expires.
+
+### Anonymous Callers and API Keys
 
 A caller that sends no `Authorization` header is the reserved user `anonymous`. It may connect, but every call is `permission_denied` unless the auth file grants it `call` rules; only the auth file can make a method public.
 
@@ -561,7 +982,7 @@ Give machine callers (webhooks, CI, external services) long-lived **API keys** i
 meshcall-router new-api-key ci-bot   # prints the key once, and the entry to add under "api_keys"
 ```
 
-Fill in the entry's `call` list and restart the Router. Callers send the key as `Authorization: Bearer mk_…`: `RouterCredentials(token="mk_…")` in Python, `{ auth: { token: "mk_…" } }` in TypeScript, `ClientOptions{Authorization: "Bearer mk_…"}` in Go, `-H 'Authorization: Bearer mk_…'` with curl. A key is checked with one hash lookup; rotate it by adding a new key and removing the old one.
+Fill in the entry's `call` list and restart the Router. Callers send the key as `Authorization: Bearer mk_…`: `Router(..., auth=RouterCredentials(token="mk_…"))` in Python, `new Router({ url, auth: { token: "mk_…" } })` in TypeScript, `meshcall.NewRouter(meshcall.WithAuth(meshcall.BearerToken("mk_…")))` in Go, `-H 'Authorization: Bearer mk_…'` with curl. A key is checked with one hash lookup; rotate it by adding a new key and removing the old one.
 
 ---
 
@@ -572,7 +993,7 @@ Fill in the entry's `call` list and restart the Router. Callers send the key as 
 ### Client & Server Interceptors (Python)
 
 ```python
-from meshcall import ClientCallInfo, ClientCallNext, RpcContext, ServerCallNext
+from meshcall import ClientCallInfo, ClientCallNext, Router, RpcContext, ServerCallNext, serve
 
 # Client interceptor: inject a trace_id header into every outgoing call
 async def trace_client_interceptor(info: ClientCallInfo, call_next: ClientCallNext):
@@ -586,6 +1007,12 @@ async def audit_server_interceptor(ctx: RpcContext, request: object, call_next: 
     trace_id = ctx.metadata.get("trace-id", "none")
     ctx.set_trailer("echo-trace-id", trace_id)
     return await call_next(ctx, request)
+
+router = Router("ws://127.0.0.1:8765", interceptors=[trace_client_interceptor])
+client = TextProcessorClient(router)
+
+async with serve(TextProcessor(), router=router, interceptors=[audit_server_interceptor]) as server:
+    ...
 ```
 
 ### OpenTelemetry Tracing
@@ -594,18 +1021,26 @@ Add the OpenTelemetry interceptors on both sides. Trace context travels as W3C `
 
 ```python
 # pip install "meshcall[otel]"
+from meshcall import Router, serve
 from meshcall.otel import client_interceptor, server_interceptor
 
-client = TextProcessorClient(driver, interceptors=[client_interceptor()])
-server = RpcServer(services=[TextProcessor()], driver=server_driver, interceptors=[server_interceptor()])
+router = Router("ws://127.0.0.1:8765", interceptors=[client_interceptor()])
+client = TextProcessorClient(router)
+
+async with serve(TextProcessor(), router=router, interceptors=[server_interceptor()]) as server:
+    ...
 ```
 
 ```typescript
 // needs the optional peer dependency @opentelemetry/api
+import { Router, serve } from "meshcall";
 import { otelClientInterceptor, otelServerInterceptor } from "meshcall/otel";
 
-const client = new MeshCallClient(url, undefined, { interceptors: [otelClientInterceptor()] });
-const server = new MeshCallServer({ services, router: { endpoint: url }, interceptors: [otelServerInterceptor()] });
+const router = new Router({ url, interceptors: [otelClientInterceptor()] });
+await using server = await serve(new TextProcessor(), {
+  router,
+  interceptors: [otelServerInterceptor()],
+});
 ```
 
 Go has no OpenTelemetry package; a `ClientInterceptor` / `ServerInterceptor` can set or read the `traceparent` metadata key itself.
@@ -618,7 +1053,7 @@ Every protocol error maps to a dedicated exception class (`InvalidArgumentError`
 from meshcall import DeadlineExceededError, InvalidArgumentError, UnavailableError
 
 try:
-    await client.add(10, 20, timeout=2.0)
+    await client.with_options(timeout=2.0).add(10, 20)
 except InvalidArgumentError as err:
     # Field-level validation failures (never echoes sensitive input values)
     for v in err.violations:
@@ -649,4 +1084,3 @@ uv run meshcall init --agent all        # every target above, plus the default (
 ```
 
 With `--agent`, only the named targets are written; add `universal` to keep the `.agents/` default as well. Re-running is idempotent, and an edited skill file is kept unless you pass `--force`.
-

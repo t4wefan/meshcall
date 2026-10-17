@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 server = "best_practice.server:main"
+demo = "best_practice.demo:main"
 
 [tool.uv.sources]
 meshcall = { path = "../meshcall-py" }

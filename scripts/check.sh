@@ -37,15 +37,18 @@ demos() {
   rm -rf demo/py2ts/ts-client/node_modules/meshcall demo/ts2py/ts-server/node_modules/meshcall best-practice/ts-client/node_modules/meshcall
   local log
   log=$(mktemp)
-  for d in quickstart py2ts showcase router ts2py; do
+  for d in quickstart py2ts showcase router ts2py best-practice; do
     printf '%s... ' "$d"
+    dir="demo/$d"
+    [ "$d" = best-practice ] && dir="$d"
     # uv caches builds of path dependencies; force the ones that live in this repo.
     reinstall="--reinstall-package meshcall"
     [ "$d" = ts2py ] && reinstall="$reinstall --reinstall-package meshcall-demo-ts2py-client"
+    [ "$d" = best-practice ] && reinstall="$reinstall --reinstall-package meshcall-best-practice"
     if [ "$d" = router ]; then
-      (cd demo/$d && env -u MESHCALL_ROUTER_BINARY uv run --locked $reinstall demo >"$log" 2>&1) || { echo FAILED; cat "$log"; return 1; }
+      (cd "$dir" && env -u MESHCALL_ROUTER_BINARY uv run --locked $reinstall demo >"$log" 2>&1) || { echo FAILED; cat "$log"; return 1; }
     else
-      (cd demo/$d && uv run --locked $reinstall demo >"$log" 2>&1) || { echo FAILED; cat "$log"; return 1; }
+      (cd "$dir" && uv run --locked $reinstall demo >"$log" 2>&1) || { echo FAILED; cat "$log"; return 1; }
     fi
     echo ok
   done

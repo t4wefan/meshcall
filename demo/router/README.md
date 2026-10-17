@@ -1,14 +1,19 @@
 # MeshCall Router demo
 
 This is a complete uv project. From this directory, run the short-lived
-Go Router, Python service, and generated-client flow with:
+standalone-Router flow with:
 
 ```bash
-go -C ../../meshcall-router build -o bin/meshcall-router ./cmd/meshcall-router
 uv run demo
 ```
 
-For the deployment-shaped deployment version, use three terminals:
+It starts a `WebSocketRouter` process, registers the service with
+`meshcall.serve(..., router=Router(url))`, connects a client with
+`Router.connect`, prints the registry (`list_services`) and calls the service
+through the generated client.
+
+For the deployment-shaped version, use three terminals (Router on
+`ws://127.0.0.1:8765`, the default every entry point resolves):
 
 ```bash
 uv run python -m router_demo.router
