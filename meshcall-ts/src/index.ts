@@ -15,19 +15,38 @@ export {
 export {
   contractEntry,
   method,
+  mutates,
   normalizeServiceName,
+  query,
   renderContract,
   service,
+  stream,
   writeContract,
   type ClientStreamOptions,
   type DuplexOptions,
+  type InputDeclaration,
+  type InputMap,
   type JsonSchema,
   type MethodSemantics,
+  type MutatesOptions,
+  type NamedServiceOptions,
+  type QueryOptions,
   type ServerStreamOptions,
   type ServiceOptions,
+  type StreamOptions,
   type SubscriptionOptions as SubscriptionMethodOptions,
   type UnaryOptions,
 } from "./contract.js";
+export {
+  DependencyScope,
+  dependency,
+  meta,
+  type Dependency,
+  type DependencyResult,
+  type Injectable,
+  type MetaDependency,
+  type MetaOptions,
+} from "./di.js";
 /** The zod this package validates with; use it for your schemas so there is one copy. */
 export { z } from "zod";
 export { contractWarnings, lintService, renderWarning, type ContractWarning } from "./diagnostics.js";

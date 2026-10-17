@@ -732,6 +732,10 @@ export class RunningServer {
     private readonly spawnedRouter: WebSocketRouter | undefined,
   ) {}
 
+  public get url(): string {
+    return this.routerUrl;
+  }
+
   public async close(options: { readonly drain?: boolean; readonly drainTimeoutMs?: number } = {}): Promise<void> {
     try {
       await this.server.close({
