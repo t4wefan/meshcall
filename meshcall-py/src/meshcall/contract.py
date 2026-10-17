@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import inspect
 import re
+from collections.abc import AsyncIterable as AsyncIterableABC
 from collections.abc import AsyncIterator as AsyncIteratorABC
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
@@ -19,7 +20,8 @@ from typing import (
 from pydantic import BaseModel, TypeAdapter, create_model
 
 from meshcall.context import RpcContext
-from meshcall.diagnostics import ContractWarning, emit_contract_warnings
+from meshcall.di import DependencyPlan, MetaPlan, extract_injected_plan
+from meshcall.diagnostics import _MUTATING, ContractWarning, emit_contract_warnings
 from meshcall.errors import ContractError
 from meshcall.ir import (
     BalanceKind,
@@ -131,6 +133,7 @@ class MethodOptions:
     deprecated: str | None = None
     duplex_reason: str | None = None
     subscription: SubscriptionSpec | None = None
+    allow_duplex_infer: bool = False
 
 
 _NO_STREAM = object()
@@ -147,6 +150,12 @@ class MethodBinding:
     stream_parameter: str | None
     logger_parameter: str | None
     context_parameter: str | None = None
+    injected_parameters: Mapping[str, DependencyPlan | MetaPlan] = field(
+        default_factory=dict
+    )
+    response_type: Any = None
+    input_type: Any = None
+    output_type: Any = None
 
     def arguments(
         self,
@@ -155,10 +164,13 @@ class MethodBinding:
         *,
         logger: Any = _NO_LOGGER,
         context: Any = _NO_CONTEXT,
+        injected: Mapping[str, Any] | None = None,
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         values: dict[str, Any] = {
             name: getattr(request, name) for name in self.request_fields
         }
+        if injected:
+            values.update(injected)
 
         if self.stream_parameter is None:
             if stream is not _NO_STREAM:
@@ -364,6 +376,7 @@ class MethodDeclaration:
         deprecated: str | None = None,
         duplex_reason: str | None = None,
         subscription: SubscriptionSpec | None = None,
+        allow_duplex_infer: bool = False,
     ) -> None:
         self.options = MethodOptions(
             balance=balance,
@@ -376,6 +389,7 @@ class MethodDeclaration:
             deprecated=deprecated,
             duplex_reason=duplex_reason,
             subscription=subscription,
+            allow_duplex_infer=allow_duplex_infer,
         )
 
     if TYPE_CHECKING:
@@ -407,6 +421,106 @@ class _StaticShape:
 
 
 method = Method()
+
+
+def mutates(
+    func: Callable[MethodParams, MethodReturnT] | None = None,
+    *,
+    balance: BalancePolicy | None = None,
+    description: str | None = None,
+    idempotent: bool | None = None,
+    destructive: bool | None = None,
+    deprecated: str | None = None,
+    reason: str | None = None,
+) -> Any:
+    """Shorthand decorator for mutating RPC methods (unary, client stream, or duplex).
+
+    May be used as ``@mutates`` or ``@mutates(idempotent=True, ...)``.
+    """
+    resolved_destructive = destructive if destructive is not None else not idempotent
+    decl = MethodDeclaration(
+        stream=None,
+        balance=balance,
+        binding=None,
+        description=description,
+        idempotent=idempotent,
+        read_only=False,
+        destructive=resolved_destructive,
+        deprecated=deprecated,
+        duplex_reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
+        allow_duplex_infer=True,
+    )
+    return decl(func) if func is not None else decl
+
+
+def query(
+    func: Callable[MethodParams, MethodReturnT] | None = None,
+    *,
+    balance: BalancePolicy | None = None,
+    description: str | None = None,
+    idempotent: bool | None = None,
+    deprecated: str | None = None,
+) -> Any:
+    """Shorthand decorator for read-only RPC methods (unary or server stream).
+
+    May be used as ``@query`` or ``@query(description=...)``.
+    """
+    decl = MethodDeclaration(
+        stream=None,
+        balance=balance,
+        binding=None,
+        description=description,
+        idempotent=True if idempotent is None else idempotent,
+        read_only=True,
+        destructive=False,
+        deprecated=deprecated,
+    )
+    return decl(func) if func is not None else decl
+
+
+def stream(
+    func: Callable[MethodParams, MethodReturnT] | None = None,
+    *,
+    balance: BalancePolicy | None = None,
+    description: str | None = None,
+    idempotent: bool | None = None,
+    read_only: bool | None = None,
+    destructive: bool | None = None,
+    deprecated: str | None = None,
+) -> Any:
+    """Shorthand decorator for server-streaming RPC methods.
+
+    May be used as ``@stream`` or ``@stream(read_only=True, ...)``.
+    """
+    decl = MethodDeclaration(
+        stream=StreamKind.SERVER,
+        balance=balance,
+        binding=None,
+        description=description,
+        idempotent=idempotent,
+        read_only=read_only,
+        destructive=destructive,
+        deprecated=deprecated,
+    )
+    if func is not None:
+        if (
+            idempotent is None
+            and read_only is None
+            and destructive is None
+            and _MUTATING.match(func.__name__) is None
+        ):
+            decl = MethodDeclaration(
+                stream=StreamKind.SERVER,
+                balance=balance,
+                binding=None,
+                description=description,
+                idempotent=True,
+                read_only=True,
+                destructive=False,
+                deprecated=deprecated,
+            )
+        return decl(func)
+    return decl
 
 
 def _mark_method(func: Callable[..., Any], options: MethodOptions) -> None:
@@ -598,6 +712,7 @@ def _extract_method(
         parameters = parameters[1:]
 
     request_parameters: list[inspect.Parameter] = []
+    injected_parameters: dict[str, DependencyPlan | MetaPlan] = {}
     stream_annotation: Any | None = None
     stream_parameter: inspect.Parameter | None = None
     logger_parameter: inspect.Parameter | None = None
@@ -614,7 +729,12 @@ def _extract_method(
         annotation = hints.get(parameter.name)
         origin = get_origin(annotation)
         if parameter.name == "logger" or annotation is RpcLogger:
-            if origin in (RpcInputStream, RpcDuplex):
+            if origin in (
+                RpcInputStream,
+                RpcDuplex,
+                AsyncIteratorABC,
+                AsyncIterableABC,
+            ):
                 raise ContractError(
                     f"RPC method {func.__qualname__} cannot use logger as a stream"
                 )
@@ -631,12 +751,21 @@ def _extract_method(
                 )
             context_parameter = parameter
             continue
+        injected = extract_injected_plan(parameter, annotation, func.__qualname__)
+        if injected is not None:
+            injected_parameters[parameter.name] = injected
+            continue
         if parameter.name not in hints:
             raise ContractError(
                 f"Parameter {parameter.name!r} on {func.__qualname__} needs a type"
             )
 
-        if origin in (RpcInputStream, RpcDuplex):
+        if origin in (
+            RpcInputStream,
+            RpcDuplex,
+            AsyncIteratorABC,
+            AsyncIterableABC,
+        ):
             if stream_parameter is not None:
                 raise ContractError(
                     f"RPC method {func.__qualname__} has more than one stream"
@@ -645,6 +774,27 @@ def _extract_method(
             stream_parameter = parameter
         else:
             request_parameters.append(parameter)
+
+    stream_origin = get_origin(stream_annotation) if stream_annotation is not None else None
+    if (
+        stream_origin is RpcDuplex
+        and declared_stream is None
+        and options.allow_duplex_infer
+    ):
+        declared_stream = StreamKind.DUPLEX
+        inferred_reason = (
+            options.duplex_reason
+            or options.description
+            or _docstring(func)
+            or "interactive duplex channel"
+        )
+        options = replace(
+            options,
+            stream=StreamKind.DUPLEX,
+            duplex_reason=inferred_reason,
+            idempotent=False,
+            read_only=False,
+        )
 
     # Parameters are the request: every non-injected parameter becomes one
     # field of a generated request model, in declaration order.
@@ -676,6 +826,7 @@ def _extract_method(
         context_parameter=(
             context_parameter.name if context_parameter is not None else None
         ),
+        injected_parameters=injected_parameters,
     )
 
     if "return" not in hints:
@@ -703,7 +854,12 @@ def _extract_method(
             parameters=request_fields,
             **semantics,
         )
-        return _validated_method(contract, declared_stream, func, method_binding)
+        return _validated_method(
+            contract,
+            declared_stream,
+            func,
+            replace(method_binding, output_type=output_type),
+        )
 
     if stream_annotation is None:
         _require_model(return_type, f"response for {func.__qualname__}")
@@ -717,11 +873,15 @@ def _extract_method(
             parameters=request_fields,
             **semantics,
         )
-        return _validated_method(contract, declared_stream, func, method_binding)
+        return _validated_method(
+            contract,
+            declared_stream,
+            func,
+            replace(method_binding, response_type=return_type),
+        )
 
-    stream_origin = get_origin(stream_annotation)
     stream_args = get_args(stream_annotation)
-    if stream_origin is RpcInputStream:
+    if stream_origin in (RpcInputStream, AsyncIteratorABC, AsyncIterableABC):
         if len(stream_args) != 1:
             raise ContractError(f"Invalid input stream on {func.__qualname__}")
         input_type = stream_args[0]
@@ -738,7 +898,12 @@ def _extract_method(
             parameters=request_fields,
             **semantics,
         )
-        return _validated_method(contract, declared_stream, func, method_binding)
+        return _validated_method(
+            contract,
+            declared_stream,
+            func,
+            replace(method_binding, input_type=input_type, response_type=return_type),
+        )
 
     if stream_origin is RpcDuplex:
         if declared_stream is not StreamKind.DUPLEX:
@@ -767,7 +932,14 @@ def _extract_method(
             parameters=request_fields,
             **semantics,
         )
-        return _validated_method(contract, declared_stream, func, method_binding)
+        return _validated_method(
+            contract,
+            declared_stream,
+            func,
+            replace(
+                method_binding, input_type=input_type, output_type=output_type
+            ),
+        )
 
     raise ContractError(f"Unsupported stream annotation on {func.__qualname__}")
 
@@ -805,7 +977,7 @@ def _method_semantics(
 def _check_subscription(
     func: Callable[..., Any],
     spec: SubscriptionSpec,
-    item_type: type[BaseModel],
+    item_type: Any,
     request_type: type[BaseModel],
     request_fields: tuple[str, ...],
 ) -> None:
@@ -816,7 +988,7 @@ def _check_subscription(
     if spec.cursor not in item_properties:
         raise ContractError(
             f"Subscription {func.__qualname__}: cursor {spec.cursor!r} is not a "
-            f"field of {item_type.__qualname__}"
+            f"field of {getattr(item_type, '__qualname__', str(item_type))}"
         )
     if spec.resume not in request_fields:
         raise ContractError(
@@ -887,17 +1059,29 @@ def _request_model_name(service_type: type[Any], method_name: str) -> str:
 
 
 def _require_model(annotation: Any, context: str) -> None:
-    if not inspect.isclass(annotation) or not issubclass(annotation, BaseModel):
-        raise ContractError(f"The {context} must be a Pydantic BaseModel")
-
-
-def _type_ref(annotation: type[BaseModel]) -> TypeRef:
-    if "<locals>" in annotation.__qualname__:
+    if annotation in (None, type(None), Any):
         raise ContractError(
-            f"Type {annotation.__qualname__} is local and cannot be generated"
+            f"The {context} must be a Pydantic BaseModel or validatable type"
         )
+    if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+        return
+    try:
+        TypeAdapter(annotation).json_schema()
+    except Exception as exc:
+        raise ContractError(
+            f"The {context} must be a Pydantic BaseModel or validatable type: {exc}"
+        ) from exc
+
+
+def _type_ref(annotation: Any) -> TypeRef:
+    qualname = getattr(annotation, "__qualname__", None) or str(annotation)
+    if "<locals>" in qualname:
+        raise ContractError(
+            f"Type {qualname} is local and cannot be generated"
+        )
+    module = getattr(annotation, "__module__", "builtins")
     return TypeRef(
-        module=annotation.__module__,
-        qualname=annotation.__qualname__,
+        module=module,
+        qualname=qualname,
         schema=TypeAdapter(annotation).json_schema(),
     )

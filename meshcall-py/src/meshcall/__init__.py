@@ -16,9 +16,13 @@ from meshcall.contract import (
     get_service_method_binding,
     get_service_warnings,
     method,
+    mutates,
+    query,
     service,
+    stream,
 )
 from meshcall.contract_io import load_contract, render_contract, write_contract
+from meshcall.di import dependency, meta
 from meshcall.diagnostics import ContractWarning, MeshCallWarning, lint_contract
 from meshcall.errors import (
     CallCancelledError,
@@ -58,7 +62,13 @@ from meshcall.router_auth import (
     RouterScope,
 )
 from meshcall.server import RpcServer
-from meshcall.streams import RpcDuplex, RpcDuplexClient, RpcInputStream, RpcServerStream
+from meshcall.streams import (
+    DuplexChannel,
+    RpcDuplex,
+    RpcDuplexClient,
+    RpcInputStream,
+    RpcServerStream,
+)
 from meshcall.topic import Topic
 
 __all__ = [
@@ -75,6 +85,7 @@ __all__ = [
     "ContractError",
     "ContractWarning",
     "DeadlineExceededError",
+    "DuplexChannel",
     "ErrorCode",
     "InternalError",
     "InvalidArgumentError",
@@ -114,15 +125,20 @@ __all__ = [
     "UnavailableError",
     "Violation",
     "WebSocketRouter",
+    "dependency",
     "get_service_contract",
     "get_service_method_binding",
     "get_service_warnings",
     "lint_contract",
     "load_contract",
+    "meta",
     "method",
+    "mutates",
+    "query",
     "render_contract",
     "run",
     "serve",
     "service",
+    "stream",
     "write_contract",
 ]

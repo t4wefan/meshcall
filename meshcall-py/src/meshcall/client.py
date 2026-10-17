@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import inspect
 import time
 import uuid
 from collections.abc import AsyncIterable, Generator, Iterator, Mapping, Sequence
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from loguru import logger as default_logger
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from meshcall.context import (
     DEFAULT_PING_INTERVAL,
@@ -886,24 +887,33 @@ class _ClientCall:
 
     # -- call surface --------------------------------------------------------
 
-    async def send(self, item: BaseModel) -> None:
+    async def send(self, item: Any) -> None:
         if self.input_closed:
             raise ProtocolError("Input stream is closed")
         await self.send_credit.acquire()
         if self.terminal:
             raise CallCancelledError("Call is closed")
-        validated = (
-            self.input_type.model_validate(item)
-            if self.input_type is not None and self.input_type is not BaseModel
-            else item
-        )
+        if self.input_type is not None and self.input_type is not BaseModel:
+            if inspect.isclass(self.input_type) and issubclass(
+                self.input_type, BaseModel
+            ):
+                validated = self.input_type.model_validate(item)
+                payload = validated.model_dump(mode="json", by_alias=True)
+            else:
+                adapter = TypeAdapter(self.input_type)
+                validated = adapter.validate_python(item)
+                payload = adapter.dump_python(validated, mode="json", by_alias=True)
+        elif isinstance(item, BaseModel):
+            payload = item.model_dump(mode="json", by_alias=True)
+        else:
+            payload = item
         try:
             await self.connection.send(
                 StreamItemFrame(
                     call_id=self.call_id,
                     direction="client",
                     sequence=self.input_sequence,
-                    payload=validated.model_dump(mode="json", by_alias=True),
+                    payload=payload,
                 )
             )
         except MeshCallError as exc:
@@ -920,7 +930,7 @@ class _ClientCall:
                 StreamEndFrame(call_id=self.call_id, direction="client")
             )
 
-    async def next_output(self) -> BaseModel:
+    async def next_output(self) -> Any:
         value = await self.output_queue.get()
         if value is _STREAM_END:
             raise StopAsyncIteration
@@ -980,7 +990,12 @@ class _ClientCall:
         self.output_sequence += 1
         self.arm_idle()
         try:
-            item = self.output_type.model_validate(frame.payload)
+            if inspect.isclass(self.output_type) and issubclass(
+                self.output_type, BaseModel
+            ):
+                item = self.output_type.model_validate(frame.payload)
+            else:
+                item = TypeAdapter(self.output_type).validate_python(frame.payload)
         except ValidationError as exc:
             await self.fail(
                 ProtocolError(
@@ -1014,11 +1029,14 @@ class _ClientCall:
         self.disarm_timers()
         self.trailers = dict(frame.metadata or {})
         try:
-            result = (
-                self.response_type.model_validate(frame.payload)
-                if self.response_type is not None
-                else None
-            )
+            if self.response_type is None:
+                result = None
+            elif inspect.isclass(self.response_type) and issubclass(
+                self.response_type, BaseModel
+            ):
+                result = self.response_type.model_validate(frame.payload)
+            else:
+                result = TypeAdapter(self.response_type).validate_python(frame.payload)
         except ValidationError as exc:
             await self.fail(
                 ProtocolError(

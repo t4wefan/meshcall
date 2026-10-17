@@ -332,8 +332,9 @@ class Router:
 
     def __init__(
         self,
-        url: str | Sequence[str] | None = None,
+        url: str | Path | Sequence[str] | None = None,
         *,
+        listen: str | Path | None = None,
         unix_path: str | Path | None = None,
         pipe: str | None = None,
         auth: RouterCredentials | None = None,
@@ -357,6 +358,15 @@ class Router:
         startup_timeout: float = 10.0,
         shutdown_timeout: float = 5.0,
     ) -> None:
+        if listen is not None:
+            if url is not None:
+                raise ValueError("Pass either url or listen, not both")
+            url = listen
+        if isinstance(url, Path):
+            if unix_path is not None:
+                raise ValueError("Pass either Path url/listen or unix_path, not both")
+            unix_path = url
+            url = None
         self.urls, self.unix_path, self.pipe = _resolve_endpoints(url, unix_path, pipe)
         self.auth = auth
         self.peer_id = peer_id
@@ -650,6 +660,10 @@ class RunningServer:
     @property
     def instance_id(self) -> str:
         return self.server.instance_id
+
+    @property
+    def url(self) -> str:
+        return self.router.url
 
     async def start(self) -> None:
         target = (
