@@ -2,8 +2,6 @@
 # External dependencies: uv add 'meshcall>=0.2.1' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from pydantic import BaseModel
 
 from meshcall.client import ClientBase
@@ -29,11 +27,6 @@ class FeedClient(ClientBase):
     def ticks(
         self,
         since: int | None = None,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[Tick]:
         """Every tick after ``since``."""
         request = FeedTicksRequest(
@@ -46,19 +39,10 @@ class FeedClient(ClientBase):
             Tick,
             cursor='seq',
             resume='since',
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )
 
     def broken(
         self,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[Tick]:
         """Fails for good after one item."""
         request = FeedBrokenRequest()
@@ -67,8 +51,4 @@ class FeedClient(ClientBase):
             'broken',
             request,
             Tick,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )

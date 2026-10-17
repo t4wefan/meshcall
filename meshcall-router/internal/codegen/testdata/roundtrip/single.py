@@ -2,7 +2,7 @@
 # External dependencies: uv add 'meshcall>=0.2.1' 'pydantic>=2.11'
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Mapping
+from collections.abc import AsyncIterable
 
 from typing import Literal
 
@@ -50,12 +50,6 @@ class ContractRoundTripClient(ClientBase):
     async def echo(
         self,
         request: AliasRequest,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        idempotency_key: str | None = None,
     ) -> AliasResult:
         request = ContractRoundTripEchoRequest(
             request=request,
@@ -65,21 +59,11 @@ class ContractRoundTripClient(ClientBase):
             'echo',
             request,
             AliasResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
-            idempotency_key=idempotency_key,
         )
 
     def download(
         self,
         request: AliasRequest,
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> RpcServerStream[AliasItem]:
         request = ContractRoundTripDownloadRequest(
             request=request,
@@ -89,21 +73,12 @@ class ContractRoundTripClient(ClientBase):
             'download',
             request,
             AliasItem,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )
 
     async def upload(
         self,
         request: AliasRequest,
         items: AsyncIterable[AliasItem],
-        *,
-        instance: str | None = None,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
     ) -> AliasResult:
         request = ContractRoundTripUploadRequest(
             request=request,
@@ -115,8 +90,4 @@ class ContractRoundTripClient(ClientBase):
             items,
             AliasItem,
             AliasResult,
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            instance=instance,
         )
