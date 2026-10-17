@@ -1,6 +1,6 @@
 [project]
 name = "meshcall"
-version = "0.2.1"
+version = "0.3.0"
 description = "Async typed RPC for Python services: WebSocket direct or through the MeshCall Router"
 readme = "README.md"
 license = "MIT"

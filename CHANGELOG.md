@@ -10,6 +10,8 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-18
+
 ### Added
 
 - **Four-layer peer architecture (`Service & Contract`, `Router` & `LocalRouter`, `Mesh`, `GeneratedClient`)**:
@@ -302,7 +304,8 @@ runtimes, the standalone Go Router, and the unified `meshcall` CLI.
   - `meshcall-conformance` runner in Go with reference fixtures for Python and
     TypeScript.
 
-[Unreleased]: https://github.com/t4wefan/meshcall/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/t4wefan/meshcall/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/t4wefan/meshcall/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/t4wefan/meshcall/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/t4wefan/meshcall/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/t4wefan/meshcall/releases/tag/v0.1.0

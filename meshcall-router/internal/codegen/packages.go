@@ -13,7 +13,7 @@ import (
 
 // RuntimeRelease is the meshcall release generated clients require by
 // default: they use that release's API. scripts/release/bump.sh sets it.
-const RuntimeRelease = "0.2.1"
+const RuntimeRelease = "0.3.0"
 
 // PackageOptions configures a generated client package.
 type PackageOptions struct {
