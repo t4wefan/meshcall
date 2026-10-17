@@ -4,6 +4,11 @@ import { dirname, resolve } from "node:path";
 
 import { z } from "zod";
 
+import {
+  DependencyScope,
+  validateInjectables,
+  type Injectable,
+} from "./di.js";
 import { recordWarnings } from "./diagnostics.js";
 import type { BalancePolicy } from "./protocol.js";
 import type { DuplexChannel, RpcContext, ServiceDefinition, ServiceMethod } from "./service.js";
@@ -12,6 +17,8 @@ export type JsonSchema = Readonly<Record<string, unknown>>;
 
 type Awaitable<T> = T | Promise<T>;
 type Schema = z.ZodType;
+export type InputMap = Readonly<Record<string, Schema>>;
+export type InputDeclaration = InputMap | Schema;
 
 /** Semantic hints shared by every method shape. */
 export interface MethodSemantics {
@@ -28,6 +35,8 @@ export interface MethodSemantics {
   /** Replacement to use instead; a short sentence when there is none. */
   readonly deprecated?: string;
   readonly balance?: BalancePolicy;
+  /** Dependencies and metadata headers injected after business parameters. */
+  readonly inject?: ReadonlyArray<Injectable<any>>;
 }
 
 export interface UnaryOptions<Request extends Schema, Response extends Schema> extends MethodSemantics {
@@ -69,6 +78,33 @@ export interface DuplexOptions<Request extends Schema, Input extends Schema, Out
   readonly outputItem: Output;
 }
 
+export interface QueryOptions<Response extends Schema = Schema> extends Omit<MethodSemantics, "readOnly" | "destructive"> {
+  readonly input?: InputDeclaration;
+  readonly request?: Schema;
+  readonly output?: Response;
+  readonly response?: Response;
+}
+
+export interface StreamOptions<Item extends Schema = Schema> extends Omit<MethodSemantics, "readOnly" | "destructive"> {
+  readonly input?: InputDeclaration;
+  readonly request?: Schema;
+  readonly output?: Item;
+  readonly outputItem?: Item;
+}
+
+export interface MutatesOptions extends MethodSemantics {
+  readonly input?: InputDeclaration;
+  readonly request?: Schema;
+  readonly streamInput?: Schema;
+  readonly inputItem?: Schema;
+  readonly output?: Schema;
+  readonly response?: Schema;
+  readonly streamOutput?: Schema;
+  readonly outputItem?: Schema;
+  readonly reason?: string;
+  readonly sideEffect?: string;
+}
+
 export interface ServiceOptions {
   /** What the service is for; required, `""` to declare none on purpose. */
   readonly description: string;
@@ -81,7 +117,12 @@ export interface ServiceOptions {
   readonly balance?: BalancePolicy;
 }
 
+export interface NamedServiceOptions extends ServiceOptions {
+  readonly name: string;
+}
+
 type Stream = ServiceMethod["stream"];
+export type BindingMode = "request_object" | "positional" | "single_schema";
 
 /** One method as declared by a decorator. */
 export interface MethodSpec extends Partial<Omit<MethodSemantics, "description">> {
@@ -94,6 +135,8 @@ export interface MethodSpec extends Partial<Omit<MethodSemantics, "description">
   readonly outputItem?: Schema;
   readonly reason?: string;
   readonly subscription?: { readonly cursor?: string; readonly resume?: string };
+  readonly bindingMode?: BindingMode;
+  readonly parameterNames?: ReadonlyArray<string>;
 }
 
 /** A `@service` class's contract: everything but the handlers. */
@@ -122,7 +165,202 @@ function record(context: ClassMethodDecoratorContext<any>, fn: unknown, spec: Om
   if (context.static || context.private || typeof context.name !== "string") {
     throw new Error("@method decorates public instance methods only");
   }
+  if (spec.inject !== undefined && spec.inject.length > 0) {
+    validateInjectables(spec.inject, context.name);
+  }
   pending.push({ fn, spec: { ...spec, name: context.name } });
+}
+
+function isZodSchema(value: unknown): value is Schema {
+  return value instanceof z.ZodType
+    || (typeof value === "object" && value !== null && "safeParse" in value && typeof (value as { safeParse?: unknown }).safeParse === "function");
+}
+
+function normalizeInputDeclaration(
+  input: InputDeclaration | undefined,
+  request: Schema | undefined,
+): { request: Schema; bindingMode: BindingMode; parameterNames?: ReadonlyArray<string> } {
+  if (request !== undefined) {
+    return { request, bindingMode: "request_object" };
+  }
+  if (input === undefined) {
+    return { request: z.object({}), bindingMode: "positional", parameterNames: [] };
+  }
+  if (isZodSchema(input)) {
+    return { request: input, bindingMode: "single_schema", parameterNames: ["request"] };
+  }
+  const names = Object.keys(input);
+  return {
+    request: z.object(input as Record<string, Schema>),
+    bindingMode: "positional",
+    parameterNames: names,
+  };
+}
+
+function looksLikeDuplexHandler(fn: unknown, positionalParamCount: number): boolean {
+  if (typeof fn !== "function") return false;
+  const src = Function.prototype.toString.call(fn);
+  if (src.includes(".send(") || src.includes(".closeSend(")) {
+    return true;
+  }
+  const match = /^[^(]*\(([^)]*)\)/u.exec(src);
+  if (match === null) return false;
+  const rawParams = match[1]!
+    .split(",")
+    .map((p) => p.trim().split(/[=\s]/u)[0] ?? "")
+    .filter((p) => p !== "");
+  const streamParam = rawParams[positionalParamCount];
+  return streamParam === "channel" || streamParam === "duplex";
+}
+
+/**
+ * Shorthand decorator for read-only, idempotent unary RPC methods (`@query({...})`).
+ */
+export function query<Response extends Schema = Schema>(options: QueryOptions<Response>) {
+  return <This>(
+    fn: (this: This, ...args: any[]) => Awaitable<z.input<Response>>,
+    context: ClassMethodDecoratorContext<This>,
+  ): void => {
+    const response = options.output ?? options.response;
+    if (response === undefined) {
+      throw new Error(`@query on ${String(context.name)} requires an output (or response) schema`);
+    }
+    const normalizedInput = normalizeInputDeclaration(options.input, options.request);
+    record(context, fn, {
+      description: options.description,
+      stream: "unary",
+      request: normalizedInput.request,
+      response,
+      bindingMode: normalizedInput.bindingMode,
+      ...(normalizedInput.parameterNames !== undefined ? { parameterNames: normalizedInput.parameterNames } : {}),
+      readOnly: true,
+      idempotent: true,
+      destructive: false,
+      ...(options.deprecated !== undefined ? { deprecated: options.deprecated } : {}),
+      ...(options.balance !== undefined ? { balance: options.balance } : {}),
+      ...(options.inject !== undefined ? { inject: options.inject } : {}),
+    });
+  };
+}
+
+/**
+ * Shorthand decorator for read-only, idempotent server-streaming RPC methods (`@stream({...})`).
+ */
+export function stream<Item extends Schema = Schema>(options: StreamOptions<Item>) {
+  return <This>(
+    fn: (this: This, ...args: any[]) => AsyncIterable<z.input<Item>> | Promise<AsyncIterable<z.input<Item>>>,
+    context: ClassMethodDecoratorContext<This>,
+  ): void => {
+    const outputItem = options.output ?? options.outputItem;
+    if (outputItem === undefined) {
+      throw new Error(`@stream on ${String(context.name)} requires an output (or outputItem) schema`);
+    }
+    const normalizedInput = normalizeInputDeclaration(options.input, options.request);
+    record(context, fn, {
+      description: options.description,
+      stream: "server_stream",
+      request: normalizedInput.request,
+      outputItem,
+      bindingMode: normalizedInput.bindingMode,
+      ...(normalizedInput.parameterNames !== undefined ? { parameterNames: normalizedInput.parameterNames } : {}),
+      readOnly: true,
+      idempotent: true,
+      destructive: false,
+      ...(options.deprecated !== undefined ? { deprecated: options.deprecated } : {}),
+      ...(options.balance !== undefined ? { balance: options.balance } : {}),
+      ...(options.inject !== undefined ? { inject: options.inject } : {}),
+    });
+  };
+}
+
+/**
+ * Shorthand decorator for mutating RPC methods (unary, client stream, or duplex).
+ */
+export function mutates(options: MutatesOptions) {
+  return <This>(
+    fn: (this: This, ...args: any[]) => any,
+    context: ClassMethodDecoratorContext<This>,
+  ): void => {
+    const normalizedInput = normalizeInputDeclaration(options.input, options.request);
+    const inputItem = options.streamInput ?? options.inputItem;
+    const idempotent = options.idempotent === true;
+    const destructive = options.destructive ?? !idempotent;
+
+    if (inputItem === undefined) {
+      const response = options.output ?? options.response;
+      if (response === undefined) {
+        throw new Error(`@mutates on ${String(context.name)} requires an output (or response) schema`);
+      }
+      record(context, fn, {
+        description: options.description,
+        stream: "unary",
+        request: normalizedInput.request,
+        response,
+        bindingMode: normalizedInput.bindingMode,
+        ...(normalizedInput.parameterNames !== undefined ? { parameterNames: normalizedInput.parameterNames } : {}),
+        readOnly: false,
+        idempotent,
+        destructive,
+        ...(options.deprecated !== undefined ? { deprecated: options.deprecated } : {}),
+        ...(options.balance !== undefined ? { balance: options.balance } : {}),
+        ...(options.inject !== undefined ? { inject: options.inject } : {}),
+      });
+      return;
+    }
+
+    const paramCount = normalizedInput.parameterNames?.length ?? 1;
+    const isExplicitDuplex =
+      options.streamOutput !== undefined ||
+      options.outputItem !== undefined ||
+      options.reason !== undefined;
+    const isExplicitClientStream = options.response !== undefined;
+    const isDuplex = isExplicitDuplex || (!isExplicitClientStream && looksLikeDuplexHandler(fn, paramCount));
+
+    if (isDuplex) {
+      const outputItem = options.streamOutput ?? options.outputItem ?? options.output;
+      if (outputItem === undefined) {
+        throw new Error(`@mutates duplex on ${String(context.name)} requires an output (or streamOutput) schema`);
+      }
+      const reason = (options.reason ?? options.sideEffect ?? options.description).trim() || "Interactive bidirectional stream";
+      record(context, fn, {
+        description: options.description,
+        stream: "duplex",
+        request: normalizedInput.request,
+        inputItem,
+        outputItem,
+        reason,
+        bindingMode: normalizedInput.bindingMode,
+        ...(normalizedInput.parameterNames !== undefined ? { parameterNames: normalizedInput.parameterNames } : {}),
+        readOnly: false,
+        idempotent: false,
+        destructive: options.destructive ?? true,
+        ...(options.deprecated !== undefined ? { deprecated: options.deprecated } : {}),
+        ...(options.balance !== undefined ? { balance: options.balance } : {}),
+        ...(options.inject !== undefined ? { inject: options.inject } : {}),
+      });
+      return;
+    }
+
+    const response = options.response ?? options.output;
+    if (response === undefined) {
+      throw new Error(`@mutates client stream on ${String(context.name)} requires an output (or response) schema`);
+    }
+    record(context, fn, {
+      description: options.description,
+      stream: "client_stream",
+      request: normalizedInput.request,
+      inputItem,
+      response,
+      bindingMode: normalizedInput.bindingMode,
+      ...(normalizedInput.parameterNames !== undefined ? { parameterNames: normalizedInput.parameterNames } : {}),
+      readOnly: false,
+      idempotent,
+      destructive,
+      ...(options.deprecated !== undefined ? { deprecated: options.deprecated } : {}),
+      ...(options.balance !== undefined ? { balance: options.balance } : {}),
+      ...(options.inject !== undefined ? { inject: options.inject } : {}),
+    });
+  };
 }
 
 /**
@@ -134,7 +372,7 @@ export function method<Request extends Schema, Response extends Schema>(options:
   return <This>(
     fn: (this: This, request: z.output<Request>, context: RpcContext) => Awaitable<z.input<Response>>,
     context: ClassMethodDecoratorContext<This>,
-  ): void => record(context, fn, { ...options, stream: "unary" });
+  ): void => record(context, fn, { ...options, stream: "unary", bindingMode: "request_object" });
 }
 
 /** A server stream: an async generator yielding `outputItem`s. */
@@ -142,10 +380,10 @@ method.serverStream = <Request extends Schema, Item extends Schema>(options: Ser
   <This>(
     fn: (this: This, request: z.output<Request>, context: RpcContext) => AsyncIterable<z.input<Item>>,
     context: ClassMethodDecoratorContext<This>,
-  ): void => record(context, fn, { ...options, stream: "server_stream" });
+  ): void => record(context, fn, { ...options, stream: "server_stream", bindingMode: "request_object" });
 
 /**
- * A subscription: a server stream meant to stay open, which clients reopen
+ * (Experimental) A subscription: a server stream meant to stay open, which clients reopen
  * after a retryable failure, passing the last item's `cursor` as `resume`.
  */
 method.subscription = <Request extends Schema, Item extends Schema>(options: SubscriptionOptions<Request, Item>) =>
@@ -155,7 +393,7 @@ method.subscription = <Request extends Schema, Item extends Schema>(options: Sub
   ): void => {
     const { cursor, resume, ...rest } = options;
     record(context, fn, {
-      ...rest, stream: "server_stream",
+      ...rest, stream: "server_stream", bindingMode: "request_object",
       subscription: cursor === undefined || resume === undefined ? {} : { cursor, resume },
     });
   };
@@ -168,7 +406,7 @@ method.clientStream = <Request extends Schema, Item extends Schema, Response ext
     fn: (this: This, request: z.output<Request>, items: AsyncIterable<z.output<Item>>, context: RpcContext)
       => Awaitable<z.input<Response>>,
     context: ClassMethodDecoratorContext<This>,
-  ): void => record(context, fn, { ...options, stream: "client_stream" });
+  ): void => record(context, fn, { ...options, stream: "client_stream", bindingMode: "request_object" });
 
 /**
  * Input and output stream at the same time — the shape of last resort. A
@@ -189,16 +427,32 @@ method.duplex = <Request extends Schema, Input extends Schema, Output extends Sc
     if (typeof options.reason !== "string" || options.reason.trim() === "") {
       throw new Error("@method.duplex needs reason: say why a server stream plus unary calls, or a client stream, will not do");
     }
-    record(context, fn, { ...options, reason: options.reason.trim(), stream: "duplex" });
+    record(context, fn, { ...options, reason: options.reason.trim(), stream: "duplex", bindingMode: "request_object" });
   };
 
 const METHOD_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 /**
- * Declare a class as a MeshCall service. Its `@method`-decorated methods are
- * the service's methods; pass instances to `MeshCallServer({ services })`.
+ * Declare a class as a MeshCall service. Its `@method`, `@query`, `@stream`,
+ * or `@mutates`-decorated methods are the service's methods; pass instances
+ * to `serve(new MyService())`, `run(new MyService())`, or `MeshCallServer({ services })`.
  */
-export function service(name: string, options: ServiceOptions) {
+export function service(name: string, options: ServiceOptions): (
+  target: abstract new (...args: never[]) => unknown,
+  context: ClassDecoratorContext,
+) => void;
+export function service(options: NamedServiceOptions): (
+  target: abstract new (...args: never[]) => unknown,
+  context: ClassDecoratorContext,
+) => void;
+export function service(
+  nameOrOptions: string | NamedServiceOptions,
+  maybeOptions?: ServiceOptions,
+) {
+  const rawName = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
+  const options: ServiceOptions = typeof nameOrOptions === "string"
+    ? (maybeOptions ?? { description: "" })
+    : nameOrOptions;
   return (target: abstract new (...args: never[]) => unknown, context: ClassDecoratorContext): void => {
     const prototype = target.prototype as Record<string, unknown>;
     const mine = pending.filter((entry) => prototype[entry.spec.name] === entry.fn);
@@ -208,8 +462,8 @@ export function service(name: string, options: ServiceOptions) {
       throw new Error("@method on " + strays.map((s) => s.spec.name).join(", ")
         + " outside a @service class: decorate that class with @service");
     }
-    const normalized = normalizeServiceName(name);
-    if (mine.length === 0) throw new Error(`Service ${name} does not declare any methods`);
+    const normalized = normalizeServiceName(rawName);
+    if (mine.length === 0) throw new Error(`Service ${rawName} does not declare any methods`);
     for (const { spec } of mine) {
       if (!METHOD_NAME.test(spec.name)) throw new Error(`Invalid cross-language method name: ${spec.name}`);
       if (spec.readOnly === true && spec.destructive === true) {
@@ -241,6 +495,13 @@ function checkResume(spec: MethodSpec): void {
   }
 }
 
+/** Whether `value` is a `@service` class or an instance of one. */
+export function isService(value: unknown): value is object {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+  const target = typeof value === "function" ? value : (value as { constructor?: object }).constructor;
+  return target !== undefined && specs.has(target);
+}
+
 /** The contract of a `@service` class or of one of its instances. */
 export function serviceSpec(service: object): ServiceSpec {
   const target = typeof service === "function" ? service : service.constructor;
@@ -252,6 +513,89 @@ export function serviceSpec(service: object): ServiceSpec {
   return spec;
 }
 
+function extractRequestArgs(spec: MethodSpec, request: unknown): unknown[] {
+  const mode = spec.bindingMode ?? "request_object";
+  if (mode === "request_object" || mode === "single_schema") {
+    return [request];
+  }
+  const names = spec.parameterNames ?? [];
+  const obj = (request !== null && typeof request === "object") ? (request as Record<string, unknown>) : {};
+  return names.map((name) => obj[name]);
+}
+
+function bindMethodHandler(instance: object, m: MethodSpec, fn: (...args: unknown[]) => unknown): ServiceMethod["handler"] {
+  const mode = m.bindingMode ?? "request_object";
+  const inject = m.inject ?? [];
+  if (mode === "request_object" && inject.length === 0) {
+    return ((...args: unknown[]) => fn.apply(instance, args)) as ServiceMethod["handler"];
+  }
+
+  if (m.stream === "unary") {
+    return async (request: unknown, context: RpcContext) => {
+      const reqArgs = extractRequestArgs(m, request);
+      if (inject.length === 0) {
+        return await fn.apply(instance, [...reqArgs, context]);
+      }
+      const scope = new DependencyScope(context);
+      try {
+        const injectedArgs = await scope.resolveAll(inject);
+        return await fn.apply(instance, [...reqArgs, ...injectedArgs, context]);
+      } finally {
+        await scope.close();
+      }
+    };
+  }
+
+  if (m.stream === "server_stream") {
+    return async function* (request: unknown, context: RpcContext) {
+      const reqArgs = extractRequestArgs(m, request);
+      const scope = new DependencyScope(context);
+      try {
+        const injectedArgs = await scope.resolveAll(inject);
+        const rawIterable = await fn.apply(instance, [...reqArgs, ...injectedArgs, context]);
+        const iterable = rawIterable as AsyncIterable<unknown>;
+        for await (const item of iterable) {
+          yield item;
+        }
+      } finally {
+        await scope.close();
+      }
+    };
+  }
+
+  if (m.stream === "client_stream") {
+    return async (request: unknown, items: AsyncIterable<unknown>, context: RpcContext) => {
+      const reqArgs = extractRequestArgs(m, request);
+      if (inject.length === 0) {
+        return await fn.apply(instance, [...reqArgs, items, context]);
+      }
+      const scope = new DependencyScope(context);
+      try {
+        const injectedArgs = await scope.resolveAll(inject);
+        return await fn.apply(instance, [...reqArgs, items, ...injectedArgs, context]);
+      } finally {
+        await scope.close();
+      }
+    };
+  }
+
+  // duplex
+  return async (request: unknown, channel: DuplexChannel<unknown, unknown>, context: RpcContext) => {
+    const reqArgs = extractRequestArgs(m, request);
+    if (inject.length === 0) {
+      await fn.apply(instance, [...reqArgs, channel, context]);
+      return;
+    }
+    const scope = new DependencyScope(context);
+    try {
+      const injectedArgs = await scope.resolveAll(inject);
+      await fn.apply(instance, [...reqArgs, channel, ...injectedArgs, context]);
+    } finally {
+      await scope.close();
+    }
+  };
+}
+
 /** The runtime definition of a service instance: its handlers bound to it. */
 export function bindService(instance: object): { spec: ServiceSpec; definition: ServiceDefinition } {
   if (typeof instance === "function") {
@@ -261,7 +605,7 @@ export function bindService(instance: object): { spec: ServiceSpec; definition: 
   const methods: Record<string, ServiceMethod> = {};
   for (const m of spec.methods) {
     const fn = (instance as Record<string, (...args: unknown[]) => unknown>)[m.name] as (...args: unknown[]) => unknown;
-    const handler = (...args: unknown[]) => fn.apply(instance, args);
+    const handler = bindMethodHandler(instance, m, fn);
     methods[m.name] = { stream: m.stream, handler, ...(m.balance === undefined ? {} : { balance: m.balance }),
       ...(m.reason === undefined ? {} : { reason: m.reason }) } as ServiceMethod;
   }
@@ -337,12 +681,14 @@ export function contractEntry(service: object): Record<string, unknown> {
     methods: spec.methods.map((m) => {
       const base = prefix + pascal(m.name);
       const request = typeRef(m.request, "input", base + "Request", spec.sourceModule);
+      const parameters = m.parameterNames !== undefined
+        ? [...m.parameterNames]
+        : Object.keys((request.schema.properties as Record<string, unknown> | undefined) ?? {});
       return {
         name: m.name,
         stream: m.stream,
         request,
-        // Parameters are the request object's properties, in schema order.
-        parameters: Object.keys((request.schema.properties as Record<string, unknown> | undefined) ?? {}),
+        parameters,
         response: m.response === undefined ? null : typeRef(m.response, "output", base + "Response", spec.sourceModule),
         input_item: m.inputItem === undefined ? null : typeRef(m.inputItem, "input", base + "InputItem", spec.sourceModule),
         output_item: m.outputItem === undefined ? null : typeRef(m.outputItem, "output", base + "OutputItem", spec.sourceModule),
@@ -391,7 +737,15 @@ export async function writeContract(services: ReadonlyArray<object>, output: str
  * do not know (docs/protocol.md → Compatibility rule).
  */
 function typeRef(schema: Schema, io: "input" | "output", fallback: string, module: string) {
-  const document = z.toJSONSchema(schema, { io, target: "draft-2020-12", unrepresentable: "throw" }) as Record<string, unknown>;
+  let document: Record<string, unknown>;
+  try {
+    document = z.toJSONSchema(schema, { io, target: "draft-2020-12", unrepresentable: "throw" }) as Record<string, unknown>;
+  } catch {
+    document = z.toJSONSchema(schema, { io, target: "draft-2020-12", unrepresentable: "any" }) as Record<string, unknown>;
+    if (Object.keys(document).filter((k) => k !== "$schema").length === 0) {
+      document = { type: "string", format: "binary" };
+    }
+  }
   delete document.$schema;
   let qualname = fallback;
   const defs = document.$defs as Record<string, Record<string, unknown>> | undefined;

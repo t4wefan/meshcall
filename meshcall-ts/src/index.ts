@@ -15,19 +15,38 @@ export {
 export {
   contractEntry,
   method,
+  mutates,
   normalizeServiceName,
+  query,
   renderContract,
   service,
+  stream,
   writeContract,
   type ClientStreamOptions,
   type DuplexOptions,
+  type InputDeclaration,
+  type InputMap,
   type JsonSchema,
   type MethodSemantics,
+  type MutatesOptions,
+  type NamedServiceOptions,
+  type QueryOptions,
   type ServerStreamOptions,
   type ServiceOptions,
+  type StreamOptions,
   type SubscriptionOptions as SubscriptionMethodOptions,
   type UnaryOptions,
 } from "./contract.js";
+export {
+  DependencyScope,
+  dependency,
+  meta,
+  type Dependency,
+  type DependencyResult,
+  type Injectable,
+  type MetaDependency,
+  type MetaOptions,
+} from "./di.js";
 /** The zod this package validates with; use it for your schemas so there is one copy. */
 export { z } from "zod";
 export { contractWarnings, lintService, renderWarning, type ContractWarning } from "./diagnostics.js";
@@ -67,12 +86,35 @@ export {
 } from "./server.js";
 
 export {
-  findCliBinary, findRouterBinary, installRouter, platformPackageName, routerCacheDir, routerVersion, WebSocketRouter,
-  type InstallRouterOptions, type WebSocketRouterOptions,
+  DEFAULT_ROUTER_URL,
+  findCliBinary,
+  findRouterBinary,
+  installRouter,
+  platformPackageName,
+  Router,
+  routerCacheDir,
+  routerVersion,
+  run,
+  RunningServer,
+  serve,
+  WebSocketRouter,
+  type InstallRouterOptions,
+  type RouterOptions,
+  type ServeOptions,
+  type WebSocketRouterOptions,
 } from "./router.js";
 export {
-  RouterAuthClient, ROUTER_AUTH_SERVICE, type RouterCredentials, type RouterScope,
-  type RouterIdentity, type IssuedToken,
+  REGISTRY_SERVICE,
+  RouterAuthClient,
+  RouterCredentials,
+  ROUTER_AUTH_SERVICE,
+  type IssuedToken,
+  type RegistryBalance,
+  type RegistryInstance,
+  type RegistryMethod,
+  type RegistryService,
+  type RouterIdentity,
+  type RouterScope,
 } from "./router-auth.js";
 export { Topic, type TopicOptions } from "./topic.js";
-export type { MeshCallRpc, RpcStream } from "./rpc.js";
+export { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";

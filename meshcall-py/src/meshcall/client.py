@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import inspect
 import time
 import uuid
-from collections.abc import AsyncIterable, Iterator, Mapping, Sequence
-from typing import Any, Self
+from collections.abc import AsyncIterable, Generator, Iterator, Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
 
 from loguru import logger as default_logger
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from meshcall.context import (
+    DEFAULT_PING_INTERVAL,
+    DEFAULT_PING_TIMEOUT,
     DEFAULT_RECONNECT,
     DEFAULT_RETRY,
     CallOptions,
@@ -43,7 +48,15 @@ from meshcall.protocol import (
 )
 from meshcall.server import INITIAL_STREAM_CREDIT
 from meshcall.streams import RpcDuplexClient, RpcServerStream
-from meshcall.transport import FrameConnection, is_frame_too_large
+from meshcall.transport import (
+    DEFAULT_MAX_FRAME_SIZE,
+    FrameConnection,
+    is_frame_too_large,
+)
+
+if TYPE_CHECKING:
+    from meshcall.router import Router
+    from meshcall.router_auth import RouterCredentials
 
 _STREAM_END = object()
 
@@ -63,26 +76,156 @@ class ClientBase:
 
     def __init__(
         self,
-        driver: ClientDriver,
+        driver: ClientDriver | Router | ClientBase,
         *,
         deadline_grace: float | None = None,
         reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
         interceptors: Sequence[ClientInterceptor] = (),
         retry: RetryPolicy = DEFAULT_RETRY,
     ) -> None:
-        self.driver = driver
-        self.deadline_grace = deadline_grace
-        self.reconnect = reconnect
-        self.retry = retry
-        self.interceptors = tuple(interceptors)
+        self._call_options = CallOptions()
+        if isinstance(driver, ClientBase):
+            self._root: ClientBase = driver._root
+            self._owns_root = False
+            self.driver: ClientDriver = self._root.driver
+            self.deadline_grace = (
+                deadline_grace
+                if deadline_grace is not None
+                else self._root.deadline_grace
+            )
+            self.reconnect = self._root.reconnect
+            self.retry = self._root.retry
+            self.interceptors = self._root.interceptors
+        elif hasattr(driver, "_ensure_client"):
+            root: ClientBase = driver._ensure_client()  # type: ignore[union-attr]
+            self._root = root
+            self._owns_root = False
+            self.driver = root.driver
+            self.deadline_grace = (
+                deadline_grace if deadline_grace is not None else root.deadline_grace
+            )
+            self.reconnect = root.reconnect
+            self.retry = root.retry
+            self.interceptors = root.interceptors
+        else:
+            self._root = self
+            self._owns_root = True
+            self.driver = driver  # type: ignore[assignment]
+            self.deadline_grace = deadline_grace
+            self.reconnect = reconnect
+            self.retry = retry
+            self.interceptors = tuple(interceptors)
         self._connection: FrameConnection | None = None
         self._calls: dict[str, _ClientCall] = {}
         self._state_lock = asyncio.Lock()
         self._receive_task: asyncio.Task[None] | None = None
         self._ever_connected = False
 
+    @classmethod
+    def connect(
+        cls,
+        router: Router | str | Sequence[str] | None = None,
+        *,
+        url: str | Sequence[str] | None = None,
+        unix_path: str | Path | None = None,
+        pipe: str | None = None,
+        auth: RouterCredentials | None = None,
+        peer_id: str | None = None,
+        reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
+        retry: RetryPolicy = DEFAULT_RETRY,
+        ping_interval: float | None = DEFAULT_PING_INTERVAL,
+        ping_timeout: float = DEFAULT_PING_TIMEOUT,
+        deadline_grace: float | None = None,
+        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
+        interceptors: Sequence[ClientInterceptor] = (),
+    ) -> Self:
+        """Create and connect a service client.
+
+        May be used either as ``async with MyClient.connect(...) as client:`` or
+        ``client = await MyClient.connect(...)``.
+        """
+        from meshcall.router import Router as RouterClass
+
+        if isinstance(router, RouterClass):
+            instance = cls(router)
+            instance._owns_root = not router.is_connected
+            return instance
+        router_obj = RouterClass(
+            url=url if url is not None else router,
+            unix_path=unix_path,
+            pipe=pipe,
+            auth=auth,
+            peer_id=peer_id,
+            reconnect=reconnect,
+            retry=retry,
+            ping_interval=ping_interval,
+            ping_timeout=ping_timeout,
+            deadline_grace=deadline_grace,
+            max_frame_size=max_frame_size,
+            interceptors=interceptors,
+        )
+        instance = cls(router_obj._ensure_client())
+        instance._owns_root = True
+        return instance
+
+    def with_options(
+        self,
+        *,
+        timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        instance: str | None = None,
+    ) -> Self:
+        """Return a shallow clone with per-call options applied."""
+        clone = copy.copy(self)
+        clone._root = self._root
+        clone._owns_root = False
+        clone._call_options = self._resolve_options(
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+            instance=instance,
+        )
+        return clone
+
+    def _resolve_options(
+        self,
+        *,
+        timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        idempotent: bool = False,
+        instance: str | None = None,
+    ) -> CallOptions:
+        base = self._call_options
+        merged_metadata: Mapping[str, str] | None
+        if base.metadata and metadata:
+            merged_metadata = {**base.metadata, **metadata}
+        elif metadata is not None:
+            merged_metadata = metadata
+        else:
+            merged_metadata = base.metadata
+        return CallOptions(
+            timeout=timeout if timeout is not None else base.timeout,
+            idle_timeout=(
+                idle_timeout if idle_timeout is not None else base.idle_timeout
+            ),
+            metadata=merged_metadata,
+            idempotency_key=(
+                idempotency_key if idempotency_key is not None else base.idempotency_key
+            ),
+            idempotent=idempotent or base.idempotent,
+            instance=instance if instance is not None else base.instance,
+        )
+
     async def start(self) -> None:
         """Connect if not connected, retrying with backoff after a loss."""
+        if self._root is not self:
+            await self._root.start()
+            return
         async with self._state_lock:
             if self._connection is not None:
                 return
@@ -113,6 +256,10 @@ class ClientBase:
             )
 
     async def stop(self) -> None:
+        if self._root is not self:
+            if self._owns_root:
+                await self._root.stop()
+            return
         async with self._state_lock:
             receive_task, self._receive_task = self._receive_task, None
             self._connection = None
@@ -125,6 +272,17 @@ class ClientBase:
             self._calls.clear()
             for call in calls:
                 await call.fail(UnavailableError("Client is stopped"))
+
+    async def close(self) -> None:
+        """Close the client connection (alias for stop)."""
+        await self.stop()
+
+    def __await__(self) -> Generator[Any, None, Self]:
+        async def _connect() -> Self:
+            await self.start()
+            return self
+
+        return _connect().__await__()
 
     async def __aenter__(self) -> Self:
         await self.start()
@@ -147,17 +305,23 @@ class ClientBase:
         idempotent: bool = False,
         instance: str | None = None,
     ) -> Any:
+        root = self._root
         info = ClientCallInfo(
             service,
             method,
             "unary",
-            CallOptions(
-                timeout, idle_timeout, metadata, idempotency_key, idempotent, instance
+            self._resolve_options(
+                timeout=timeout,
+                idle_timeout=idle_timeout,
+                metadata=metadata,
+                idempotency_key=idempotency_key,
+                idempotent=idempotent,
+                instance=instance,
             ),
         )
 
         async def innermost(info: ClientCallInfo) -> Any:
-            call = await self._open_call(
+            call = await root._open_call(
                 info.service,
                 info.method,
                 request,
@@ -173,14 +337,14 @@ class ClientBase:
                 info.trailers = call.trailers
             return result
 
-        return await self._run_chain(info, innermost)
+        return await root._run_chain(info, innermost)
 
     def call_server_stream(
         self,
         service: str,
         method: str,
         request: BaseModel,
-        item_type: type[BaseModel],
+        item_type: type[BaseModel | str | bytes],
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
@@ -189,12 +353,18 @@ class ClientBase:
         idempotent: bool = False,
         instance: str | None = None,
     ) -> RpcServerStream[Any]:
+        root = self._root
         info = ClientCallInfo(
             service,
             method,
             "server_stream",
-            CallOptions(
-                timeout, idle_timeout, metadata, idempotency_key, idempotent, instance
+            self._resolve_options(
+                timeout=timeout,
+                idle_timeout=idle_timeout,
+                metadata=metadata,
+                idempotency_key=idempotency_key,
+                idempotent=idempotent,
+                instance=instance,
             ),
         )
 
@@ -202,7 +372,7 @@ class ClientBase:
             return _ClientServerStream(
                 _observed(
                     asyncio.create_task(
-                        self._open_call(
+                        root._open_call(
                             info.service,
                             info.method,
                             request,
@@ -214,7 +384,7 @@ class ClientBase:
             )
 
         async def open() -> _ClientCall:
-            stream = await self._run_chain(info, innermost)
+            stream = await root._run_chain(info, innermost)
             return await _stream_open_task(stream)
 
         return _ClientServerStream(_observed(asyncio.create_task(open())))
@@ -233,14 +403,20 @@ class ClientBase:
         metadata: Mapping[str, str] | None = None,
         instance: str | None = None,
     ) -> RpcServerStream[Any]:
-        """Open a subscription (docs/protocol.md → Subscriptions).
+        """Open a subscription (docs/protocol.md → Subscriptions; Experimental).
 
         A server stream that is reopened after a retryable failure with the
         reconnect backoff, asking to resume after the last item's ``cursor``
         through the ``resume`` request parameter. It has no default timeouts.
         """
+        resolved = self._resolve_options(
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
+            instance=instance,
+        )
         return _Subscription(
-            self,
+            self._root,
             service,
             method,
             request,
@@ -248,10 +424,10 @@ class ClientBase:
             cursor=cursor,
             resume=resume,
             options={
-                "timeout": timeout,
-                "idle_timeout": idle_timeout,
-                "metadata": metadata,
-                "instance": instance,
+                "timeout": resolved.timeout,
+                "idle_timeout": resolved.idle_timeout,
+                "metadata": resolved.metadata,
+                "instance": resolved.instance,
             },
         )
 
@@ -260,8 +436,8 @@ class ClientBase:
         service: str,
         method: str,
         request: BaseModel,
-        items: AsyncIterable[BaseModel],
-        input_type: type[BaseModel],
+        items: AsyncIterable[Any],
+        input_type: type[BaseModel | str | bytes],
         response_type: type[BaseModel],
         *,
         timeout: float | None = None,
@@ -271,17 +447,23 @@ class ClientBase:
         idempotent: bool = False,
         instance: str | None = None,
     ) -> Any:
+        root = self._root
         info = ClientCallInfo(
             service,
             method,
             "client_stream",
-            CallOptions(
-                timeout, idle_timeout, metadata, idempotency_key, idempotent, instance
+            self._resolve_options(
+                timeout=timeout,
+                idle_timeout=idle_timeout,
+                metadata=metadata,
+                idempotency_key=idempotency_key,
+                idempotent=idempotent,
+                instance=instance,
             ),
         )
 
         async def innermost(info: ClientCallInfo) -> Any:
-            call = await self._open_call(
+            call = await root._open_call(
                 info.service,
                 info.method,
                 request,
@@ -290,7 +472,7 @@ class ClientBase:
                 options=info.options,
             )
             pump = asyncio.create_task(
-                self._pump_input(call, items),
+                root._pump_input(call, items),
                 name=f"meshcall-input-{call.call_id}",
             )
             try:
@@ -306,15 +488,15 @@ class ClientBase:
                     await pump
             return result
 
-        return await self._run_chain(info, innermost)
+        return await root._run_chain(info, innermost)
 
     def call_duplex(
         self,
         service: str,
         method: str,
         request: BaseModel,
-        input_type: type[BaseModel],
-        output_type: type[BaseModel],
+        input_type: type[BaseModel | str | bytes],
+        output_type: type[BaseModel | str | bytes],
         *,
         timeout: float | None = None,
         idle_timeout: float | None = None,
@@ -322,18 +504,32 @@ class ClientBase:
         instance: str | None = None,
     ) -> RpcDuplexClient[Any, Any]:
         """Open a duplex call. It is never retried and takes no idempotency key."""
+        root = self._root
+        resolved = self._resolve_options(
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
+            instance=instance,
+        )
         info = ClientCallInfo(
             service,
             method,
             "duplex",
-            CallOptions(timeout, idle_timeout, metadata, None, False, instance),
+            CallOptions(
+                resolved.timeout,
+                resolved.idle_timeout,
+                resolved.metadata,
+                None,
+                False,
+                resolved.instance,
+            ),
         )
 
         async def innermost(info: ClientCallInfo) -> _ClientDuplex:
             return _ClientDuplex(
                 _observed(
                     asyncio.create_task(
-                        self._open_call(
+                        root._open_call(
                             info.service,
                             info.method,
                             request,
@@ -346,7 +542,7 @@ class ClientBase:
             )
 
         async def open() -> _ClientCall:
-            stream = await self._run_chain(info, innermost)
+            stream = await root._run_chain(info, innermost)
             return await _stream_open_task(stream)
 
         return _ClientDuplex(_observed(asyncio.create_task(open())))
@@ -380,8 +576,8 @@ class ClientBase:
         request: BaseModel,
         *,
         response_type: type[BaseModel] | None = None,
-        input_type: type[BaseModel] | None = None,
-        output_type: type[BaseModel] | None = None,
+        input_type: type[BaseModel | str | bytes] | None = None,
+        output_type: type[BaseModel | str | bytes] | None = None,
         options: CallOptions,
     ) -> _ClientCall:
         # The local budget covers connecting and the handshake as well as the
@@ -464,7 +660,7 @@ class ClientBase:
     async def _pump_input(
         self,
         call: _ClientCall,
-        items: AsyncIterable[BaseModel],
+        items: AsyncIterable[Any],
     ) -> None:
         try:
             async for item in items:
@@ -624,8 +820,8 @@ class _ClientCall:
         connection: FrameConnection,
         call_id: str,
         response_type: type[BaseModel] | None,
-        input_type: type[BaseModel] | None,
-        output_type: type[BaseModel] | None,
+        input_type: type[BaseModel | str | bytes] | None,
+        output_type: type[BaseModel | str | bytes] | None,
         idle_timeout: float | None = None,
     ) -> None:
         self.client = client
@@ -691,24 +887,33 @@ class _ClientCall:
 
     # -- call surface --------------------------------------------------------
 
-    async def send(self, item: BaseModel) -> None:
+    async def send(self, item: Any) -> None:
         if self.input_closed:
             raise ProtocolError("Input stream is closed")
         await self.send_credit.acquire()
         if self.terminal:
             raise CallCancelledError("Call is closed")
-        validated = (
-            self.input_type.model_validate(item)
-            if self.input_type is not None and self.input_type is not BaseModel
-            else item
-        )
+        if self.input_type is not None and self.input_type is not BaseModel:
+            if inspect.isclass(self.input_type) and issubclass(
+                self.input_type, BaseModel
+            ):
+                validated = self.input_type.model_validate(item)
+                payload = validated.model_dump(mode="json", by_alias=True)
+            else:
+                adapter = TypeAdapter(self.input_type)
+                validated = adapter.validate_python(item)
+                payload = adapter.dump_python(validated, mode="json", by_alias=True)
+        elif isinstance(item, BaseModel):
+            payload = item.model_dump(mode="json", by_alias=True)
+        else:
+            payload = item
         try:
             await self.connection.send(
                 StreamItemFrame(
                     call_id=self.call_id,
                     direction="client",
                     sequence=self.input_sequence,
-                    payload=validated.model_dump(mode="json", by_alias=True),
+                    payload=payload,
                 )
             )
         except MeshCallError as exc:
@@ -725,7 +930,7 @@ class _ClientCall:
                 StreamEndFrame(call_id=self.call_id, direction="client")
             )
 
-    async def next_output(self) -> BaseModel:
+    async def next_output(self) -> Any:
         value = await self.output_queue.get()
         if value is _STREAM_END:
             raise StopAsyncIteration
@@ -785,7 +990,12 @@ class _ClientCall:
         self.output_sequence += 1
         self.arm_idle()
         try:
-            item = self.output_type.model_validate(frame.payload)
+            if inspect.isclass(self.output_type) and issubclass(
+                self.output_type, BaseModel
+            ):
+                item = self.output_type.model_validate(frame.payload)
+            else:
+                item = TypeAdapter(self.output_type).validate_python(frame.payload)
         except ValidationError as exc:
             await self.fail(
                 ProtocolError(
@@ -819,11 +1029,14 @@ class _ClientCall:
         self.disarm_timers()
         self.trailers = dict(frame.metadata or {})
         try:
-            result = (
-                self.response_type.model_validate(frame.payload)
-                if self.response_type is not None
-                else None
-            )
+            if self.response_type is None:
+                result = None
+            elif inspect.isclass(self.response_type) and issubclass(
+                self.response_type, BaseModel
+            ):
+                result = self.response_type.model_validate(frame.payload)
+            else:
+                result = TypeAdapter(self.response_type).validate_python(frame.payload)
         except ValidationError as exc:
             await self.fail(
                 ProtocolError(

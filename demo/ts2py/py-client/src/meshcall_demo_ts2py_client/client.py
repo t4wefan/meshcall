@@ -48,8 +48,8 @@ class TypeScriptGreetingServiceClient(ClientBase):
 
     async def sum(
         self,
+        offset: int,
         items: AsyncIterable[NumberItem],
-        offset: int = 0,
         *,
         instance: str | None = None,
         timeout: float | None = None,

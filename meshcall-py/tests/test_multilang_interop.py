@@ -282,7 +282,7 @@ async def test_generated_python_streams_to_typescript_over_direct_and_router(
                                 value=value, handled_by="python"
                             )
 
-                    assert (await client.upload(input_items(), 64, 2)).product == 4096
+                    assert (await client.upload(64, 2, input_items())).product == 4096
 
                     async with client.exchange(0, 3) as exchange:
                         for value in range(5):
@@ -622,7 +622,7 @@ async def test_go_service_with_generated_python_client(tmp_path: Path) -> None:
                     for value in range(1, 4):
                         yield generated.Item(value=value, handled_by="python")
 
-                assert (await client.upload(input_items(), 10, 2)).product == 22
+                assert (await client.upload(10, 2, input_items())).product == 22
                 assert [t.seq async for t in client.ticks()] == [0, 1, 2, 3, 4]
                 assert [t.seq async for t in client.ticks(2)] == [3, 4]
                 async with client.exchange(0, 5) as exchange:
@@ -664,15 +664,15 @@ func main() {{
 \tout := map[string]any{{}}
 
 \tpy := pyclient.NewPythonInteropServiceClient(rpc)
-\tgreet := must(py.Greet(ctx, pyclient.PythonInteropServiceGreetRequest{{Name: "Go", Repeat: ptr(int64(2))}}))
+\tgreet := must(py.Greet(ctx, "Go", ptr(int64(2))))
 \tout["greet"] = greet.Message
-\tdownload := must(py.Download(ctx, pyclient.PythonInteropServiceDownloadRequest{{Count: 3}}))
+\tdownload := must(py.Download(ctx, 3))
 \tvar values []int64
 \tfor item, err := range download.All() {{
 \t\tvalues = append(values, must(item, err).ItemValue)
 \t}}
 \tout["download"] = values
-\tupload := must(py.Upload(ctx, pyclient.PythonInteropServiceUploadRequest{{Offset: 7}}, func(yield func(pyclient.PythonItem) bool) {{
+\tupload := must(py.Upload(ctx, 7, func(yield func(pyclient.PythonItem) bool) {{
 \t\tfor _, v := range []int64{{1, 2, 3}} {{
 \t\t\tif !yield(pyclient.PythonItem{{ItemValue: v, Status: "ready"}}) {{
 \t\t\t\treturn
@@ -680,13 +680,13 @@ func main() {{
 \t\t}}
 \t}}))
 \tout["upload"] = upload.Total
-\tevents := must(py.Events(ctx, pyclient.PythonInteropServiceEventsRequest{{Since: ptr(int64(2))}}))
+\tevents := must(py.Events(ctx, ptr(int64(2))))
 \tvar seqs []int64
 \tfor event, err := range events.All() {{
 \t\tseqs = append(seqs, must(event, err).Seq)
 \t}}
 \tout["events"] = seqs
-\texchange := must(py.Exchange(ctx, pyclient.PythonInteropServiceExchangeRequest{{Offset: 100}}))
+\texchange := must(py.Exchange(ctx, 100))
 \t_ = exchange.Send(pyclient.PythonItem{{ItemValue: 1, Status: "busy"}})
 \tout["exchange"] = must(exchange.Recv()).ItemValue
 \t_ = exchange.CloseSend()
@@ -695,9 +695,9 @@ func main() {{
 \t}}
 
 \tts := tsclient.NewTypeScriptInteropServiceClient(rpc)
-\tproduct := must(ts.Multiply(ctx, tsclient.TypeScriptRequest{{Value: 6, Factor: 7}}))
+\tproduct := must(ts.Multiply(ctx, 6, 7))
 \tout["multiply"] = []any{{product.Product, product.HandledBy}}
-\tticks := must(ts.Ticks(ctx, tsclient.TypeScriptTicks{{Since: ptr(int64(1))}}))
+\tticks := must(ts.Ticks(ctx, ptr(int64(1))))
 \tvar tickSeqs []int64
 \tfor tick, err := range ticks.All() {{
 \t\ttickSeqs = append(tickSeqs, must(tick, err).Seq)

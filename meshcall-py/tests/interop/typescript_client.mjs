@@ -21,9 +21,9 @@ try {
     values.push(item.itemValue);
   }
   assert.deepEqual(values, Array.from({ length: 64 }, (_, i) => i));
-  const upload = await client.upload((async function* () {
+  const upload = await client.upload(7, (async function* () {
     for (const itemValue of values) yield { itemValue, status: "ready" };
-  })(), 7);
+  })());
   assert.equal(upload.total, 2023);
   const exchange = client.exchange(100);
   const echoed = [];

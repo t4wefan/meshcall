@@ -19,7 +19,7 @@ import {
   validateMetadata,
 } from "./liveness.js";
 import { ConsoleRpcLogger, type RpcLogger } from "./logging.js";
-import type { MeshCallRpc, RpcStream } from "./rpc.js";
+import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
 import { MeshCallSubscription } from "./subscription.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter, isFrameTooLarge } from "./transport.js";
 import { checkReceived } from "./validation.js";
@@ -41,6 +41,7 @@ import {
 import type { RouterCredentials } from "./router-auth.js";
 
 export { INITIAL_STREAM_CREDIT } from "./flow.js";
+export { mergeCallOptions } from "./rpc.js";
 export { MeshCallSubscription } from "./subscription.js";
 
 export interface CallOptions {
@@ -186,6 +187,10 @@ export class MeshCallServerStream<Item>
     await this.cancel("iterator_closed");
     return { done: true, value: undefined };
   }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.cancel("iterator_closed");
+  }
 }
 
 /**
@@ -206,6 +211,9 @@ export class MeshCallDuplexCall<Input, Output> extends MeshCallServerStream<Outp
 }
 
 export class MeshCallClient implements MeshCallRpc {
+  private root: MeshCallClient;
+  private ownsRoot = true;
+  private defaultCallOptions: CallOptions = {};
   private socket: WebSocket | undefined;
   private connectingSocket: WebSocket | undefined;
   private writer: FrameWriter | undefined;
@@ -232,6 +240,7 @@ export class MeshCallClient implements MeshCallRpc {
     private readonly peerId: string = randomUUID().replaceAll("-", ""),
     private readonly options: MeshCallClientOptions = {},
   ) {
+    this.root = this;
     this.endpoints = Array.isArray(url) ? [...(url as ReadonlyArray<WebSocketEndpoint>)] : [url as WebSocketEndpoint];
     if (this.endpoints.length === 0) throw new RangeError("At least one endpoint is required");
     for (const value of [options.maxFrameSize, options.handshakeTimeoutMs, options.pingTimeoutMs]) {
@@ -248,10 +257,29 @@ export class MeshCallClient implements MeshCallRpc {
   }
 
   /**
+   * Return a shallow view sharing this client's connection with overridden per-call options.
+   */
+  public withOptions(options: CallOptions): this {
+    const clone = Object.create(MeshCallClient.prototype) as this;
+    clone.root = this.root;
+    clone.ownsRoot = false;
+    clone.defaultCallOptions = mergeCallOptions(this.defaultCallOptions, options);
+    Object.assign(clone, {
+      endpoints: this.root.endpoints,
+      peerId: this.root.peerId,
+      options: this.root.options,
+    });
+    return clone;
+  }
+
+  /**
    * Connect if not connected. After a loss this retries with backoff per the
    * reconnect policy; concurrent callers share one attempt sequence.
    */
   public async connect(): Promise<void> {
+    if (this.root !== this) {
+      return this.root.connect();
+    }
     if (this.socket?.readyState === WebSocket.OPEN) {
       return;
     }
@@ -269,6 +297,7 @@ export class MeshCallClient implements MeshCallRpc {
 
   /** The endpoint of the current (or most recently used) connection. */
   public get endpoint(): WebSocketEndpoint {
+    if (this.root !== this) return this.root.endpoint;
     return this.endpoints[this.cursor % this.endpoints.length] as WebSocketEndpoint;
   }
 
@@ -316,8 +345,12 @@ export class MeshCallClient implements MeshCallRpc {
     request: Request,
     options: CallOptions = {},
   ): Promise<Response> {
-    this.validateOptions(options);
-    const info: ClientCallInfo = { service, method, stream: "unary", options, trailers: {} };
+    const merged = mergeCallOptions(this.defaultCallOptions, options);
+    if (this.root !== this) {
+      return this.root.unary(service, method, request, merged);
+    }
+    this.validateOptions(merged);
+    const info: ClientCallInfo = { service, method, stream: "unary", options: merged, trailers: {} };
     return this.runChain(info, async (info) => {
       this.ensureNotAborted(info.options);
       const startedAt = performance.now();
@@ -352,8 +385,12 @@ export class MeshCallClient implements MeshCallRpc {
     items: AsyncIterable<Item>,
     options: CallOptions = {},
   ): Promise<Response> {
-    this.validateOptions(options);
-    const info: ClientCallInfo = { service, method, stream: "client_stream", options, trailers: {} };
+    const merged = mergeCallOptions(this.defaultCallOptions, options);
+    if (this.root !== this) {
+      return this.root.clientStream(service, method, request, items, merged);
+    }
+    this.validateOptions(merged);
+    const info: ClientCallInfo = { service, method, stream: "client_stream", options: merged, trailers: {} };
     return this.runChain(info, async (info) => {
       this.ensureNotAborted(info.options);
       const startedAt = performance.now();
@@ -409,14 +446,18 @@ export class MeshCallClient implements MeshCallRpc {
     request: Request,
     options: CallOptions = {},
   ): MeshCallServerStream<Item> {
-    this.validateOptions(options);
-    const info: ClientCallInfo = { service, method, stream: "server_stream", options, trailers: {} };
+    const merged = mergeCallOptions(this.defaultCallOptions, options);
+    if (this.root !== this) {
+      return this.root.serverStream(service, method, request, merged);
+    }
+    this.validateOptions(merged);
+    const info: ClientCallInfo = { service, method, stream: "server_stream", options: merged, trailers: {} };
     const innermost = async (info: ClientCallInfo): Promise<MeshCallServerStream<Item>> =>
       new MeshCallServerStream<Item>(
         this.openServerStream(info.service, info.method, request, info.options),
       );
     if (this.options.interceptors === undefined || this.options.interceptors.length === 0) {
-      return new MeshCallServerStream(this.openServerStream(service, method, request, options));
+      return new MeshCallServerStream(this.openServerStream(service, method, request, merged));
     }
     return new MeshCallServerStream(this.runChain(info, innermost).then((stream) => {
       if (!(stream instanceof MeshCallServerStream)) {
@@ -437,7 +478,12 @@ export class MeshCallClient implements MeshCallRpc {
     request: Request,
     options: SubscriptionOptions = {},
   ): MeshCallSubscription<Item> {
-    const { cursor, resume, ...callOptions } = options;
+    const { idempotent: _i, responseSchema: _r, ...baseSub } = this.defaultCallOptions;
+    const merged = mergeCallOptions(baseSub, options);
+    if (this.root !== this) {
+      return this.root.subscribe(service, method, request, merged);
+    }
+    const { cursor, resume, ...callOptions } = merged;
     this.validateOptions(callOptions);
     return new MeshCallSubscription<Item>(
       (payload) => this.serverStream<Record<string, unknown>, Item>(service, method, payload, callOptions),
@@ -459,14 +505,19 @@ export class MeshCallClient implements MeshCallRpc {
     request: Request,
     options: DuplexCallOptions = {},
   ): MeshCallDuplexCall<Input, Output> {
-    this.validateOptions(options);
-    const info: ClientCallInfo = { service, method, stream: "duplex", options, trailers: {} };
+    const { idempotencyKey: _k, idempotent: _i, responseSchema: _r, ...baseDuplex } = this.defaultCallOptions;
+    const merged = mergeCallOptions(baseDuplex, options);
+    if (this.root !== this) {
+      return this.root.duplex(service, method, request, merged);
+    }
+    this.validateOptions(merged);
+    const info: ClientCallInfo = { service, method, stream: "duplex", options: merged, trailers: {} };
     const innermost = async (info: ClientCallInfo): Promise<MeshCallDuplexCall<Input, Output>> =>
       new MeshCallDuplexCall<Input, Output>(
         this.openServerStream(info.service, info.method, request, info.options, true),
       );
     if (this.options.interceptors === undefined || this.options.interceptors.length === 0) {
-      return new MeshCallDuplexCall(this.openServerStream(service, method, request, options, true));
+      return new MeshCallDuplexCall(this.openServerStream(service, method, request, merged, true));
     }
     return new MeshCallDuplexCall(this.runChain(info, innermost).then((call) => {
       if (!(call instanceof MeshCallDuplexCall)) {
@@ -504,6 +555,7 @@ export class MeshCallClient implements MeshCallRpc {
   }
 
   public async close(): Promise<void> {
+    if (!this.ownsRoot) return;
     this.closed = true;
     const sockets = new Set([this.socket, this.connectingSocket]);
     this.socket = undefined;
@@ -514,6 +566,10 @@ export class MeshCallClient implements MeshCallRpc {
     this.writer = undefined;
     this.rejectAll(new UnavailableError("Client is closed"));
     await Promise.all([...sockets].map((socket) => socket === undefined ? undefined : closeSocket(socket)));
+  }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
   }
 
   private async openServerStream<Item>(

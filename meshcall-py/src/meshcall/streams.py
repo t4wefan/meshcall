@@ -70,3 +70,6 @@ class RpcDuplexClient(RpcServerStream[OutputT], ABC, Generic[InputT, OutputT]):
     @abstractmethod
     async def close_send(self) -> None:
         """Half-close the input; the server's iteration of it then ends."""
+
+
+DuplexChannel = RpcDuplex

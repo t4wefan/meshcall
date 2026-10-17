@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import Any
 
 from loguru import logger as default_logger
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from meshcall.context import RpcContext, ServerCallNext, ServerInterceptor
 from meshcall.contract import (
@@ -22,6 +22,7 @@ from meshcall.contract import (
     get_service_method_binding,
     get_service_warnings,
 )
+from meshcall.di import DependencyScope, MetaPlan
 from meshcall.diagnostics import ContractWarning
 from meshcall.driver import DriverBinding, ServerDriver
 from meshcall.errors import (
@@ -87,9 +88,9 @@ class RuntimeMethod:
     handler: Any
     method_binding: MethodBinding
     request_type: type[BaseModel]
-    response_type: type[BaseModel] | None
-    input_type: type[BaseModel] | None
-    output_type: type[BaseModel] | None
+    response_type: Any | None
+    input_type: Any | None
+    output_type: Any | None
 
 
 class ServerRuntime:
@@ -158,9 +159,21 @@ class ServerRuntime:
                     handler=getattr(owner, method.name),
                     method_binding=method_binding,
                     request_type=method_binding.request_type,
-                    response_type=_resolve_optional_type(method.response),
-                    input_type=_resolve_optional_type(method.input_item),
-                    output_type=_resolve_optional_type(method.output_item),
+                    response_type=(
+                        method_binding.response_type
+                        if method_binding.response_type is not None
+                        else _resolve_optional_type(method.response)
+                    ),
+                    input_type=(
+                        method_binding.input_type
+                        if method_binding.input_type is not None
+                        else _resolve_optional_type(method.input_item)
+                    ),
+                    output_type=(
+                        method_binding.output_type
+                        if method_binding.output_type is not None
+                        else _resolve_optional_type(method.output_item)
+                    ),
                 )
 
     @property
@@ -672,10 +685,10 @@ class _ServerCall:
         if self.method.response_type is None:
             return None
         try:
-            validated = self.method.response_type.model_validate(result)
+            validated = _validate_value(self.method.response_type, result)
         except ValidationError as exc:
             raise self._invalid_output(exc, "invalid_response") from None
-        return validated.model_dump(mode="json", by_alias=True)
+        return _dump_value(self.method.response_type, validated)
 
     def _invalid_output(self, exc: ValidationError, reason: str) -> InternalError:
         """A response or output item broke the contract: log here, hide there."""
@@ -690,51 +703,64 @@ class _ServerCall:
 
     async def _invoke_handler(self, request: BaseModel) -> Any:
         """Run the handler to completion, streaming every output item."""
-        kind = self.method.contract.stream
-        if kind is StreamKind.UNARY:
+        async with DependencyScope(context=self.context, logger=self.logger) as scope:
+            injected: dict[str, Any] = {}
+            plans = self.method.method_binding.injected_parameters
+            for name, plan in plans.items():
+                if isinstance(plan, MetaPlan):
+                    injected[name] = await scope.resolve(plan)
+            for name, plan in plans.items():
+                if not isinstance(plan, MetaPlan):
+                    injected[name] = await scope.resolve(plan)
+            kind = self.method.contract.stream
+            if kind is StreamKind.UNARY:
+                args, kwargs = self.method.method_binding.arguments(
+                    request,
+                    logger=self.logger,
+                    context=self.context,
+                    injected=injected,
+                )
+                return await self.method.handler(*args, **kwargs)
+            if kind is StreamKind.SERVER:
+                args, kwargs = self.method.method_binding.arguments(
+                    request,
+                    logger=self.logger,
+                    context=self.context,
+                    injected=injected,
+                )
+                iterator = self.method.handler(*args, **kwargs)
+                async for item in iterator:
+                    await self._send_worker_output(item)
+                return None
+            inbound = _ServerInputStream(self)
+            if kind is StreamKind.CLIENT:
+                args, kwargs = self.method.method_binding.arguments(
+                    request,
+                    inbound,
+                    logger=self.logger,
+                    context=self.context,
+                    injected=injected,
+                )
+                return await self.method.handler(*args, **kwargs)
+            channel = _ServerDuplex(self)
             args, kwargs = self.method.method_binding.arguments(
                 request,
+                channel,
                 logger=self.logger,
                 context=self.context,
+                injected=injected,
             )
             return await self.method.handler(*args, **kwargs)
-        if kind is StreamKind.SERVER:
-            args, kwargs = self.method.method_binding.arguments(
-                request,
-                logger=self.logger,
-                context=self.context,
-            )
-            iterator = self.method.handler(*args, **kwargs)
-            async for item in iterator:
-                await self._send_worker_output(item)
-            return None
-        inbound = _ServerInputStream(self)
-        if kind is StreamKind.CLIENT:
-            args, kwargs = self.method.method_binding.arguments(
-                request,
-                inbound,
-                logger=self.logger,
-                context=self.context,
-            )
-            return await self.method.handler(*args, **kwargs)
-        channel = _ServerDuplex(self)
-        args, kwargs = self.method.method_binding.arguments(
-            request,
-            channel,
-            logger=self.logger,
-            context=self.context,
-        )
-        return await self.method.handler(*args, **kwargs)
 
-    async def _send_worker_output(self, item: BaseModel) -> None:
+    async def _send_worker_output(self, item: Any) -> None:
         output_type = self.method.output_type
         if output_type is None:
             raise ProtocolError("Call does not declare an output stream")
         try:
-            validated = output_type.model_validate(item)
+            validated = _validate_value(output_type, item)
         except ValidationError as exc:
             raise self._invalid_output(exc, "invalid_output_item") from None
-        payload = validated.model_dump(mode="json", by_alias=True)
+        payload = _dump_value(output_type, validated)
         await self._run_on_rpc(self.send_output_payload(payload))
 
     async def _run_on_rpc(self, coroutine: Any) -> Any:
@@ -819,14 +845,14 @@ class _ServerCall:
         self.cancel(error.message)
 
 
-class _ServerInputStream(RpcInputStream[BaseModel]):
+class _ServerInputStream(RpcInputStream[Any]):
     def __init__(self, call: _ServerCall) -> None:
         self.call = call
 
     def __aiter__(self) -> _ServerInputStream:
         return self
 
-    async def __anext__(self) -> BaseModel:
+    async def __anext__(self) -> Any:
         value = await asyncio.wrap_future(
             submit_to_loop(
                 self.call.rpc_loop,
@@ -841,13 +867,13 @@ class _ServerInputStream(RpcInputStream[BaseModel]):
         if input_type is None:
             raise ProtocolError("Call does not declare an input stream")
         try:
-            return input_type.model_validate(value)
+            return _validate_value(input_type, value)
         except ValidationError as exc:
             raise invalid_argument(exc, "input_item") from None
 
 
-class _ServerDuplex(_ServerInputStream, RpcDuplex[BaseModel, BaseModel]):
-    async def send(self, item: BaseModel) -> None:
+class _ServerDuplex(_ServerInputStream, RpcDuplex[Any, Any]):
+    async def send(self, item: Any) -> None:
         await self.call._send_worker_output(item)
 
     async def close_send(self) -> None:
@@ -1059,17 +1085,35 @@ def _bind_interceptor(
     return bound
 
 
-def _resolve_optional_type(ref: TypeRef | None) -> type[BaseModel] | None:
+def _validate_value(target_type: Any, value: Any) -> Any:
+    if inspect.isclass(target_type) and issubclass(target_type, BaseModel):
+        return target_type.model_validate(value)
+    return TypeAdapter(target_type).validate_python(value)
+
+
+def _dump_value(target_type: Any, value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", by_alias=True)
+    return TypeAdapter(target_type).dump_python(value, mode="json", by_alias=True)
+
+
+def _resolve_optional_type(ref: TypeRef | None) -> Any | None:
     return _resolve_type(ref) if ref is not None else None
 
 
-def _resolve_type(ref: TypeRef) -> type[BaseModel]:
+def _resolve_type(ref: TypeRef) -> Any:
     value: Any = importlib.import_module(ref.module)
     for part in ref.qualname.split("."):
         value = getattr(value, part)
-    if not inspect.isclass(value) or not issubclass(value, BaseModel):
-        raise ContractError(f"Contract type {ref.module}.{ref.qualname} is invalid")
-    return value
+    if inspect.isclass(value) and issubclass(value, BaseModel):
+        return value
+    try:
+        TypeAdapter(value).json_schema()
+        return value
+    except Exception as exc:
+        raise ContractError(
+            f"Contract type {ref.module}.{ref.qualname} is invalid"
+        ) from exc
 
 
 def _error_frame(

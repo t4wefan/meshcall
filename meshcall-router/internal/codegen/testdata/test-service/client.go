@@ -40,26 +40,31 @@ type TestServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewTestServiceClient wraps a meshcall.Client.
-func NewTestServiceClient(rpc *meshcall.Client) *TestServiceClient {
-	return &TestServiceClient{rpc: rpc}
+// NewTestServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewTestServiceClient(rpc meshcall.Caller) *TestServiceClient {
+	return &TestServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *TestServiceClient) WithOptions(opts meshcall.CallOptions) *TestServiceClient {
+	return &TestServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "test.v1.TestService"
 
-func (c *TestServiceClient) Unary(ctx context.Context, req TestServiceUnaryRequest, opts ...meshcall.CallOption) (Result, error) {
-	return meshcall.Unary[TestServiceUnaryRequest, Result](ctx, c.rpc, ServiceName, "unary", req, opts...)
+func (c *TestServiceClient) Unary(ctx context.Context, request Request, opts ...meshcall.CallOption) (Result, error) {
+	return meshcall.Unary[TestServiceUnaryRequest, Result](ctx, c.rpc, ServiceName, "unary", TestServiceUnaryRequest{Request: request}, opts...)
 }
 
-func (c *TestServiceClient) Download(ctx context.Context, req TestServiceDownloadRequest, opts ...meshcall.CallOption) (*meshcall.Stream[Item], error) {
-	return meshcall.ServerStream[TestServiceDownloadRequest, Item](ctx, c.rpc, ServiceName, "download", req, opts...)
+func (c *TestServiceClient) Download(ctx context.Context, request Request, opts ...meshcall.CallOption) (*meshcall.Stream[Item], error) {
+	return meshcall.ServerStream[TestServiceDownloadRequest, Item](ctx, c.rpc, ServiceName, "download", TestServiceDownloadRequest{Request: request}, opts...)
 }
 
-func (c *TestServiceClient) Upload(ctx context.Context, req TestServiceUploadRequest, items func(yield func(Item) bool), opts ...meshcall.CallOption) (Result, error) {
-	return meshcall.ClientStream[TestServiceUploadRequest, Item, Result](ctx, c.rpc, ServiceName, "upload", req, items, opts...)
+func (c *TestServiceClient) Upload(ctx context.Context, request Request, items func(yield func(Item) bool), opts ...meshcall.CallOption) (Result, error) {
+	return meshcall.ClientStream[TestServiceUploadRequest, Item, Result](ctx, c.rpc, ServiceName, "upload", TestServiceUploadRequest{Request: request}, items, opts...)
 }
 
-func (c *TestServiceClient) Duplex(ctx context.Context, req TestServiceDuplexRequest, opts ...meshcall.CallOption) (*meshcall.DuplexCall[Item, Item], error) {
-	return meshcall.Duplex[TestServiceDuplexRequest, Item, Item](ctx, c.rpc, ServiceName, "duplex", req, opts...)
+func (c *TestServiceClient) Duplex(ctx context.Context, request Request, opts ...meshcall.CallOption) (*meshcall.DuplexCall[Item, Item], error) {
+	return meshcall.Duplex[TestServiceDuplexRequest, Item, Item](ctx, c.rpc, ServiceName, "duplex", TestServiceDuplexRequest{Request: request}, opts...)
 }

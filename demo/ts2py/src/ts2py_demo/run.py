@@ -49,7 +49,7 @@ async def run_demo() -> None:
                 for item in items:
                     yield item
 
-            total = await client.sum(input_items(), 10)
+            total = await client.sum(10, input_items())
             assert len(items) == 40
             assert total.total == 790
         print(f"TypeScript service -> Python client: {response.model_dump()}")

@@ -28,18 +28,23 @@ type OneWayStreamServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewOneWayStreamServiceClient wraps a meshcall.Client.
-func NewOneWayStreamServiceClient(rpc *meshcall.Client) *OneWayStreamServiceClient {
-	return &OneWayStreamServiceClient{rpc: rpc}
+// NewOneWayStreamServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewOneWayStreamServiceClient(rpc meshcall.Caller) *OneWayStreamServiceClient {
+	return &OneWayStreamServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *OneWayStreamServiceClient) WithOptions(opts meshcall.CallOptions) *OneWayStreamServiceClient {
+	return &OneWayStreamServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "test.v1.OneWayStreamService"
 
-func (c *OneWayStreamServiceClient) Download(ctx context.Context, req OneWayStreamServiceDownloadRequest, opts ...meshcall.CallOption) (*meshcall.Stream[StreamItem], error) {
-	return meshcall.ServerStream[OneWayStreamServiceDownloadRequest, StreamItem](ctx, c.rpc, ServiceName, "download", req, opts...)
+func (c *OneWayStreamServiceClient) Download(ctx context.Context, start int64, opts ...meshcall.CallOption) (*meshcall.Stream[StreamItem], error) {
+	return meshcall.ServerStream[OneWayStreamServiceDownloadRequest, StreamItem](ctx, c.rpc, ServiceName, "download", OneWayStreamServiceDownloadRequest{Start: start}, opts...)
 }
 
-func (c *OneWayStreamServiceClient) Upload(ctx context.Context, req OneWayStreamServiceUploadRequest, items func(yield func(StreamItem) bool), opts ...meshcall.CallOption) (StreamResult, error) {
-	return meshcall.ClientStream[OneWayStreamServiceUploadRequest, StreamItem, StreamResult](ctx, c.rpc, ServiceName, "upload", req, items, opts...)
+func (c *OneWayStreamServiceClient) Upload(ctx context.Context, offset int64, items func(yield func(StreamItem) bool), opts ...meshcall.CallOption) (StreamResult, error) {
+	return meshcall.ClientStream[OneWayStreamServiceUploadRequest, StreamItem, StreamResult](ctx, c.rpc, ServiceName, "upload", OneWayStreamServiceUploadRequest{Offset: offset}, items, opts...)
 }

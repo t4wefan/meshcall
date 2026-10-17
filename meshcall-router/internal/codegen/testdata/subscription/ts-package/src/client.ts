@@ -9,6 +9,10 @@ import { TickSchema } from "./models.js";
 export class FeedClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): FeedClient {
+    return new FeedClient(this.rpc.withOptions(options));
+  }
+
   /**
    * Every tick after ``since``.
    */

@@ -34,33 +34,61 @@ func Sticky(field string) BalancePolicy {
 // Service is a named set of methods served by a Server. Build one with
 // NewService and add methods with HandleUnary, HandleServerStream, … .
 type Service struct {
-	name        string
-	version     string
-	description *string
-	targeted    bool
-	balance     BalancePolicy
-	module      string
-	methods     []*method
-	byName      map[string]*method
+	name         string
+	version      string
+	description  *string
+	targeted     bool
+	balance      BalancePolicy
+	module       string
+	methods      []*method
+	byName       map[string]*method
+	dependencies []DependencyProvider
+	methodOpts   map[string][]MethodOption
 }
 
 // ServiceOption configures a Service.
-type ServiceOption func(*Service)
+type ServiceOption interface {
+	applyService(*Service)
+}
+
+type serviceOptFunc func(*Service)
+
+func (f serviceOptFunc) applyService(s *Service) { f(s) }
 
 // Describe sets the service's description (shown to humans and LLM callers).
 // An empty string declares "no description" on purpose (silences W001).
-func Describe(text string) ServiceOption { return func(s *Service) { s.description = &text } }
+func Describe(text string) ServiceOption {
+	return serviceOptFunc(func(s *Service) { s.description = &text })
+}
 
 // Targeted declares that every call must name the instance it is for: the
 // instances hold distinct state (a session, a loaded model, an actor).
-func Targeted() ServiceOption { return func(s *Service) { s.targeted = true } }
+func Targeted() ServiceOption {
+	return serviceOptFunc(func(s *Service) { s.targeted = true })
+}
 
 // DefaultBalance sets the balance policy of methods that do not set one.
-func DefaultBalance(p BalancePolicy) ServiceOption { return func(s *Service) { s.balance = p } }
+func DefaultBalance(p BalancePolicy) ServiceOption {
+	return serviceOptFunc(func(s *Service) { s.balance = p })
+}
 
 // SourceModule names the module recorded in the contract (default: the Go
 // package of the first request type).
-func SourceModule(module string) ServiceOption { return func(s *Service) { s.module = module } }
+func SourceModule(module string) ServiceOption {
+	return serviceOptFunc(func(s *Service) { s.module = module })
+}
+
+// WithMethodOptions attaches MethodOption values (e.g. ReadOnly(), Idempotent(),
+// Doc("...")) to a named method on a reflected service (using either the Go
+// method name or the snake_case wire name).
+func WithMethodOptions(methodName string, opts ...MethodOption) ServiceOption {
+	return serviceOptFunc(func(s *Service) {
+		if s.methodOpts == nil {
+			s.methodOpts = map[string][]MethodOption{}
+		}
+		s.methodOpts[methodName] = append(s.methodOpts[methodName], opts...)
+	})
+}
 
 var (
 	nameSegment    = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
@@ -77,9 +105,17 @@ func NewService(name string, opts ...ServiceOption) *Service {
 	if err != nil {
 		panic("meshcall: " + err.Error())
 	}
-	s := &Service{name: full, version: version, balance: RoundRobin, byName: map[string]*method{}}
+	s := &Service{
+		name:       full,
+		version:    version,
+		balance:    RoundRobin,
+		byName:     map[string]*method{},
+		methodOpts: map[string][]MethodOption{},
+	}
 	for _, opt := range opts {
-		opt(s)
+		if opt != nil {
+			opt.applyService(s)
+		}
 	}
 	return s
 }
@@ -138,17 +174,20 @@ const (
 )
 
 type method struct {
-	name         string
-	stream       streamKind
-	request      reflect.Type
-	response     reflect.Type // nil for streams
-	input        reflect.Type // client stream / duplex
-	output       reflect.Type // server stream / duplex
-	opts         methodOptions
-	duplexReason string
-	subscription *SubscriptionSpec
-	schemas      struct{ request, response, input, output *orderedObject }
-	invoke       func(ctx *Context, call *serverCall, request json.RawMessage) (any, error)
+	name            string
+	stream          streamKind
+	request         reflect.Type
+	response        reflect.Type // nil for streams
+	input           reflect.Type // client stream / duplex
+	output          reflect.Type // server stream / duplex
+	parameters      []string
+	requestQualname string
+	reflected       bool
+	opts            methodOptions
+	duplexReason    string
+	subscription    *SubscriptionSpec
+	schemas         struct{ request, response, input, output *orderedObject }
+	invoke          func(ctx *Context, call *serverCall, request json.RawMessage) (any, error)
 }
 
 // SubscriptionSpec says how a subscription resumes (docs/protocol.md →
@@ -206,20 +245,25 @@ func (s *Service) add(m *method, opts []MethodOption) {
 	if m.stream == duplexShape && (m.opts.idempotent || m.opts.readOnly) {
 		panic(fmt.Sprintf("meshcall: duplex method %s.%s cannot be idempotent or read-only: a duplex call is never replayed", s.name, m.name))
 	}
-	for _, t := range []reflect.Type{m.request, m.response, m.input, m.output} {
-		if t != nil && structType(t) == nil {
-			panic(fmt.Sprintf("meshcall: %s.%s: request, response and item types must be structs, got %s", s.name, m.name, t))
+	if !m.reflected {
+		for _, t := range []reflect.Type{m.request, m.response, m.input, m.output} {
+			if t != nil && structType(t) == nil {
+				panic(fmt.Sprintf("meshcall: %s.%s: request, response and item types must be structs, got %s", s.name, m.name, t))
+			}
 		}
-	}
-	m.schemas.request = schemaOf(m.request)
-	if m.response != nil {
-		m.schemas.response = schemaOf(m.response)
-	}
-	if m.input != nil {
-		m.schemas.input = schemaOf(m.input)
-	}
-	if m.output != nil {
-		m.schemas.output = schemaOf(m.output)
+		m.schemas.request = schemaOf(m.request)
+		if m.response != nil {
+			m.schemas.response = schemaOf(m.response)
+		}
+		if m.input != nil {
+			m.schemas.input = schemaOf(m.input)
+		}
+		if m.output != nil {
+			m.schemas.output = schemaOf(m.output)
+		}
+		if s.module == "" && m.request != nil && structType(m.request) != nil {
+			s.module = structType(m.request).PkgPath()
+		}
 	}
 	if spec := m.subscription; spec != nil && spec.Cursor != "" {
 		if !hasField(m.output, spec.Cursor) {
@@ -232,9 +276,6 @@ func (s *Service) add(m *method, opts []MethodOption) {
 		if f.required {
 			panic(fmt.Sprintf("meshcall: subscription %s.%s: request field %q must be optional (a pointer or omitempty): the first call has no cursor yet", s.name, m.name, spec.Resume))
 		}
-	}
-	if s.module == "" {
-		s.module = structType(m.request).PkgPath()
 	}
 	s.methods = append(s.methods, m)
 	s.byName[m.name] = m
@@ -424,13 +465,31 @@ func HandleDuplex[Req, In, Out any](s *Service, name, reason string, handler fun
 
 // --- contract --------------------------------------------------------------
 
-func typeRef(t reflect.Type, schema *orderedObject, module string) *orderedObject {
-	st := structType(t)
-	pkg := st.PkgPath()
-	if pkg == "" {
-		pkg = module
+func typeRef(t reflect.Type, schema *orderedObject, module, qualnameOverride string) *orderedObject {
+	pkg := module
+	qname := qualnameOverride
+	if t != nil {
+		if st := structType(t); st != nil {
+			if st.PkgPath() != "" {
+				pkg = st.PkgPath()
+			}
+			if qname == "" {
+				qname = st.Name()
+			}
+		} else {
+			if t.PkgPath() != "" {
+				pkg = t.PkgPath()
+			}
+			if qname == "" {
+				if t.Name() != "" {
+					qname = t.Name()
+				} else {
+					qname = t.String()
+				}
+			}
+		}
 	}
-	return newObject().set("module", pkg).set("qualname", st.Name()).set("schema", schema)
+	return newObject().set("module", pkg).set("qualname", qname).set("schema", schema)
 }
 
 // Contract returns the service's portable contract entry, the object a
@@ -439,17 +498,23 @@ func (s *Service) Contract() json.RawMessage {
 	methods := []any{}
 	for _, m := range s.methods {
 		var params []any
-		for _, f := range fieldsOf(structType(m.request)) {
-			params = append(params, f.name)
+		if m.reflected {
+			for _, p := range m.parameters {
+				params = append(params, p)
+			}
+		} else if m.request != nil && structType(m.request) != nil {
+			for _, f := range fieldsOf(structType(m.request)) {
+				params = append(params, f.name)
+			}
 		}
 		if params == nil {
 			params = []any{}
 		}
-		ref := func(t reflect.Type, schema *orderedObject) any {
-			if t == nil {
+		ref := func(t reflect.Type, schema *orderedObject, qname string) any {
+			if t == nil && schema == nil {
 				return nil
 			}
-			return typeRef(t, schema, s.module)
+			return typeRef(t, schema, s.module, qname)
 		}
 		balance := s.balance
 		if m.opts.balance != nil {
@@ -458,11 +523,11 @@ func (s *Service) Contract() json.RawMessage {
 		entry := newObject().
 			set("name", m.name).
 			set("stream", string(m.stream)).
-			set("request", ref(m.request, m.schemas.request)).
+			set("request", ref(m.request, m.schemas.request, m.requestQualname)).
 			set("parameters", params).
-			set("response", ref(m.response, m.schemas.response)).
-			set("input_item", ref(m.input, m.schemas.input)).
-			set("output_item", ref(m.output, m.schemas.output)).
+			set("response", ref(m.response, m.schemas.response, "")).
+			set("input_item", ref(m.input, m.schemas.input, "")).
+			set("output_item", ref(m.output, m.schemas.output, "")).
 			set("balance", balance).
 			set("binding", "instance").
 			set("description", m.opts.description).

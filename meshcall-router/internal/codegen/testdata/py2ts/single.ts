@@ -37,6 +37,10 @@ export const GreetingResultSchema: JsonSchema = {
 export class PythonGreetingServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): PythonGreetingServiceClient {
+    return new PythonGreetingServiceClient(this.rpc.withOptions(options));
+  }
+
   /**
    * Greet ``name`` ``repeat`` times and say which runtime answered.
    */

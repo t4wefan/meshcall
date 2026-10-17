@@ -26,14 +26,19 @@ type GreetingServiceClient struct {
 	rpc *meshcall.Client
 }
 
-// NewGreetingServiceClient wraps a meshcall.Client.
-func NewGreetingServiceClient(rpc *meshcall.Client) *GreetingServiceClient {
-	return &GreetingServiceClient{rpc: rpc}
+// NewGreetingServiceClient wraps a meshcall.Client or meshcall.Router.
+func NewGreetingServiceClient(rpc meshcall.Caller) *GreetingServiceClient {
+	return &GreetingServiceClient{rpc: rpc.Client()}
+}
+
+// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
+func (c *GreetingServiceClient) WithOptions(opts meshcall.CallOptions) *GreetingServiceClient {
+	return &GreetingServiceClient{rpc: c.rpc.WithOptions(opts)}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "test.v1.GreetingService"
 
-func (c *GreetingServiceClient) Greet(ctx context.Context, req GreetingServiceGreetRequest, opts ...meshcall.CallOption) (GreetingResult, error) {
-	return meshcall.Unary[GreetingServiceGreetRequest, GreetingResult](ctx, c.rpc, ServiceName, "greet", req, opts...)
+func (c *GreetingServiceClient) Greet(ctx context.Context, request GreetingRequest, opts ...meshcall.CallOption) (GreetingResult, error) {
+	return meshcall.Unary[GreetingServiceGreetRequest, GreetingResult](ctx, c.rpc, ServiceName, "greet", GreetingServiceGreetRequest{Request: request}, opts...)
 }

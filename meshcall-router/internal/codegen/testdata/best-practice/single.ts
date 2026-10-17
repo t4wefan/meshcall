@@ -198,6 +198,10 @@ export const ChatChunkSchema: JsonSchema = {
 export class LlmServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
+  public withOptions(options: CallOptions): LlmServiceClient {
+    return new LlmServiceClient(this.rpc.withOptions(options));
+  }
+
   /**
    * Create a session and return it; each call creates a new one.
    */

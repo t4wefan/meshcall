@@ -62,8 +62,8 @@ class TestServiceClient(ClientBase):
 
     async def upload(
         self,
-        items: AsyncIterable[Item],
         request: Request,
+        items: AsyncIterable[Item],
         *,
         instance: str | None = None,
         timeout: float | None = None,
