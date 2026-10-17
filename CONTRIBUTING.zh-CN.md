@@ -8,12 +8,13 @@
 | --- | --- | --- |
 | `meshcall-py/` | Python 运行时、契约导出器、`meshcall` 启动器 | uv, ruff, pyright, pytest |
 | `meshcall-ts/` | TypeScript 运行时、`meshcall` 启动器 | Yarn 1, tsc, `node --test` |
+| `meshcall-go/` | Go 运行时（服务定义、客户端、依赖注入、一致性测试固件） | Go 1.26, `go test -race` |
 | `meshcall-router/` | Go Router、`meshcall` CLI 与代码生成器、一致性测试运行器 | Go 1.26, `go test -race` |
 | `skills/meshcall/` | 由 `meshcall init` 安装的 AI Agent 技能源文件 | — |
 | `docs/` | 协议规范、运行时架构、Router 指南与使用手册（含 `docs/zh-CN/` 中文版） | — |
-| `demo/`、`best-practice/` | 可运行的示例项目，每个目录均为独立的 uv / Yarn 项目 | — |
+| `demo/`、`best-practice/` | 可运行的示例项目，每个目录均为独立的 uv / Yarn / Go 项目 | — |
 
-`docs/protocol.md` 是三个实现之间的契约规范。任何行为变更请先修改协议文档，再同步修改三个语言的实现，最后补充一致性测试（conformance）与跨语言互操作测试（interop）。
+`docs/protocol.md` 是三个运行时与 Router 之间的契约规范。任何行为变更请先修改协议文档，再同步修改各语言实现，最后补充一致性测试（conformance）与跨语言互操作测试（interop）。
 
 ## 在本地运行全量检查
 

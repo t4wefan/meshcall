@@ -26,27 +26,25 @@ Logical Frame connection and fair scheduler
 ```
 
 The contract layer has no networking dependency. Unary is the default method
-shape; `@query` / `@mutates` / `@stream` (`query` / `mutates` / `stream` in
-TypeScript; `HandleUnary` / `HandleServerStream` / `HandleClientStream` in Go)
-select the shape and its semantics — read-only, idempotent and destructive —
-and those options travel into the contract as `read_only`, `idempotent`,
-`destructive`, `description` and `deprecated`. Service parameters are the
-request: they are wrapped into one generated request model for validation and
-transport, and a model-typed parameter is simply one field of it. A client
-stream's inbound iterator comes last, after every ordinary business parameter.
-Service names are normalised to carry exactly one version segment (`chat` →
-`chat.v0`). The Runtime operates on logical frames and doesn't know whether the
-connection is direct or routed. WebSocket drivers own connection setup, role
-handshakes, TCP and local (Unix socket / Windows named pipe, `unix_path=` /
-`pipe=`) endpoints, and server registration. Duplex
-(`@method.duplex(reason=…)` / `@method.duplex({ reason })` / `HandleDuplex`) is
-a restricted, opt-in shape of last resort: the handler gets a channel
-(`RpcDuplex` / `DuplexChannel`) to iterate input and `send` output, returns
+shape; `@query` / `@mutates` / `@stream` (`@query` / `@mutates` / `@stream` in
+TypeScript; `MethodMeta` or `HandleUnary` / `HandleServerStream` /
+`HandleClientStream` in Go) select the shape and its semantics — read-only,
+idempotent and destructive — and those options travel into the contract as
+`read_only`, `idempotent`, `destructive`, `description` and `deprecated`.
+Service parameters are the request: they are wrapped into one generated request
+model for validation and transport, and a model-typed parameter is simply one
+field of it. A client stream's inbound iterator comes last, after every
+ordinary business parameter. Service names are normalised to carry exactly one
+version segment (`chat` → `chat.v0`). The Runtime operates on logical frames
+and doesn't know whether the connection is direct or routed. WebSocket drivers
+own connection setup, role handshakes, TCP and local (Unix socket / Windows
+named pipe, `unix_path=` / `pipe=`) endpoints, and server registration. Duplex
+(`@mutates(reason=…)` with a `DuplexChannel[In, Out]` parameter in Python,
+`@mutates({ reason, channel: { input, output } })` with `DuplexChannel<In, Out>`
+in TypeScript, and `HandleDuplex` in Go) is a restricted, opt-in shape of last
+resort: the handler iterates input and sends output over the channel, returns
 nothing, and the call is never retried, deduplicated or reachable over HTTP;
-see protocol.md → Duplex calls. Subscriptions (`@method.subscription` /
-`method.subscription` / `HandleSubscription`) and `Topic` remain implemented
-but are **experimental** in v0.3: they are outside the recommended path and
-may change.
+see [Duplex calls](protocol.md#duplex-calls).
 
 Parameters named `logger` / typed `RpcLogger` and `ctx` / `context` / typed
 `RpcContext`, values declared with `@dependency` / `dependency()` and values
@@ -55,18 +53,29 @@ removed while extracting the request model and supplied by the server per call,
 so generated clients do not expose them. Docstrings and the method options are
 carried into the contract as `description`, `annotations` and `deprecated`.
 
-## The 4-layer API: `Router` / `LocalRouter`, `Mesh`, and generated clients
+## The 4-layer API: Services, `Router` / `LocalRouter`, `Mesh`, and generated clients
 
-MeshCall separates endpoint topology (Layer 2) from peer runtime (Layer 3) and business services/clients (Layer 4):
+MeshCall organises every runtime into four layers with strict separation of concerns:
 
-1. **Layer 2 (`Router` and `LocalRouter`)**:
-   - `Router` (Python `Router`, TypeScript `Router`, Go `NewRouter` / `NewRouterWithOptions`) is a pure endpoint descriptor for a remote or external `meshcall-router`. When constructed with no arguments, it resolves `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`). It accepts one or more URLs (`ws(s)://`, `http(s)://`, `unix://`, `pipe://`), `unix_path` / `unixPath` / `WithUnixSocket`, or `pipe` / `WithPipe`. It performs zero I/O and owns no network connections.
-   - `LocalRouter` (Python `LocalRouter`, TypeScript `LocalRouter`, Go `NewLocalRouter` / `StartLocalRouter`) explicitly manages a local `meshcall-router` OS subprocess (`async with LocalRouter(port=0) as router:` / `await using router = await LocalRouter.start({ port: 0 })` / `StartLocalRouter(ctx, WithPort(0))`), exposing `.url`, `.http_url`, `.bound_port`, `.pid` and `.is_running`. There is no implicit auto-spawning on `Router` or `Mesh`.
-2. **Layer 3 (`Mesh`)**:
-   - `Mesh` (Python `Mesh(router, ...)`, TypeScript `new Mesh(router, ...)` / `Mesh.connect(router, ...)`, Go `NewMesh(router, ...)` / `ConnectMesh(ctx, router, ...)`) strictly requires a `Router` or `LocalRouter` instance and represents a peer connected to that Router.
+| Layer | Role | Python | TypeScript | Go |
+| --- | --- | --- | --- | --- |
+| **Layer 1** | Service & contract definition (plus low-level wire primitives) | `@service`, `@query`, `@mutates`, `@stream`, `@dependency`, `meta` (`RpcServer`, `ClientBase`) | `@service`, `@query`, `@mutates`, `@stream`, `dependency`, `meta` (`MeshCallServer`, `MeshCallClient`) | `ServiceMeta`, `MethodMeta`, `NewService`, `Dependency`, `Meta[T]` (`Server`, `Client`) |
+| **Layer 2** | Endpoint topology & local Router subprocess | `Router`, `LocalRouter` | `Router`, `LocalRouter` | `NewRouter`, `StartLocalRouter`, `NewLocalRouter` |
+| **Layer 3** | Peer runtime (shared connection, built-in services, service mounting & serving) | `Mesh` (`mesh.mount`, `mesh.run`, `mesh.serve`, `mesh.drain`, `mesh.registry`, `mesh.auth`) | `Mesh` (`mesh.mount`, `mesh.serve`, `mesh.startServing`, `mesh.drain`, `mesh.registry`, `mesh.auth`) | `Mesh` (`mesh.Mount`, `mesh.Run`, `mesh.Serve`, `mesh.StartServing`, `mesh.Drain`, `mesh.Registry()`, `mesh.Auth()`) |
+| **Layer 4** | Generated typed service clients | `<Service>Client(mesh)` | `new <Service>Client(mesh)` | `New<Service>Client(mesh)` |
+
+1. **Layer 1 (Services & Wire Primitives)**:
+   - Services declare their contract with `@service`, `@query`, `@mutates`, and `@stream` (or struct metadata / `NewService` in Go) without importing any networking or transport state. Low-level wire primitives (`RpcServer`, `ClientBase`, `MeshCallServer`, `MeshCallClient`, Go `Server` / `Client`) sit underneath for direct peer-to-peer tests and custom drivers.
+2. **Layer 2 (`Router` and `LocalRouter`)**:
+   - `Router` (Python `Router`, TypeScript `Router`, Go `NewRouter`) is a pure endpoint descriptor for a remote or external `meshcall-router`. When constructed with no arguments, it resolves `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`). It accepts one or more URLs (`ws(s)://`, `http(s)://`, `unix://`, `pipe://`), `unix_path` / `unixPath` / `WithUnixSocket`, or `pipe` / `WithPipe`. It performs zero I/O and owns no network connections.
+   - `LocalRouter` (Python `LocalRouter`, TypeScript `LocalRouter`, Go `NewLocalRouter` / `StartLocalRouter`) explicitly manages a local `meshcall-router` OS subprocess (`async with LocalRouter(port=0) as router:` / `await using router = await LocalRouter.start({ port: 0 })` / `StartLocalRouter(ctx, WithPort(0))`), exposing `.url`, `.http_url` (`httpUrl` / `HTTPURL()`), `.bound_port` (`boundPort` / `BoundPort()`), `.pid` (`PID()`) and `.is_running` (`isRunning` / `IsRunning()`). Neither `Router` nor `Mesh` spawns a background Router implicitly unless given a `LocalRouter`.
+3. **Layer 3 (`Mesh`)**:
+   - `Mesh` (Python `Mesh(router, ...)`, TypeScript `new Mesh(router, ...)` / `Mesh.connect(router, ...)`, Go `NewMesh(router, ...)` / `ConnectMesh(ctx, router, ...)`) requires a `Router` or `LocalRouter` instance and represents a peer connected to that Router.
    - **Automatic transport selection**: `Mesh` inspects the `Router`'s URL scheme and selects WebSocket (`ws(s)://`, `unix://`, `pipe://`) or HTTP (`http(s)://`) automatically (`meshcall/web` in TypeScript provides a browser-safe `fetch`-only `Mesh` and `Router`).
-   - **Multiplexed client & built-in services**: Any number of generated clients (`MyClient(mesh)`) share the `Mesh`'s underlying connection. Built-in Router services are exposed as sub-namespaces on `Mesh`: `mesh.registry.list()` / `mesh.registry.describe(service)` (Go `mesh.Registry().List(ctx)` / `Describe(ctx, service)`) and `mesh.auth.whoami()` / `issue_token(...)` / `revoke_token(...)` (Go `mesh.Auth().Whoami(ctx)` / `IssueToken(...)` / `RevokeToken(...)`).
+   - **Multiplexed client & built-in services**: Any number of generated clients (`MyClient(mesh)`) share the `Mesh`'s underlying connection. Built-in Router services are exposed as sub-namespaces on `Mesh`: `mesh.registry.list()` / `mesh.registry.describe(service)` (Go `mesh.Registry().List(ctx)` / `Describe(ctx, service)`) and `mesh.auth.whoami()` / `issue_token(...)` / `revoke_token(...)` (TypeScript `issueToken` / `revokeToken`, Go `mesh.Auth().Whoami(ctx)` / `IssueToken(...)` / `RevokeToken(...)`).
    - **Service mounting & server lifecycle**: `mesh.mount(*services, ...)` (Go `mesh.Mount(...)`) synchronously mounts local services onto the `Mesh` (failing immediately if the `Router` uses `http(s)://`). `mesh.run()` blocks until `SIGINT` / `SIGTERM` and drains in-flight calls; `mesh.serve()` (TS `mesh.serve()` / `mesh.startServing()`, Go `mesh.Serve()` / `mesh.StartServing()`) runs or starts the server asynchronously and drains on exit.
+4. **Layer 4 (Generated Service Clients)**:
+   - Generated clients wrap a `Mesh` (`MyClient(mesh)` / `new MyClient(mesh)` / `NewMyClient(mesh)`) and expose typed methods matching the service's business signature.
 
 Per-call control parameters are deliberately kept out of the generated
 *business* parameter list. `with_options` / `withOptions` / `WithOptions`
@@ -109,8 +118,8 @@ Every method contract stores one request JSON Schema. TypeScript's method
 decorators can declare it in three binding modes; Python and Go produce the
 equivalent request schema from their handler signatures:
 
-- `request_object` — an explicit `request` schema (or the `@method` default).
-  The handler receives one parsed request object.
+- `request_object` — an explicit `request` schema (the default for `@query` /
+  `@mutates` / `@stream`). The handler receives one parsed request object.
 - `positional` — `input: { a: z.string(), b: z.int() }` (or `input: {}` for no
   parameters). The named object becomes the request schema and the handler
   receives `a, b` positionally; the names and order are kept.
@@ -140,9 +149,9 @@ Cross-loop operations use thread-safe future submission. A synchronously
 blocking handler can delay other work assigned to the current service worker,
 but it cannot prevent the RPC loop from enforcing a deadline or maintaining
 other connections. The TypeScript client consumes unary, server-streaming,
-client-streaming, (experimental) subscription and duplex calls; TypeScript
-service handlers are still not worker-thread isolated and must avoid
-synchronously blocking Node's event loop.
+client-streaming and duplex calls; TypeScript
+service handlers run on Node's event loop and must avoid blocking it
+synchronously.
 
 Access logging is also owned by the RPC loop. It is emitted at the single
 terminal-frame arbitration point, after a result or error status is known, so a
@@ -155,15 +164,15 @@ per-connection sessions, credit/queue primitives, frame scheduling, and endpoint
 lifecycle. Direct and Router connections share the same session implementation.
 Unary, server-streaming, and client-streaming handlers receive a call-bound
 logger and abort signal. Declared schemas validate requests, responses, and
-stream items; raw legacy handlers without schemas remain unchecked.
+stream items.
 
 TypeScript supports TCP and the local transport (`unixPath`, or `pipe` on
 Windows) for clients, Direct servers, and Router service connections. The Go
 runtime (`meshcall-go`) takes the same endpoints as `ws://`, `unix:///path`
 and `pipe://NAME` strings; each handler runs in its own goroutine with a
 `context.Context` that ends with the call. All three runtimes use the same Go
-Router; its process is launched by thin Python/TypeScript wrappers (Go has no
-launcher). Its registry, account authentication, scoped token RPC and failure
+Router; `LocalRouter` launches it as a child process in Python, TypeScript and
+Go. Its registry, account authentication, scoped token RPC and failure
 boundaries are described in [Router architecture](router.md).
 
 ## Call ownership
@@ -244,26 +253,22 @@ task can't operate through a newly acquired generation.
   re-sends failed unary calls when the error is retryable, the code is in the
   policy's set, and the method is idempotent per the contract or the call has
   an `idempotency_key`; attempts share the call's timeout and the final error
-  reports `details.attempts`. Streams are never retried; an (experimental)
-  subscription is reopened from its last cursor instead (see
-  [Subscriptions](protocol.md#subscriptions)).
+  reports `details.attempts`. Streams are never retried.
 - `stop(drain=True)` / `close({ drain: true })` first stops taking new calls
   (`server.drain` to the Router, or closing the listener) and waits up to the
   drain timeout for in-flight calls, then stops; nothing in flight fails.
 - Instance disconnect terminates its routed calls with retryable `unavailable`.
-- Clients and Router-mode servers accept a list of Router endpoints: clients
-  fail over to the next endpoint, servers keep one registration per Router.
+- Clients and Router-mode servers accept a list of Router endpoints (`Router([uri1, uri2])`):
+  clients fail over to the next endpoint, servers keep one registration per Router.
 - Connection loss terminates all local active calls. Clients then reconnect
   lazily on the next call with exponential backoff and jitter
   (`ReconnectPolicy`), waiting at most that call's timeout. Router-mode
   servers re-register with the same backoff while staying `RUNNING`; calls
   that arrive in between fail at the Router with retryable `unavailable`.
-  Calls are never replayed automatically; an (experimental) subscription is
-  reopened from its last cursor instead (see
-  [Subscriptions](protocol.md#subscriptions)).
+  Calls are never replayed automatically.
 - A malformed frame that still names a call fails only that call with
   `protocol_error`; a frame that cannot be attributed closes the connection.
-  Oversize frames fail the sending call with `resource_exhausted`.
+- Oversize frames fail the sending call with `resource_exhausted`.
 - Call metadata (`call.open`) and trailers (`call.result` / `call.error`) are
   string maps that reach handlers through `RpcContext` and are otherwise opaque
   to the runtime.
@@ -286,8 +291,6 @@ A new language runtime is conformant when `meshcall-conformance --fixture
 "<its fixture command>"` passes. `scripts/check.sh conformance` runs all
 three fixtures over TCP and over the local transport (`--transport tcp` /
 `local`); CI does too.
-Client-side conformance (a scripted fixture *client* driven by the suite
-acting as the Router) is a planned second phase.
 
 ## Contract warnings
 
@@ -302,27 +305,26 @@ direct instruction, and an explicit way to silence it:
 | Code | Finding | Silence |
 | --- | --- | --- |
 | W001 | service or method without a description | `description=""` |
-| W002 | mutating-looking name (`create_*`, `delete_*`, …) with no annotation | any of `idempotent`, `read_only`, `destructive` |
+| W002 | mutating-looking name (`create_*`, `delete_*`, …) with no annotation | `@mutates`, `@query`, or any of `idempotent`, `read_only`, `destructive` |
 | W003 | `read_only` on a mutating name, or `destructive` on a reading name | fix the name or the annotation |
 | W005 | `deprecated` without a named replacement | `deprecated="…"` with text |
 | W006 | sticky balancing on a `targeted` service (never used) | remove the sticky policy |
 
 Where they surface, by language and moment:
 
-- **TypeScript, compile time**: the method builders' overload without
-  `description` is `@deprecated`, so editors strike it through and
-  `@typescript-eslint/no-deprecated` can fail the build. Name shape is a type
-  error via `normalizeServiceName`'s runtime check plus the documented
-  template literal form.
+- **TypeScript, compile time**: `description` is a required property on
+  `@service`, `@query`, `@mutates` and `@stream` options (`""` declares none on
+  purpose). Name shape is checked via `normalizeServiceName` plus the
+  documented template literal form.
 - **Python, import time**: `warnings.warn(MeshCallWarning)` for each finding
   when the `@service` decorator runs; pytest collects them, and
   `python -W error::meshcall.MeshCallWarning` makes them fatal.
 - **All three, server start**: one summarised log line per start (Go: in
   `NewServer`; `meshcall.LintService` lists the findings).
 - **Strict mode**: `MESHCALL_STRICT=1` (all three runtimes),
-  `MeshCallServer({ strictContracts: true })` (TS) and
-  `ServerOptions{Strict: true}` (Go) turn warnings into errors. `AGENTS.md`
-  tells agents to run in strict mode; CI may opt in.
+  `mesh.mount(svc, strict=True)` (Python), `mesh.mount(svc, { strict: true })`
+  (TS) and `mesh.Mount(svc, meshcall.WithStrict(true))` (Go) turn warnings into
+  errors. `AGENTS.md` tells agents to run in strict mode; CI may opt in.
 - **Project-wide ignore**: `MESHCALL_IGNORE_WARNINGS=W001,W002`.
 
 `lint_contract(contract)` / `lintService(definition)` return the findings
@@ -331,10 +333,11 @@ without side effects, for tooling such as `meshcall check`.
 ## Interceptors
 
 All three runtimes expose one interception point per side, shaped the same
-way in Python, TypeScript and Go (`ServerOptions.Interceptors` /
-`ClientOptions.Interceptors`).
+way in Python, TypeScript and Go:
 
-- **Server**: `RpcServer(interceptors=[...])` / `MeshCallServer({ interceptors })`.
+- **Server**: `mesh.mount(svc, interceptors=[...])` (Python),
+  `mesh.mount(svc, { interceptors })` (TypeScript), or
+  `mesh.Mount(svc, meshcall.WithServerInterceptors(...))` (Go).
   Each interceptor is `(ctx, request, call_next) -> result`. It runs after
   request validation, on the same loop as the handler, and `call_next()`
   resolves only once the whole call has run, including every streamed item.
@@ -342,17 +345,18 @@ way in Python, TypeScript and Go (`ServerOptions.Interceptors` /
   trailers; `ctx.metadata` carries what the caller sent. The built-in access
   log stays outside the chain because the authoritative status is only known
   when the terminal frame is sent.
-- **Client**: `ClientBase(interceptors=[...])` / `MeshCallClient(url, peerId,
-  { interceptors })`. Each interceptor is `(info, call_next) -> result` where
-  `info` names the service, method and shape and holds mutable `options`
-  (timeouts, metadata). `call_next(info)` returns the response for unary and
-  client-stream calls, or the lazy stream object for server streams, and may be
-  invoked again to retry. `info.trailers` is populated for unary and
-  client-stream calls after `call_next` returns; streams expose `.trailers`
-  once iteration completes.
+- **Client**: `Mesh(router, interceptors=[...])` (Python),
+  `new Mesh(router, { interceptors })` (TypeScript), or
+  `meshcall.NewMesh(router, meshcall.WithClientInterceptors(...))` (Go). Each
+  interceptor is `(info, call_next) -> result` where `info` names the service,
+  method and shape and holds mutable `options` (timeouts, metadata).
+  `call_next(info)` returns the response for unary and client-stream calls, or
+  the lazy stream object for server streams, and may be invoked again to retry.
+  `info.trailers` is populated for unary and client-stream calls after
+  `call_next` returns; streams expose `.trailers` once iteration completes.
 
-The first interceptor in either list is outermost. Interceptors do not see
-individual stream items; that remains a future extension.
+The first interceptor in either list is outermost. Interceptors wrap the whole
+call lifecycle rather than individual stream items.
 
 ## Observability
 

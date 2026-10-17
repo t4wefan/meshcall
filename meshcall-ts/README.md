@@ -4,7 +4,7 @@
 
 **Write cross-language streaming RPC the way you write ordinary TypeScript, Python and Go functions.**
 
-MeshCall is an asynchronous, typed streaming RPC framework for TypeScript, Python and Go over WebSocket. A service is a `@service` class whose methods are declared with `@query` (pure read), `@mutates` (side effects) or `@stream` (server stream), with [zod](https://zod.dev) schemas for what goes in and out (`z` is re-exported, so there is one copy). Services register with the standalone Go Router; clients call them through it, and generated clients in every language take the same parameter list. Client streams, restricted duplex calls and experimental subscriptions are covered below.
+MeshCall is an asynchronous, typed streaming RPC framework for TypeScript, Python and Go over WebSocket. A service is a `@service` class whose methods are declared with `@query` (pure read), `@mutates` (side effects) or `@stream` (server stream), with [zod](https://zod.dev) schemas for what goes in and out (`z` is re-exported, so there is one copy). Services register with the standalone Go Router; clients call them through it, and generated clients in every language take the same parameter list. Client streams and restricted duplex calls are covered below.
 
 ## Install
 
@@ -27,7 +27,7 @@ npx meshcall init --agent claude   # or target: claude | cursor | copilot | wind
 A service is a class; its decorated methods are the service's methods, and zod schemas describe what goes in and out:
 
 ```typescript
-import { Mesh, mutates, query, Router, service, stream, z } from "meshcall";
+import { LocalRouter, Mesh, mutates, query, service, stream, z } from "meshcall";
 
 const Message = z.object({ text: z.string() }).meta({ id: "Message" });
 
@@ -63,13 +63,13 @@ class Chat {
   }
 }
 
-const mesh = new Mesh(new Router("ws://127.0.0.1:8765"));
+const mesh = new Mesh(new LocalRouter({ port: 8765 }));
 mesh.mount(new Chat());
 await using server = await mesh.startServing();
 console.log(`serving on ${server.url}`);
 ```
 
-`mesh.startServing()` starts in the background and resolves with a `RunningServer` (`.url`, `.close()`); `await mesh.serve()` is the same but blocks until `SIGINT` / `SIGTERM`, then drains. `new Router()` with no argument reads `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`); use `await using router = await LocalRouter.start({ port: 0 })` when you want Node to start and stop a local `meshcall-router` subprocess automatically.
+`mesh.startServing()` starts in the background and resolves with a `RunningServer` (`.url`, `.close()`); `await mesh.serve()` is the same but blocks until `SIGINT` / `SIGTERM`, then drains. Passing `new LocalRouter({ port: 8765 })` automatically starts and stops a local `meshcall-router` subprocess with the `Mesh`; pass `new Router()` (reads `MESHCALL_ROUTER_URL`, default `ws://127.0.0.1:8765`) when connecting to an already-running Router.
 
 Call the service through a generated client (generation is shown below):
 
@@ -94,7 +94,7 @@ await chat
 
 What happens here:
 
-- `@query` declares a pure read (`readOnly: true, idempotent: true`); `@mutates` declares a state-changing method (`idempotent: true` when repeating it is safe; otherwise it is `destructive` by default); `@stream` declares a server stream, an async generator that yields `output` items. A client stream is `@mutates` plus `streamInput`; duplex is the restricted last resort (`streamInput` + `streamOutput` + `reason`). The long forms `@method`, `@method.serverStream`, `@method.clientStream` and `@method.duplex` still exist.
+- `@query` declares a pure read (`readOnly: true, idempotent: true`); `@mutates` declares a state-changing method (`idempotent: true` when repeating it is safe; otherwise it is `destructive` by default); `@stream` declares a server stream, an async generator that yields `output` items. A client stream is `@mutates` plus `streamInput`; duplex is the restricted last resort (`@mutates` with `streamInput`, `streamOutput` and `reason`, receiving a `DuplexChannel<In, Out>`).
 - `input` is an inline zod map (`{ session_id: z.string(), text: z.string() }`), which binds positionally: the handler takes `(session_id, text)`, and the generated client takes the same parameters in the same order. A single schema binds one parameter, `request: schema` binds a request object, and omitting `input` means no business parameters.
 - `output` (or `response` for unary calls) and `outputItem` validate what the handler returns; defaults are applied to the request. `.meta({ id: "Message" })` names a model in the portable contract (unnamed ones are named after the method). `description` is required by the types (`""` declares none on purpose); `@query` and `@stream` need an output schema, checked when the class is defined.
 - The schemas become the portable contract that `meshcall generate` turns into typed clients for Python, TypeScript and Go.
@@ -150,9 +150,9 @@ await mesh.auth.revokeToken(issued.token_id);
 
 `mesh.withOptions({ timeoutMs, idleTimeoutMs, metadata, idempotencyKey, instance })` returns a view that shares the connection and adds those options to every call. Several endpoints fail over without Router-side coordination: `new Router(["ws://router-a:8765", "ws://router-b:8765"])` registers a server with each and makes a client try them in order, starting from the last one that worked.
 
-`LocalRouter` (alias `WebSocketRouter`) starts the bundled Router from Node: besides `host` / `port` it takes `unixPath` (Linux, macOS, FreeBSD) or `pipe` (Windows) for the local transport, `maxFrameSize` (default and maximum 64 MiB), `outboxSize` (bytes queued for a peer that is not reading; default the Router's 256 MiB, at least `maxFrameSize`), `maxConnections`, `binaryPath` and `authFile`.
+`LocalRouter` starts the bundled Router from Node: besides `host` / `port` it takes `unixPath` (Linux, macOS, FreeBSD) or `pipe` (Windows) for the local transport, `maxFrameSize` (default and maximum 64 MiB), `outboxSize` (bytes queued for a peer that is not reading; default the Router's 256 MiB, at least `maxFrameSize`), `maxConnections`, `binaryPath` and `authFile`.
 
-`MeshCallClient` is the lower-level connection (`new MeshCallClient(url, peerId?, options?)`); `Mesh` wraps one. `MeshCallServer` likewise remains the explicit server (`start()` / `close()`) that `mesh.serve()` builds on.
+`MeshCallClient` (`new MeshCallClient(url, peerId?, options?)`) and `MeshCallServer` (`start()` / `close()`) are the lower-level connection and server primitives that `Mesh` builds on.
 
 ## HTTP Transport & Browser (`meshcall/web`)
 
@@ -168,7 +168,7 @@ console.log(await chat.withOptions({ timeoutMs: 5000 }).greet("Alice"));
 console.log(await mesh.registry.list());
 ```
 
-Duplex methods are WebSocket-only (`method_not_found`, `reason: "duplex_over_http"`), and `mesh.mount(...)` throws `TypeError` on an HTTP-backed `Mesh`; unary retries, streams, subscriptions and the built-ins work as over WebSocket.
+Duplex methods are WebSocket-only (`method_not_found`, `reason: "duplex_over_http"`), and `mesh.mount(...)` throws `TypeError` on an HTTP-backed `Mesh`; unary retries, streams and the built-ins work as over WebSocket.
 
 ## Explore, Call, and Generate Clients with the CLI
 
@@ -189,12 +189,8 @@ npx meshcall generate service.meshcall.json --language go --output internal/chat
 
 ## Subpath Exports
 
-- `meshcall/web` exports browser-safe `Mesh` and `Router`, which call the Router's HTTP v1 API over `fetch` (browsers, Deno, Bun, edge runtimes). Generated clients accept `new ChatClient(mesh)`. Duplex calls stay WebSocket-only; another origin needs `--http-cors-origin` on the Router.
+- `meshcall/web` exports browser-safe `Mesh` and `Router`, which call the Router's HTTP v1 API over `fetch` (browsers, Deno, Bun, edge runtimes). Generated clients accept `new ChatClient(mesh)`. Duplex calls are WebSocket-only; another origin needs `--http-cors-origin` on the Router.
 - `meshcall/otel` exports `otelClientInterceptor()` and `otelServerInterceptor()` for the `interceptors` option of `Mesh` and `mesh.serve()`. They need the optional peer dependency `@opentelemetry/api` and carry W3C trace context as call metadata, matching the Python `meshcall.otel` spans and metrics, so a trace continues across languages and through the Router.
-
-## Experimental
-
-Subscriptions and `Topic` are experimental in v0.3. `@method.subscription({ description, request, outputItem, cursor, resume })` declares a server stream whose generated client resubscribes after a retryable failure, passing the last item's `cursor` as the `resume` request field; `Topic` fans published items out to every subscriber in one process. They are left out of the flow above because their semantics may still change; see [Subscriptions](https://github.com/t4wefan/meshcall/blob/main/docs/protocol.md#subscriptions).
 
 ## Documentation
 

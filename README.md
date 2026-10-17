@@ -10,15 +10,15 @@
 
 **Write cross-language streaming RPC the way you write ordinary Python, TypeScript and Go functions.**
 
-When building applications across processes or languages (such as pairing a Python AI/compute backend with a TypeScript application), you shouldn't have to choose between heavy `.proto` toolchains and fragile hand-rolled WebSocket / JSON glue.
+When building applications across processes or languages (such as pairing a Python AI/compute backend with a TypeScript or Go application), you shouldn't have to choose between heavy `.proto` toolchains and fragile hand-rolled WebSocket / JSON glue.
 
 MeshCall is an asynchronous streaming RPC framework for **Python**, **TypeScript** and **Go**—**defining a remote service feels like writing a normal async function, and calling a remote endpoint feels like calling a local method:**
 
 - **Code is the contract—no `.proto` files or raw dictionaries** — declare inputs with function parameters and outputs with return models; generated clients provide full type signatures and IDE autocomplete so callers never have to hand-craft dictionaries or read server source code to check field names
-- **Catch contract changes at type-check time, validate at runtime** — generate a TypeScript client from a Python service (or vice versa) in one command. When a server changes a parameter or field, type checkers and compilers flag affected call sites immediately, while the runtime automatically validates requests and responses before handler code runs
+- **Catch contract changes at type-check time, validate at runtime** — generate a TypeScript, Python or Go client from a service in one command. When a server changes a parameter or field, type checkers and compilers flag affected call sites immediately, while the runtime automatically validates requests and responses before handler code runs
 - **Stream as naturally as writing a loop** — `yield` items on the server and iterate with `async for` on the client, ideal for progress updates, live data feeds, and streaming AI outputs
 - **Focus on business logic** — the framework handles connection management, request routing, timeouts, cancellation, and flow control so your handlers stay free of networking code
-- **Observable when you need it** — opt-in OpenTelemetry interceptors (`meshcall[otel]` in Python, `meshcall/otel` in TypeScript) carry W3C trace context across languages and through the Router, and the Router serves Prometheus metrics on `--metrics-listen`
+- **Observable when you need it** — opt-in OpenTelemetry interceptors (`meshcall[otel]` in Python, `meshcall/otel` in TypeScript) propagate W3C trace context across languages and services, paired with built-in Prometheus metrics
 - **Transparent to both humans and AI** — running services carry their own interface descriptions, so you can inspect signatures and make test calls right from the terminal without reading source code or writing throwaway scripts
 
 ---
@@ -33,9 +33,22 @@ uv add meshcall
 # TypeScript / Node.js (20+)
 yarn add meshcall
 # or: npm install meshcall
+
+# Go (1.22+)
+go get github.com/t4wefan/meshcall/meshcall-go
 ```
 
-The package already includes the routing process (`Router`) and the `meshcall` CLI—ready out of the box with no extra setup required.
+The Python and TypeScript packages bundle the local routing binary (`meshcall-router`) and the `meshcall` CLI—ready out of the box with no extra setup required.
+
+### Building with an AI Coding Assistant?
+
+After installing, run `meshcall init` once in your project root:
+
+```bash
+uv run meshcall init      # or: npx meshcall init / meshcall init
+```
+
+This writes `.agents/skills/meshcall/SKILL.md` and updates `AGENTS.md` with complete instructions so your AI assistant knows how to write services, generate clients, connect through `Router` and `Mesh`, and inspect or call running endpoints from the terminal. (Pass `--agent claude|cursor|copilot|windsurf|all` for tool-specific rule files.)
 
 ---
 
@@ -82,23 +95,26 @@ uv run meshcall generate service:Greeter --single-file --output greeter_client.p
 
 Instead of passing string method names or raw dictionaries, you get full IDE autocomplete for methods and fields, along with static type checking for parameters and return values.
 
-### 3. Start and Register the Service Through the "Router"
+### 3. Start the Service with `LocalRouter` / `Router` and `Mesh`
 
-How do servers and clients find each other? In MeshCall, we recommend routing all communication through a **Router (the relay process between services)** rather than connecting clients directly to individual server ports:
+How do servers and clients find each other? MeshCall separates network topology from your process runtime across two layers:
 
-- **Servers** connect to the Router and register their **service instances** (`instance_id`). You can start multiple instances of the same service, and the Router automatically forwards and load-balances requests across them.
-- **Clients** connect to the same Router and call services by name (such as `demo.v1.Greeter`), without needing to know which port or machine hosts the target service.
-- Because every node connects to the Router, **any process can simultaneously provide services and act as a client calling other services**.
+1. **Router (`Router` / `LocalRouter`) — the relay process between peers**:
+   Instead of connecting clients directly to individual server ports, every peer connects to a **Router** (`ws://127.0.0.1:8765` by default).
+   - `LocalRouter(port=8765)` launches and manages a local `meshcall-router` subprocess automatically—ideal for local development, tutorials, and tests.
+   - `Router()` points to an external Router process already running at `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`).
+2. **Mesh (`Mesh(router)`) — the peer runtime in your process**:
+   A `Mesh` connects to the Router, mounts your local services (`mesh.mount(Greeter())`) so the Router can forward requests to them, and serves as the shared connection for generated clients. You can start multiple instances of the same service, and the Router automatically load-balances requests across them. Because every peer connects through a `Mesh`, **any process can simultaneously provide services and act as a client calling other services**.
 
-Create `server.py` and run it (assuming `meshcall-router` is running on the default `ws://127.0.0.1:8765`, or pass `LocalRouter()` in tests/demos to spawn one in-process):
+Create `server.py` and run it in Terminal 1:
 
 ```python
-from meshcall import Mesh, Router
+from meshcall import LocalRouter, Mesh
 from service import Greeter
 
 
 if __name__ == "__main__":
-    mesh = Mesh(Router())
+    mesh = Mesh(LocalRouter(port=8765))
     mesh.mount(Greeter())
     mesh.run()
 ```
@@ -107,11 +123,11 @@ if __name__ == "__main__":
 uv run python server.py
 ```
 
-`Router()` resolves the Router address (`MESHCALL_ROUTER_URL`, default `ws://127.0.0.1:8765`). `mesh.mount(Greeter())` mounts the service locally, and `mesh.run()` connects to the Router, registers the service, and drains on `SIGINT` / `SIGTERM` before exiting. Pass `LocalRouter(port=0)` when you want Python to start and stop a local `meshcall-router` subprocess automatically.
+`Mesh(LocalRouter(port=8765))` starts a local Router subprocess on port `8765`, `mesh.mount(Greeter())` mounts the service locally, and `mesh.run()` connects to the Router, registers `demo.v1.Greeter`, and drains in-flight calls on `SIGINT` / `SIGTERM` before exiting. (When connecting to an existing standalone `meshcall-router`, pass `Router()` instead of `LocalRouter(port=8765)`.)
 
 ### 4. Call the Service Like a Local Async Function
 
-Keep `server.py` running, create `client.py`, and run it in another terminal:
+Keep `server.py` running, create `client.py`, and run it in Terminal 2:
 
 ```python
 import asyncio
@@ -134,19 +150,17 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-Several generated clients can share one `Mesh` connection (`GreeterClient(mesh)`, `BillingClient(mesh)`), and `mesh.registry` / `mesh.auth` expose the Router's built-in Registry and AuthService.
-
 ```bash
 uv run python client.py
 ```
 
-Both the parameters and return value of `client.greet` carry full type signatures—giving you IDE autocomplete and static type checking so missing or mismatched arguments are caught right in your editor.
+`Router()` connects to the Router listening on `ws://127.0.0.1:8765`. Several generated clients can share one `Mesh` connection (`GreeterClient(mesh)`, `BillingClient(mesh)`), and `mesh` also exposes built-in Router capabilities through `mesh.registry` (listing and inspecting registered services) and `mesh.auth` (checking caller identity and managing access tokens). Both the parameters and return value of `client.greet` carry full type signatures, so missing or mismatched arguments are caught right in your editor.
 
 ---
 
 ## Streaming Methods: Replace `return` with `yield`
 
-Beyond request-response methods, MeshCall natively supports **streaming methods**. A server stream is an async generator decorated with `@stream`; a client stream takes the inbound `AsyncIterator` as its last parameter and is declared with `@mutates` (a stream of uploads is a call with side effects). Both keep the 1:1 signature rule: the generated client takes the same ordinary parameters, in the same order. For events and notifications that should survive dropped connections, `@method.subscription(cursor=…, resume=…)` declares a server stream that clients resume automatically after the last item they saw; `Topic[T]` fans events out to every subscriber in the process. Subscriptions and `Topic` are **experimental** in v0.3 (see [Subscriptions](docs/protocol.md#subscriptions)).
+Beyond request-response methods, MeshCall natively supports **streaming methods**. A server stream is an async generator decorated with `@stream`; a client stream takes an inbound `AsyncIterator` as its last parameter and is declared with `@mutates` (a stream of uploads is a call with side effects). Both keep the 1:1 signature rule: the generated client takes the same ordinary parameters, in the same order.
 
 Update `service.py` to add the streaming method `countdown`:
 
@@ -233,7 +247,7 @@ for await (const tick of client.countdown(3)) {
 }
 ```
 
-`new Router()` reads `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), and `withOptions({ timeoutMs, metadata, idempotencyKey, instance })` sets per-call options without changing the business signature.
+`await using mesh = await Mesh.connect(...)` is TypeScript's async-disposable equivalent of Python's `async with Mesh(...) as mesh:`. `new Router()` reads `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), and `withOptions({ timeoutMs, metadata, idempotencyKey, instance })` sets per-call options without changing the business signature.
 
 ---
 
@@ -291,13 +305,13 @@ curl http://127.0.0.1:8765/v1/services
 curl http://127.0.0.1:8765/v1/openapi.json
 ```
 
-When a `Router` is given an `http://` or `https://` URL, `Mesh` automatically selects the HTTP client transport underneath, so the same typed client can switch transport without changing its methods:
+When a `Router` is given an `http://` or `https://` URL, `Mesh` automatically selects the HTTP client transport underneath, so the same generated client can switch transport without changing its methods:
 
 ```python
 from meshcall import Mesh, Router
 
 mesh = Mesh(Router("https://router.example"), token="mk_…")
-client = ChatClient(mesh)
+client = GreeterClient(mesh)
 reply = await client.greet("Alice")
 ```
 
@@ -305,35 +319,23 @@ reply = await client.greet("Alice")
 import { Mesh, Router } from "meshcall/web";
 
 const mesh = new Mesh(new Router("https://router.example"), { token });
-const client = new ChatClient(mesh);
+const client = new GreeterClient(mesh);
 ```
 
 ```go
 mesh := meshcall.NewMesh(meshcall.NewRouter("https://router.example"), meshcall.WithToken("mk_…"))
-chat := chatclient.NewChatClient(mesh)
+greeter := greeterclient.NewGreeterClient(mesh)
 ```
 
 From a browser (or Deno, Bun, an edge runtime), `meshcall/web` exports a `fetch`-only `Mesh` and `Router` with no Node imports (start the Router with `--http-cors-origin https://app.example` for another origin). The Router's built-ins (`mesh.registry.list()` / `mesh.Registry().List(ctx)`, `mesh.auth.whoami()`, …) work through it too.
 
-Unary calls and server streams work fully, client streams take an NDJSON body, and duplex calls (a restricted shape of last resort; see [Duplex calls](docs/protocol.md#duplex-calls)) stay WebSocket-only. Accounts, tokens, timeouts (`MeshCall-Timeout-Ms`), idempotency keys (`Idempotency-Key`) and metadata (`MeshCall-Meta-*`) work as headers; see [HTTP calls](docs/protocol.md#http-calls).
+Unary calls and server streams work fully, client streams take an NDJSON body, and duplex calls (bidirectional streaming where client and server send items concurrently; see [Duplex calls](docs/protocol.md#duplex-calls)) stay WebSocket-only. Accounts, tokens, timeouts (`MeshCall-Timeout-Ms`), idempotency keys (`Idempotency-Key`) and metadata (`MeshCall-Meta-*`) work as headers; see [HTTP calls](docs/protocol.md#http-calls).
 
 ---
 
 ## Go
 
-Go services and clients use the Go runtime, [`meshcall-go`](meshcall-go/README.md): the same calls, errors, deadlines, streams, subscriptions and Router features, checked by the same conformance suite. `meshcall generate service.meshcall.json --language go --output internal/chatclient` writes a typed Go client for a service written in any of the three languages, and `meshcall.WriteContract` exports a Go service's contract for Python and TypeScript clients.
-
----
-
-## Teach Your AI Coding Assistant
-
-If you build with an AI coding assistant, run `meshcall init` once in your project root:
-
-```bash
-uv run meshcall init
-```
-
-This installs development instructions for AI assistants (`.agents/skills/meshcall/SKILL.md` and `AGENTS.md`), showing your assistant how to define services and methods, generate clients, and use `meshcall router inspect` and `meshcall call` to explore and verify running endpoints. See the [User Guide](docs/guide.md) for tool-specific flags (such as Claude Code or Cursor).
+Go services and clients use the Go runtime, [`meshcall-go`](meshcall-go/README.md): the same calls, errors, deadlines, streams and Router features, checked by the same conformance suite. `meshcall generate service.meshcall.json --language go --output internal/chatclient` writes a typed Go client for a service written in any of the three languages, and `meshcall.WriteContract` exports a Go service's contract for Python and TypeScript clients.
 
 ---
 

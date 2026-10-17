@@ -2,8 +2,8 @@
 
 [English](./README.md) | **简体中文**
 
-基于 WebSocket、面向 Python、TypeScript 与 Go 的异步强类型流式 RPC 框架。
-服务使用 Pydantic v2 模型定义契约，注册到独立 Go Router，并暴露一元调用（Unary）、服务端流（Server Stream）与客户端流（Client Stream）方法。订阅在 v0.3 中属于实验特性，双向流（duplex）仍是受限制的最后手段。
+面向 Python、TypeScript 与 Go 的异步强类型流式 RPC 框架，支持 WebSocket 与 HTTP 传输。
+服务使用 Pydantic v2 模型定义契约，通过 `Mesh` 注册到独立 Go Router，并暴露一元调用（Unary）、服务端流（Server Stream）、客户端流（Client Stream）与受限双向流（Duplex）方法。
 
 ## 安装
 
@@ -29,11 +29,11 @@ from collections.abc import AsyncIterator
 from pydantic import BaseModel
 
 from meshcall import (
-    Router,
+    LocalRouter,
+    Mesh,
     RpcLogger,
     mutates,
     query,
-    run,
     service,
     stream,
 )
@@ -73,51 +73,59 @@ class Chat:
 
 
 if __name__ == "__main__":
-    run(Chat(), router=Router("ws://127.0.0.1:8765"))
+    mesh = Mesh(LocalRouter(port=8765))
+    mesh.mount(Chat())
+    mesh.run()
 ```
 
-v0.3 推荐用这些简写声明方法：
+服务方法使用以下三个装饰器声明：
 
 - `@query` 声明纯读取（`read_only=True`、`idempotent=True`）。
-- `@mutates(...)` 声明会修改状态的一元、客户端流或双向流方法。裸 `@mutates` 默认就是 destructive；可重试的写入用 `@mutates(idempotent=True)`，需要显式声明破坏性时用 `@mutates(destructive=True)`。
+- `@mutates(...)` 声明会修改状态的一元、客户端流或双向流方法。裸 `@mutates` 默认为 `destructive=True`；可安全重试的写入用 `@mutates(idempotent=True)`，需要显式声明破坏性时用 `@mutates(destructive=True)`。
 - `@stream` 声明服务端流。裸 `@stream` 默认按只读处理，除非方法名看起来像变更操作；有副作用的服务端流请显式传 `read_only=False, idempotent=False`。
 
-长写法的 `@method`、`@method.server_stream`、`@method.client_stream`、`@method.duplex` 与 `@method.subscription` 仍然可用，但新服务应使用上面的简写。双向流（一次调用中输入与输出交错）仍是最后手段：用 `@mutates(reason="…")`（或 `@method.duplex(reason=…)`）声明，处理函数接收 `DuplexChannel[In, Out]` 参数并返回 `None`。duplex 不重试、不去重、不接受幂等键，也不能通过 HTTP 调用。
+双向流（一次调用中输入与输出交错）是受限的最后手段：用 `@mutates(reason="…")` 声明，处理函数接收 `DuplexChannel[In, Out]` 参数并返回 `None`。双向流不重试、不去重、不接受幂等键，也不能通过 HTTP 调用。
 
-处理函数也可以请求 `ctx: RpcContext` 与 `logger: RpcLogger`；二者由运行时注入，不会进入契约参数。
+处理函数也可以声明 `ctx: RpcContext` 与 `logger: RpcLogger` 参数；二者由运行时注入，不会进入契约参数。
 
 在开发与 CI 阶段设置 `MESHCALL_STRICT=1`，可在导入模块时立即发现缺失的文档字符串或未标注副作用的变更方法，并给出精确的修复提示。
 
-## 运行与托管
+## 挂载、运行与托管
 
-阻塞式 `run` 入口会接管进程，直到收到 `SIGINT` / `SIGTERM`，随后先排空再停止它启动的 Router：
+在 `Mesh` 上挂载服务并调用阻塞式入口 `mesh.run()`，它会接管进程直到收到 `SIGINT` / `SIGTERM`，随后优雅排空在途调用。使用 `LocalRouter(port=8765)` 可自动拉起并托管本地 `meshcall-router` 子进程，使用 `Router("ws://127.0.0.1:8765")` 则连接到已运行的外部 Router：
 
 ```python
-from meshcall import Router, run
+from meshcall import LocalRouter, Mesh, Router
 
-run(Chat(), router=Router("ws://127.0.0.1:8765"))
+# 在 8765 端口启动本地 Router 子进程（若连接外部 Router 则传入 Router()）：
+mesh = Mesh(LocalRouter(port=8765))
+mesh.mount(Chat())
+mesh.run()
 ```
 
-在异步应用中用 `serve` 托管服务；当地址是本机且没有进程在监听时，会自动拉起一个临时本地 Router：
+在异步应用或测试中，配合 `LocalRouter` 与 `mesh.serve()` 托管服务：
 
 ```python
 import asyncio
 
-from meshcall import Router, serve
+from meshcall import LocalRouter, Mesh
 
 
 async def main() -> None:
-    async with serve(Chat(), router=Router("ws://127.0.0.1:0")) as server:
-        print(f"serving on {server.url}")  # 例如 ws://127.0.0.1:53281
-        await asyncio.Event().wait()       # 离开代码块时会先排空再停止
+    async with LocalRouter(port=0) as router:
+        mesh = Mesh(router)
+        mesh.mount(Chat())
+        async with mesh.serve() as server:
+            print(f"serving on {server.url}")  # 例如 ws://127.0.0.1:53281
+            await asyncio.Event().wait()       # 离开代码块时会先排空再停止
 
 
 asyncio.run(main())
 ```
 
-`serve(...)` 返回 `RunningServer`（`server.url`、`await server.stop()`、`await server.wait_closed()`），也可以直接 `server = await serve(...)`。`run` 与 `serve` 都接受 `instance_id`、`max_inflight`、`strict`、`interceptors` 与日志选项，也可以用 URL 字符串代替 `Router`。
+`mesh.serve(...)` 返回 `RunningServer`（`server.url`、`await server.stop()`、`await server.wait_closed()`），也可以直接 `await mesh.serve(...)`。`mesh.run` 与 `mesh.serve` 都接受 `instance_id`、`max_inflight`、`strict`、`interceptors` 与日志选项。
 
-两者的 Router 解析规则一致：显式地址优先，否则读取 `MESHCALL_ROUTER_URL`（多个 Router 用逗号分隔），最后回退到 `ws://127.0.0.1:8765`。自动拉起只适用于本地地址，且只发生在 `run` / `serve` 中；设置 `Router(..., spawn_if_local=False)` 可关闭。我们推荐在所有场景下都通过 Router 连接：这样同一个节点既能注册自身服务，也能通过同一条连接作为客户端调用网格中的其他服务（`WebSocketDirectServerDriver` 仅作为早期兼容性方法保留，不推荐使用）。
+无参的 `Router()` 会读取 `MESHCALL_ROUTER_URL`（多个 Router 用逗号分隔），未设置时回退到 `ws://127.0.0.1:8765`。需要由 Python 显式启动和停止本地 `meshcall-router` 子进程时，请使用 `LocalRouter(...)`。
 
 ## 生成并调用强类型客户端
 
@@ -130,16 +138,16 @@ uv run meshcall generate my_app.service:Chat --language typescript --output gene
 uv run meshcall generate my_app.service:Chat --language go --output internal/chatclient
 ```
 
-通过生成的客户端发起调用：
+保持服务端运行，在另一个终端通过生成的客户端发起调用：
 
 ```python
-from meshcall import Router
+from meshcall import Mesh, Router
 from meshcall_chat_v1_chat_client import ChatClient
 
 
 async def main() -> None:
-    async with Router.connect("ws://127.0.0.1:8765") as router:
-        chat = ChatClient(router)  # 复用 Router 的唯一连接
+    async with Mesh(Router("ws://127.0.0.1:8765")) as mesh:
+        chat = ChatClient(mesh)  # 复用 Mesh 的唯一连接
         reply = await chat.with_options(
             timeout=5.0,
             idempotency_key="send-s1-1",
@@ -148,7 +156,7 @@ async def main() -> None:
         print(reply.text)
 ```
 
-`ChatClient.connect(...)` 是独立形式，解析 Router 的方式与 `run` 完全一致：`async with ChatClient.connect() as client:` 使用 `MESHCALL_ROUTER_URL` / 默认地址，`ChatClient.connect("ws://…")` 则使用显式地址。生成的客户端方法只接收业务参数，顺序与服务端处理函数一致（客户端流方法先接收这些参数，最后接收入站 `AsyncIterable`）；定向服务（targeted）还会要求必填的 `instance=` 关键字。单次调用选项不会改变业务方法签名：`with_options(timeout=..., idle_timeout=..., metadata=..., idempotency_key=..., instance=...)` 返回一个应用了这些选项的客户端视图。
+生成的客户端方法只接收业务参数，顺序与服务端处理函数一致（客户端流方法先接收普通参数，最后接收入站 `AsyncIterable`）；定向服务（`targeted=True`）还会要求必填的 `instance=` 关键字。单次调用选项不会改变业务方法签名：`with_options(timeout=..., idle_timeout=..., metadata=..., idempotency_key=..., instance=...)` 返回一个应用了这些选项的客户端视图。
 
 ## 使用 CLI 探索与调用
 
@@ -193,54 +201,52 @@ class Chat:
 
 `@dependency` provider 可以是同步函数、异步函数或生成器；生成器的清理逻辑在调用结束时运行，因此可以在成功时提交、在出错或取消时回滚（参见 `best-practice/`）。依赖也可以写成 `Annotated[T, dependency(provider)]`，或通过类的 `_provider()` 解析。`meta("key")` 注入一条调用元数据。被注入的参数会从契约与生成的客户端中移除；调用方可通过 `with_options(metadata=...)` 或 CLI 的 `--metadata k=v` 发送元数据。
 
-## Router
+## `Router`、`LocalRouter` 与 `Mesh`
 
-`Router` 是统一句柄，用于启动服务、共享客户端连接，以及调用 Router 的内置服务：
+`Router` 描述远程 Router 端点；`LocalRouter` 管理本地 `meshcall-router` 子进程；`Mesh` 是进程内的对端运行时，负责挂载本地服务、在多个客户端间复用同一条连接，并通过 `mesh.registry` 与 `mesh.auth` 暴露 Router 的内置服务：
 
 ```python
-from meshcall import Router, RouterCredentials
+from meshcall import Mesh, Router, RouterCredentials
 from meshcall_chat_v1_chat_client import ChatClient
 
 
 async def main() -> None:
-    async with Router.connect(
-        "ws://127.0.0.1:8765",
-        auth=RouterCredentials(token="…"),
-    ) as router:
-        services = await router.list_services()
+    async with Mesh(
+        Router("ws://127.0.0.1:8765"),
+        credentials=RouterCredentials(token="…"),
+    ) as mesh:
+        services = await mesh.registry.list()
         print([service.name for service in services])
-        chat = ChatClient(router)  # 多个客户端共享同一条连接
+        chat = ChatClient(mesh)  # 多个客户端共享同一条连接
         reply = await chat.with_options(timeout=5.0).last_message("s1")
 ```
 
-`Router.connect(...)` 既可以写成 `async with Router.connect(...) as router`，也可以写成 `await Router.connect(...)`；不传地址时会依次解析 `MESHCALL_ROUTER_URL`（多个 Router 可用逗号分隔）与 `ws://127.0.0.1:8765`。传给 `run` / `serve` 时直接构造 `Router(url)` 即可。用 `ChatClient(router)`（或在已连接的 Router 上调用 `ChatClient.connect(router)`）创建的客户端会复用同一条连接；关闭 Router 会一并关闭它们。
+Router 的内置服务挂载在 `mesh.registry`（`await mesh.registry.list()`、`await mesh.registry.describe(name)`）与 `mesh.auth`（`await mesh.auth.whoami()`、`await mesh.auth.issue_token(scopes, ttl_seconds=900)`、`await mesh.auth.revoke_token(token_id)`）上。
 
-Router 的内置服务可直接调用：`await router.list_services()`、`await router.describe_service(name)`、`await router.whoami()`、`await router.issue_token(scopes, ttl_seconds=900)` 与 `await router.revoke_token(token_id)`。
-
-## Router 与本地传输
+## 本地传输
 
 `Router` 接受 `unix_path`（Linux、macOS、FreeBSD）或 `pipe`（Windows 命名管道）代替 TCP URL；`Router("unix:///path")` 与 `Router("pipe://NAME")` 同样可用。CLI 以 `unix:///path` 与 `pipe://NAME` 寻址同样的监听地址。
 
-需要自己管理 Router 进程时，`WebSocketRouter` 仍然可用：`host` / `port`、`unix_path`、`pipe`、`max_frame_size`（默认且最大 64 MiB）、`outbox_size`（为不读取数据的对端排队的字节数，默认使用 Router 的 256 MiB，不得小于 `max_frame_size`）、`max_connections`、`binary_path`、`auth_file` 与就绪超时。它提供 `pid`、`is_running`、`bound_port`、`wait_closed()` 以及异步上下文管理器（`async with`）。如需覆盖内置二进制，可设置环境变量 `MESHCALL_ROUTER_BINARY`。底层 `WebSocketClientDriver` 与 `WebSocketRouterServerDriver` 仍可用于自定义接线，并同样接受 `unix_path=` / `pipe=`。
+需要显式管理本地 Router 进程时可使用 `LocalRouter`：支持配置 `host` / `port`、`unix_path`、`pipe`、`max_frame_size`（默认且最大 64 MiB）、`outbox_size`（为不读取数据的对端排队的字节数，默认使用 Router 的 256 MiB，不得小于 `max_frame_size`）、`max_connections`、`binary_path`、`auth_file` 与就绪超时。它提供 `pid`、`is_running`、`bound_port`、`wait_closed()` 以及异步上下文管理器（`async with`）。如需覆盖内置二进制，可设置环境变量 `MESHCALL_ROUTER_BINARY`。底层原语（`RpcServer`、`ClientBase`、`WebSocketClientDriver` 与 `WebSocketRouterServerDriver`）支持自定义传输接线，并同样接受 `unix_path=` / `pipe=`。
 
-## HTTP 客户端
+## HTTP 传输
 
-`HTTPRouter` 是只用 HTTP 通信的客户端 Router：像普通 Router 一样传给生成的客户端即可。它依赖 `httpx`（默认依赖）。
+当 `Router` 传入 `http://` 或 `https://` 地址时，`Mesh` 会在底层自动切换为 HTTP 客户端传输（基于 `httpx`）：
 
 ```python
-from meshcall import HTTPRouter
+from meshcall import Mesh, Router
 
-http = HTTPRouter("https://router.example", token="mk_…")
-chat = ChatClient(http)                    # 或 ChatClient.connect(http)
+mesh = Mesh(Router("https://router.example"), token="mk_…")
+chat = ChatClient(mesh)
 reply = await chat.with_options(timeout=5).greet("Alice")
-services = await http.list_services()
+services = await mesh.registry.list()
 ```
 
-duplex 方法只能走 WebSocket（会抛出 `method_not_found`，`reason: "duplex_over_http"`）。其余能力与 WebSocket 一致：一元调用及其幂等重试、服务端流、客户端流、订阅（按 cursor 恢复），以及内置的 Registry/AuthService 调用。
+双向流（Duplex）方法仅支持 WebSocket（在 HTTP 上会抛出 `method_not_found`，`reason: "duplex_over_http"`），且在 HTTP `Mesh` 上调用 `mesh.mount(...)` 会抛出 `ContractError`。其余能力与 WebSocket 完全一致：一元调用及其幂等重试、服务端流、客户端流，以及内置的 `mesh.registry` / `mesh.auth` 调用。
 
 ## Router 鉴权
 
-向 `Router(...)` / `Router.connect(...)` 的 `auth` 参数传入 `RouterCredentials(username=..., password=...)` 或 `RouterCredentials(token=...)`（直接使用驱动时，则传给 `WebSocketClientDriver` / `WebSocketRouterServerDriver`）。Router 提供 `whoami()`、`issue_token(scopes=..., ...)` 与 `revoke_token(...)`；`RouterAuthClient` 是同一个内置服务的类型化客户端。使用 `RouterScope(service=..., methods=[...])` 限制令牌权限范围，或为临时服务实例开启 `register_service=True`。
+向 `Mesh(router, ...)` 传入 `token="…"` 或 `credentials=RouterCredentials(username=..., password=...)` / `RouterCredentials(token=...)`（直接使用底层驱动时，则传给 `WebSocketClientDriver` / `WebSocketRouterServerDriver` 的 `auth=` 参数）。`mesh.auth` 提供 `whoami()`、`issue_token(scopes=..., ...)` 与 `revoke_token(...)`；`RouterAuthClient` 是同一个内置服务的底层类型化客户端。使用 `RouterScope(service=..., methods=[...])` 限制令牌权限范围，或为临时服务实例开启 `register_service=True`。
 
 ## OpenTelemetry
 
@@ -249,53 +255,26 @@ pip install "meshcall[otel]"
 ```
 
 ```python
-from meshcall import Router, serve
+from meshcall import Mesh, Router
 from meshcall.otel import client_interceptor, server_interceptor
 from meshcall_chat_v1_chat_client import ChatClient
 
 
 async def main() -> None:
-    async with Router.connect(
-        "ws://127.0.0.1:8765",
+    async with Mesh(
+        Router("ws://127.0.0.1:8765"),
         interceptors=[client_interceptor()],
-    ) as router:
-        chat = ChatClient(router)
+    ) as mesh:
+        chat = ChatClient(mesh)
         ...
 
-    async with serve(
-        Chat(),
-        router=Router("ws://127.0.0.1:8765"),
-        interceptors=[server_interceptor()],
-    ):
+    server_mesh = Mesh(Router("ws://127.0.0.1:8765"))
+    server_mesh.mount(Chat())
+    async with server_mesh.serve(interceptors=[server_interceptor()]):
         ...
 ```
 
 每次调用都会生成一个 span 以及 `meshcall.calls` / `meshcall.call.duration` 指标；W3C trace context 作为调用元数据传递，因此链路可以穿过 Router、跨语言延续（TypeScript 对应 `meshcall/otel`）。未配置 OpenTelemetry SDK 时，这些拦截器不做任何事。
-
-## 实验特性：订阅与 Topic
-
-订阅与 `Topic` 仍然可用，但在 v0.3 中是**实验特性**：API 可能变化。除非确实需要断线后自动恢复，否则优先使用普通的服务端流。
-
-`@method.subscription(cursor="seq", resume="since")` 声明一个服务端流：客户端在遇到可重试失败后会自动重新打开调用，并把最后一个条目的 `cursor` 字段作为 `resume` 参数传回。`Topic[T]` 把发布的条目分发给进程内的每个订阅者：
-
-```python
-from meshcall import Topic, method, service
-
-topic: Topic[Event] = Topic(history=100, cursor=lambda e: e.seq)
-
-
-@service("events.v1.Events")
-class Events:
-    """事件流服务。"""
-
-    @method.subscription(cursor="seq", resume="since", read_only=True)
-    async def events(self, since: int | None = None) -> AsyncIterator[Event]:
-        """推送 since 之后的事件。"""
-        async for event in topic.subscribe(after=since):
-            yield event
-```
-
-`topic.publish(event)` 可以从任意线程或事件循环调用。落后太多的订阅者会以可重试的 `resource_exhausted`（`reason: "slow_subscriber"`）被断开并重新订阅；早于历史缓冲的 cursor 以 `invalid_argument`（`reason: "cursor_expired"`）拒绝。详见[协议规范：订阅](../docs/zh-CN/protocol.md#订阅subscriptions)。
 
 ## 相关文档
 

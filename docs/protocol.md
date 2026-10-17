@@ -61,8 +61,7 @@ unique string chosen by the client. All time values are integer milliseconds.
 `services[]` entries are `{name, methods[{name, stream, balance{kind, key?}}], contract?}`.
 `contract` is the service's portable contract entry (the same object a
 `*.meshcall.json` document holds: version, description, methods with
-schemas, parameters, annotations and, for duplex methods, `duplex_reason`; for
-subscriptions, `subscription`). It is opaque to routing; the Router
+schemas, parameters, annotations and, for duplex methods, `duplex_reason`). It is opaque to routing; the Router
 keeps the first one registered per service and serves it through the
 `meshcall.router.v1.Registry` service (`list`, `describe {service}`), which
 is readable without an account in development mode and needs a call
@@ -349,10 +348,8 @@ that `call_id`. The instance still sends its own terminal frame, which the
 Router drops. Because the client has already given up on the call, it is also
 free to fail the call locally as `cancelled` as soon as it sends the cancel.
 
-A connection loss terminates every active call on that connection. Version 1
-does not resume streams or migrate them between service instances; a
-subscription's client reopens it as a new call (see
-[Subscriptions](#subscriptions)).
+A connection loss terminates every active call on that connection. The protocol
+does not resume streams or migrate them between service instances.
 
 ## Duplex calls
 
@@ -383,55 +380,6 @@ contract (`duplex_reason`, required). A duplex method:
 
 Prefer a server stream plus unary calls, or a client stream, whenever the
 two directions do not truly interleave.
-
-## Subscriptions
-
-A subscription is a server stream that is meant to stay open (events,
-notifications, a live feed) and to be resumed after interruptions.
-Subscriptions and the runtimes' `Topic` helper are **experimental** in v0.3:
-supported and specified here, but outside the recommended core flow. It adds
-nothing to the wire: the call, credit, cancellation and errors are those of a
-server stream. What it adds is a contract entry the clients act on:
-
-```json
-"subscription": {"cursor": "seq", "resume": "since"}
-```
-
-- `cursor` names a property of the output item that identifies its position
-  (a sequence number, an event id, a timestamp); `resume` names an optional
-  request parameter that asks the server to continue *after* that position.
-  Both are given or neither (`{}`): a subscription without a cursor can only
-  be restarted from "now".
-- The method's `stream` is `server_stream`; tools and the Registry show it as a
-  subscription.
-
-Client runtimes treat a subscription call differently from other streams:
-
-- it has no default `timeout_ms` or `idle_timeout_ms`;
-- after a **retryable** failure (`unavailable`, `resource_exhausted`, or the
-  connection being lost) it reopens the call with the reconnect backoff and,
-  when a cursor is declared and an item has been seen, sets `resume` to the
-  last item's cursor; items keep flowing to the caller as one iterator;
-- a non-retryable error, cancellation by the caller, or the server ending the
-  stream ends it.
-
-Each reopened call is an ordinary `call.open`: it may reach a different
-instance, interceptors see it, and the server is responsible for honouring
-`resume`. A server that cannot (its history no longer covers the cursor)
-should fail the call with a non-retryable error rather than skip events
-silently. Over HTTP a subscription is a server stream; callers resume by
-sending the cursor themselves.
-
-The Python and TypeScript runtimes ship a `Topic` helper that fans items out
-to the subscribers in one process and fails them with these reasons
-(`source: "server"`):
-
-- a subscriber that falls more than its queue behind fails with retryable
-  `resource_exhausted` (`reason: "slow_subscriber"`), so one slow client
-  cannot hold memory for everyone; its client resubscribes after its cursor;
-- a `resume` cursor older than the kept history fails with non-retryable
-  `invalid_argument` (`reason: "cursor_expired"`) instead of skipping the
-  missing items.
 
 ## Liveness
 
@@ -492,10 +440,7 @@ consumer's credit, see [Flow control](#flow-control)), `router_draining` and
 [Router shutdown](#router-shutdown)). A direct server uses the same reasons with
 `source: "server"`. A server enforcing its own `max_inflight`
 answers `resource_exhausted` with `source: "server"`, `reason: "overloaded"`.
-Servers using the `Topic` helper add `slow_subscriber` (a retryable
-`resource_exhausted`) and `cursor_expired` (a non-retryable
-`invalid_argument`), both with `source: "server"`; see
-[Subscriptions](#subscriptions). Clients and servers report a frame they
+Clients and servers report a frame they
 did not send because it was over the size limit as non-retryable
 `resource_exhausted`, `reason: "frame_too_large"`, with their own `source`
 (see [Frame size](#frame-size)). Client retry policies add
@@ -539,8 +484,8 @@ is one call; the Router translates it into the frames above, so permission
 checks, balancing, deadlines, breakers, deduplication and targeting behave
 exactly as for a WebSocket caller. HTTP carries **unary calls and server
 streams fully, client streams with the limits below, and no duplex calls**.
-Requests whose path does not start with `/v1/` are WebSocket upgrades as
-before, except `/healthz` and `/readyz`.
+Requests whose path does not start with `/v1/` are WebSocket upgrades,
+except `/healthz` and `/readyz`.
 
 This mapping is stable under `/v1`; breaking changes need a new prefix.
 
@@ -636,8 +581,9 @@ Cross-origin calls are allowed only for origins listed with
 origins are refused. Cookies are never used, so credentials are always the
 `Authorization` header. Browsers cannot set that header on a WebSocket,
 which is why web clients use HTTP: the TypeScript package's `meshcall/web`
-entry (`MeshCallHttpClient`) implements this mapping over `fetch` with no
-Node dependency, and generated TypeScript clients accept it.
+entry (`new Mesh(new Router("https://…"), { token })`) implements this
+mapping over `fetch` with no Node dependency, and generated TypeScript
+clients accept it.
 
 ### Deployment
 

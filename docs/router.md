@@ -3,24 +3,24 @@
 **English** | [简体中文](zh-CN/router.md)
 
 MeshCall has one Router implementation: the standalone `meshcall-router` Go
-executable. Python and TypeScript `WebSocketRouter` APIs launch, supervise, and
-stop that same executable. They do not maintain routing tables or run Go through
-an FFI layer. A deployed Router can also run independently of any language.
-Go services and clients (`meshcall-go`) connect to it the same way; the Go
-runtime has no launcher, so a Go program runs `meshcall-router` itself or
-connects to a deployed one.
+executable. Python (`LocalRouter`), TypeScript (`LocalRouter`), and Go
+(`StartLocalRouter` / `NewLocalRouter`) launch, supervise, and stop that same
+executable. They do not maintain routing tables or run Go through an FFI layer.
+A deployed Router can also run independently of any language, and services and
+clients in all three runtimes connect to it through `Router` and `Mesh`.
 
 ```mermaid
 flowchart LR
-  PL[Python launcher] -. owns process .-> R[Go Router]
-  TL[TypeScript launcher] -. owns process .-> R
-  PC[Python client] <-->|meshcall/1| R
-  TC[TypeScript client] <-->|meshcall/1| R
-  GC[Go client] <-->|meshcall/1| R
+  PL[Python LocalRouter] -. owns process .-> R[Go Router]
+  TL[TypeScript LocalRouter] -. owns process .-> R
+  GL[Go LocalRouter] -. owns process .-> R
+  PC[Python Mesh] <-->|meshcall/1| R
+  TC[TypeScript Mesh] <-->|meshcall/1| R
+  GC[Go Mesh] <-->|meshcall/1| R
   R <-->|registered connection| PS[Python services]
   R <-->|registered connection| TS[TypeScript services]
   R <-->|registered connection| GS[Go services]
-  R --> A[Built-in AuthService]
+  R --> A[Built-in AuthService / Registry]
 ```
 
 Choose one launcher, or launch the binary directly. Clients and services initiate
@@ -94,7 +94,8 @@ and `meshcall call … --instance ID` addresses one.
 
 - An instance that sends `server.drain` leaves every pool immediately and is
   acknowledged; calls already routed to it finish normally. Python
-  `RpcServer.stop(drain=True)` and TypeScript `server.close({ drain: true })`
+  `await mesh.drain()`, TypeScript `await mesh.drain()`, and Go `mesh.Drain(ctx)`
+  (as well as `mesh.run()` / `mesh.serve()` / `mesh.startServing()` on exit)
   do this before disconnecting, so a rolling restart fails no request.
 - Instances may register `max_inflight`; the Router routes around full
   instances and answers `resource_exhausted` / `overloaded` when all are full.
@@ -136,22 +137,22 @@ and `meshcall call … --instance ID` addresses one.
   ends, and after `--shutdown-timeout` (default 10 s, `0` for none) the calls
   still in flight end with `unavailable` / `router_shutdown` and the instance
   receives `call.cancel`. A second signal skips the wait. A Router owned by
-  the Python or TypeScript launcher, which closes its stdin to stop it, ends
-  the calls in flight at once. Embedding Go programs call `Shutdown()` or
-  `Close()`.
-- Restarting the Router loses its registrations and active routes. Version 1
+  a `LocalRouter` launcher in Python, TypeScript or Go, which closes its stdin
+  to stop it, ends the calls in flight at once. Embedding Go programs call
+  `Shutdown()` or `Close()`.
+- Restarting the Router loses its registrations and active routes. The Router
   provides no automatic call replay, stream resumption, route migration, or
   replicated Router state; streams that a restart ends fail with a retryable
-  error, so subscriptions resume from their cursor.
+  error.
 
 ## High availability without Router state
 
-Run several independent Routers. A service instance registers with each of
-them (Python `WebSocketRouterServerDriver([uri1, uri2])`, TypeScript
-`router: { endpoint: [uri1, uri2] }`), keeping one registration per Router
-with its own reconnect loop; `start()` succeeds once any Router accepts.
-Clients take the same list (`WebSocketClientDriver([uri1, uri2])`,
-`new MeshCallClient([uri1, uri2])`): they use one Router and move to the next
+Run several independent Routers and pass the list of addresses to `Router`:
+Python `Router([uri1, uri2])`, TypeScript `new Router([uri1, uri2])`, or Go
+`meshcall.NewRouter(uri1, uri2)`. When `Mesh(router)` serves mounted services,
+it registers with each Router in the list, keeping one registration per Router
+with its own reconnect loop; startup succeeds once any Router accepts. When
+`Mesh(router)` makes client calls, it uses one Router and moves to the next
 when it fails, resuming from the last good one. Because every Router sees
 every instance and holds no state that peers cannot rebuild, no coordination
 between Routers is needed. Balancing, deduplication and circuit breaking are
@@ -283,8 +284,8 @@ not terminate TLS itself. The same checks apply to Unix sockets and named
 pipes; a named pipe admits only the Router's own user, SYSTEM and
 Administrators, as a Unix socket's file mode does. Browsers cannot set the
 `Authorization` header on a WebSocket, so they call over HTTP with
-`meshcall/web` (`new Mesh(new Router("https://…"), { token })`, see [HTTP calls](#http-calls)). JWT and
-an external login system are outside this version. WebSocket clients and
+`meshcall/web` (`new Mesh(new Router("https://…"), { token })`, see [HTTP calls](#http-calls)). The Router
+does not implement JWT validation or an external login system directly. WebSocket clients and
 `LocalRouter` subprocess launchers run in Python, Node and Go.
 
 ## HTTP calls
@@ -451,7 +452,7 @@ Expiry or revocation prevents new connections and closes existing token
 connections. Client calls are cancelled; calls assigned to an expired/revoked
 service instance fail with retryable `unavailable`. Token credentials are
 specific to one Router process and become invalid after its restart. There is
-no shared token database or replicated Router state in this version.
+no shared token database or replicated Router state.
 
 Python, connecting to a Router configured with the `app` account above:
 
@@ -496,8 +497,8 @@ Python:
 ```python
 async with LocalRouter(host="127.0.0.1", port=8765) as router:  # launches Go; auth_file=... enables accounts
     mesh = Mesh(router)
-    mesh.mount(MyService())
-    async with mesh.serve(instance_id="python-1"):
+    mesh.mount(MyService(), instance_id="python-1")
+    async with mesh.serve():
         ...
 ```
 
@@ -506,8 +507,8 @@ TypeScript:
 ```typescript
 await using router = await LocalRouter.start({ host: "127.0.0.1", port: 8765 }); // use authFile to enable accounts
 const mesh = new Mesh(router);
-mesh.mount(new MyService());
-await using srv = await mesh.startServing({ instanceId: "typescript-1" });
+mesh.mount(new MyService(), { instanceId: "typescript-1" });
+await using srv = await mesh.startServing();
 ```
 
 Go:
@@ -517,12 +518,12 @@ router, err := meshcall.StartLocalRouter(ctx, meshcall.WithHost("127.0.0.1"), me
 defer router.Stop()
 
 mesh := meshcall.NewMesh(router)
-mesh.Mount(&MyService{})
-srv, err := mesh.StartServing(ctx, meshcall.WithInstanceID("go-1"))
+mesh.Mount(&MyService{}, meshcall.WithInstanceID("go-1"))
+srv, err := mesh.StartServing(ctx)
 defer srv.Close()
 ```
 
-For an authenticated Router, pass `token=...` or `credentials=RouterCredentials(...)` to `Mesh` in Python and TypeScript, or `meshcall.WithToken(...)` / `meshcall.WithCredentials(...)` in Go. Each form accepts an account, an API key or a token.
+For an authenticated Router, pass `token=...` or `credentials=RouterCredentials(...)` to `Mesh` in Python and TypeScript, or `meshcall.WithToken(...)` / `meshcall.WithAuth(meshcall.BasicAuth(...))` in Go. Each form accepts an account, an API key or a token.
 
 Clients in every language connect to the Router's WebSocket or HTTP address through `Mesh(Router(...))`. They do not implement balancing or need to know the individual service addresses.
 

@@ -25,22 +25,25 @@ Python RPC 事件循环 <---- 线程安全桥接 ----> 业务工作线程事件�
         +---- WebSocket Router 路由驱动 ---- 服务实例注册表 (Registry)
 ```
 
-- **契约层与网络传输解耦**：默认调用形状为一元调用（`unary`），通过 `@query` / `@mutates` / `@stream`（TypeScript 为 `query` / `mutates` / `stream`，Go 为 `HandleUnary` / `HandleServerStream` / `HandleClientStream`）声明调用形状与语义（`read_only`、`idempotent`、`destructive`），这些选项作为 `annotations`、`description` 与 `deprecated` 写入契约。**函数参数即请求体（Parameters are the request）**：多个函数参数会被自动打包为一个合成的请求模型用于校验与传输，模型类型的参数只是其中一个字段。客户端流的入站迭代器排在所有普通业务参数之后。服务名自动规范化为包含一个版本段（如 `chat` → `chat.v0`）。订阅（`@method.subscription` / `method.subscription` / `HandleSubscription`）与 `Topic` 仍保留实现，但在 v0.3 中是**实验特性**：不在推荐路径中，API 可能变化。
-- **双向流（duplex）是受限的最后手段**：必须显式声明（`@method.duplex(reason=…)` / `@method.duplex({ reason })` / `HandleDuplex`），Handler 拿到一个通道（`RpcDuplex` / `DuplexChannel`）迭代输入、`send` 输出，不返回值；该调用从不重试、不去重、不能通过 HTTP 调用。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
+- **契约层与网络传输解耦**：默认调用形状为一元调用（`unary`），通过 `@query` / `@mutates` / `@stream`（TypeScript 为 `@query` / `@mutates` / `@stream`，Go 为结构体字段 `meshcall.MethodMeta` 或 `HandleUnary` / `HandleServerStream` / `HandleClientStream`）声明调用形状与语义（`read_only`、`idempotent`、`destructive`），这些选项作为 `annotations`、`description` 与 `deprecated` 写入契约。**函数参数即请求体（Parameters are the request）**：多个函数参数会被自动打包为一个合成的请求模型用于校验与传输，模型类型的参数只是其中一个字段。客户端流的入站迭代器排在所有普通业务参数之后。服务名自动规范化为包含一个版本段（如 `chat` → `chat.v0`）。
+- **双向流（duplex）是受限的最后手段**：必须显式声明（`@mutates(reason=…)` 配合 `DuplexChannel` 参数 / `@mutates({ reason, channel: { input, output } })` / `HandleDuplex`），Handler 拿到一个通道（`DuplexChannel`）迭代输入、`send` 输出，不返回值；该调用从不重试、不去重、不能通过 HTTP 调用。详见[协议规范：双向流调用](protocol.md#双向流调用duplex-calls)。
 - **依赖注入参数自动剥离**：`@dependency` / `dependency()`、`Annotated[T, dependency(provider)]`、`meta("key")`、`ctx: RpcContext` 与 `logger: RpcLogger` 都属于服务端注入参数，在提取请求契约时会自动剔除，不会出现在生成的客户端参数列表中。注入在每个调用内解析：提供者最多执行一次并按提供者缓存；生成器提供者通过退出栈管理，调用结束时（成功、异常或取消）执行 `yield` 之后的清理逻辑。详见下文「依赖注入作用域」。
 - **逻辑帧与底层模式解耦**：运行时核心仅处理逻辑帧（Frame），无需关心底层是 Direct 直连还是经由 Router 转发；连接握手、角色声明、TCP 与本地传输（Unix 套接字或 Windows 命名管道：Python `unix_path=` / `pipe=`，TypeScript `unixPath` / `pipe`）绑定及服务注册均由 Driver 层封装。
 
-### 1.1 Router 对象与 run / serve / connect 生命周期
+### 1.1 四层公开 API：Service、Router、Mesh 与生成客户端
 
-统一的 `Router` 对象（Python / TypeScript 的 `Router`，Go 的 `NewRouter` / `ConnectRouter`）承担三种角色：
+三个运行时对外统一暴露严格分离的四层概念：
 
-1. **服务端配置**：传给 `run` / `serve`（Go `Run` / `Serve`），设置端点、凭据、重连与重试策略，以及本地内嵌 Router 的启动参数。
-2. **共享客户端连接**：`Router.connect(...)` 建立一条底层 WebSocket，多个生成客户端复用它；三种运行时也都支持通过 `with_options` / `withOptions` / `WithOptions` 设置调用默认值。
-3. **内置服务客户端**：`list_services` / `describe_service` / `whoami` / `issue_token` / `revoke_token`（TypeScript 为 camelCase，Go 为 `ListServices` / …）直接调用 Router 的 Registry 与 AuthService。
+| 层级 | 职责 | Python | TypeScript | Go |
+| --- | --- | --- | --- | --- |
+| **第 1 层：服务与契约（Service & Contract）** | 纯业务声明，不包含任何网络地址或传输逻辑 | `@service`、`@query`、`@mutates`、`@stream`、`@dependency`、`meta` | `@service`、`@query`、`@mutates`、`@stream`、`dependency`、`meta` | 结构体 `meshcall.ServiceMeta` + `meshcall.MethodMeta`（或 `NewService`）、`Dependency`、`Meta[T]` |
+| **第 2 层：路由器（Router / LocalRouter）** | 路由平面位置或本地子进程生命周期 | `Router(url=…)`、`LocalRouter(port=…)` | `new Router(…)`、`LocalRouter.start(…)` | `NewRouter(…)`、`StartLocalRouter(ctx, …)` |
+| **第 3 层：网格运行时（Mesh）** | 连接平面、服务挂载与生命周期、内置管理平面（`.registry`、`.auth`） | `Mesh(router)`、`mesh.mount(svc)`、`mesh.run()`、`mesh.serve()`、`mesh.drain()` | `new Mesh(router)` / `Mesh.connect(router)`、`mesh.mount(svc)`、`mesh.serve()`、`mesh.startServing()`、`mesh.drain()` | `NewMesh(router)` / `ConnectMesh(ctx, router)`、`mesh.Mount(svc)`、`mesh.Run()`、`mesh.Serve(ctx)`、`mesh.StartServing(ctx)`、`mesh.Drain(ctx)` |
+| **第 4 层：生成的客户端（`<Service>Client`）** | 绑定在 `Mesh` 上的类型安全 RPC 调用方 | `MyClient(mesh)`、`client.with_options(…)` | `new MyClient(mesh)`、`client.withOptions(…)` | `NewMyClient(mesh)`、`client.WithOptions(…)` |
 
-`run` 是一行启动入口：它从 `MESHCALL_ROUTER_URL`（默认 `ws://127.0.0.1:8765`）解析端点，当目标是本地地址且无人监听时拉起内置 `meshcall-router`，注册传入的所有服务，并在 SIGINT / SIGTERM 时排空后退出。`serve` 是其下的异步构件：返回 `RunningServer`（`.url`、`.instance_id`、`.stop(drain=True)`），测试与演示用它把 Router 起在临时端口（`ws://127.0.0.1:0`），并可显式停止或排空。若本地拉起时在端口绑定竞争中失败，会回退为连接胜出的进程；`spawn_if_local=False` 关闭自动拉起。Python 生成的客户端提供 `MyClient.connect(router_or_url)`；TypeScript 的 `MyClient.connect(router)` 与 Go 的 `NewMyClient(router)` 包装一个已有的 `Router`，因此复用其连接而不是再开一条。
-
-单次调用控制参数刻意不进入生成的**业务**参数列表。`with_options` / `withOptions` / `WithOptions` 附加 `timeout`、`idle_timeout` / `timeoutMs`、`metadata`、`idempotency_key` / `idempotencyKey` 与 `instance`；生成的 TypeScript 与 Go 方法也接受一个可选的尾部 options / `opts ...` 参数用于同样目的。定向服务的生成客户端仍把 `instance` 作为必填参数（Python keyword-only、TypeScript 必填选项、Go 位置参数），由编译器强制。
+1. **第 2 层（`Router` 与 `LocalRouter`）**：`Router` 描述外部 Router 的连接地址（如 `ws://`、`unix://`、Windows 命名管道，或浏览器 `meshcall/web` 中的 `https://`，以及用于高可用故障转移的多 Router URL 列表）。`LocalRouter` 显式管理内嵌 `meshcall-router` OS 子进程的生命周期（Python `async with LocalRouter(port=0) as router:`、TypeScript `await using router = await LocalRouter.start({ port: 0 })`、Go `StartLocalRouter(ctx, WithPort(0))`）。普通客户端连接绝不会隐式拉起子进程。
+2. **第 3 层（`Mesh`）**：`Mesh(router)` 持有多路复用的传输连接、客户端凭据（`token`、`credentials`）、重连与重试策略以及客户端拦截器。在服务端，通过 `mesh.mount(service, ...)` 注册一个或多个服务，再调用 `mesh.run()`（同步阻塞，收到 SIGINT / SIGTERM 时优雅排空后退出）或 `mesh.serve()` / `mesh.startServing()` / `mesh.StartServing(ctx)`（返回可显式排空停止的异步句柄）；`mesh.drain()` 执行显式优雅排空。同时，`mesh.registry`（`list`、`describe`）与 `mesh.auth`（`whoami`、`issue_token` / `issueToken` / `IssueToken`、`revoke_token` / `revokeToken` / `RevokeToken`）直接暴露 Router 内置的发现与令牌管理平面。
+3. **第 4 层（`<Service>Client(mesh)`）**：生成的客户端直接包装一个 `Mesh` 实例，多服务客户端共享同一条底层连接。单次调用控制参数刻意不进入生成的**业务**参数列表：`with_options` / `withOptions` / `WithOptions` 附加 `timeout`、`idle_timeout` / `timeoutMs`、`metadata`、`idempotency_key` / `idempotencyKey` 与 `instance`；生成的 TypeScript 与 Go 方法也接受一个可选的尾部 options / `opts ...` 参数用于同样目的。定向服务（`targeted`）的生成客户端仍把 `instance` 作为必填参数（Python keyword-only、TypeScript 必填选项、Go 位置参数），由编译器强制。
 
 ### 1.2 依赖注入作用域
 
@@ -52,7 +55,7 @@ Python RPC 事件循环 <---- 线程安全桥接 ----> 业务工作线程事件�
 
 每个方法契约都保存一份请求 JSON Schema。TypeScript 的方法装饰器可以用三种绑定模式声明它；Python 与 Go 则从 Handler 签名推导出等价的请求 Schema：
 
-- `request_object`：显式 `request` Schema（或 `@method` 的默认形式）。Handler 收到一个解析后的请求对象。
+- `request_object`：显式 `request` Schema（`@query` / `@mutates` / `@stream` 的默认形式）。Handler 收到一个解析后的请求对象。
 - `positional`：`input: { a: z.string(), b: z.int() }`（无参数时为 `input: {}`）。这个具名对象成为请求 Schema，Handler 按位置收到 `a, b`；字段名与顺序被保留。
 - `single_schema`：`input: SomeSchema`。该 Schema 就是整个请求，Handler 将它作为一个值接收，不拆散其内部字段。
 
@@ -71,10 +74,10 @@ Python 按签名顺序提取非注入参数，单个模型类型的参数保持�
 
 其他运行时：
 
-- **TypeScript**：运行在 Node.js 单线程事件循环上，Handler 不做工作线程隔离，应保持异步非阻塞。TypeScript 客户端支持一元、服务端流、客户端流、（实验性的）订阅与 duplex 调用；客户端、直连服务端与 Router 服务连接都支持 TCP 与本地传输。
+- **TypeScript**：运行在 Node.js 事件循环上，Handler 应保持异步非阻塞。TypeScript 客户端支持一元、服务端流、客户端流与 duplex 调用；声明的 Schema 会校验请求、响应与流条目。客户端、直连服务端与 Router 服务连接都支持 TCP 与本地传输。
 - **Go**（`meshcall-go`）：端点同样写作 `ws://`、`unix:///path` 与 `pipe://NAME`；每个 Handler 运行在自己的 goroutine 中，带一个随调用结束而结束的 `context.Context`。
 
-三种运行时使用同一个 Go Router；其进程由轻量的 Python/TypeScript 启动器拉起（Go 没有启动器）。Router 的注册表、账号鉴权、范围 Token RPC 与故障边界见 [Router 架构](router.md)。
+三种运行时使用同一个 Go Router；`LocalRouter` 在 Python、TypeScript 与 Go 中都可以将它作为子进程拉起。Router 的注册表、账号鉴权、范围 Token RPC 与故障边界见 [Router 架构](router.md)。
 
 ---
 
@@ -105,6 +108,12 @@ Python 按签名顺序提取非注入参数，单个模型类型的参数保持�
 ### 公平帧调度（Fair Scheduling）
 同一条连接上的发送调度器优先发送控制帧（`call.cancel`、`stream.window`、`ping`/`pong`），其余业务数据帧按 `call_id` 进行 **Round-Robin 公平轮转调度**，防止单个大吞吐流独占 WebSocket 连接而饿死其他并发调用。
 
+### 生命周期（Lifecycle）
+
+`RpcServer.start()` 会冻结服务注册并获取带代数标记（generation-tagged）的独占 Driver 绑定；启动失败会回滚到 `IDLE` 并释放绑定，`stop()` 先关闭 Driver 再释放绑定，防止旧任务操作新一轮连接。
+
+`mesh.serve`（TypeScript `mesh.serve` / `mesh.startServing`，Go `mesh.Serve` / `mesh.StartServing`）封装底层 Server 与根据 `Mesh` 所持 `Router` / `LocalRouter` 配置的 Router Driver；其返回的运行句柄在 `stop(drain=True)` / `Close()` 时会先排空再断开。`mesh.run` 在 `mesh.serve` 之上封装了信号处理：收到 SIGINT / SIGTERM 时触发同一条排空路径并退出。`LocalRouter` 显式管理其拉起的 OS 子进程生命周期（`async with LocalRouter() as router:` / `await using router = await LocalRouter.start()` / `StartLocalRouter(ctx)`）。生成的客户端包装 `Mesh`（`MyClient(mesh)`），共享其多路复用连接。
+
 ---
 
 ## 5. 故障边界与恢复策略
@@ -117,9 +126,9 @@ Python 按签名顺序提取非注入参数，单个模型类型的参数保持�
 - **类型化错误**：客户端为每个协议错误码提供一个子类（`InvalidArgumentError`、`DeadlineExceededError`、`UnavailableError` 等；`cancelled` 对应 `CallCancelledError`），由 `MeshCallError.from_code` / `fromCode` 构造；未知（业务）错误码保持为普通 `MeshCallError`。`error.source` 与 `error.reason` 读取对应的 `details` 字段。
 - **三层相对超时（Relative Timeouts）**：超时以相对毫秒数 `timeout_ms` 在线上传输，无需机器间时钟同步。Server（`timeout_ms`）、Router（`timeout_ms + 500ms`）和 Client（`timeout_ms + max(1s, 10%)`）依次在各自单调时钟上独立兜底。`idle_timeout_ms` 只由消费方执行。
 - **容量与熔断**：`max_inflight` 限制每个实例的并发调用数，服务端自身也会执行（`resource_exhausted`，`reason: "overloaded"`），Router 绕开满载实例；Router 的实例级熔断器在连续超时或 `internal`/`unavailable` 后排除实例，再放行一个探测调用。
-- **重试**：内置的 `RetryPolicy`（位于客户端拦截器链最外层）只在错误可重试、错误码在策略集合中，且方法按契约是幂等的或调用带有 `idempotency_key` 时重发失败的一元调用；各次尝试共享调用的超时，最终错误报告 `details.attempts`。流从不重试；（实验性的）订阅改为从最后一个 cursor 重新打开（见[订阅](protocol.md#订阅subscriptions)）。
-- **优雅排空**：`run` / `serve` 在 SIGINT / SIGTERM 或退出上下文时自动排空；更底层的形式是 `stop(drain=True)` / `close({ drain: true })` / Go `server.Drain(ctx)`，它们先停止接收新调用（向 Router 发送 `server.drain`，或关闭监听器），在排空超时内等待进行中的调用结束后再停止，进行中的调用不会失败。
-- **断线重连策略**：连接断开会立即终止该连接上的活跃调用。随后客户端在下次发起调用时按指数退避与随机抖动（`ReconnectPolicy`）自动重连，最多等待该调用的超时；Router 模式服务端则在后台以同样退避持续重连并重新注册。调用从不自动重放；（实验性的）订阅从最后一个 cursor 重新打开。客户端与 Router 模式服务端都接受多个 Router 端点：客户端故障转移到下一个端点，服务端在每个 Router 上各保持一个注册。
+- **重试**：内置的 `RetryPolicy`（位于客户端拦截器链最外层）只在错误可重试、错误码在策略集合中，且方法按契约是幂等的或调用带有 `idempotency_key` 时重发失败的一元调用；各次尝试共享调用的超时，最终错误报告 `details.attempts`。流从不重试。
+- **优雅排空**：`mesh.run` / `mesh.serve` 在 SIGINT / SIGTERM 或退出上下文时自动排空；也可显式调用 `await mesh.drain()` / `mesh.Drain(ctx)` 或 `stop(drain=True)` / `close({ drain: true })`，它们先停止接收新调用（向 Router 发送 `server.drain`，或关闭监听器），在排空超时内等待进行中的调用结束后再停止，进行中的调用不会失败。
+- **断线重连策略**：连接断开会立即终止该连接上的活跃调用。随后客户端在下次发起调用时按指数退避与随机抖动（`ReconnectPolicy`）自动重连，最多等待该调用的超时；Router 模式服务端则在后台以同样退避持续重连并重新注册。调用从不自动重放。客户端与 Router 模式服务端都接受多个 Router 端点（`Router([uri1, uri2])`）：客户端故障转移到下一个端点，服务端在每个 Router 上各保持一个注册。
 - **帧错误**：仍能对应到某个调用的畸形帧只使该调用以 `protocol_error` 失败；无法归属的帧会关闭连接。超大帧使发送它的调用以 `resource_exhausted` 失败。
 
 ---
@@ -133,25 +142,25 @@ MeshCall 将契约规范分为两类：
 | 编号 | 检查项说明 | 修复或显式静默方式 |
 | --- | --- | --- |
 | `W001` | 服务或方法缺少描述文档（Python docstring / TS `description`） | 补充描述，或显式传 `description=""` |
-| `W002` | 方法名看似写操作（如 `create_*`、`update_*`、`delete_*`、`send_*`）但未声明任何读写注解 | 显式添加 `idempotent=True`、`destructive=True` 或 `read_only=True` |
+| `W002` | 方法名看似写操作（如 `create_*`、`update_*`、`delete_*`、`send_*`）但未声明任何读写注解 | 使用 `@mutates`、`@query`，或显式添加 `idempotent=True`、`destructive=True`、`read_only=True` |
 | `W003` | 注解与方法名语义矛盾（如 `delete_*` 标了 `read_only=True`，或 `get_*` 标了 `destructive=True`） | 修正方法名或修正注解 |
 | `W005` | 标记了 `deprecated` 但未说明替代方案 | 填写替代说明，如 `deprecated="请改用 v2 接口"` |
 | `W006` | 在 `targeted=True` 的定向服务上配置了 `sticky` 负载均衡（定向服务永远不会走负载均衡） | 移除 `sticky` 策略 |
 
-告警出现的位置：TypeScript 在编译期（不带 `description` 的方法构造器重载被标为 `@deprecated`）；Python 在导入期（`warnings.warn(MeshCallWarning)`）；三种运行时在服务启动时各输出一行汇总日志（Go 在 `NewServer` 中，`meshcall.LintService` 列出结果）。
+告警出现的位置：TypeScript 在编译期（`@service`、`@query`、`@mutates` 与 `@stream` 选项要求必填 `description`，传 `""` 表示有意留空）；Python 在导入期（`warnings.warn(MeshCallWarning)`）；三种运行时在服务启动时各输出一行汇总日志（Go 在 `NewServer` 中，`meshcall.LintService` 列出结果）。
 
-严格模式：`MESHCALL_STRICT=1`（三种运行时通用）、TypeScript `MeshCallServer({ strictContracts: true })` 与 Go `ServerOptions{Strict: true}` 会把告警变为错误。也可通过 `MESHCALL_IGNORE_WARNINGS=W001,W002` 按编号全局忽略特定告警。`lint_contract(contract)` / `lintService(definition)` 无副作用地返回检查结果，供工具使用。
+严格模式：`MESHCALL_STRICT=1`（三种运行时通用）、Python `mesh.mount(svc, strict=True)`、TypeScript `mesh.mount(svc, { strict: true })` 与 Go `mesh.Mount(svc, meshcall.WithStrict(true))` 会把告警变为错误。也可通过 `MESHCALL_IGNORE_WARNINGS=W001,W002` 按编号全局忽略特定告警。`lint_contract(contract)` / `lintService(definition)` 无副作用地返回检查结果，供工具使用。
 
 ---
 
 ## 7. 拦截器（Interceptors）
 
-Python、TypeScript 与 Go 在客户端和服务端均提供结构一致的洋葱模型拦截器（Go 为 `ServerOptions.Interceptors` / `ClientOptions.Interceptors`），列表中的第一个拦截器位于最外层：
+Python、TypeScript 与 Go 在客户端和服务端均提供结构一致的洋葱模型拦截器，列表中的第一个拦截器位于最外层：
 
-- **服务端拦截器**：`(ctx, request, call_next) -> result`，在请求通过 Schema 校验后、进入业务 Handler 前执行。对于流式调用，`call_next()` 会在整个流发送完毕后才返回。抛出 `MeshCallError` 可短路调用；`ctx.set_trailer()` 添加 Trailers；`ctx.metadata` 携带调用方发来的元数据。
-- **客户端拦截器**：`(info, call_next) -> result`，其中 `info` 包含服务名、方法名、调用形状以及可修改的 `options`（如统一注入 `metadata` 或默认 `timeout`），并可通过再次调用 `call_next(info)` 实现自定义重试。
+- **服务端拦截器**：通过 `mesh.mount(svc, interceptors=[...])`（Python）、`mesh.mount(svc, { interceptors })`（TypeScript）或 `mesh.Mount(svc, meshcall.WithServerInterceptors(...))`（Go）挂载。签名均为 `(ctx, request, call_next) -> result`，在请求通过 Schema 校验后、进入业务 Handler 前执行。对于流式调用，`call_next()` 会在整个流发送完毕后才返回。抛出 `MeshCallError` 可短路调用；`ctx.set_trailer()` 添加 Trailers；`ctx.metadata` 携带调用方发来的元数据。
+- **客户端拦截器**：通过 `Mesh(router, interceptors=[...])`（Python）、`new Mesh(router, { interceptors })`（TypeScript）或 `meshcall.NewMesh(router, meshcall.WithClientInterceptors(...))`（Go）配置。签名均为 `(info, call_next) -> result`，其中 `info` 包含服务名、方法名、调用形状以及可修改的 `options`（如统一注入 `metadata` 或默认 `timeout`），并可通过再次调用 `call_next(info)` 实现自定义重试。
 
-拦截器看不到单个流条目；对 duplex 调用，它们只观察调用的开始与结束。
+拦截器包裹整个调用的生命周期，而不介入单个流条目。
 
 ---
 
@@ -169,7 +178,7 @@ Router 在独立的监听地址上提供 Prometheus 指标（`--metrics-listen 1
 
 `meshcall-router/conformance` 是验证一个语言运行时“是否完全符合 MeshCall 规范”的可执行标准测试集。它在进程内启动真实的 Go Router，拉起被测语言的 Fixture 进程，并通过脚本化的原始协议帧交互验证：服务注册、一元调用、错误透传、双向流信用窗口（含额度耗尽时的单条目预取）、服务端超时与空闲超时、取消传播、Metadata 与 Trailers、心跳保活、Router 重启后自动重注册以及优雅排空（Drain）。
 
-Fixture 约定见 `meshcall-router/conformance/FIXTURE.md`；参考 Fixture 为 `meshcall-py/conformance/fixture.py`、`meshcall-ts/conformance/fixture.ts` 与 `meshcall-go/conformance/fixture`。新的语言运行时只要通过 `meshcall-conformance --fixture "<其 fixture 命令>"` 即视为符合规范。`scripts/check.sh conformance` 会让三个 Fixture 分别在 TCP 与本地传输（`--transport tcp` / `local`）上运行，CI 同样如此。客户端侧一致性测试（由测试套件扮演 Router 驱动脚本化的客户端 Fixture）是计划中的第二阶段。
+Fixture 约定见 `meshcall-router/conformance/FIXTURE.md`；参考 Fixture 为 `meshcall-py/conformance/fixture.py`、`meshcall-ts/conformance/fixture.ts` 与 `meshcall-go/conformance/fixture`。新的语言运行时只要通过 `meshcall-conformance --fixture "<其 fixture 命令>"` 即视为符合规范。`scripts/check.sh conformance` 会让三个 Fixture 分别在 TCP 与本地传输（`--transport tcp` / `local`）上运行，CI 同样如此。
 
 运行命令：
 

@@ -2,11 +2,10 @@
 
 **English** | [简体中文](https://github.com/t4wefan/meshcall/blob/main/meshcall-py/README.zh-CN.md)
 
-Asynchronous, typed streaming RPC for Python, TypeScript and Go over WebSocket.
+Asynchronous, typed streaming RPC for Python, TypeScript and Go over WebSocket and HTTP.
 Services define contracts with Pydantic v2 models, register with the standalone
-Go Router, and expose unary, server-streaming and client-streaming methods.
-Subscriptions are experimental in v0.3, and duplex remains a restricted shape
-of last resort.
+Go Router through `Mesh`, and expose unary, server-streaming, client-streaming,
+and restricted duplex methods.
 
 ## Install
 
@@ -36,8 +35,8 @@ from collections.abc import AsyncIterator
 from pydantic import BaseModel
 
 from meshcall import (
+    LocalRouter,
     Mesh,
-    Router,
     RpcLogger,
     mutates,
     query,
@@ -80,12 +79,12 @@ class Chat:
 
 
 if __name__ == "__main__":
-    mesh = Mesh(Router("ws://127.0.0.1:8765"))
+    mesh = Mesh(LocalRouter(port=8765))
     mesh.mount(Chat())
     mesh.run()
 ```
 
-The v0.3 shorthands are the recommended way to declare methods:
+Methods are declared with three decorators:
 
 - `@query` is a pure read (`read_only=True`, `idempotent=True`).
 - `@mutates(...)` is a state-changing unary, client-stream or duplex method.
@@ -95,11 +94,8 @@ The v0.3 shorthands are the recommended way to declare methods:
   the method name looks mutating; pass `read_only=False, idempotent=False` for
   a side-effecting stream.
 
-The long-form `@method`, `@method.server_stream`, `@method.client_stream`,
-`@method.duplex` and `@method.subscription` remain available, but the
-shorthands above are what new services should use. Duplex (interleaved input
-and output in one call) stays the last resort: declare it with
-`@mutates(reason="…")` (or `@method.duplex(reason=…)`), take a
+Duplex (interleaved input and output in one call) is a restricted shape of last
+resort: declare it with `@mutates(reason="…")`, take a
 `DuplexChannel[In, Out]` parameter, and return `None`. Duplex calls are never
 retried or deduplicated, take no idempotency key, and are not reachable over
 HTTP.
@@ -112,12 +108,13 @@ unannotated mutating methods fail fast at import with a hint.
 
 ## Mount, run and serve
 
-Mount services on a `Mesh` and start the blocking `mesh.run()` entry point, which owns the process until `SIGINT` / `SIGTERM` and then drains in-flight calls:
+Mount services on a `Mesh` and start the blocking `mesh.run()` entry point, which owns the process until `SIGINT` / `SIGTERM` and then drains in-flight calls. Use `LocalRouter(port=8765)` to launch a local `meshcall-router` subprocess automatically, or `Router("ws://127.0.0.1:8765")` to connect to an already running Router:
 
 ```python
-from meshcall import Mesh, Router
+from meshcall import LocalRouter, Mesh, Router
 
-mesh = Mesh(Router("ws://127.0.0.1:8765"))
+# Start a local Router subprocess on port 8765 (or pass Router() for an external Router):
+mesh = Mesh(LocalRouter(port=8765))
 mesh.mount(Chat())
 mesh.run()
 ```
@@ -149,8 +146,7 @@ Both `mesh.run` and `mesh.serve` accept `instance_id`, `max_inflight`, `strict`,
 
 `Router()` with no arguments resolves `MESHCALL_ROUTER_URL` (comma-separated for
 several Routers), falling back to `ws://127.0.0.1:8765`. Use `LocalRouter(...)`
-when you want Python to start and stop a local `meshcall-router` subprocess
-explicitly.
+when you want Python to start and stop a local `meshcall-router` subprocess.
 
 ## Generate and call a typed client
 
@@ -163,7 +159,7 @@ uv run meshcall generate my_app.service:Chat --language typescript --output gene
 uv run meshcall generate my_app.service:Chat --language go --output internal/chatclient
 ```
 
-Call the service through the generated client:
+Call the service through the generated client in a second terminal while `server.py` is running:
 
 ```python
 from meshcall import Mesh, Router
@@ -272,16 +268,16 @@ pipe) instead of a TCP URL; `Router("unix:///path")` and
 `Router("pipe://NAME")` work too. The CLI addresses the same listeners as
 `unix:///path` and `pipe://NAME`.
 
-`LocalRouter` (alias `WebSocketRouter`) owns an explicit Router process when you
-want to manage one yourself: `host` / `port`, `unix_path`, `pipe`, `max_frame_size`
+`LocalRouter` owns an explicit Router process when you want to manage one
+yourself: `host` / `port`, `unix_path`, `pipe`, `max_frame_size`
 (default and maximum 64 MiB), `outbox_size` (bytes queued for a peer that is
 not reading; default the Router's 256 MiB, at least `max_frame_size`),
 `max_connections`, `binary_path`, `auth_file` and readiness timeouts. It
 exposes `pid`, `is_running`, `bound_port`, `wait_closed()` and async context
 management. Override the bundled binary with `MESHCALL_ROUTER_BINARY` when
-needed. The low-level `WebSocketClientDriver` and
-`WebSocketRouterServerDriver` remain available for custom wiring and accept
-`unix_path=` / `pipe=` as well.
+needed. Low-level primitives (`RpcServer`, `ClientBase`,
+`WebSocketClientDriver` and `WebSocketRouterServerDriver`) support custom
+transport wiring and accept `unix_path=` / `pipe=` as well.
 
 ## HTTP transport
 
@@ -296,7 +292,7 @@ reply = await chat.with_options(timeout=5).greet("Alice")
 services = await mesh.registry.list()
 ```
 
-Duplex methods are WebSocket-only (they raise `method_not_found`, `reason: "duplex_over_http"`), and `mesh.mount(...)` raises `ContractError` on an HTTP-backed `Mesh`. Everything else works as over WebSocket: unary calls with the usual idempotent retry, server and client streams, subscriptions (resumed from their cursor), and the built-in `mesh.registry` / `mesh.auth` calls.
+Duplex methods are WebSocket-only (they raise `method_not_found`, `reason: "duplex_over_http"`), and `mesh.mount(...)` raises `ContractError` on an HTTP-backed `Mesh`. Everything else works as over WebSocket: unary calls with the usual idempotent retry, server and client streams, and the built-in `mesh.registry` / `mesh.auth` calls.
 
 ## Router authentication
 
@@ -338,41 +334,6 @@ Each call gets a span and `meshcall.calls` / `meshcall.call.duration` metrics;
 the W3C trace context travels as call metadata, so a trace continues through
 the Router and across languages (TypeScript: `meshcall/otel`). With no
 OpenTelemetry SDK configured the interceptors are no-ops.
-
-## Experimental: subscriptions and Topic
-
-Subscriptions and `Topic` remain available but are **experimental in v0.3**:
-the API may change. Prefer plain server streams until a use case really needs
-automatic resume after a dropped connection.
-
-`@method.subscription(cursor="seq", resume="since")` declares a server stream
-that clients reopen after a retryable failure, passing the last item's
-`cursor` field as the `resume` parameter. `Topic[T]` fans published items out
-to every subscriber in the process:
-
-```python
-from meshcall import Topic, method, service
-
-topic: Topic[Event] = Topic(history=100, cursor=lambda e: e.seq)
-
-
-@service("events.v1.Events")
-class Events:
-    """Event feed."""
-
-    @method.subscription(cursor="seq", resume="since", read_only=True)
-    async def events(self, since: int | None = None) -> AsyncIterator[Event]:
-        """Stream events after since."""
-        async for event in topic.subscribe(after=since):
-            yield event
-```
-
-`topic.publish(event)` may be called from any thread or loop. A subscriber
-that falls too far behind is disconnected with retryable
-`resource_exhausted` (`reason: "slow_subscriber"`) and resubscribes; a cursor
-older than the history buffer is refused with `invalid_argument`
-(`reason: "cursor_expired"`). See
-[Subscriptions](https://github.com/t4wefan/meshcall/blob/main/docs/protocol.md#subscriptions).
 
 ## Documentation
 

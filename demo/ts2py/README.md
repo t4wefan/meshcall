@@ -8,9 +8,10 @@ cross-language round trip with:
 uv run demo
 ```
 
-The command builds the local TypeScript runtime and service, starts it with
-`serve(...)` (which starts a bundled Router and registers there), calls it from
-Python through the generated client's `connect`, and shuts the server down. It
+The command builds the local TypeScript runtime and service, starts a
+`LocalRouter` and serves the TypeScript service with `new Mesh(router).mount(...).startServing()`,
+calls it from Python through `Mesh(Router(url))` +
+`TypeScriptGreetingServiceClient(mesh)`, and shuts the server down. It
 demonstrates unary `greet`, server-streaming `count`, and client-streaming
 `sum`. The streaming calls exchange 40 items, exceeding the initial credit
 window.

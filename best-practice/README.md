@@ -4,11 +4,11 @@ This is a small, complete application with real process boundaries and three
 languages:
 
 - `src/best_practice/service.py` implements an in-memory, LLM-shaped Python
-  service with the recommended v0.3 API;
-- `src/best_practice/server.py` starts it through the Router (`meshcall.run`);
-- `src/best_practice/demo.py` runs the whole example: it starts the service
-  with an embedded Router, then runs the TypeScript CLI and the Go client
-  against it;
+  service with `@service`, `@query`, `@mutates`, `@stream`, `@dependency` and `meta`;
+- `src/best_practice/server.py` starts it through `Mesh(router).mount(LlmService()).run()`;
+- `src/best_practice/demo.py` runs the whole example: it starts a `LocalRouter`
+  and mounts the service on a `Mesh`, then runs the TypeScript CLI and the Go
+  client against it;
 - `ts-client/` is a generated TypeScript client package plus an interactive
   CLI;
 - `go-client/` is a generated Go client plus a small program that exercises
@@ -21,12 +21,12 @@ credentials and keeps all state in the Python server process.
 
 ## What it demonstrates
 
-**One entry point.** `server.py` is `meshcall.run(LlmService())`: it resolves
-`MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), starts a bundled Router
-when that address is local and nothing listens there, registers the service,
-and drains on `SIGINT` / `SIGTERM`.
+**Explicit topology and peer runtime.** `server.py` connects to `Router()` when
+`MESHCALL_ROUTER_URL` is set or starts a `LocalRouter(port=8765)` for local
+development, mounts `LlmService()` on `Mesh(router)`, and runs `mesh.run()`,
+draining in-flight calls on `SIGINT` / `SIGTERM`.
 
-**Method shorthands.** `@query` for pure reads (`list_sessions`,
+**Method decorators.** `@query` for pure reads (`list_sessions`,
 `count_tokens`), `@mutates` for `new_session` and the client-streaming
 `assemble_prompt`, and `@stream` for `stream_chat`. Generated clients take the
 same business parameters, in the same order.
@@ -43,11 +43,12 @@ value that arrives as call metadata, not as a business field. The TypeScript
 and Go clients set it with `withOptions({ metadata })` /
 `WithOptions(CallOptions{Metadata})`.
 
-**One Router connection, several clients.** The TypeScript CLI connects with
-`Router.connect()` and wraps the generated client in
-`await LlmServiceClient.connect(router)`; the Go client passes
-`meshcall.NewRouter()` to `NewLlmServiceClient`. Both share one connection and
-call `with_options` / `WithOptions` for per-call settings.
+**One `Mesh`, several clients.** The TypeScript CLI connects with
+`await Mesh.connect(new Router())` and passes `mesh` to
+`new LlmServiceClient(mesh)`; the Go client creates
+`meshcall.NewMesh(meshcall.NewRouter())` and passes it to
+`llmclient.NewLlmServiceClient(mesh)`. Both share one connection and call
+`withOptions` / `WithOptions` for per-call settings.
 
 ## Run it
 

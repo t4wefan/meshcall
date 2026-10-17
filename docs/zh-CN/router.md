@@ -2,13 +2,14 @@
 
 [English](../router.md) | **简体中文**
 
-MeshCall 只有一套统一的 Router 实现：独立编译的 Go 可执行文件 `meshcall-router`。Python 与 TypeScript 中的 `WebSocketRouter` API 负责作为启动器（Launcher）拉起、监管和停止同一个 Go 进程，而不在各自语言内部重复维护路由表或通过 FFI 绑定。在生产环境中，Router 也可以完全独立于 Python/Node 进程单独部署。Python、TypeScript 与 Go（[`meshcall-go`](../../meshcall-go/README.md)）运行时编写的客户端和服务实例都以同样的方式连接 Router。
+MeshCall 只有一套统一的 Router 实现：独立编译的 Go 可执行文件 `meshcall-router`。Python（`LocalRouter`）、TypeScript（`LocalRouter`）与 Go（`StartLocalRouter` / `NewLocalRouter`）作为启动器（Launcher）拉起、监管和停止同一个 Go 进程，而不在各自语言内部重复维护路由表或通过 FFI 绑定。在生产环境中，Router 也可以完全独立于应用进程单独部署；三种运行时编写的客户端和服务实例都通过 `Router` 与 `Mesh` 连接 Router。
 
 ```mermaid
 flowchart LR
-  PL["Python 启动器 (WebSocketRouter)"] -. "监管子进程" .-> R["Go Router (meshcall-router)"]
-  TL["TypeScript 启动器 (WebSocketRouter)"] -. "监管子进程" .-> R
-  PC["Python / TypeScript / Go 客户端"] <-->|"meshcall/1"| R
+  PL["Python LocalRouter"] -. "监管子进程" .-> R["Go Router (meshcall-router)"]
+  TL["TypeScript LocalRouter"] -. "监管子进程" .-> R
+  GL["Go LocalRouter"] -. "监管子进程" .-> R
+  PC["Python / TypeScript / Go Mesh"] <-->|"meshcall/1"| R
   H["任意 HTTP 客户端"] <-->|"/v1/call"| R
   R <-->|"已注册连接"| PS["Python 服务实例群"]
   R <-->|"已注册连接"| TS["TypeScript 服务实例群"]
@@ -65,8 +66,8 @@ Router 在内存中仅维护四张轻量表：客户端连接表、服务实例�
 
 ## 3. 连接管理、熔断、去重与容错边界
 
-- **零中断优雅排空（Graceful Drain）**：服务实例停止前发送 `server.drain`，Router 立即将其从所有服务池摘除并回复 `server.drain.ack`，不再向其分配新请求，同时继续转发已建立调用的双向帧直到自然结束。Python 的 `await server.stop(drain=True)`、TypeScript 的 `await server.close({ drain: true })` 与 Go 的 `server.Drain(ctx)` 已内置该流程。
-- **Router 优雅关闭**：收到 SIGTERM/SIGINT 后先排空：`/readyz` 返回 503，新连接收到 HTTP 503，新调用以可重试的 `unavailable`（`reason: "router_draining"`）失败；没有进行中调用的连接立即以 1001 关闭，其余连接在最后一个调用结束后关闭；超过 `--shutdown-timeout`（默认 10 秒，`0` 表示不等待）仍未结束的调用以可重试的 `unavailable`（`reason: "router_shutdown"`）结束，实例收到 `call.cancel`。再次收到信号则跳过等待。由 Python 或 TypeScript 启动器托管的 Router（启动器通过关闭 stdin 停止它）会立即结束进行中的调用；嵌入 Router 的 Go 程序调用 `Shutdown()` 或 `Close()`。详见[协议规范：Router 停机](protocol.md#router-停机router-shutdown)。
+- **零中断优雅排空（Graceful Drain）**：服务实例停止前发送 `server.drain`，Router 立即将其从所有服务池摘除并回复 `server.drain.ack`，不再向其分配新请求，同时继续转发已建立调用的双向帧直到自然结束。Python 的 `await mesh.drain()`、TypeScript 的 `await mesh.drain()` 与 Go 的 `mesh.Drain(ctx)`（以及 `mesh.run()` / `mesh.serve()` / `mesh.startServing()` 退出时）已内置该流程。
+- **Router 优雅关闭**：收到 SIGTERM/SIGINT 后先排空：`/readyz` 返回 503，新连接收到 HTTP 503，新调用以可重试的 `unavailable`（`reason: "router_draining"`）失败；没有进行中调用的连接立即以 1001 关闭，其余连接在最后一个调用结束后关闭；超过 `--shutdown-timeout`（默认 10 秒，`0` 表示不等待）仍未结束的调用以可重试的 `unavailable`（`reason: "router_shutdown"`）结束，实例收到 `call.cancel`。再次收到信号则跳过等待。由 Python、TypeScript 或 Go 的 `LocalRouter` 启动器托管的 Router（启动器通过关闭 stdin 停止它）会立即结束进行中的调用；嵌入 Router 的 Go 程序调用 `Shutdown()` 或 `Close()`。详见[协议规范：Router 停机](protocol.md#router-停机router-shutdown)。
 - **单连接并发上限**：每个连接最多同时进行 `--max-calls-per-connection` 个调用（默认 1000，`0` 表示不限，加入进行中幂等调用的请求也计数），超出时以可重试的 `resource_exhausted`（`reason: "overloaded"`）拒绝，连接保持不变。
 - **并发上限（`max_inflight`）与实例级熔断器**：
   - 实例可在注册时声明 `max_inflight`，Router 自动绕开满载实例；若所有实例均满载，则返回可重试的 `resource_exhausted`（`reason: "overloaded"`）。
@@ -78,7 +79,7 @@ Router 在内存中仅维护四张轻量表：客户端连接表、服务实例�
 - **断线处理**：客户端断开时，Router 取消它所有进行中的服务调用；服务实例断开时，其进行中的客户端调用以可重试的 `unavailable` 失败，是否发起新调用由调用方决定。
 - **三层超时兜底**：Router 对携带 `timeout_ms` 的调用在 `timeout_ms + --deadline-grace`（默认宽限 `500ms`）处设置定时器。正常情况下服务端的超时（`timeout_ms`）会先触发；只有当服务实例假死未响应时，Router 才会介入，向客户端返回 `deadline_exceeded`（`details.source = "router"`），并向实例发送 `call.cancel` 释放路由。Router 不执行 `idle_timeout_ms`。详见[协议规范：超时](protocol.md#超时timeouts)。
 - **空闲连接清理**：Router 从不发送 `ping`，只应答；客户端与服务实例默认每 15 秒发送一次协议级 `ping`，Router 对超过 `--idle-timeout`（默认 45 秒）无任何帧到达的静默连接自动关闭。
-- **Router 重启**：重启会丢失注册信息与活跃路由。版本 1 不提供自动调用重放、流恢复、路由迁移或 Router 状态复制；被重启中断的流以可重试错误失败，订阅随后从 cursor 处恢复。
+- **Router 重启**：重启会丢失注册信息与活跃路由。Router 不提供自动调用重放、流恢复、路由迁移或 Router 状态复制；被重启中断的流以可重试错误失败。
 
 ---
 
@@ -86,9 +87,9 @@ Router 在内存中仅维护四张轻量表：客户端连接表、服务实例�
 
 MeshCall 不需要复杂的分布式共识（Raft/Etcd）即可实现 Router 层高可用：
 
-直接部署多个相互独立的 `meshcall-router` 进程，并将端点列表同时配置给服务端与客户端：
-- **服务端**：`WebSocketRouterServerDriver(["ws://r1:8765", "ws://r2:8765"])`（TS：`router: { endpoint: ["ws://r1:8765", "ws://r2:8765"] }`）会为每个 Router 建立独立的注册连接与重连循环，只要任意一个 Router 接受即启动成功。
-- **客户端**：`WebSocketClientDriver(["ws://r1:8765", "ws://r2:8765"])`（TS：`new MeshCallClient(["ws://r1:8765", "ws://r2:8765"])`）优先使用当前活跃 Router，一旦连接失败立即切换到列表中的下一个 Router。
+直接部署多个相互独立的 `meshcall-router` 进程，并将端点列表传入 `Router`：Python `Router(["ws://r1:8765", "ws://r2:8765"])`、TypeScript `new Router(["ws://r1:8765", "ws://r2:8765"])`、Go `meshcall.NewRouter("ws://r1:8765", "ws://r2:8765")`，然后传给 `Mesh(router)`：
+- **挂载服务时**：`Mesh` 会为列表中的每个 Router 建立独立的注册连接与重连循环，只要任意一个 Router 接受即启动成功。
+- **发起客户端调用时**：`Mesh` 优先使用当前活跃 Router，一旦连接失败立即切换到列表中的下一个 Router，并在重连时从最近健康的节点恢复。
 
 由于每个 Router 都能看到每个实例，且不持有对端无法重建的状态，Router 之间无需协调。负载均衡、去重与熔断都是按 Router 独立进行的：发往两个不同 Router 的重复幂等调用可能执行两次，遵守幂等键的 Handler 可以容忍这一点。
 
@@ -161,7 +162,7 @@ API Key 是面向机器调用方（Webhook、外部服务）的长期凭据。`m
 
 Key 是 256 位随机串，以 SHA-256 摘要保存，因此校验只是一次哈希查找（不同于需要 PBKDF2 的密码）。它们属于配置，Router 重启后依然有效；轮换方式是先添加新 Key 再删除旧 Key。与临时 Token 一样，API Key 不能签发 Token。
 
-成功的 Basic 校验会在内存中缓存一分钟（以凭据摘要为键，失败不缓存），同一账号的重复调用无需每次都付出 PBKDF2 的代价；缓存在重启时丢失，无害。频繁的 HTTP 调用方仍应优先使用 API Key 或 Token。
+成功的 Basic 校验会在内存中缓存一分钟（以凭据摘要为键，失败不缓存），同一账号的重复调用无需每次都付出 PBKDF2 的代价；缓存在重启时丢失，无害。频繁的 HTTP 调用方仍应优先使用 API Key 或 Token。浏览器无法在 WebSocket 握手上设置 `Authorization` 头，因此通过 `meshcall/web`（`new Mesh(new Router("https://…"), { token })`）走 HTTP 调用（见[第 6 节 HTTP 调用](#6-http-调用)）。Router 不直接实现 JWT 校验或外部登录系统；WebSocket 客户端与 `LocalRouter` 子进程启动器可在 Python、Node 与 Go 中运行。
 
 ---
 
@@ -223,7 +224,7 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 
 `meshcall init [dir] [--force]`（也可用 `uv run meshcall init`、`npx meshcall init`）默认安装 `.agents/skills/meshcall/SKILL.md` 与 `AGENTS.md` 中带标记的 MeshCall 段落，让该项目中的编码 Agent 使用上述命令；`--agent claude|cursor|copilot|windsurf|all` 改为写入对应工具的位置（见[实战指南第 10 节](guide.md#10-ai-编程助手集成meshcall-init)）。重复执行是幂等的；被修改过的技能文件会保留，除非加 `--force`。
 
-`meshcall generate <contract.json | module:Class> --output PATH [--language python|typescript|go] [--single-file] [--service NAME] [--package-name N] [--package-version V] [--class-name N] [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]` 生成类型化的客户端包（或单个文件）；`meshcall export module:Class --output contract.json` 导出 Python 服务的契约。`module:Class` 形式的来源通过 `MESHCALL_PYTHON` 指定的解释器导出，`uv run meshcall` 会自动将其设为项目自身的解释器。Go 服务用 `meshcall.WriteContract` 导出契约。
+`meshcall generate <contract.json | module:Class> --output PATH [--language python|typescript|go] [--single-file] [--service NAME] [--package-name N] [--package-version V] [--class-name N] [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]` 生成类型化的客户端包（或单个文件）；`meshcall export module:Class --output contract.json` 导出 Python 服务的契约。`module:Class` 形式的来源通过 `MESHCALL_PYTHON` 指定的解释器导出，`uv run meshcall` 会自动将其设为项目自身的解释器。Go 服务用 `meshcall.WriteContract` 导出契约，TypeScript 服务用 `writeContract`。
 
 ---
 
@@ -239,78 +240,92 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 
 `scopes` 中每项为 `{"service": …, "methods": [...]}`；`methods: ["*"]` 允许该服务全部方法，省略 `methods` 不授予调用权限；`register: true`（Python 为 `RouterScope(register_service=True)`）授予注册该服务的权限，适合短生命周期的 Worker。Scope 中的服务名必须是具体且不重复的，不接受命名空间通配符与 Router 保留命名空间。
 
-**安全边界**：Router 会严格校验所请求的 `scopes` 是否属于签发账号自身的权限子集（权限委托绝不能超越母账号自身权限，超出时返回 `permission_denied`），且临时 Token 与 API Key 都不能再签发或吊销其他 Token。Router 内存中仅保存 Token 的 SHA-256 摘要，明文只在签发时返回一次；默认有效期 900 秒，最多同时存在 4096 个 Token、每个 Token 最多 128 个服务 Scope。一旦 Token 过期或被吊销，新连接将被拒绝，正在使用该 Token 的连接会被立即关闭。Token 只属于签发它的 Router 进程，Router 重启后失效。
+**安全边界**：Router 会严格校验所请求的 `scopes` 是否属于签发账号自身的权限子集（权限委托绝不能超越母账号自身权限，超出时返回 `permission_denied`），且临时 Token 与 API Key 都不能再签发或吊销其他 Token。Router 内存中仅保存 Token 的 SHA-256 摘要，明文只在签发时返回一次；默认有效期 900 秒，最多同时存在 4096 个 Token、每个 Token 最多 128 个服务 Scope。一旦 Token 过期或被吊销，新连接将被拒绝，正在使用该 Token 的连接会被立即关闭。Token 只属于签发它的 Router 进程，Router 重启后失效，没有共享 Token 数据库或复制的 Router 状态。
 
 **Python 签发与使用示例：**
 
 ```python
 import os
-from meshcall import RouterAuthClient, RouterCredentials, RouterScope
-from meshcall.drivers import WebSocketClientDriver
+from meshcall import Mesh, Router, RouterCredentials, RouterScope
 
 credentials = RouterCredentials(username="app", password=os.environ["ROUTER_PASSWORD"])
-async with RouterAuthClient(WebSocketClientDriver(uri, auth=credentials)) as auth:
-    issued = await auth.issue_token(
-        ttl_seconds=900,
+async with Mesh(Router(uri), credentials=credentials) as issuer_mesh:
+    issued = await issuer_mesh.auth.issue_token(
         scopes=[RouterScope(service="chat.v1.ChatService", methods=["send", "history"])],
+        ttl_seconds=900,
     )
-    scoped_driver = WebSocketClientDriver(uri, auth=RouterCredentials(token=issued.token))
-    # 将 scoped_driver 传给生成的 ChatServiceClient 使用
-    # 用完后可随时吊销：
-    await auth.revoke_token(issued.token_id)
+    async with Mesh(Router(uri), token=issued.token) as scoped_mesh:
+        # 将 scoped_mesh 传给生成的客户端：ChatServiceClient(scoped_mesh)
+        pass
+    # 将 Token 移交给目标调用方后可随时吊销：
+    await issuer_mesh.auth.revoke_token(issued.token_id)
 ```
 
 **TypeScript 签发与使用示例：**
 
 ```typescript
-import { MeshCallClient, RouterAuthClient } from "meshcall";
+import { Mesh, Router } from "meshcall";
 
-const issuer = new MeshCallClient(uri, undefined, {
-  auth: { username: "app", password: process.env.ROUTER_PASSWORD! },
+await using issuerMesh = await Mesh.connect(new Router(uri), {
+  credentials: { username: "app", password: process.env.ROUTER_PASSWORD! },
 });
-const auth = new RouterAuthClient(issuer);
-const issued = await auth.issueToken({
-  ttl_seconds: 900,
-  scopes: [{ service: "chat.v1.ChatService", methods: ["send", "history"] }],
-});
-const scoped = new MeshCallClient(uri, undefined, { auth: { token: issued.token } });
-try {
-  // 直接使用 scoped 或将其传给生成的客户端
-} finally {
-  await scoped.close();
-  await auth.revokeToken(issued.token_id);
-  await issuer.close();
-}
+const issued = await issuerMesh.auth.issueToken(
+  [{ service: "chat.v1.ChatService", methods: ["send", "history"] }],
+  900,
+);
+await using scopedMesh = await Mesh.connect(new Router(uri), { token: issued.token });
+// 将 scopedMesh 传给生成的客户端：new ChatServiceClient(scopedMesh)
+await issuerMesh.auth.revokeToken(issued.token_id);
 ```
-
-Go 运行时通过 `ClientOptions.Authorization` / `ServerOptions.Authorization` 传入 `"Basic …"` 或 `"Bearer mk_…"` 等完整的 `Authorization` 头值。
 
 ---
 
 ## 10. 连接服务
 
-启动器与服务实例的写法如下（Python 的 `WebSocketRouter` 还支持 `unix_path`、`pipe`、`max_frame_size`、`outbox_size`、`max_connections` 等选项；TypeScript 对应 `unixPath`、`pipe`、`maxFrameSize`、`outboxSize`、`maxConnections`）：
+本地启动器（`LocalRouter`）与挂载服务实例（`Mesh`）的写法如下（Python 的 `LocalRouter` 还支持 `unix_path`、`pipe`、`max_frame_size`、`outbox_size`、`max_connections` 等选项；TypeScript 对应 `unixPath`、`pipe`、`maxFrameSize`、`outboxSize`、`maxConnections`；Go 对应 `WithUnixSocket`、`WithPipe`、`WithMaxFrameSize` 等选项）：
+
+**Python：**
 
 ```python
-router = WebSocketRouter(host="127.0.0.1", port=8765)  # 拉起 Go Router；auth_file=... 启用账号
-await router.start()
-
-server = RpcServer(
-    services=[MyService],
-    driver=WebSocketRouterServerDriver("ws://127.0.0.1:8765", instance_id="python-1"),
-)
-await server.start()
+async with LocalRouter(host="127.0.0.1", port=8765) as router:  # 拉起 Go Router；auth_file=... 启用账号
+    mesh = Mesh(router)
+    mesh.mount(MyService(), instance_id="python-1")
+    async with mesh.serve():
+        ...
 ```
+
+**TypeScript：**
 
 ```typescript
-const router = new WebSocketRouter({ host: "127.0.0.1", port: 8765 });
-await router.start(); // 拉起同一个 Go 可执行文件；authFile 启用账号
-
-const server = new MeshCallServer({
-  services: [myService],
-  router: { endpoint: "ws://127.0.0.1:8765", instanceId: "typescript-1" },
-});
-await server.start();
+await using router = await LocalRouter.start({ host: "127.0.0.1", port: 8765 }); // authFile 启用账号
+const mesh = new Mesh(router);
+mesh.mount(new MyService(), { instanceId: "typescript-1" });
+await using srv = await mesh.startServing();
 ```
 
-连接需要鉴权的 Router 时，Python 在 `WebSocketRouterServerDriver` 与 `WebSocketClientDriver` 中传入 `auth=RouterCredentials(...)`；TypeScript 在 `MeshCallServer` 的 `router` 选项与 `MeshCallClient` 的第三个参数中传入 `auth`，账号或 Token 均可。应用退出时调用 `await router.stop()`。客户端只需连接 Router 的普通地址，无需实现负载均衡或知道各个服务实例的地址。
+**Go：**
+
+```go
+router, err := meshcall.StartLocalRouter(ctx, meshcall.WithHost("127.0.0.1"), meshcall.WithPort(8765))
+defer router.Stop()
+
+mesh := meshcall.NewMesh(router)
+mesh.Mount(&MyService{}, meshcall.WithInstanceID("go-1"))
+srv, err := mesh.StartServing(ctx)
+defer srv.Close()
+```
+
+连接需要鉴权的 Router 时，Python 与 TypeScript 在 `Mesh` 中传入 `token=...` 或 `credentials=RouterCredentials(...)`；Go 传入 `meshcall.WithToken(...)` 或 `meshcall.WithAuth(meshcall.BasicAuth(...))`，账号、API Key 或 Token 均可。任何语言的客户端都通过 `Mesh(Router(...))` 连接 Router 的 WebSocket 或 HTTP 地址，无需实现负载均衡或了解各个服务实例的地址。
+
+---
+
+## 11. 验证
+
+无头跨语言测试套件通过生成的客户端验证全部核心调用形状、直连 TCP/本地端点、Router TCP/本地端点、多 TypeScript 实例、流固定绑定、实例断开清理、各语言启动器、跨语言签发与使用 Token、生成的 Python 客户端调用 Go 服务，以及生成的 Go 客户端调用 Python 与 TypeScript 服务：
+
+```bash
+MESHCALL_RUN_INTEROP=1 uv run --directory meshcall-py \
+  pytest -q tests/test_multilang_interop.py
+```
+
+运行前请先编译 Go Router 并安装 TypeScript 运行时依赖；Go 用例需要 `go` 工具链。测试使用临时套接字与短生命周期子进程；CI 的 `interop` 任务会运行该套件。`scripts/check.sh conformance` 在 TCP 与本地传输上对 Python、TypeScript 和 Go 固件运行一致性测试套件（见[架构说明](architecture.md#一致性测试套件conformance-suite)）。

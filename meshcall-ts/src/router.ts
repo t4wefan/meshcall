@@ -544,6 +544,7 @@ export class Mesh implements MeshCallRpc {
   private readonly credentials: RouterCredentials | undefined;
   private root: Mesh;
   private ownsRoot = true;
+  private ownsLocalRouter = false;
   private defaultCallOptions: CallOptions = {};
   private transport: (MeshCallClient | HttpTransport) | undefined;
   private readonly mountedServices: object[] = [];
@@ -567,6 +568,17 @@ export class Mesh implements MeshCallRpc {
     this.auth = new AuthClient(this);
   }
 
+  private async ensureRouterStarted(): Promise<void> {
+    if (this.root !== this) {
+      await this.root.ensureRouterStarted();
+      return;
+    }
+    if (this.router instanceof LocalRouter && !this.router.isRunning) {
+      await this.router.start();
+      this.ownsLocalRouter = true;
+    }
+  }
+
   /** Eagerly connect a `Mesh` participant (`await using mesh = await Mesh.connect(router, options)`). */
   public static async connect(router: Router | LocalRouter, options: MeshOptions = {}): Promise<Mesh> {
     const mesh = new Mesh(router, options);
@@ -582,6 +594,7 @@ export class Mesh implements MeshCallRpc {
       credentials: this.root.credentials,
       root: this.root,
       ownsRoot: false,
+      ownsLocalRouter: false,
       defaultCallOptions: mergeCallOptions(this.defaultCallOptions, options),
       registry: new RegistryClient(clone),
       auth: new AuthClient(clone),
@@ -638,6 +651,7 @@ export class Mesh implements MeshCallRpc {
       await this.root.connect();
       return this;
     }
+    await this.ensureRouterStarted();
     const transport = this.ensureTransport();
     if (transport instanceof MeshCallClient) {
       await transport.connect();
@@ -695,6 +709,7 @@ export class Mesh implements MeshCallRpc {
       throw new Error("Mesh is already serving");
     }
 
+    await this.ensureRouterStarted();
     const merged: ServeOptions = { ...this.mountOptions, ...options };
     const endpoints = this.router.endpoints;
     const resolvedEndpoint = endpoints[0]!;
@@ -729,7 +744,15 @@ export class Mesh implements MeshCallRpc {
     };
 
     const server = new MeshCallServer(serverOptions);
-    await server.start();
+    try {
+      await server.start();
+    } catch (error) {
+      if (this.ownsLocalRouter && this.transport === undefined && this.router instanceof LocalRouter) {
+        this.ownsLocalRouter = false;
+        await this.router.stop();
+      }
+      throw error;
+    }
     const running = new RunningServer(
       server,
       formatRouterEndpointUrl(resolvedEndpoint),
@@ -788,11 +811,18 @@ export class Mesh implements MeshCallRpc {
     try {
       await this.drain();
     } finally {
-      if (this.transport !== undefined) {
-        const t = this.transport;
-        this.transport = undefined;
-        if (t instanceof MeshCallClient) {
-          await t.close();
+      try {
+        if (this.transport !== undefined) {
+          const t = this.transport;
+          this.transport = undefined;
+          if (t instanceof MeshCallClient) {
+            await t.close();
+          }
+        }
+      } finally {
+        if (this.ownsLocalRouter && this.router instanceof LocalRouter) {
+          this.ownsLocalRouter = false;
+          await this.router.stop();
         }
       }
     }

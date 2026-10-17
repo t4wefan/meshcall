@@ -596,18 +596,25 @@ class _ServeHandle:
         return srv
 
     async def __aenter__(self) -> RunningServer:
+        await self._mesh._ensure_router_started()
         srv = self._build_server()
         try:
             await srv.start()
         except BaseException:
             if self._mesh._running_server is srv:
                 self._mesh._running_server = None
+            if self._mesh._owns_local_router and not self._mesh._entered:
+                await self._mesh.close()
             raise
         return srv
 
     async def __aexit__(self, *_: object) -> None:
-        if self._server is not None:
-            await self._server.stop(drain=True, drain_timeout=self._drain_timeout)
+        try:
+            if self._server is not None:
+                await self._server.stop(drain=True, drain_timeout=self._drain_timeout)
+        finally:
+            if self._mesh._owns_local_router and not self._mesh._entered:
+                await self._mesh.close()
 
     async def _serve_forever(self) -> None:
         loop = asyncio.get_running_loop()
@@ -615,12 +622,15 @@ class _ServeHandle:
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.add_signal_handler(sig, stop_event.set)
+        await self._mesh._ensure_router_started()
         srv = self._build_server()
         try:
             await srv.start()
         except BaseException:
             if self._mesh._running_server is srv:
                 self._mesh._running_server = None
+            if self._mesh._owns_local_router:
+                await self._mesh.close()
             raise
         try:
             closed_task = asyncio.create_task(srv.wait_closed())
@@ -635,6 +645,8 @@ class _ServeHandle:
                     await task
         finally:
             await srv.stop(drain=True, drain_timeout=self._drain_timeout)
+            if self._mesh._owns_local_router:
+                await self._mesh.close()
 
     def __await__(self) -> Generator[Any, None, None]:
         return self._serve_forever().__await__()
@@ -691,6 +703,13 @@ class Mesh:
         self._max_inflight: int | None = None
         self._server_interceptors: list[ServerInterceptor] = []
         self._running_server: RunningServer | None = None
+        self._owns_local_router = False
+        self._entered = False
+
+    async def _ensure_router_started(self) -> None:
+        if isinstance(self.router, LocalRouter) and not self.router.is_running:
+            await self.router.start()
+            self._owns_local_router = True
 
     @property
     def registry(self) -> RegistryClient:
@@ -760,6 +779,7 @@ class Mesh:
     ) -> Self:
         """Return a shallow view of this Mesh with per-call options applied."""
         clone = copy.copy(self)
+        clone._owns_local_router = False
         clone._client = self._ensure_client().with_options(
             timeout=timeout,
             idle_timeout=idle_timeout,
@@ -771,6 +791,7 @@ class Mesh:
 
     async def connect(self) -> Self:
         """Open the underlying client connection explicitly."""
+        await self._ensure_router_started()
         client = self._ensure_client()
         if hasattr(client, "start"):
             await client.start()
@@ -778,20 +799,32 @@ class Mesh:
 
     async def close(self) -> None:
         """Close any running server and client connection on this Mesh."""
-        if self._running_server is not None:
-            await self._running_server.stop(drain=True)
-        if self._client is not None:
-            stop = getattr(self._client, "close", None) or getattr(
-                self._client, "stop", None
-            )
-            if stop is not None:
-                await stop()
+        try:
+            if self._running_server is not None:
+                await self._running_server.stop(drain=True)
+            if self._client is not None:
+                client, self._client = self._client, None
+                stop = getattr(client, "close", None) or getattr(
+                    client, "stop", None
+                )
+                if stop is not None:
+                    await stop()
+        finally:
+            if self._owns_local_router and isinstance(self.router, LocalRouter):
+                self._owns_local_router = False
+                await self.router.stop()
 
     async def __aenter__(self) -> Self:
-        await self.connect()
+        self._entered = True
+        try:
+            await self.connect()
+        except BaseException:
+            self._entered = False
+            raise
         return self
 
     async def __aexit__(self, *_: object) -> None:
+        self._entered = False
         await self.close()
 
     # -- Server Mounting & Lifecycle ---------------------------------------

@@ -128,8 +128,8 @@ mesh.Mount(&Workspace{}, meshcall.WithDependencies(dbDep, callerDep))
 
 `mesh.Mount` accepts `*Service`, `[]*Service`, `ServiceMeta` structs (or pointers) and `WithDependencies(...)`. `meshcall.ReflectService` (and panicking `MustReflectService`) produce the same `*Service` from a struct when you need to pass it to `NewServer` or `WriteContract` directly. `NewRouter()` with no URL reads `MESHCALL_ROUTER_URL`, else `ws://127.0.0.1:8765` (or use `NewRouterWithOptions(WithUnixSocket(...))` / `WithPipe(...)`). `WithDirectListen("127.0.0.1:9000")` serves clients directly without a Router, and `WithInstanceID`, `WithMaxInflight`, `WithAccessLog`, `WithServerInterceptors`, `WithServerLogger` and `WithStrict` configure the server instance.
 
-Services built by hand are still first-class — use this form when methods
-are registered dynamically or need subscription cursors:
+Services can also be built programmatically with `NewService` when methods
+are registered dynamically:
 
 ```go
 type SendRequest struct {
@@ -151,15 +151,12 @@ meshcall.HandleServerStream(chat, "history", func(ctx *meshcall.Context, req Sen
 	return send(Message{Text: "…"})
 }, meshcall.Doc("Replay the session."), meshcall.ReadOnly())
 
-server, err := meshcall.NewServer(meshcall.ServerOptions{Services: []*meshcall.Service{chat}})
-// Through a Router (ws://, unix:///path, pipe://NAME; several for failover):
-err = server.ConnectRouter(ctx, "ws://127.0.0.1:8765")
-// …or directly: server.Listen("127.0.0.1:9000")
+mesh := meshcall.NewMesh(meshcall.NewRouter("ws://127.0.0.1:8765"))
+mesh.Mount(chat)
+err := mesh.Serve(ctx)
 ```
 
-Also `HandleClientStream` (reads a `*meshcall.Input[Item]`),
-`HandleSubscription` (a server stream clients resume from a cursor; see
-[Subscriptions](../docs/protocol.md#subscriptions)) and `HandleDuplex` (the
+Also `HandleClientStream` (reads a `*meshcall.Input[Item]`) and `HandleDuplex` (the
 shape of last resort; it needs a reason). Return a `*meshcall.Error` to fail
 a call with a code (`&meshcall.Error{Code: "chat.v1.quota_exceeded", …}`);
 any other error becomes a sanitised `internal`, and a panic is recovered and
@@ -206,12 +203,12 @@ the Router's built-in services via `mesh.Registry()` (`List` and `Describe` on
 `meshcall.router.v1.Registry`) and `mesh.Auth()` (`Whoami`, `IssueToken` and
 `RevokeToken` on `meshcall.router.v1.AuthService`). `NewMesh(router, opts...)`
 builds a lazy Mesh from a `*Router` or `*LocalRouter` and `MeshOption`s
-(`WithToken`, `WithCredentials`, `WithHeaders`, `WithPing`, `WithReconnect`,
+(`WithToken`, `WithCredentials`, `WithPing`, `WithReconnect`,
 `WithRetry`, `WithMaxFrameSize`, …); it does no I/O until the first call.
 `ConnectMesh` connects eagerly.
 
 Without generation, the typed helpers are `meshcall.Unary`,
-`ServerStream`, `ClientStream`, `Duplex` and `Subscribe` (plus
+`ServerStream`, `ClientStream` and `Duplex` (plus
 `ServerStreamSeq`, `ClientStreamSeq`, `SliceSeq` and `SliceItems` for
 iterators); they take a `meshcall.Caller` (`*meshcall.Mesh` or `*meshcall.Client`).
 Clients connect lazily, reconnect with backoff, fail over between several
@@ -236,7 +233,7 @@ reply, err := chat.Greet(ctx, "Alice")
 services, err := mesh.Registry().List(ctx)
 ```
 
-Duplex calls are WebSocket-only (`method_not_found`, reason `duplex_over_http`), and `mesh.Mount` panics if called on an HTTP-backed `Mesh`. Unary retries, server/client streams, subscriptions and the built-in calls work as over WebSocket.
+Duplex calls are WebSocket-only (`method_not_found`, reason `duplex_over_http`), and `mesh.Mount` panics if called on an HTTP-backed `Mesh`. Unary retries, server/client streams and the built-in calls work as over WebSocket.
 
 ## Credentials, interceptors and draining
 

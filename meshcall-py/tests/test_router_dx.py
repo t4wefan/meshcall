@@ -103,6 +103,22 @@ async def test_local_router_and_mesh_multiplexed_clients() -> None:
                 await lazy_mesh.close()
 
 
+async def test_mesh_manages_unstarted_local_router() -> None:
+    unstarted_router = LocalRouter(port=0)
+    assert not unstarted_router.is_running
+
+    mesh = Mesh(unstarted_router)
+    mesh.mount(NumberService())
+
+    async with mesh.serve(access_log=False):
+        assert unstarted_router.is_running
+        client = NumberServiceClient(mesh)
+        assert await client.unary(NumberRequest(value=12)) == NumberResult(total=12)
+
+    assert not unstarted_router.is_running
+
+
+
 async def test_mesh_builtin_auth_and_token_scoping(tmp_path: Path) -> None:
     name = get_service_contract(NumberService).name
     auth_file = write_auth_file(tmp_path / "auth.json", name)

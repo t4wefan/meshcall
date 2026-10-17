@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from meshcall import Mesh, Router
+import os
+
+from meshcall import LocalRouter, Mesh, Router
 from quickstart_demo.service import CounterService
 
 
 def main() -> None:
-    # Router() resolves MESHCALL_ROUTER_URL (default ws://127.0.0.1:8765);
-    # mesh.run() serves all mounted services and drains on SIGINT/SIGTERM.
-    mesh = Mesh(Router()).mount(CounterService())
-    mesh.run()
+    router = (
+        Router()
+        if os.environ.get("MESHCALL_ROUTER_URL")
+        else LocalRouter(port=8765)
+    )
+    Mesh(router).mount(CounterService()).run()
 
 
 if __name__ == "__main__":

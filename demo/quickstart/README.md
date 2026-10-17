@@ -7,14 +7,15 @@ with:
 uv run demo
 ```
 
-The command starts the service with an embedded Router (`meshcall.serve`),
-calls it through the generated client, prints the typed stream, and shuts
-everything down. The two-process form is:
+The command starts a `LocalRouter` on an ephemeral port, mounts `CounterService`
+on a `Mesh` (`server_mesh.serve()`), calls it through `CounterServiceClient(mesh)`,
+prints the typed stream, and shuts everything down. The two-process form is:
 
 ```bash
-uv run python -m quickstart_demo.server   # meshcall.run(CounterService())
-uv run python -m quickstart_demo.client   # CounterServiceClient.connect()
+uv run python -m quickstart_demo.server   # Mesh(router).mount(CounterService()).run()
+uv run python -m quickstart_demo.client   # CounterServiceClient(mesh)
 ```
 
-Both resolve `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`); the first
-one starts a bundled Router if the address is local and nothing listens there.
+`server.py` uses `Router()` when `MESHCALL_ROUTER_URL` is set and starts a
+`LocalRouter(port=8765)` otherwise; `client.py` connects with `Mesh(Router())`
+(defaulting to `ws://127.0.0.1:8765`).

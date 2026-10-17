@@ -843,17 +843,28 @@ func WithRouterLogger(logger *slog.Logger) MeshOption {
 
 // Mesh is the Layer 3 RPC runtime for calling and serving services over a Router or LocalRouter.
 type Mesh struct {
-	router      RouterEndpoint
-	cfg         meshConfig
-	authHeader  string
-	wsClient    *Client
-	httpCaller  *httpTransport
-	registry    *RegistryClient
-	auth        *AuthClient
-	mountedRaw  []any
-	mountCfg    serveConfig
-	activeSrvMu sync.Mutex
-	activeSrv   *RunningServer
+	router          RouterEndpoint
+	cfg             meshConfig
+	authHeader      string
+	wsClient        *Client
+	httpCaller      *httpTransport
+	registry        *RegistryClient
+	auth            *AuthClient
+	mountedRaw      []any
+	mountCfg        serveConfig
+	activeSrvMu     sync.Mutex
+	activeSrv       *RunningServer
+	ownsLocalRouter bool
+}
+
+func (m *Mesh) ensureRouterStarted(ctx context.Context) error {
+	if lr, ok := m.router.(*LocalRouter); ok && !lr.IsRunning() {
+		if err := lr.Start(ctx); err != nil {
+			return err
+		}
+		m.ownsLocalRouter = true
+	}
+	return nil
 }
 
 // NewMesh constructs a Layer 3 Mesh bound to a Router or LocalRouter.
@@ -951,6 +962,9 @@ func (m *Mesh) Client() Caller {
 
 // Connect eagerly connects the Mesh client to the Router.
 func (m *Mesh) Connect(ctx context.Context) error {
+	if err := m.ensureRouterStarted(ctx); err != nil {
+		return err
+	}
 	if m.router.IsHTTP() {
 		_, err := m.ensureCaller()
 		return err
@@ -1073,8 +1087,8 @@ func (m *Mesh) Drain(ctx context.Context) error {
 	return nil
 }
 
-// Close closes the Mesh's active server (if serving) and its client connection.
-// It does not stop a LocalRouter subprocess (LocalRouter owns its own OS lifecycle).
+// Close closes the Mesh's active server (if serving), its client connection,
+// and any LocalRouter subprocess that was auto-started by this Mesh.
 func (m *Mesh) Close() error {
 	m.activeSrvMu.Lock()
 	srv := m.activeSrv
@@ -1095,6 +1109,14 @@ func (m *Mesh) Close() error {
 	if m.httpCaller != nil {
 		if err := m.httpCaller.Close(); err != nil && firstErr == nil {
 			firstErr = err
+		}
+	}
+	if m.ownsLocalRouter {
+		m.ownsLocalRouter = false
+		if lr, ok := m.router.(*LocalRouter); ok {
+			if err := lr.Stop(); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	return firstErr
@@ -1321,9 +1343,16 @@ func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningS
 		return running, nil
 	}
 
+	if err := m.ensureRouterStarted(ctx); err != nil {
+		_ = srv.Close()
+		return nil, err
+	}
 	endpoints := m.router.Endpoints()
 	if err := srv.ConnectRouter(ctx, endpoints...); err != nil {
 		_ = srv.Close()
+		if m.ownsLocalRouter && m.wsClient == nil {
+			_ = m.Close()
+		}
 		return nil, err
 	}
 	running := &RunningServer{
@@ -1353,7 +1382,13 @@ func (m *Mesh) Serve(ctx context.Context, opts ...ServeOption) error {
 		return err
 	}
 	<-ctx.Done()
-	return running.Close()
+	closeErr := running.Close()
+	if m.ownsLocalRouter {
+		if err := m.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }
 
 // Run connects the Mesh's mounted services to the Router and blocks until SIGINT
