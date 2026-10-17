@@ -16,35 +16,23 @@ import (
 	"time"
 )
 
-// HTTPRouterOptions configures an HTTPRouter.
-type HTTPRouterOptions struct {
-	// Token is a Bearer token ("mk_…" API key or an issued token).
-	Token string
-	// Username and Password select Basic authentication instead.
-	Username string
-	Password string
-	// Headers are added to every request (a gateway in front of the Router).
-	Headers map[string]string
-	// Retry is the unary retry policy; nil uses DefaultRetry.
-	Retry *RetryPolicy
-	// Reconnect drives subscription resume backoff; zero uses DefaultReconnect.
-	Reconnect ReconnectPolicy
-	// Timeout bounds each request when the call sets no timeout.
-	Timeout time.Duration
-	Logger  *slog.Logger
-	// Client overrides the HTTP client (tests, custom transports).
-	Client *http.Client
+type httpTransportOptions struct {
+	Authorization string
+	Token         string
+	Username      string
+	Password      string
+	Headers       map[string]string
+	Retry         *RetryPolicy
+	Reconnect     ReconnectPolicy
+	Timeout       time.Duration
+	Logger        *slog.Logger
+	Client        *http.Client
 }
 
-// HTTPRouter is a client-only Router that speaks the Router's HTTP v1 API.
-//
-// Pass it to generated clients exactly like a WebSocket Router
-// (NewChatClient(httpRouter)); typed unary, server-stream and client-stream
-// calls work, duplex calls are refused (the Router answers 405) and there is
-// no server side.
-type HTTPRouter struct {
+// httpTransport is an internal Layer 1 Caller that speaks the Router's HTTP v1 API.
+type httpTransport struct {
 	base      string
-	options   HTTPRouterOptions
+	options   httpTransportOptions
 	defaults  CallOptions
 	logger    *slog.Logger
 	retry     RetryPolicy
@@ -52,57 +40,7 @@ type HTTPRouter struct {
 	client    *http.Client
 }
 
-// NewHTTPRouter creates a client for the Router at endpoint (http(s)://, or
-// ws(s):// which is converted).
-func NewHTTPRouter(endpoint string, opts ...HTTPRouterOption) *HTTPRouter {
-	options := HTTPRouterOptions{}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&options)
-		}
-	}
-	return newHTTPRouter(endpoint, options)
-}
-
-// HTTPRouterOption configures NewHTTPRouter.
-type HTTPRouterOption func(*HTTPRouterOptions)
-
-// WithHTTPToken authenticates with a Bearer token.
-func WithHTTPToken(token string) HTTPRouterOption {
-	return func(o *HTTPRouterOptions) { o.Token, o.Username, o.Password = token, "", "" }
-}
-
-// WithHTTPBasic authenticates with a username and password.
-func WithHTTPBasic(username, password string) HTTPRouterOption {
-	return func(o *HTTPRouterOptions) { o.Username, o.Password, o.Token = username, password, "" }
-}
-
-// WithHTTPHeaders adds request headers.
-func WithHTTPHeaders(headers map[string]string) HTTPRouterOption {
-	return func(o *HTTPRouterOptions) { o.Headers = headers }
-}
-
-// WithHTTPRetry sets the unary retry policy.
-func WithHTTPRetry(policy RetryPolicy) HTTPRouterOption {
-	return func(o *HTTPRouterOptions) { o.Retry = &policy }
-}
-
-// WithHTTPTimeout bounds requests that set no timeout.
-func WithHTTPTimeout(timeout time.Duration) HTTPRouterOption {
-	return func(o *HTTPRouterOptions) { o.Timeout = timeout }
-}
-
-// WithHTTPClient sets the underlying http.Client.
-func WithHTTPClient(client *http.Client) HTTPRouterOption {
-	return func(o *HTTPRouterOptions) { o.Client = client }
-}
-
-// WithHTTPLogger sets the logger used for subscription resume warnings.
-func WithHTTPLogger(logger *slog.Logger) HTTPRouterOption {
-	return func(o *HTTPRouterOptions) { o.Logger = logger }
-}
-
-func newHTTPRouter(endpoint string, options HTTPRouterOptions) *HTTPRouter {
+func newHTTPTransport(endpoint string, options httpTransportOptions) *httpTransport {
 	base := strings.TrimRight(endpoint, "/")
 	switch {
 	case strings.HasPrefix(base, "ws://"):
@@ -135,7 +73,7 @@ func newHTTPRouter(endpoint string, options HTTPRouterOptions) *HTTPRouter {
 	if reconnect == (ReconnectPolicy{}) {
 		reconnect = DefaultReconnect
 	}
-	return &HTTPRouter{
+	return &httpTransport{
 		base:      base,
 		options:   options,
 		logger:    logger,
@@ -145,8 +83,7 @@ func newHTTPRouter(endpoint string, options HTTPRouterOptions) *HTTPRouter {
 	}
 }
 
-// WithOptions returns a shallow copy whose calls apply opts by default.
-func (h *HTTPRouter) WithOptions(opts CallOptions) Caller {
+func (h *httpTransport) WithOptions(opts CallOptions) *httpTransport {
 	clone := *h
 	clone.defaults = mergeCallOptions(h.defaults, opts)
 	return &clone
@@ -180,19 +117,18 @@ func mergeCallOptions(base, over CallOptions) CallOptions {
 	return merged
 }
 
-// Close releases idle connections; HTTPRouter has no persistent connection.
-func (h *HTTPRouter) Close() error {
+func (h *httpTransport) Close() error {
 	h.client.CloseIdleConnections()
 	return nil
 }
 
-func (h *HTTPRouter) reconnectDelays() func() (time.Duration, bool) { return h.reconnect.delays() }
-func (h *HTTPRouter) log() *slog.Logger                             { return h.logger }
-func (h *HTTPRouter) WithCallOptions(opts CallOptions) Caller {
+func (h *httpTransport) reconnectDelays() func() (time.Duration, bool) { return h.reconnect.delays() }
+func (h *httpTransport) log() *slog.Logger                             { return h.logger }
+func (h *httpTransport) WithCallOptions(opts CallOptions) Caller {
 	return h.WithOptions(opts)
 }
 
-func (h *HTTPRouter) optionsFor(opts []CallOption) CallOptions {
+func (h *httpTransport) optionsFor(opts []CallOption) CallOptions {
 	merged := h.defaults
 	for _, opt := range opts {
 		if opt != nil {
@@ -202,12 +138,14 @@ func (h *HTTPRouter) optionsFor(opts []CallOption) CallOptions {
 	return merged
 }
 
-func (h *HTTPRouter) headers(options CallOptions, contentType string) http.Header {
+func (h *httpTransport) headers(options CallOptions, contentType string) http.Header {
 	headers := http.Header{}
 	for key, value := range h.options.Headers {
 		headers.Set(key, value)
 	}
-	if h.options.Token != "" {
+	if h.options.Authorization != "" {
+		headers.Set("Authorization", h.options.Authorization)
+	} else if h.options.Token != "" {
 		headers.Set("Authorization", "Bearer "+h.options.Token)
 	} else if h.options.Username != "" {
 		pair := h.options.Username + ":" + h.options.Password
@@ -234,11 +172,11 @@ func (h *HTTPRouter) headers(options CallOptions, contentType string) http.Heade
 	return headers
 }
 
-func (h *HTTPRouter) callURL(service, method string) string {
+func (h *httpTransport) callURL(service, method string) string {
 	return h.base + "/v1/call/" + url.PathEscape(service) + "/" + url.PathEscape(method)
 }
 
-func (h *HTTPRouter) unaryRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (json.RawMessage, map[string]string, error) {
+func (h *httpTransport) unaryRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (json.RawMessage, map[string]string, error) {
 	options := h.optionsFor(opts)
 	mayRetry := !h.retry.Disabled && (options.Idempotent || options.IdempotencyKey != "")
 	var deadline time.Time
@@ -293,7 +231,7 @@ func (h *HTTPRouter) unaryRaw(ctx context.Context, service, method string, reque
 	}
 }
 
-func (h *HTTPRouter) withTimeout(ctx context.Context, options CallOptions) (context.Context, context.CancelFunc) {
+func (h *httpTransport) withTimeout(ctx context.Context, options CallOptions) (context.Context, context.CancelFunc) {
 	if options.Timeout > 0 {
 		return context.WithTimeout(ctx, options.Timeout)
 	}
@@ -303,7 +241,7 @@ func (h *HTTPRouter) withTimeout(ctx context.Context, options CallOptions) (cont
 	return context.WithCancel(ctx)
 }
 
-func (h *HTTPRouter) serverStreamRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (streamSource, error) {
+func (h *httpTransport) serverStreamRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (streamSource, error) {
 	options := h.optionsFor(opts)
 	callCtx, cancel := h.withTimeout(ctx, options)
 	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, h.callURL(service, method), bytes.NewReader(request))
@@ -328,7 +266,7 @@ func (h *HTTPRouter) serverStreamRaw(ctx context.Context, service, method string
 	return &httpStream{response: response, cancel: cancel, scanner: scanner}, nil
 }
 
-func (h *HTTPRouter) clientStreamRaw(ctx context.Context, service, method string, request json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error) {
+func (h *httpTransport) clientStreamRaw(ctx context.Context, service, method string, request json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error) {
 	options := h.optionsFor(opts)
 	callCtx, cancel := h.withTimeout(ctx, options)
 	defer cancel()
@@ -368,39 +306,12 @@ func (h *HTTPRouter) clientStreamRaw(ctx context.Context, service, method string
 	return json.RawMessage(body), trailersOf(response.Header), nil
 }
 
-func (h *HTTPRouter) duplexRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (rawDuplex, error) {
+func (h *httpTransport) duplexRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (rawDuplex, error) {
 	return nil, &Error{
 		Code:    CodeMethodNotFound,
 		Message: "duplex methods are WebSocket-only",
 		Details: map[string]any{"source": "client", "reason": "duplex_over_http"},
 	}
-}
-
-// Built-in Router services, shared with *Router's implementations.
-
-// ListServices lists the services visible to this caller.
-func (h *HTTPRouter) ListServices(ctx context.Context, opts ...CallOption) ([]RegistryService, error) {
-	return listServices(ctx, h, opts...)
-}
-
-// DescribeService describes one registered service.
-func (h *HTTPRouter) DescribeService(ctx context.Context, service string, opts ...CallOption) (RegistryServiceDetail, error) {
-	return describeService(ctx, h, service, opts...)
-}
-
-// Whoami returns the caller's identity and scopes.
-func (h *HTTPRouter) Whoami(ctx context.Context, opts ...CallOption) (WhoamiResponse, error) {
-	return whoami(ctx, h, opts...)
-}
-
-// IssueToken mints a scoped bearer token.
-func (h *HTTPRouter) IssueToken(ctx context.Context, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
-	return issueToken(ctx, h, scopes, ttlSeconds, opts...)
-}
-
-// RevokeToken revokes an issued token by its ID.
-func (h *HTTPRouter) RevokeToken(ctx context.Context, tokenID string, opts ...CallOption) (RevokeTokenResponse, error) {
-	return revokeToken(ctx, h, tokenID, opts...)
 }
 
 // httpStream reads NDJSON envelopes from one streaming response.

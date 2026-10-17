@@ -6,10 +6,10 @@ import test from "node:test";
 import { build } from "esbuild";
 
 import {
-  MeshCallError, MeshCallServer, method, service, WebSocketRouter, z, type MeshCallRpc, type RpcContext,
+  LocalRouter, MeshCallError, MeshCallServer, method, service, z, type MeshCallRpc, type RpcContext,
 } from "../src/index.js";
 import { findRouterBinary } from "../src/router.js";
-import { MeshCallHttpClient } from "../src/web.js";
+import { Mesh, Router } from "../src/web.js";
 
 const routerMissing = (() => { try { findRouterBinary(); return false; } catch { return "Go Router binary not built"; } })();
 
@@ -70,13 +70,12 @@ test("a generated client bundles for browsers: it imports only types from meshca
   assert.doesNotMatch(result.outputFiles[0]!.text, /meshcall"|node:/u);
 });
 
-test("the HTTP client makes every non-duplex call through a Router", { timeout: 20000, skip: routerMissing }, async (t) => {
-  const router = new WebSocketRouter();
-  await router.start();
-  const server = new MeshCallServer({ services: [new Web()], accessLog: false, router: { endpoint: `ws://127.0.0.1:${router.boundPort}` } });
+test("browser Mesh (meshcall/web) makes every non-duplex call through an HTTP Router", { timeout: 20000, skip: routerMissing }, async (t) => {
+  const router = await LocalRouter.start({ port: 0 });
+  const server = new MeshCallServer({ services: [new Web()], accessLog: false, router: { endpoint: router.url } });
   await server.start();
   t.after(async () => { await server.close(); await router.stop(); });
-  const rpc: MeshCallRpc = new MeshCallHttpClient(`http://127.0.0.1:${router.boundPort}`, {
+  const rpc: MeshCallRpc = new Mesh(new Router(router.httpUrl!), {
     reconnect: { initialDelayMs: 10, maxDelayMs: 50 },
     logger: { bind() { return this; }, log() {}, debug() {}, info() {}, warning() {}, error() {} },
   });

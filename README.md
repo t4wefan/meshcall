@@ -90,22 +90,24 @@ How do servers and clients find each other? In MeshCall, we recommend routing al
 - **Clients** connect to the same Router and call services by name (such as `demo.v1.Greeter`), without needing to know which port or machine hosts the target service.
 - Because every node connects to the Router, **any process can simultaneously provide services and act as a client calling other services**.
 
-Create `server.py` and run it:
+Create `server.py` and run it (assuming `meshcall-router` is running on the default `ws://127.0.0.1:8765`, or pass `LocalRouter()` in tests/demos to spawn one in-process):
 
 ```python
-from meshcall import run
+from meshcall import Mesh, Router
 from service import Greeter
 
 
 if __name__ == "__main__":
-    run(Greeter())
+    mesh = Mesh(Router())
+    mesh.mount(Greeter())
+    mesh.run()
 ```
 
 ```bash
 uv run python server.py
 ```
 
-`run` resolves the Router address (`MESHCALL_ROUTER_URL`, default `ws://127.0.0.1:8765`), starts a bundled Router when that address is local and nothing listens there, registers the service, and drains on `SIGINT` / `SIGTERM` before exiting. You can pass an explicit `router=Router(...)` for auth, metrics, several Router endpoints, or `spawn_if_local=False`.
+`Router()` resolves the Router address (`MESHCALL_ROUTER_URL`, default `ws://127.0.0.1:8765`). `mesh.mount(Greeter())` mounts the service locally, and `mesh.run()` connects to the Router, registers the service, and drains on `SIGINT` / `SIGTERM` before exiting. Pass `LocalRouter(port=0)` when you want Python to start and stop a local `meshcall-router` subprocess automatically.
 
 ### 4. Call the Service Like a Local Async Function
 
@@ -113,11 +115,13 @@ Keep `server.py` running, create `client.py`, and run it in another terminal:
 
 ```python
 import asyncio
+from meshcall import Mesh, Router
 from greeter_client import GreeterClient
 
 
 async def main() -> None:
-    async with GreeterClient.connect() as client:
+    async with Mesh(Router()) as mesh:
+        client = GreeterClient(mesh)
         reply = await client.greet("Alice")
         print(reply.message)  # hello, Alice
 
@@ -130,7 +134,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-`connect()` resolves the Router exactly like `run()` does. Several clients can share one connection: `router = await Router.connect(); GreeterClient(router); BillingClient(router)`.
+Several generated clients can share one `Mesh` connection (`GreeterClient(mesh)`, `BillingClient(mesh)`), and `mesh.registry` / `mesh.auth` expose the Router's built-in Registry and AuthService.
 
 ```bash
 uv run python client.py
@@ -149,7 +153,7 @@ Update `service.py` to add the streaming method `countdown`:
 ```python
 from collections.abc import AsyncIterator
 from pydantic import BaseModel
-from meshcall import method, service
+from meshcall import query, service, stream
 
 
 class Reply(BaseModel):
@@ -183,7 +187,8 @@ uv run meshcall generate service:Greeter --single-file --output greeter_client.p
 ```
 
 ```python
-async with GreeterClient.connect() as client:
+async with Mesh(Router()) as mesh:
+    client = GreeterClient(mesh)
     async for tick in client.countdown(3):
         print(tick.step)  # 3, 2, 1
 ```
@@ -214,24 +219,21 @@ yarn add file:./greeter-ts
 3. Keep `server.py` running and call the service from TypeScript:
 
 ```typescript
-import { Router } from "meshcall";
+import { Mesh, Router } from "meshcall";
 import { GreeterClient } from "meshcall-demo-v1-greeter-client";
 
-const router = await Router.connect("ws://127.0.0.1:8765");
-const client = await GreeterClient.connect(router);
-try {
-  const reply = await client.greet("Alice");
-  console.log(reply.message); // hello, Alice
+await using mesh = await Mesh.connect(new Router("ws://127.0.0.1:8765"));
+const client = new GreeterClient(mesh);
 
-  for await (const tick of client.countdown(3)) {
-    console.log(tick.step); // 3, 2, 1
-  }
-} finally {
-  await router.close();
+const reply = await client.greet("Alice");
+console.log(reply.message); // hello, Alice
+
+for await (const tick of client.countdown(3)) {
+  console.log(tick.step); // 3, 2, 1
 }
 ```
 
-`Router.connect` reads `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), and `withOptions({ timeoutMs, metadata, idempotencyKey, instance })` sets per-call options without changing the business signature.
+`new Router()` reads `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), and `withOptions({ timeoutMs, metadata, idempotencyKey, instance })` sets per-call options without changing the business signature.
 
 ---
 
@@ -289,29 +291,29 @@ curl http://127.0.0.1:8765/v1/services
 curl http://127.0.0.1:8765/v1/openapi.json
 ```
 
-Every runtime also provides an **HTTP-only Router object** for generated clients, so the same typed client can switch transport without changing its methods:
+When a `Router` is given an `http://` or `https://` URL, `Mesh` automatically selects the HTTP client transport underneath, so the same typed client can switch transport without changing its methods:
 
 ```python
-from meshcall import HTTPRouter
+from meshcall import Mesh, Router
 
-http = HTTPRouter("https://router.example", token="mk_…")
-client = ChatClient(http)                 # or ChatClient.connect(http)
+mesh = Mesh(Router("https://router.example"), token="mk_…")
+client = ChatClient(mesh)
 reply = await client.greet("Alice")
 ```
 
 ```typescript
-import { HTTPRouter } from "meshcall/web";
+import { Mesh, Router } from "meshcall/web";
 
-const http = await HTTPRouter.connect("https://router.example", { token });
-const client = ChatClient.connect(http);
+const mesh = new Mesh(new Router("https://router.example"), { token });
+const client = new ChatClient(mesh);
 ```
 
 ```go
-httpRouter := meshcall.NewHTTPRouter("https://router.example", meshcall.WithHTTPToken("mk_…"))
-chat := chatclient.NewChatClient(httpRouter)
+mesh := meshcall.NewMesh(meshcall.NewRouter("https://router.example"), meshcall.WithToken("mk_…"))
+chat := chatclient.NewChatClient(mesh)
 ```
 
-From a browser (or Deno, Bun, an edge runtime), the TypeScript `HTTPRouter` uses `fetch` and needs no Node imports (start the Router with `--http-cors-origin https://app.example` for another origin). The Router's built-ins (`list_services` / `ListServices` / `listServices`, `whoami`, …) work through it too.
+From a browser (or Deno, Bun, an edge runtime), `meshcall/web` exports a `fetch`-only `Mesh` and `Router` with no Node imports (start the Router with `--http-cors-origin https://app.example` for another origin). The Router's built-ins (`mesh.registry.list()` / `mesh.Registry().List(ctx)`, `mesh.auth.whoami()`, …) work through it too.
 
 Unary calls and server streams work fully, client streams take an NDJSON body, and duplex calls (a restricted shape of last resort; see [Duplex calls](docs/protocol.md#duplex-calls)) stay WebSocket-only. Accounts, tokens, timeouts (`MeshCall-Timeout-Ms`), idempotency keys (`Idempotency-Key`) and metadata (`MeshCall-Meta-*`) work as headers; see [HTTP calls](docs/protocol.md#http-calls).
 

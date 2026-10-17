@@ -283,9 +283,9 @@ not terminate TLS itself. The same checks apply to Unix sockets and named
 pipes; a named pipe admits only the Router's own user, SYSTEM and
 Administrators, as a Unix socket's file mode does. Browsers cannot set the
 `Authorization` header on a WebSocket, so they call over HTTP with
-`meshcall/web` (`MeshCallHttpClient`, see [HTTP calls](#http-calls)). JWT and
-an external login system are outside this version. WebSocket clients run in
-Python, Node and Go; launchers in Python and Node.
+`meshcall/web` (`new Mesh(new Router("https://…"), { token })`, see [HTTP calls](#http-calls)). JWT and
+an external login system are outside this version. WebSocket clients and
+`LocalRouter` subprocess launchers run in Python, Node and Go.
 
 ## HTTP calls
 
@@ -457,42 +457,36 @@ Python, connecting to a Router configured with the `app` account above:
 
 ```python
 import os
-from meshcall import RouterAuthClient, RouterCredentials, RouterScope
-from meshcall.drivers import WebSocketClientDriver
+from meshcall import Mesh, Router, RouterCredentials, RouterScope
 
 credentials = RouterCredentials(username="app", password=os.environ["ROUTER_PASSWORD"])
-async with RouterAuthClient(WebSocketClientDriver(uri, auth=credentials)) as auth:
-    issued = await auth.issue_token(
-        ttl_seconds=900,
+async with Mesh(Router(uri), credentials=credentials) as issuer_mesh:
+    issued = await issuer_mesh.auth.issue_token(
         scopes=[RouterScope(service="chat.v1.ChatService", methods=["send", "history"])],
+        ttl_seconds=900,
     )
-    scoped_driver = WebSocketClientDriver(uri, auth=RouterCredentials(token=issued.token))
-    # Pass scoped_driver to the generated ChatService client.
+    async with Mesh(Router(uri), token=issued.token) as scoped_mesh:
+        # Pass scoped_mesh to the generated ChatService client: ChatServiceClient(scoped_mesh)
+        pass
     # Revoke after handing the token to its intended caller:
-    await auth.revoke_token(issued.token_id)
+    await issuer_mesh.auth.revoke_token(issued.token_id)
 ```
 
 TypeScript:
 
 ```typescript
-import { MeshCallClient, RouterAuthClient } from "meshcall";
+import { Mesh, Router } from "meshcall";
 
-const issuer = new MeshCallClient(uri, undefined, {
-  auth: { username: "app", password: process.env.ROUTER_PASSWORD! },
+await using issuerMesh = await Mesh.connect(new Router(uri), {
+  credentials: { username: "app", password: process.env.ROUTER_PASSWORD! },
 });
-const auth = new RouterAuthClient(issuer);
-const issued = await auth.issueToken({
-  ttl_seconds: 900,
-  scopes: [{ service: "chat.v1.ChatService", methods: ["send", "history"] }],
-});
-const scoped = new MeshCallClient(uri, undefined, { auth: { token: issued.token } });
-try {
-  // Use scoped directly, or pass it to the generated ChatService client.
-} finally {
-  await scoped.close();
-  await auth.revokeToken(issued.token_id);
-  await issuer.close();
-}
+const issued = await issuerMesh.auth.issueToken(
+  [{ service: "chat.v1.ChatService", methods: ["send", "history"] }],
+  900,
+);
+await using scopedMesh = await Mesh.connect(new Router(uri), { token: issued.token });
+// Pass scopedMesh to the generated ChatService client: new ChatServiceClient(scopedMesh)
+await issuerMesh.auth.revokeToken(issued.token_id);
 ```
 
 ## Connecting services
@@ -500,51 +494,37 @@ try {
 Python:
 
 ```python
-router = WebSocketRouter(host="127.0.0.1", port=8765)  # launches Go; auth_file=... enables accounts
-await router.start()
-
-server = RpcServer(
-    services=[MyService],
-    driver=WebSocketRouterServerDriver(
-        "ws://127.0.0.1:8765", instance_id="python-1",
-    ),
-)
-await server.start()
+async with LocalRouter(host="127.0.0.1", port=8765) as router:  # launches Go; auth_file=... enables accounts
+    mesh = Mesh(router)
+    mesh.mount(MyService())
+    async with mesh.serve(instance_id="python-1"):
+        ...
 ```
 
-TypeScript, using an existing service definition:
+TypeScript:
 
 ```typescript
-const router = new WebSocketRouter({ host: "127.0.0.1", port: 8765 });
-await router.start(); // launches the same Go executable; use authFile to enable accounts
-
-const server = new MeshCallServer({
-  services: [myService],
-  router: {
-    endpoint: "ws://127.0.0.1:8765",
-    instanceId: "typescript-1",
-  },
-});
-await server.start();
+await using router = await LocalRouter.start({ host: "127.0.0.1", port: 8765 }); // use authFile to enable accounts
+const mesh = new Mesh(router);
+mesh.mount(new MyService());
+await using srv = await mesh.startServing({ instanceId: "typescript-1" });
 ```
 
-Go, against a Router started separately:
+Go:
 
 ```go
-server, err := meshcall.NewServer(meshcall.ServerOptions{Services: []*meshcall.Service{svc}, InstanceID: "go-1"})
-err = server.ConnectRouter(ctx, "ws://127.0.0.1:8765")
+router, err := meshcall.StartLocalRouter(ctx, meshcall.WithHost("127.0.0.1"), meshcall.WithPort(8765))
+defer router.Stop()
+
+mesh := meshcall.NewMesh(router)
+mesh.Mount(&MyService{})
+srv, err := mesh.StartServing(ctx, meshcall.WithInstanceID("go-1"))
+defer srv.Close()
 ```
 
-For an authenticated Router, add `auth=RouterCredentials(...)` to Python
-`WebSocketRouterServerDriver` and `WebSocketClientDriver`. In TypeScript, add
-`auth` inside `MeshCallServer`'s `router` options, and in the third options
-argument of `MeshCallClient`; in Go, set `Authorization` in `ServerOptions` /
-`ClientOptions`. Each form accepts an account, an API key or a token.
-Call `await router.stop()` in both languages when the owning application exits.
+For an authenticated Router, pass `token=...` or `credentials=RouterCredentials(...)` to `Mesh` in Python and TypeScript, or `meshcall.WithToken(...)` / `meshcall.WithCredentials(...)` in Go. Each form accepts an account, an API key or a token.
 
-Clients in every language connect to the Router's normal WebSocket address.
-They do not implement balancing or need to know the individual service
-addresses.
+Clients in every language connect to the Router's WebSocket or HTTP address through `Mesh(Router(...))`. They do not implement balancing or need to know the individual service addresses.
 
 ## Verification
 

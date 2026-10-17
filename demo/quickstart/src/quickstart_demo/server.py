@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from meshcall import run
+from meshcall import Mesh, Router
 from quickstart_demo.service import CounterService
 
 
 def main() -> None:
-    # run() resolves MESHCALL_ROUTER_URL (default ws://127.0.0.1:8765), starts a
-    # bundled Router when the address is local and nothing listens, and drains
-    # on SIGINT/SIGTERM.
-    run(CounterService())
+    # Router() resolves MESHCALL_ROUTER_URL (default ws://127.0.0.1:8765);
+    # mesh.run() serves all mounted services and drains on SIGINT/SIGTERM.
+    mesh = Mesh(Router()).mount(CounterService())
+    mesh.run()
 
 
 if __name__ == "__main__":

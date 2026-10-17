@@ -9,7 +9,7 @@ import os
 import signal
 from collections.abc import Generator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import urlsplit
 
 from meshcall.client import ClientBase
@@ -33,7 +33,7 @@ from meshcall.drivers.websocket import (
     WebSocketClientDriver,
     WebSocketRouterServerDriver,
 )
-from meshcall.errors import ContractError, DriverStateError, UnavailableError
+from meshcall.errors import ContractError, DriverStateError
 from meshcall.logging import RpcLogger
 from meshcall.protocol import PROTOCOL_VERSION
 from meshcall.router_auth import (
@@ -57,12 +57,15 @@ from meshcall.server import RpcServer
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 from meshcall.transport import DEFAULT_MAX_FRAME_SIZE
 
+if TYPE_CHECKING:
+    import httpx
+
 DEFAULT_ROUTER_URL = "ws://127.0.0.1:8765"
-_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_VALID_URL_SCHEMES = frozenset({"ws", "wss", "http", "https"})
 
 
-class WebSocketRouter:
-    """Own a Go Router process; all RPC routing and authentication run in Go."""
+class LocalRouter:
+    """Own a local Go ``meshcall-router`` subprocess."""
 
     def __init__(
         self,
@@ -129,6 +132,7 @@ class WebSocketRouter:
         self._lock = asyncio.Lock()
         self._stderr = bytearray()
         self._readers: list[asyncio.Task[None]] = []
+        self._is_http = False
 
     @property
     def is_running(self) -> bool:
@@ -151,6 +155,33 @@ class WebSocketRouter:
         if not self.is_running or self._bound_port is None:
             raise DriverStateError("Go Router is not running")
         return self._bound_port
+
+    @property
+    def url(self) -> str:
+        """Primary endpoint URL for this local Router."""
+        if self.unix_path is not None:
+            return f"unix://{self.unix_path}"
+        if self.pipe is not None:
+            return f"pipe://{self.pipe}"
+        host_fmt = f"[{self.host}]" if ":" in self.host else self.host
+        return f"ws://{host_fmt}:{self.bound_port}"
+
+    @property
+    def http_url(self) -> str:
+        """HTTP endpoint URL for this local Router (TCP listeners only)."""
+        if self.unix_path is not None or self.pipe is not None:
+            raise DriverStateError("A local listener does not have a TCP port")
+        host_fmt = f"[{self.host}]" if ":" in self.host else self.host
+        return f"http://{host_fmt}:{self.bound_port}"
+
+    def _endpoints(self) -> tuple[tuple[str, ...], Path | None, str | None]:
+        if not self.is_running:
+            raise DriverStateError("Go Router is not running")
+        if self.unix_path is not None:
+            return (), self.unix_path, None
+        if self.pipe is not None:
+            return (), None, self.pipe
+        return (self.url,), None, None
 
     async def _drain(self, stream: asyncio.StreamReader, *, diagnostic: bool) -> None:
         while data := await stream.read(4096):
@@ -285,6 +316,10 @@ class WebSocketRouter:
         await self.stop()
 
 
+# Keep alias for internal/low-level process tests.
+WebSocketRouter = LocalRouter
+
+
 def _resolve_endpoints(
     url: str | Sequence[str] | None,
     unix_path: str | Path | None,
@@ -315,306 +350,88 @@ def _resolve_endpoints(
             return (), Path(single.removeprefix("unix://")), None
         if single.startswith("pipe://"):
             return (), None, single.removeprefix("pipe://")
+    schemes = set()
+    for item in urls:
+        parsed = urlsplit(item)
+        if parsed.scheme not in _VALID_URL_SCHEMES or not parsed.netloc:
+            raise ValueError(
+                f"Unsupported Router URL {item!r}; expected ws://, wss://, http://, https://, unix://, or pipe://"
+            )
+        schemes.add("http" if parsed.scheme in ("http", "https") else "ws")
+    if len(schemes) > 1:
+        raise ValueError("Cannot mix HTTP and WebSocket URLs in a single Router")
     return urls, None, None
 
 
 class Router:
-    """Unified Router configuration, shared client connection, and built-in services.
+    """Layer-2 endpoint descriptor for a remote or external MeshCall Router.
 
-    A ``Router`` instance can be:
-    1. Passed to ``meshcall.run(..., router=router)`` or ``meshcall.serve(..., router=router)``
-       to configure how services connect to (or locally auto-spawn) the Router.
-    2. Connected via ``async with Router.connect(...) as router:`` and passed to
-       multiple generated service clients (``WorkspaceClient(router)``) so they
-       multiplex over one WebSocket connection.
-    3. Used directly to call built-in Router services: ``list_services()``,
-       ``describe_service()``, ``whoami()``, ``issue_token()``, ``revoke_token()``.
+    With no arguments, ``Router()`` resolves ``MESHCALL_ROUTER_URL`` from the
+    environment or defaults to ``ws://127.0.0.1:8765``.
     """
 
     def __init__(
         self,
         url: str | Path | Sequence[str] | None = None,
         *,
-        listen: str | Path | None = None,
         unix_path: str | Path | None = None,
         pipe: str | None = None,
-        auth: RouterCredentials | None = None,
-        peer_id: str | None = None,
-        ping_interval: float | None = DEFAULT_PING_INTERVAL,
-        ping_timeout: float = DEFAULT_PING_TIMEOUT,
-        reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
-        retry: RetryPolicy = DEFAULT_RETRY,
-        deadline_grace: float | None = None,
-        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
-        interceptors: Sequence[ClientInterceptor] = (),
-        # Local embedded Router auto-spawn options (used by serve / run):
-        spawn_if_local: bool = True,
-        binary_path: str | Path | None = None,
-        metrics_listen: str | None = None,
-        http_cors_origins: Sequence[str] | None = None,
-        http_default_timeout: float | None = None,
-        auth_file: str | Path | None = None,
-        outbox_size: int | None = None,
-        max_connections: int | None = None,
-        startup_timeout: float = 10.0,
-        shutdown_timeout: float = 5.0,
     ) -> None:
-        if listen is not None:
-            if url is not None:
-                raise ValueError("Pass either url or listen, not both")
-            url = listen
         if isinstance(url, Path):
             if unix_path is not None:
-                raise ValueError("Pass either Path url/listen or unix_path, not both")
+                raise ValueError("Pass either Path url or unix_path, not both")
             unix_path = url
             url = None
         self.urls, self.unix_path, self.pipe = _resolve_endpoints(url, unix_path, pipe)
-        self.auth = auth
-        self.peer_id = peer_id
-        self.ping_interval = ping_interval
-        self.ping_timeout = ping_timeout
-        self.reconnect = reconnect
-        self.retry = retry
-        self.deadline_grace = deadline_grace
-        self.max_frame_size = max_frame_size
-        self.interceptors = tuple(interceptors)
-        self.spawn_if_local = spawn_if_local
-        self.binary_path = binary_path
-        self.metrics_listen = metrics_listen
-        self.http_cors_origins = (
-            tuple(http_cors_origins) if http_cors_origins is not None else None
+        self._is_http = bool(
+            self.urls and self.urls[0].startswith(("http://", "https://"))
         )
-        self.http_default_timeout = http_default_timeout
-        self.auth_file = auth_file
-        self.outbox_size = outbox_size
-        self.max_connections = max_connections
-        self.startup_timeout = startup_timeout
-        self.shutdown_timeout = shutdown_timeout
-        self._client: ClientBase | None = None
 
     @property
     def url(self) -> str | None:
-        """Primary WebSocket URL, or None when using a Unix socket or named pipe."""
+        """Primary URL, or None when using a Unix socket or named pipe."""
         return self.urls[0] if self.urls else None
 
-    @property
-    def is_connected(self) -> bool:
-        """Whether the shared client connection is currently open."""
-        return self._client is not None and self._client._root._connection is not None
+    def _endpoints(self) -> tuple[tuple[str, ...], Path | None, str | None]:
+        return self.urls, self.unix_path, self.pipe
 
-    @classmethod
-    def connect(
-        cls,
-        url: str | Sequence[str] | None = None,
-        *,
-        unix_path: str | Path | None = None,
-        pipe: str | None = None,
-        auth: RouterCredentials | None = None,
-        peer_id: str | None = None,
-        ping_interval: float | None = DEFAULT_PING_INTERVAL,
-        ping_timeout: float = DEFAULT_PING_TIMEOUT,
-        reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
-        retry: RetryPolicy = DEFAULT_RETRY,
-        deadline_grace: float | None = None,
-        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
-        interceptors: Sequence[ClientInterceptor] = (),
-    ) -> Self:
-        """Create and connect a shared Router client.
 
-        May be used either as ``async with Router.connect(...) as router:`` or
-        ``router = await Router.connect(...)``.
-        """
-        return cls(
-            url=url,
-            unix_path=unix_path,
-            pipe=pipe,
-            auth=auth,
-            peer_id=peer_id,
-            ping_interval=ping_interval,
-            ping_timeout=ping_timeout,
-            reconnect=reconnect,
-            retry=retry,
-            deadline_grace=deadline_grace,
-            max_frame_size=max_frame_size,
-            interceptors=interceptors,
-        )
+class RegistryClient:
+    """Client for the Router's built-in ``meshcall.router.Registry`` service."""
 
-    def _ensure_client(self) -> ClientBase:
-        if self._client is None:
-            driver = WebSocketClientDriver(
-                uri=self.urls if self.urls else None,
-                unix_path=self.unix_path,
-                pipe=self.pipe,
-                peer_id=self.peer_id,
-                max_frame_size=self.max_frame_size,
-                auth=self.auth,
-                ping_interval=self.ping_interval,
-                ping_timeout=self.ping_timeout,
-            )
-            self._client = ClientBase(
-                driver,
-                deadline_grace=self.deadline_grace,
-                reconnect=self.reconnect,
-                interceptors=self.interceptors,
-                retry=self.retry,
-            )
-        return self._client
+    def __init__(self, mesh: Mesh) -> None:
+        self._mesh = mesh
 
-    def _create_server_driver(
-        self, *, instance_id: str | None = None
-    ) -> WebSocketRouterServerDriver:
-        return WebSocketRouterServerDriver(
-            uri=self.urls if self.urls else None,
-            unix_path=self.unix_path,
-            pipe=self.pipe,
-            instance_id=instance_id,
-            max_frame_size=self.max_frame_size,
-            auth=self.auth,
-            ping_interval=self.ping_interval,
-            ping_timeout=self.ping_timeout,
-            reconnect=self.reconnect,
-        )
-
-    def _local_spawn_target(
-        self,
-    ) -> tuple[str | None, int | None, Path | None, str | None] | None:
-        if self.unix_path is not None:
-            return None, None, self.unix_path, None
-        if self.pipe is not None:
-            return None, None, None, self.pipe
-        if len(self.urls) != 1:
-            return None
-        parsed = urlsplit(self.urls[0])
-        if parsed.scheme != "ws" or parsed.hostname not in _LOCAL_HOSTS:
-            return None
-        port = 8765 if parsed.port is None else parsed.port
-        return parsed.hostname, port, None, None
-
-    def _set_bound_port(self, port: int) -> None:
-        if len(self.urls) == 1:
-            parsed = urlsplit(self.urls[0])
-            host = parsed.hostname or "127.0.0.1"
-            host_fmt = f"[{host}]" if ":" in host else host
-            self.urls = (f"ws://{host_fmt}:{port}",)
-            if self._client is not None and isinstance(
-                self._client.driver, WebSocketClientDriver
-            ):
-                self._client.driver.uris = self.urls
-                self._client.driver.uri = self.urls[0]
-
-    def _create_embedded_router(
-        self,
-        host: str | None,
-        port: int | None,
-        unix_path: Path | None,
-        pipe: str | None,
-    ) -> WebSocketRouter:
-        return WebSocketRouter(
-            host=host,
-            port=port,
-            unix_path=unix_path,
-            pipe=pipe,
-            max_frame_size=self.max_frame_size,
-            outbox_size=self.outbox_size,
-            binary_path=self.binary_path,
-            auth_file=self.auth_file,
-            max_connections=self.max_connections,
-            metrics_listen=self.metrics_listen,
-            http_cors_origins=self.http_cors_origins,
-            http_default_timeout=self.http_default_timeout,
-            startup_timeout=self.startup_timeout,
-            shutdown_timeout=self.shutdown_timeout,
-        )
-
-    def with_options(
-        self,
-        *,
-        timeout: float | None = None,
-        idle_timeout: float | None = None,
-        metadata: Mapping[str, str] | None = None,
-        idempotency_key: str | None = None,
-        instance: str | None = None,
-    ) -> Self:
-        """Return a shallow view of this Router with per-call options applied."""
-        clone = copy.copy(self)
-        clone._client = self._ensure_client().with_options(
-            timeout=timeout,
-            idle_timeout=idle_timeout,
-            metadata=metadata,
-            idempotency_key=idempotency_key,
-            instance=instance,
-        )
-        return clone
-
-    async def start(self) -> None:
-        await self._ensure_client().start()
-
-    async def stop(self) -> None:
-        if self._client is not None:
-            await self._client.stop()
-
-    async def close(self) -> None:
-        await self.stop()
-
-    def __await__(self) -> Generator[Any, None, Self]:
-        async def _connect() -> Self:
-            await self.start()
-            return self
-
-        return _connect().__await__()
-
-    async def __aenter__(self) -> Self:
-        await self.start()
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        await self.stop()
-
-    # --- Built-in Router services (Registry & AuthService) -------------------
-
-    # -- MeshCallRpc -------------------------------------------------------
-    # Router is what a generated client receives; these delegate to the
-    # shared WebSocket client, so `ChatClient(router)` and a bare
-    # `ClientBase` behave the same.
-
-    async def call_unary(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._ensure_client().call_unary(*args, **kwargs)
-
-    def call_server_stream(self, *args: Any, **kwargs: Any) -> RpcServerStream[Any]:
-        return self._ensure_client().call_server_stream(*args, **kwargs)
-
-    def call_subscription(self, *args: Any, **kwargs: Any) -> RpcServerStream[Any]:
-        return self._ensure_client().call_subscription(*args, **kwargs)
-
-    async def call_client_stream(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._ensure_client().call_client_stream(*args, **kwargs)
-
-    def call_duplex(self, *args: Any, **kwargs: Any) -> RpcDuplexClient[Any, Any]:
-        return self._ensure_client().call_duplex(*args, **kwargs)
-
-    async def list_services(self) -> list[RegistryService]:
+    async def list(self) -> list[RegistryService]:
         """List all services visible to this caller in the Router's Registry."""
-        result = await self._ensure_client().call_unary(
+        result = await self._mesh.call_unary(
             REGISTRY_SERVICE, "list", _Empty(), _ListServicesResult
         )
         return result.services
 
-    async def describe_service(self, service: str) -> RegistryService:
+    async def describe(self, service: str) -> RegistryService:
         """Describe a registered service, its instances, methods, and contract."""
         try:
             normalized = normalize_service_name(service)[0]
         except Exception:  # noqa: BLE001
             normalized = service
-        return await self._ensure_client().call_unary(
+        return await self._mesh.call_unary(
             REGISTRY_SERVICE,
             "describe",
             _DescribeServiceRequest(service=normalized),
             RegistryService,
         )
 
+
+class AuthClient:
+    """Client for the Router's built-in ``meshcall.router.AuthService`` service."""
+
+    def __init__(self, mesh: Mesh) -> None:
+        self._mesh = mesh
+
     async def whoami(self) -> RouterIdentity:
         """Return the caller's authenticated identity and permissions."""
-        return await self._ensure_client().call_unary(
+        return await self._mesh.call_unary(
             AUTH_SERVICE, "whoami", _Empty(), RouterIdentity
         )
 
@@ -628,7 +445,7 @@ class Router:
             )
             for scope in scopes
         ]
-        return await self._ensure_client().call_unary(
+        return await self._mesh.call_unary(
             AUTH_SERVICE,
             "issue_token",
             _IssueRequest(ttl_seconds=ttl_seconds, scopes=normalized),
@@ -637,130 +454,13 @@ class Router:
 
     async def revoke_token(self, token_id: str) -> bool:
         """Revoke a previously issued Bearer token by its ``token_id``."""
-        result = await self._ensure_client().call_unary(
+        result = await self._mesh.call_unary(
             AUTH_SERVICE,
             "revoke_token",
             _RevokeRequest(token_id=token_id),
             _RevokeResult,
         )
         return result.revoked
-
-
-class RunningServer:
-    """Handle returned by :func:`serve`, managing an :class:`RpcServer` and any auto-spawned local Router."""
-
-    def __init__(
-        self,
-        *,
-        services: Sequence[object],
-        router: Router,
-        instance_id: str | None = None,
-        max_inflight: int | None = None,
-        drain_timeout: float = 30.0,
-        access_log: bool = True,
-        log_level: str | int = "INFO",
-        colorize: bool = False,
-        logger: RpcLogger | None = None,
-        interceptors: Sequence[ServerInterceptor] = (),
-    ) -> None:
-        self.router = router
-        self.drain_timeout = drain_timeout
-        self._driver = router._create_server_driver(instance_id=instance_id)
-        self.server = RpcServer(
-            services=services,
-            driver=self._driver,
-            access_log=access_log,
-            log_level=log_level,
-            colorize=colorize,
-            logger=logger,
-            interceptors=interceptors,
-            max_inflight=max_inflight,
-        )
-        self.spawned_router: WebSocketRouter | None = None
-
-    @property
-    def instance_id(self) -> str:
-        return self.server.instance_id
-
-    @property
-    def url(self) -> str | None:
-        return self.router.url
-
-    async def start(self) -> None:
-        target = (
-            self.router._local_spawn_target() if self.router.spawn_if_local else None
-        )
-        # Ephemeral port (ws://127.0.0.1:0): spawn the embedded Router first so
-        # we know which port it bound before registering the service.
-        if target is not None and target[1] == 0:
-            host, port, unix_path, pipe = target
-            spawned = self.router._create_embedded_router(host, port, unix_path, pipe)
-            await spawned.start()
-            self.spawned_router = spawned
-            self.router._set_bound_port(spawned.bound_port)
-            self._driver.uri = self.router.url
-            self._driver._links[0].endpoint = self.router.url
-            try:
-                await self.server.start()
-            except BaseException:
-                await spawned.stop()
-                self.spawned_router = None
-                raise
-            return
-
-        try:
-            await self.server.start()
-            return
-        except (OSError, ConnectionError, UnavailableError):
-            if target is None:
-                raise
-
-        host, port, unix_path, pipe = target
-        spawned = self.router._create_embedded_router(host, port, unix_path, pipe)
-        try:
-            await spawned.start()
-            self.spawned_router = spawned
-        except DriverStateError:
-            # Another local process may have bound the address concurrently;
-            # fall back to connecting to the winner.
-            await spawned.stop()
-            self.spawned_router = None
-
-        try:
-            await self.server.start()
-        except BaseException:
-            if self.spawned_router is not None:
-                await self.spawned_router.stop()
-                self.spawned_router = None
-            raise
-
-    async def stop(
-        self, *, drain: bool = True, drain_timeout: float | None = None
-    ) -> None:
-        timeout = self.drain_timeout if drain_timeout is None else drain_timeout
-        try:
-            await self.server.stop(drain=drain, drain_timeout=timeout)
-        finally:
-            if self.spawned_router is not None:
-                spawned, self.spawned_router = self.spawned_router, None
-                await spawned.stop()
-
-    async def wait_closed(self) -> None:
-        await self.server.wait_closed()
-
-    def __await__(self) -> Generator[Any, None, Self]:
-        async def _start() -> Self:
-            await self.start()
-            return self
-
-        return _start().__await__()
-
-    async def __aenter__(self) -> Self:
-        await self.start()
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        await self.stop(drain=True)
 
 
 def _check_strict_services(services: Sequence[object]) -> None:
@@ -776,88 +476,154 @@ def _check_strict_services(services: Sequence[object]) -> None:
             )
 
 
-def _coerce_router(router: Router | str | Sequence[str] | None) -> Router:
-    if isinstance(router, Router):
-        return router
-    return Router(url=router)
+class RunningServer:
+    """Handle for a running Mesh server session."""
+
+    def __init__(
+        self,
+        *,
+        mesh: Mesh,
+        services: Sequence[object],
+        instance_id: str | None = None,
+        max_inflight: int | None = None,
+        drain_timeout: float = 30.0,
+        access_log: bool = True,
+        log_level: str | int = "INFO",
+        colorize: bool = False,
+        logger: RpcLogger | None = None,
+        interceptors: Sequence[ServerInterceptor] = (),
+    ) -> None:
+        self.mesh = mesh
+        self.router = mesh.router
+        self.drain_timeout = drain_timeout
+        urls, unix_path, pipe = mesh.router._endpoints()
+        self._driver = WebSocketRouterServerDriver(
+            uri=urls if urls else None,
+            unix_path=unix_path,
+            pipe=pipe,
+            instance_id=instance_id,
+            max_frame_size=mesh.max_frame_size,
+            auth=mesh.credentials,
+            ping_interval=mesh.ping_interval,
+            ping_timeout=mesh.ping_timeout,
+            reconnect=mesh.reconnect,
+        )
+        self.server = RpcServer(
+            services=services,
+            driver=self._driver,
+            access_log=access_log,
+            log_level=log_level,
+            colorize=colorize,
+            logger=logger,
+            interceptors=interceptors,
+            max_inflight=max_inflight,
+        )
+        self._stopped = False
+
+    @property
+    def instance_id(self) -> str:
+        return self.server.instance_id
+
+    @property
+    def url(self) -> str | None:
+        return self.router.url
+
+    async def start(self) -> None:
+        self._stopped = False
+        await self.server.start()
+
+    async def stop(
+        self, *, drain: bool = True, drain_timeout: float | None = None
+    ) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+        timeout = self.drain_timeout if drain_timeout is None else drain_timeout
+        try:
+            await self.server.stop(drain=drain, drain_timeout=timeout)
+        finally:
+            if self.mesh._running_server is self:
+                self.mesh._running_server = None
+
+    async def wait_closed(self) -> None:
+        await self.server.wait_closed()
 
 
-def serve(
-    *services: object,
-    router: Router | str | Sequence[str] | None = None,
-    instance_id: str | None = None,
-    max_inflight: int | None = None,
-    drain_timeout: float = 30.0,
-    strict: bool = False,
-    access_log: bool = True,
-    log_level: str | int = "INFO",
-    colorize: bool = False,
-    logger: RpcLogger | None = None,
-    interceptors: Sequence[ServerInterceptor] = (),
-) -> RunningServer:
-    """Start one or more MeshCall services and register them with a Router.
+class _ServeHandle:
+    """Dual-mode object returned by :meth:`Mesh.serve`.
 
-    May be used either as ``async with meshcall.serve(Workspace()) as srv:`` or
-    ``srv = await meshcall.serve(Workspace())``. When the target is a local
-    Router address and nothing is listening yet, an embedded ``meshcall-router``
-    is spawned automatically unless ``router=Router(..., spawn_if_local=False)``.
+    1. ``async with mesh.serve() as srv:`` starts serving on enter and drains +
+       closes on exit.
+    2. ``await mesh.serve()`` starts serving, waits until ``SIGINT`` /
+       ``SIGTERM`` (or server close), then drains and closes.
     """
-    if not services:
-        raise ValueError("At least one service is required")
-    if strict:
-        _check_strict_services(services)
-    router_obj = _coerce_router(router)
-    return RunningServer(
-        services=services,
-        router=router_obj,
-        instance_id=instance_id,
-        max_inflight=max_inflight,
-        drain_timeout=drain_timeout,
-        access_log=access_log,
-        log_level=log_level,
-        colorize=colorize,
-        logger=logger,
-        interceptors=interceptors,
-    )
 
+    def __init__(
+        self,
+        mesh: Mesh,
+        *,
+        drain_timeout: float = 30.0,
+        access_log: bool = True,
+        log_level: str | int = "INFO",
+        colorize: bool = False,
+        logger: RpcLogger | None = None,
+    ) -> None:
+        self._mesh = mesh
+        self._drain_timeout = drain_timeout
+        self._access_log = access_log
+        self._log_level = log_level
+        self._colorize = colorize
+        self._logger = logger
+        self._server: RunningServer | None = None
 
-def run(
-    *services: object,
-    router: Router | str | Sequence[str] | None = None,
-    instance_id: str | None = None,
-    max_inflight: int | None = None,
-    drain_timeout: float = 30.0,
-    strict: bool = False,
-    access_log: bool = True,
-    log_level: str | int = "INFO",
-    colorize: bool = False,
-    logger: RpcLogger | None = None,
-    interceptors: Sequence[ServerInterceptor] = (),
-) -> None:
-    """Run one or more MeshCall services until interrupted (SIGINT / SIGTERM)."""
-    handle = serve(
-        *services,
-        router=router,
-        instance_id=instance_id,
-        max_inflight=max_inflight,
-        drain_timeout=drain_timeout,
-        strict=strict,
-        access_log=access_log,
-        log_level=log_level,
-        colorize=colorize,
-        logger=logger,
-        interceptors=interceptors,
-    )
+    def _build_server(self) -> RunningServer:
+        if self._mesh._running_server is not None:
+            raise DriverStateError("Mesh is already serving")
+        srv = RunningServer(
+            mesh=self._mesh,
+            services=self._mesh._mounted_services,
+            instance_id=self._mesh._instance_id,
+            max_inflight=self._mesh._max_inflight,
+            drain_timeout=self._drain_timeout,
+            access_log=self._access_log,
+            log_level=self._log_level,
+            colorize=self._colorize,
+            logger=self._logger if self._logger is not None else self._mesh.logger,
+            interceptors=self._mesh._server_interceptors,
+        )
+        self._mesh._running_server = srv
+        self._server = srv
+        return srv
 
-    async def _main() -> None:
+    async def __aenter__(self) -> RunningServer:
+        srv = self._build_server()
+        try:
+            await srv.start()
+        except BaseException:
+            if self._mesh._running_server is srv:
+                self._mesh._running_server = None
+            raise
+        return srv
+
+    async def __aexit__(self, *_: object) -> None:
+        if self._server is not None:
+            await self._server.stop(drain=True, drain_timeout=self._drain_timeout)
+
+    async def _serve_forever(self) -> None:
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.add_signal_handler(sig, stop_event.set)
-        await handle.start()
+        srv = self._build_server()
         try:
-            closed_task = asyncio.create_task(handle.wait_closed())
+            await srv.start()
+        except BaseException:
+            if self._mesh._running_server is srv:
+                self._mesh._running_server = None
+            raise
+        try:
+            closed_task = asyncio.create_task(srv.wait_closed())
             signal_task = asyncio.create_task(stop_event.wait())
             _done, pending = await asyncio.wait(
                 {closed_task, signal_task},
@@ -868,7 +634,267 @@ def run(
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
         finally:
-            await handle.stop(drain=True, drain_timeout=drain_timeout)
+            await srv.stop(drain=True, drain_timeout=self._drain_timeout)
 
-    with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(_main())
+    def __await__(self) -> Generator[Any, None, None]:
+        return self._serve_forever().__await__()
+
+
+class Mesh:
+    """Layer-3 Mesh participant: shared client connection, built-in services, and service host."""
+
+    def __init__(
+        self,
+        router: Router | LocalRouter,
+        *,
+        token: str | None = None,
+        credentials: RouterCredentials | None = None,
+        headers: Mapping[str, str] | None = None,
+        peer_id: str | None = None,
+        ping_interval: float | None = DEFAULT_PING_INTERVAL,
+        ping_timeout: float = DEFAULT_PING_TIMEOUT,
+        reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
+        retry: RetryPolicy = DEFAULT_RETRY,
+        deadline_grace: float | None = None,
+        timeout: float | None = None,
+        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
+        interceptors: Sequence[ClientInterceptor] = (),
+        logger: RpcLogger | None = None,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if not isinstance(router, (Router, LocalRouter)):
+            raise TypeError(
+                "Mesh requires a Router or LocalRouter instance "
+                "(e.g. Mesh(Router(...)) or Mesh(local_router))"
+            )
+        if credentials is not None and token is not None:
+            raise ValueError("Pass credentials or token, not both")
+        self.router = router
+        self.credentials = credentials or (
+            RouterCredentials.bearer(token) if token is not None else None
+        )
+        self.headers = dict(headers or {})
+        self.peer_id = peer_id
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
+        self.reconnect = reconnect
+        self.retry = retry
+        self.deadline_grace = deadline_grace
+        self.timeout = timeout
+        self.max_frame_size = max_frame_size
+        self.interceptors = tuple(interceptors)
+        self.logger = logger
+        self._http_client = http_client
+        self._client: Any | None = None
+        self._mounted_services: list[object] = []
+        self._instance_id: str | None = None
+        self._max_inflight: int | None = None
+        self._server_interceptors: list[ServerInterceptor] = []
+        self._running_server: RunningServer | None = None
+
+    @property
+    def registry(self) -> RegistryClient:
+        """Built-in ``meshcall.router.Registry`` client."""
+        return RegistryClient(self)
+
+    @property
+    def auth(self) -> AuthClient:
+        """Built-in ``meshcall.router.AuthService`` client."""
+        return AuthClient(self)
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the shared client transport is currently open."""
+        if self._client is None:
+            return False
+        if hasattr(self._client, "is_connected"):
+            return bool(self._client.is_connected)
+        return self._client._root._connection is not None
+
+    def _ensure_client(self) -> Any:
+        if self._client is None:
+            if self.router._is_http:
+                from meshcall.http import _HttpTransport
+
+                assert self.router.url is not None
+                self._client = _HttpTransport(
+                    self.router.url,
+                    credentials=self.credentials,
+                    headers=self.headers,
+                    retry=self.retry,
+                    timeout=self.timeout,
+                    client=self._http_client,
+                )
+            else:
+                urls, unix_path, pipe = self.router._endpoints()
+                driver = WebSocketClientDriver(
+                    uri=urls if urls else None,
+                    unix_path=unix_path,
+                    pipe=pipe,
+                    peer_id=self.peer_id,
+                    max_frame_size=self.max_frame_size,
+                    auth=self.credentials,
+                    ping_interval=self.ping_interval,
+                    ping_timeout=self.ping_timeout,
+                )
+                client = ClientBase(
+                    driver,
+                    deadline_grace=self.deadline_grace,
+                    reconnect=self.reconnect,
+                    interceptors=self.interceptors,
+                    retry=self.retry,
+                )
+                if self.timeout is not None:
+                    client = client.with_options(timeout=self.timeout)
+                self._client = client
+        return self._client
+
+    def with_options(
+        self,
+        *,
+        timeout: float | None = None,
+        idle_timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        instance: str | None = None,
+    ) -> Self:
+        """Return a shallow view of this Mesh with per-call options applied."""
+        clone = copy.copy(self)
+        clone._client = self._ensure_client().with_options(
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+            instance=instance,
+        )
+        return clone
+
+    async def connect(self) -> Self:
+        """Open the underlying client connection explicitly."""
+        client = self._ensure_client()
+        if hasattr(client, "start"):
+            await client.start()
+        return self
+
+    async def close(self) -> None:
+        """Close any running server and client connection on this Mesh."""
+        if self._running_server is not None:
+            await self._running_server.stop(drain=True)
+        if self._client is not None:
+            stop = getattr(self._client, "close", None) or getattr(
+                self._client, "stop", None
+            )
+            if stop is not None:
+                await stop()
+
+    async def __aenter__(self) -> Self:
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+    # -- Server Mounting & Lifecycle ---------------------------------------
+
+    def mount(
+        self,
+        *services: object,
+        instance_id: str | None = None,
+        max_inflight: int | None = None,
+        interceptors: Sequence[ServerInterceptor] = (),
+        strict: bool = False,
+    ) -> Self:
+        """Register one or more ``@service`` objects to be served by this Mesh."""
+        if not services:
+            raise ValueError("At least one service is required")
+        if self.router._is_http:
+            raise ContractError(
+                "Cannot mount or serve services over an HTTP(S) Router URL; "
+                "use ws(s)://, unix://, or pipe://"
+            )
+        if self._running_server is not None:
+            raise DriverStateError(
+                "Cannot mount services while Mesh is already serving"
+            )
+        for svc in services:
+            svc_type = svc if inspect.isclass(svc) else type(svc)
+            get_service_contract(svc_type)
+        if strict:
+            _check_strict_services(services)
+        self._mounted_services.extend(services)
+        if instance_id is not None:
+            self._instance_id = instance_id
+        if max_inflight is not None:
+            self._max_inflight = max_inflight
+        if interceptors:
+            self._server_interceptors.extend(interceptors)
+        return self
+
+    def serve(
+        self,
+        *,
+        drain_timeout: float = 30.0,
+        access_log: bool = True,
+        log_level: str | int = "INFO",
+        colorize: bool = False,
+        logger: RpcLogger | None = None,
+    ) -> _ServeHandle:
+        """Serve mounted services on this Mesh.
+
+        Use either ``async with mesh.serve() as srv:`` (background context
+        manager) or ``await mesh.serve()`` (blocks until SIGINT/SIGTERM).
+        """
+        if not self._mounted_services:
+            raise ValueError(
+                "No services mounted on Mesh; call mesh.mount(...) before mesh.serve()"
+            )
+        return _ServeHandle(
+            self,
+            drain_timeout=drain_timeout,
+            access_log=access_log,
+            log_level=log_level,
+            colorize=colorize,
+            logger=logger,
+        )
+
+    def run(
+        self,
+        *,
+        drain_timeout: float = 30.0,
+        access_log: bool = True,
+        log_level: str | int = "INFO",
+        colorize: bool = False,
+        logger: RpcLogger | None = None,
+    ) -> None:
+        """Synchronous entrypoint: serve mounted services until interrupted (SIGINT / SIGTERM)."""
+        handle = self.serve(
+            drain_timeout=drain_timeout,
+            access_log=access_log,
+            log_level=log_level,
+            colorize=colorize,
+            logger=logger,
+        )
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(handle._serve_forever())
+
+    async def drain(self, timeout: float | None = None) -> None:
+        """Gracefully drain and stop the active server session on this Mesh."""
+        if self._running_server is not None:
+            await self._running_server.stop(drain=True, drain_timeout=timeout)
+
+    # -- MeshCallRpc -------------------------------------------------------
+
+    async def call_unary(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._ensure_client().call_unary(*args, **kwargs)
+
+    def call_server_stream(self, *args: Any, **kwargs: Any) -> RpcServerStream[Any]:
+        return self._ensure_client().call_server_stream(*args, **kwargs)
+
+    def call_subscription(self, *args: Any, **kwargs: Any) -> RpcServerStream[Any]:
+        return self._ensure_client().call_subscription(*args, **kwargs)
+
+    async def call_client_stream(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._ensure_client().call_client_stream(*args, **kwargs)
+
+    def call_duplex(self, *args: Any, **kwargs: Any) -> RpcDuplexClient[Any, Any]:
+        return self._ensure_client().call_duplex(*args, **kwargs)

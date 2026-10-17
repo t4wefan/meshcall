@@ -23,7 +23,7 @@ type PythonGreetingServiceClient struct {
 	rpc meshcall.Caller
 }
 
-// NewPythonGreetingServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewPythonGreetingServiceClient wraps a Mesh (or any Caller).
 func NewPythonGreetingServiceClient(rpc meshcall.Caller) *PythonGreetingServiceClient {
 	return &PythonGreetingServiceClient{rpc: rpc}
 }

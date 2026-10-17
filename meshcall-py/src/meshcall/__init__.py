@@ -40,7 +40,6 @@ from meshcall.errors import (
     UnavailableError,
     Violation,
 )
-from meshcall.http import HTTPRouter
 from meshcall.ir import (
     BalanceKind,
     BalancePolicy,
@@ -50,7 +49,15 @@ from meshcall.ir import (
     SubscriptionSpec,
 )
 from meshcall.logging import RpcLogger
-from meshcall.router import Router, RunningServer, WebSocketRouter, run, serve
+from meshcall.router import (
+    AuthClient,
+    LocalRouter,
+    Mesh,
+    RegistryClient,
+    Router,
+    RunningServer,
+    WebSocketRouter,
+)
 from meshcall.router_auth import (
     IssuedToken,
     RegistryBalance,
@@ -73,6 +80,7 @@ from meshcall.streams import (
 from meshcall.topic import Topic
 
 __all__ = [
+    "AuthClient",
     "Balance",
     "BalanceKind",
     "BalancePolicy",
@@ -88,10 +96,11 @@ __all__ = [
     "DeadlineExceededError",
     "DuplexChannel",
     "ErrorCode",
-    "HTTPRouter",
     "InternalError",
     "InvalidArgumentError",
     "IssuedToken",
+    "LocalRouter",
+    "Mesh",
     "MeshCallError",
     "MeshCallWarning",
     "MethodAnnotations",
@@ -100,6 +109,7 @@ __all__ = [
     "ProtocolError",
     "ReconnectPolicy",
     "RegistryBalance",
+    "RegistryClient",
     "RegistryInstance",
     "RegistryMethod",
     "RegistryService",
@@ -138,8 +148,6 @@ __all__ = [
     "mutates",
     "query",
     "render_contract",
-    "run",
-    "serve",
     "service",
     "stream",
     "write_contract",

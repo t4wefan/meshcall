@@ -28,7 +28,7 @@ type OneWayStreamServiceClient struct {
 	rpc meshcall.Caller
 }
 
-// NewOneWayStreamServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewOneWayStreamServiceClient wraps a Mesh (or any Caller).
 func NewOneWayStreamServiceClient(rpc meshcall.Caller) *OneWayStreamServiceClient {
 	return &OneWayStreamServiceClient{rpc: rpc}
 }

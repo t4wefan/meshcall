@@ -91,45 +91,42 @@ string`. A missing `WithMetaRequired()` header fails with `invalid_argument`
 before any other dependency is acquired; `WithMetaDefault(v)` supplies a
 fallback. Circular dependencies fail at registration.
 
-Start the service with `meshcall.Run`, which blocks until SIGINT or SIGTERM
-and then drains in-flight calls:
+Mount the service on a `*meshcall.Mesh` and start it with `mesh.Run(...)` (which blocks until SIGINT or SIGTERM and then drains in-flight calls) or `mesh.Serve(ctx, ...)`:
 
 ```go
-err := meshcall.Run(
+mesh := meshcall.NewMesh(meshcall.NewRouter("ws://127.0.0.1:8765"))
+mesh.Mount(
 	&Workspace{},
 	meshcall.WithDependencies(dbDep, callerDep),
-	meshcall.WithRouterURLs("ws://127.0.0.1:8765"),
 )
+err := mesh.Run(meshcall.WithInstanceID("workspace-1"))
 ```
 
-Or keep a handle with `meshcall.Serve`; `Close` drains in-flight calls
-(bounded by `WithDrainTimeout`, default 10s) and stops any Router it started:
+Or keep a background handle with `mesh.StartServing`; `Close` drains in-flight calls
+(bounded by `WithDrainTimeout`, default 10s):
 
 ```go
-running, err := meshcall.Serve(ctx,
-	&Workspace{},
-	meshcall.WithDependencies(dbDep, callerDep),
+mesh := meshcall.NewMesh(meshcall.NewRouter("ws://127.0.0.1:8765"))
+mesh.Mount(&Workspace{}, meshcall.WithDependencies(dbDep, callerDep))
+
+running, err := mesh.StartServing(ctx,
 	meshcall.WithInstanceID("workspace-1"),
 	meshcall.WithStrict(true),
 )
 defer running.Close()
 ```
 
-Both accept `*Service`, `[]*Service`, `ServiceMeta` structs (or pointers),
-`*Router`, `ServeOption` and `RouterOption` values; `ctx` in `Serve` bounds
-startup (spawning and connecting), and the returned handle owns the
-lifecycle. `meshcall.ReflectService` (and panicking `MustReflectService`)
-produce the same `*Service` from a struct when you need to pass it to
-`NewServer` or `WriteContract` directly. With no endpoint configured the
-endpoint is `MESHCALL_ROUTER_URL`, else `ws://127.0.0.1:8765`. When that
-single endpoint is local and nothing is listening, a local
-`meshcall-router` is started automatically, found through
-`WithRouterBinary`, `MESHCALL_ROUTER_BINARY`, the repository's
-`meshcall-router/bin`, or `PATH`; `WithSpawnIfLocal(false)` disables this,
-and `WithDirectListen("127.0.0.1:9000")` serves clients directly without a
-Router. `WithInstanceID`, `WithMaxInflight`, `WithAccessLog`,
-`WithServerInterceptors`, `WithServerLogger` and `WithStrict` configure the
-server instance.
+In tests or self-contained demos, use `StartLocalRouter` (or `NewLocalRouter` + `Start`) to manage a local `meshcall-router` subprocess explicitly:
+
+```go
+router, err := meshcall.StartLocalRouter(ctx, meshcall.WithPort(0))
+defer router.Stop()
+
+mesh := meshcall.NewMesh(router)
+mesh.Mount(&Workspace{}, meshcall.WithDependencies(dbDep, callerDep))
+```
+
+`mesh.Mount` accepts `*Service`, `[]*Service`, `ServiceMeta` structs (or pointers) and `WithDependencies(...)`. `meshcall.ReflectService` (and panicking `MustReflectService`) produce the same `*Service` from a struct when you need to pass it to `NewServer` or `WriteContract` directly. `NewRouter()` with no URL reads `MESHCALL_ROUTER_URL`, else `ws://127.0.0.1:8765` (or use `NewRouterWithOptions(WithUnixSocket(...))` / `WithPipe(...)`). `WithDirectListen("127.0.0.1:9000")` serves clients directly without a Router, and `WithInstanceID`, `WithMaxInflight`, `WithAccessLog`, `WithServerInterceptors`, `WithServerLogger` and `WithStrict` configure the server instance.
 
 Services built by hand are still first-class — use this form when methods
 are registered dynamically or need subscription cursors:
@@ -185,83 +182,80 @@ meshcall generate chat.meshcall.json --language go --package-name chatclient --o
 The file holds every payload type and a typed client whose methods mirror
 the contract's business parameters one for one — injected dependencies and
 metadata never appear — plus `opts ...meshcall.CallOption`. Construct it
-from a `*meshcall.Router` or a `*meshcall.Client` (both are
+from a `*meshcall.Mesh` or a `*meshcall.Client` (both are
 `meshcall.Caller`); `WithOptions` returns a copy that applies default call
 options to every call:
 
 ```go
-router, err := meshcall.ConnectRouter(ctx,
-	meshcall.WithRouterURLs("ws://127.0.0.1:8765"),
-	meshcall.WithAuth(meshcall.BearerToken("mk_…")),
+mesh, err := meshcall.ConnectMesh(ctx,
+	meshcall.NewRouter("ws://127.0.0.1:8765"),
+	meshcall.WithToken("mk_…"),
 )
-defer router.Close()
+defer mesh.Close()
 
-workspace := workspaceclient.NewWorkspaceClient(router).WithOptions(meshcall.CallOptions{
+workspace := workspaceclient.NewWorkspaceClient(mesh).WithOptions(meshcall.CallOptions{
 	Metadata: map[string]string{"x-user-id": "u_42"},
 	Timeout:  5 * time.Second,
 })
 stat, err := workspace.WriteFile(ctx, "/notes.txt", "hello")
 ```
 
-A `Router` multiplexes every generated client over one connection and is a
+A `Mesh` multiplexes every generated client over one connection and is a
 `meshcall.Caller`, so pass it wherever a client is expected. It also exposes
-the Router's built-in services: `ListServices` and `DescribeService`
-(`meshcall.router.v1.Registry/list` and `/describe`), and `Whoami`,
-`IssueToken` and `RevokeToken` (`meshcall.router.v1.AuthService/whoami`,
-`/issue_token` and `/revoke_token`). `NewRouter(opts...)` builds a lazy
-Router from `RouterOption`s (`WithRouterURLs`, `WithUnixSocket`,
-`WithPipe`, `WithAuth`, `WithPing`, `WithReconnect`, `WithRetry`,
-`WithMaxFrameSize`, …); it does no I/O until the first call.
-`ConnectRouter` connects eagerly and, like `Serve`, can start a local
-Router.
+the Router's built-in services via `mesh.Registry()` (`List` and `Describe` on
+`meshcall.router.v1.Registry`) and `mesh.Auth()` (`Whoami`, `IssueToken` and
+`RevokeToken` on `meshcall.router.v1.AuthService`). `NewMesh(router, opts...)`
+builds a lazy Mesh from a `*Router` or `*LocalRouter` and `MeshOption`s
+(`WithToken`, `WithCredentials`, `WithHeaders`, `WithPing`, `WithReconnect`,
+`WithRetry`, `WithMaxFrameSize`, …); it does no I/O until the first call.
+`ConnectMesh` connects eagerly.
 
 Without generation, the typed helpers are `meshcall.Unary`,
 `ServerStream`, `ClientStream`, `Duplex` and `Subscribe` (plus
 `ServerStreamSeq`, `ClientStreamSeq`, `SliceSeq` and `SliceItems` for
-iterators); they take a `*meshcall.Client`, which a Router hands out with
-`router.Client()`. Clients connect lazily, reconnect with backoff, fail
-over between several endpoints, retry unary calls that are idempotent (or
-carry `WithIdempotencyKey`) on retryable errors, validate what they receive
-against their own types, and take call options `WithTimeout`,
-`WithIdleTimeout`, `WithMetadata`, `WithInstance` (required for targeted
-services) and `IdempotentCall`. Generated clients for targeted services
-take the instance ID as their second parameter and add `WithInstance` for
-you; generated unary methods declared idempotent retry by default. Streams
-are read with `Recv()` (`io.EOF` at the end) or
+iterators); they take a `meshcall.Caller` (`*meshcall.Mesh` or `*meshcall.Client`).
+Clients connect lazily, reconnect with backoff, fail over between several
+endpoints, retry unary calls that are idempotent (or carry `WithIdempotencyKey`)
+on retryable errors, validate what they receive against their own types, and
+take call options `WithTimeout`, `WithIdleTimeout`, `WithMetadata`,
+`WithInstance` (required for targeted services) and `IdempotentCall`. Generated
+clients for targeted services take the instance ID as their second parameter and
+add `WithInstance` for you; generated unary methods declared idempotent retry by
+default. Streams are read with `Recv()` (`io.EOF` at the end) or
 `for item, err := range stream.All()`.
 
 ## HTTP transport
 
-`NewHTTPRouter` returns a client-only Router over the Router's HTTP API; generated clients accept it exactly like a WebSocket Router. It uses the standard library's `net/http`, and exposes the built-in Registry/AuthService calls.
+When `NewRouter` is given an `http://` or `https://` URL, `NewMesh` automatically selects the HTTP client transport (`net/http`) underneath; generated clients and `mesh.Registry()` / `mesh.Auth()` work over it identically to a WebSocket Router:
 
 ```go
-httpRouter := meshcall.NewHTTPRouter("https://router.example", meshcall.WithHTTPToken("mk_…"))
-defer httpRouter.Close()
-chat := chatclient.NewChatClient(httpRouter)
+mesh := meshcall.NewMesh(meshcall.NewRouter("https://router.example"), meshcall.WithToken("mk_…"))
+defer mesh.Close()
+chat := chatclient.NewChatClient(mesh)
 reply, err := chat.Greet(ctx, "Alice")
-services, err := httpRouter.ListServices(ctx)
+services, err := mesh.Registry().List(ctx)
 ```
 
-Duplex calls are WebSocket-only (`method_not_found`, reason `duplex_over_http`). Unary retries, server/client streams, subscriptions and the built-in calls work as over WebSocket.
+Duplex calls are WebSocket-only (`method_not_found`, reason `duplex_over_http`), and `mesh.Mount` panics if called on an HTTP-backed `Mesh`. Unary retries, server/client streams, subscriptions and the built-in calls work as over WebSocket.
 
 ## Credentials, interceptors and draining
 
-`WithAuth(BearerToken(…))` and `WithAuth(BasicAuth(…))` set the Router
-credential on `NewRouter`, `ConnectRouter`, `Serve` and `Run`;
+`WithToken("…")`, `WithCredentials(BearerToken(…))` and `WithCredentials(BasicAuth(…))`
+set the Router credential on `NewMesh` and `ConnectMesh`;
 `ClientOptions.Authorization` and `ServerOptions.Authorization` do the same
 for hand-built clients and servers. The value is sent with the WebSocket
-upgrade (see [Router authentication](../docs/router.md)).
+upgrade or HTTP request (see [Router authentication](../docs/router.md)).
 
 `WithClientInterceptors` and `WithServerInterceptors` attach interceptors to
-a Router and to a `Serve`/`Run` configuration respectively;
+a `Mesh` and to `Serve`/`StartServing`/`Run` respectively;
 `ClientOptions.Interceptors` (`[]meshcall.ClientInterceptor`) and
 `ServerOptions.Interceptors` (`[]meshcall.ServerInterceptor`) do the same on
 hand-built values. They wrap every call, the first one outermost; call
 metadata carries what they add, such as a W3C `traceparent`.
 
-`RunningServer.Close` (and therefore `Run` on SIGINT/SIGTERM) drains first:
-in Router mode the instance leaves every pool, in direct mode the listener
-closes, and it waits for the calls in flight to finish or
+`RunningServer.Close` (and `mesh.Drain(ctx)`, or `mesh.Run` on SIGINT/SIGTERM)
+drains first: in Router mode the instance leaves every pool, in direct mode the
+listener closes, and it waits for the calls in flight to finish or
 `WithDrainTimeout` to end. With a hand-built server, call `server.Drain(ctx)`
 for a rolling restart and `server.Close()` afterwards.
 

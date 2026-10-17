@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -81,7 +81,7 @@ type RegistryMethod struct {
 	Instances    []string        `json:"instances"`
 }
 
-// RegistryService is one entry returned by Router.ListServices (meshcall.router.v1.Registry/list).
+// RegistryService is one entry returned by Mesh.Registry().List() (meshcall.router.v1.Registry/list).
 type RegistryService struct {
 	Name        string             `json:"name"`
 	Version     string             `json:"version,omitempty"`
@@ -91,7 +91,7 @@ type RegistryService struct {
 	Methods     []RegistryMethod   `json:"methods"`
 }
 
-// RegistryServiceDetail is returned by Router.DescribeService (meshcall.router.v1.Registry/describe).
+// RegistryServiceDetail is returned by Mesh.Registry().Describe() (meshcall.router.v1.Registry/describe).
 type RegistryServiceDetail struct {
 	RegistryService
 	Contract json.RawMessage `json:"contract,omitempty"`
@@ -104,7 +104,7 @@ type RouterScope struct {
 	Register bool     `json:"register,omitempty"`
 }
 
-// WhoamiResponse is returned by Router.Whoami (meshcall.router.v1.AuthService/whoami).
+// WhoamiResponse is returned by Mesh.Auth().Whoami() (meshcall.router.v1.AuthService/whoami).
 type WhoamiResponse struct {
 	Username        string   `json:"username"`
 	Roles           []string `json:"roles"`
@@ -113,7 +113,7 @@ type WhoamiResponse struct {
 	ExpiresAtUnixMS *int64   `json:"expires_at_unix_ms,omitempty"`
 }
 
-// IssuedToken is returned by Router.IssueToken (meshcall.router.v1.AuthService/issue_token).
+// IssuedToken is returned by Mesh.Auth().IssueToken() (meshcall.router.v1.AuthService/issue_token).
 type IssuedToken struct {
 	Token           string        `json:"token"`
 	TokenID         string        `json:"token_id"`
@@ -121,257 +121,111 @@ type IssuedToken struct {
 	Scopes          []RouterScope `json:"scopes"`
 }
 
-// RevokeTokenResponse is returned by Router.RevokeToken (meshcall.router.v1.AuthService/revoke_token).
+// RevokeTokenResponse is returned by Mesh.Auth().RevokeToken() (meshcall.router.v1.AuthService/revoke_token).
 type RevokeTokenResponse struct {
 	Revoked bool `json:"revoked"`
 }
 
-// --- Router configuration & options ----------------------------------------
+// --- Layer 2: Router & LocalRouter -----------------------------------------
 
-type routerConfig struct {
-	urls               []string
-	unixPath           string
-	pipe               string
-	auth               string
-	peerID             string
-	pingInterval       time.Duration
-	pingTimeout        time.Duration
-	reconnect          *ReconnectPolicy
-	retry              *RetryPolicy
-	deadlineGrace      time.Duration
-	handshakeTimeout   time.Duration
-	maxFrameSize       int
-	clientInterceptors []ClientInterceptor
-	logger             *slog.Logger
-
-	// Embedded Router subprocess options
-	spawnIfLocal       bool
-	httpDefaultTimeout time.Duration
-	httpCorsOrigins    []string
-	metricsListen      string
-	authFile           string
-	outboxSize         int
-	maxConnections     int
-	binaryPath         string
+// RouterEndpoint is implemented by *Router (remote endpoint descriptor) and
+// *LocalRouter (managed local meshcall-router subprocess).
+type RouterEndpoint interface {
+	URL() string
+	Endpoints() []string
+	IsHTTP() bool
+	isRouterEndpoint()
 }
 
-func defaultRouterConfig() routerConfig {
-	return routerConfig{
-		spawnIfLocal: true,
-	}
+type routerEndpointConfig struct {
+	urls     []string
+	unixPath string
+	pipe     string
 }
 
-// RouterOption configures a Router (and can also be passed directly to Serve / Run).
+// RouterOption configures a remote Router endpoint descriptor.
 type RouterOption interface {
-	applyRouter(*routerConfig)
+	applyRouterEndpoint(*routerEndpointConfig)
 }
 
-type routerOptFunc func(*routerConfig)
+type routerEndpointOptFunc func(*routerEndpointConfig)
 
-func (f routerOptFunc) applyRouter(c *routerConfig) { f(c) }
-func (f routerOptFunc) applyServe(s *serveConfig)   { f(&s.routerCfg) }
+func (f routerEndpointOptFunc) applyRouterEndpoint(c *routerEndpointConfig) { f(c) }
 
-// WithRouterURLs sets one or more Router WebSocket URLs ("ws://...", "wss://...").
+// WithRouterURLs sets one or more Router URLs ("ws://...", "wss://...", "http://...", "https://...").
 func WithRouterURLs(urls ...string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.urls = append([]string{}, urls...) })
-}
-
-// WithUnixSocket configures the Router to use a Unix domain socket ("unix:///path" or "/path").
-func WithUnixSocket(path string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.unixPath = path })
-}
-
-// WithPipe configures the Router to use a Windows named pipe ("pipe://NAME" or "NAME").
-func WithPipe(name string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.pipe = name })
-}
-
-// WithAuth sets the Authorization header value (e.g. BearerToken(...) or BasicAuth(...)).
-func WithAuth(authorization string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.auth = authorization })
-}
-
-// WithPeerID sets the client peer ID sent during handshake.
-func WithPeerID(peerID string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.peerID = peerID })
-}
-
-// WithPing sets the keepalive ping interval and pong timeout.
-func WithPing(interval, timeout time.Duration) RouterOption {
-	return routerOptFunc(func(c *routerConfig) {
-		c.pingInterval = interval
-		c.pingTimeout = timeout
+	return routerEndpointOptFunc(func(c *routerEndpointConfig) {
+		c.urls = append(c.urls, urls...)
 	})
 }
 
-// WithReconnect sets the exponential backoff policy for reconnecting after a lost connection.
-func WithReconnect(policy ReconnectPolicy) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.reconnect = &policy })
+type unixSocketOpt string
+
+func (u unixSocketOpt) applyRouterEndpoint(c *routerEndpointConfig) { c.unixPath = string(u) }
+func (u unixSocketOpt) applyLocalRouter(c *localRouterConfig)       { c.unixPath = string(u) }
+
+// WithUnixSocket configures a Router or LocalRouter to use a Unix domain socket ("unix:///path" or "/path").
+func WithUnixSocket(path string) interface {
+	RouterOption
+	LocalRouterOption
+} {
+	return unixSocketOpt(path)
 }
 
-// WithRetry sets the client-side unary retry policy.
-func WithRetry(policy RetryPolicy) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.retry = &policy })
+type pipeOpt string
+
+func (p pipeOpt) applyRouterEndpoint(c *routerEndpointConfig) { c.pipe = string(p) }
+func (p pipeOpt) applyLocalRouter(c *localRouterConfig)       { c.pipe = string(p) }
+
+// WithPipe configures a Router or LocalRouter to use a Windows named pipe ("pipe://NAME" or "NAME").
+func WithPipe(name string) interface {
+	RouterOption
+	LocalRouterOption
+} {
+	return pipeOpt(name)
 }
 
-// WithDeadlineGrace sets how long past a call's timeout the client waits for the peer's deadline error.
-func WithDeadlineGrace(grace time.Duration) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.deadlineGrace = grace })
-}
-
-// WithHandshakeTimeout bounds the WebSocket + hello handshake.
-func WithHandshakeTimeout(timeout time.Duration) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.handshakeTimeout = timeout })
-}
-
-// WithMaxFrameSize caps incoming and outgoing frame size in bytes.
-func WithMaxFrameSize(bytes int) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.maxFrameSize = bytes })
-}
-
-// WithClientInterceptors attaches client interceptors to the Router's underlying client.
-func WithClientInterceptors(interceptors ...ClientInterceptor) RouterOption {
-	return routerOptFunc(func(c *routerConfig) {
-		c.clientInterceptors = append(c.clientInterceptors, interceptors...)
-	})
-}
-
-// WithSpawnIfLocal controls whether a local Router subprocess is automatically spawned when the target local port/socket is not listening (default true).
-func WithSpawnIfLocal(spawn bool) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.spawnIfLocal = spawn })
-}
-
-// WithHTTPConfig configures the embedded Router's HTTP v1 gateway timeout and CORS origins (HTTP shares the same port as WebSocket).
-func WithHTTPConfig(defaultTimeout time.Duration, corsOrigins ...string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) {
-		c.httpDefaultTimeout = defaultTimeout
-		c.httpCorsOrigins = append([]string{}, corsOrigins...)
-	})
-}
-
-// WithMetricsListen configures the Prometheus metrics listener address ("host:port") when spawning a local Router.
-func WithMetricsListen(addr string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.metricsListen = addr })
-}
-
-// WithAuthFile sets the path to the Router auth configuration file when spawning a local Router.
-func WithAuthFile(path string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.authFile = path })
-}
-
-// WithRouterLimits sets the per-connection outbox size (bytes) and max concurrent connections when spawning a local Router.
-func WithRouterLimits(outboxSize, maxConnections int) RouterOption {
-	return routerOptFunc(func(c *routerConfig) {
-		c.outboxSize = outboxSize
-		c.maxConnections = maxConnections
-	})
-}
-
-// WithRouterBinary overrides the path to the meshcall-router executable.
-func WithRouterBinary(binaryPath string) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.binaryPath = binaryPath })
-}
-
-// WithRouterLogger sets the structured logger used by the Router client.
-func WithRouterLogger(logger *slog.Logger) RouterOption {
-	return routerOptFunc(func(c *routerConfig) { c.logger = logger })
-}
-
-// --- Unified Router object -------------------------------------------------
-
-// Router represents a MeshCall Router endpoint, its multiplexed client connection,
-// and its built-in Registry and AuthService RPC methods.
+// Router is a Layer 2 endpoint descriptor for a remote/external meshcall-router.
+// It performs no network I/O and spawns no subprocesses. Pass it to NewMesh or ConnectMesh.
 type Router struct {
-	cfg       routerConfig
 	endpoints []string
-	client    *Client
-	spawned   *spawnedRouter
+	isHTTP    bool
 }
 
-// NewRouter constructs a Router configuration and lazy multiplexed client.
-// It can be passed to Serve / Run (via WithRouter) or used directly by generated clients.
-func NewRouter(opts ...RouterOption) *Router {
-	cfg := defaultRouterConfig()
-	for _, opt := range opts {
-		if opt != nil {
-			opt.applyRouter(&cfg)
+// NewRouter creates a Layer 2 Router endpoint descriptor.
+// Arguments may be URL strings ("ws://...", "http://..."), []string, or RouterOption
+// (WithRouterURLs, WithUnixSocket, WithPipe). When called with no arguments, it
+// reads MESHCALL_ROUTER_URL or defaults to DefaultRouterURL ("ws://127.0.0.1:8765").
+func NewRouter(args ...any) *Router {
+	var cfg routerEndpointConfig
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case nil:
+			continue
+		case string:
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				cfg.urls = append(cfg.urls, trimmed)
+			}
+		case []string:
+			for _, u := range v {
+				if trimmed := strings.TrimSpace(u); trimmed != "" {
+					cfg.urls = append(cfg.urls, trimmed)
+				}
+			}
+		case RouterOption:
+			v.applyRouterEndpoint(&cfg)
+		default:
+			panic(fmt.Sprintf("meshcall: unsupported NewRouter argument of type %T (pass a URL string or RouterOption)", arg))
 		}
 	}
-	endpoints := resolveRouterEndpoints(cfg)
-	r := &Router{cfg: cfg, endpoints: endpoints}
-	if c, err := r.buildClient(endpoints); err == nil {
-		r.client = c
+	endpoints, isHTTP := resolveAndValidateEndpoints(cfg)
+	return &Router{
+		endpoints: endpoints,
+		isHTTP:    isHTTP,
 	}
-	return r
 }
 
-// ConnectRouter connects to a Router (auto-spawning a local meshcall-router if
-// SpawnIfLocal is true and the local address is not listening yet) and returns
-// a ready *Router that multiplexes generated clients and exposes built-in services.
-func ConnectRouter(ctx context.Context, opts ...RouterOption) (*Router, error) {
-	r := NewRouter(opts...)
-	if r.cfg.spawnIfLocal && len(r.endpoints) == 1 {
-		if spawned, updatedURL, err := maybeSpawnLocalRouter(ctx, r.cfg, r.endpoints[0]); err != nil {
-			return nil, err
-		} else if spawned != nil {
-			r.spawned = spawned
-			r.endpoints = []string{updatedURL}
-		}
-	}
-	c, err := r.buildClient(r.endpoints)
-	if err != nil {
-		if r.spawned != nil {
-			r.spawned.close()
-		}
-		return nil, err
-	}
-	if r.spawned != nil {
-		spawned := r.spawned
-		c.onClose = func() { spawned.close() }
-	}
-	if _, err := c.connection(ctx); err != nil {
-		_ = c.Close()
-		return nil, err
-	}
-	r.client = c
-	return r, nil
-}
-
-func (r *Router) buildClient(endpoints []string) (*Client, error) {
-	clientOpts := ClientOptions{
-		Authorization:    r.cfg.auth,
-		PeerID:           r.cfg.peerID,
-		MaxFrameSize:     r.cfg.maxFrameSize,
-		PingInterval:     r.cfg.pingInterval,
-		PingTimeout:      r.cfg.pingTimeout,
-		DeadlineGrace:    r.cfg.deadlineGrace,
-		HandshakeTimeout: r.cfg.handshakeTimeout,
-		Retry:            r.cfg.retry,
-		Interceptors:     r.cfg.clientInterceptors,
-		Logger:           r.cfg.logger,
-	}
-	if r.cfg.reconnect != nil {
-		clientOpts.Reconnect = *r.cfg.reconnect
-	}
-	return NewClient(clientOpts, endpoints...)
-}
-
-// Client returns the underlying multiplexed *Client (satisfying Caller).
-func (r *Router) Client() *Client {
-	if r.client == nil {
-		c, err := r.buildClient(r.endpoints)
-		if err != nil {
-			panic(err)
-		}
-		r.client = c
-	}
-	return r.client
-}
-
-// Endpoints returns the resolved Router endpoint URLs.
-func (r *Router) Endpoints() []string {
-	return append([]string{}, r.endpoints...)
-}
+func (*Router) isRouterEndpoint() {}
 
 // URL returns the primary Router endpoint URL.
 func (r *Router) URL() string {
@@ -381,85 +235,459 @@ func (r *Router) URL() string {
 	return r.endpoints[0]
 }
 
-// WithOptions returns a lightweight shallow copy of Router that attaches default
-// CallOptions to calls made through it while sharing the underlying connection.
-func (r *Router) WithOptions(opts CallOptions) *Router {
-	clone := *r
-	clone.client = r.Client().WithOptions(opts)
-	return &clone
+// Endpoints returns a copy of all configured Router endpoint URLs.
+func (r *Router) Endpoints() []string {
+	return append([]string{}, r.endpoints...)
 }
 
-// Close closes the underlying client connection and stops any locally spawned Router subprocess.
-// Caller implementation: a Router shares one WebSocket client across the
-// generated clients it is given.
-
-func (r *Router) unaryRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (json.RawMessage, map[string]string, error) {
-	return r.Client().unaryRaw(ctx, service, method, request, opts)
+// IsHTTP reports whether the Router uses an HTTP(S) endpoint.
+func (r *Router) IsHTTP() bool {
+	return r.isHTTP
 }
 
-func (r *Router) serverStreamRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (streamSource, error) {
-	return r.Client().serverStreamRaw(ctx, service, method, request, opts)
+func isValidEndpointScheme(u string) bool {
+	return strings.HasPrefix(u, "ws://") ||
+		strings.HasPrefix(u, "wss://") ||
+		strings.HasPrefix(u, "unix://") ||
+		strings.HasPrefix(u, "pipe://") ||
+		strings.HasPrefix(u, "http://") ||
+		strings.HasPrefix(u, "https://")
 }
 
-func (r *Router) clientStreamRaw(ctx context.Context, service, method string, request json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error) {
-	return r.Client().clientStreamRaw(ctx, service, method, request, items, opts)
+func isHTTPScheme(u string) bool {
+	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
 }
 
-func (r *Router) duplexRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (rawDuplex, error) {
-	return r.Client().duplexRaw(ctx, service, method, request, opts)
-}
-
-func (r *Router) reconnectDelays() func() (time.Duration, bool) {
-	return r.Client().reconnectDelays()
-}
-
-func (r *Router) log() *slog.Logger                       { return r.Client().log() }
-func (r *Router) WithCallOptions(opts CallOptions) Caller { return r.WithOptions(opts) }
-
-func (r *Router) Close() error {
-	var err error
-	if r.client != nil {
-		err = r.client.Close()
+func resolveAndValidateEndpoints(cfg routerEndpointConfig) ([]string, bool) {
+	choices := 0
+	if len(cfg.urls) > 0 {
+		choices++
 	}
-	if r.spawned != nil {
-		r.spawned.close()
+	if cfg.unixPath != "" {
+		choices++
 	}
-	return err
+	if cfg.pipe != "" {
+		choices++
+	}
+	if choices > 1 {
+		panic("meshcall: specify at most one of URLs, WithUnixSocket, or WithPipe on Router")
+	}
+
+	var resolved []string
+	switch {
+	case cfg.unixPath != "":
+		p := cfg.unixPath
+		if !strings.HasPrefix(p, "unix://") {
+			p = "unix://" + p
+		}
+		resolved = []string{p}
+	case cfg.pipe != "":
+		p := cfg.pipe
+		if !strings.HasPrefix(p, "pipe://") {
+			p = "pipe://" + p
+		}
+		resolved = []string{p}
+	case len(cfg.urls) > 0:
+		resolved = append([]string{}, cfg.urls...)
+	default:
+		if env := strings.TrimSpace(os.Getenv("MESHCALL_ROUTER_URL")); env != "" {
+			for _, part := range strings.Split(env, ",") {
+				if trimmed := strings.TrimSpace(part); trimmed != "" {
+					resolved = append(resolved, trimmed)
+				}
+			}
+		}
+		if len(resolved) == 0 {
+			resolved = []string{DefaultRouterURL}
+		}
+	}
+
+	for _, ep := range resolved {
+		if !isValidEndpointScheme(ep) {
+			panic(fmt.Sprintf("meshcall: invalid Router endpoint %q: must start with ws://, wss://, unix://, pipe://, http://, or https://", ep))
+		}
+	}
+	hasHTTP := false
+	hasNonHTTP := false
+	for _, ep := range resolved {
+		if isHTTPScheme(ep) {
+			hasHTTP = true
+		} else {
+			hasNonHTTP = true
+		}
+	}
+	if hasHTTP && hasNonHTTP {
+		panic("meshcall: Router endpoints cannot mix HTTP(S) and WebSocket/Unix/Pipe schemes")
+	}
+	return resolved, hasHTTP
 }
 
-// --- Built-in Router service methods ---------------------------------------
+// --- LocalRouter (Managed OS Subprocess) -----------------------------------
 
-// ListServices calls meshcall.router.v1.Registry/list to list all registered services.
-func (r *Router) ListServices(ctx context.Context, opts ...CallOption) ([]RegistryService, error) {
-	return listServices(ctx, r.Client(), opts...)
+type localRouterConfig struct {
+	host               string
+	port               int
+	unixPath           string
+	pipe               string
+	httpDefaultTimeout time.Duration
+	httpCorsOrigins    []string
+	metricsListen      string
+	authFile           string
+	outboxSize         int
+	maxConnections     int
+	binaryPath         string
 }
 
-// DescribeService calls meshcall.router.v1.Registry/describe for one service.
-func (r *Router) DescribeService(ctx context.Context, service string, opts ...CallOption) (RegistryServiceDetail, error) {
-	return describeService(ctx, r.Client(), service, opts...)
+// LocalRouterOption configures a LocalRouter subprocess.
+type LocalRouterOption interface {
+	applyLocalRouter(*localRouterConfig)
+}
+
+type localRouterOptFunc func(*localRouterConfig)
+
+func (f localRouterOptFunc) applyLocalRouter(c *localRouterConfig) { f(c) }
+
+// WithHost sets the TCP bind host for LocalRouter (default "127.0.0.1").
+func WithHost(host string) LocalRouterOption {
+	return localRouterOptFunc(func(c *localRouterConfig) { c.host = host })
+}
+
+// WithPort sets the TCP bind port for LocalRouter (0 for an OS-assigned ephemeral port).
+func WithPort(port int) LocalRouterOption {
+	return localRouterOptFunc(func(c *localRouterConfig) { c.port = port })
+}
+
+// WithHTTPConfig configures the LocalRouter's HTTP v1 gateway timeout and CORS origins.
+func WithHTTPConfig(defaultTimeout time.Duration, corsOrigins ...string) LocalRouterOption {
+	return localRouterOptFunc(func(c *localRouterConfig) {
+		c.httpDefaultTimeout = defaultTimeout
+		c.httpCorsOrigins = append([]string{}, corsOrigins...)
+	})
+}
+
+// WithMetricsListen configures the Prometheus metrics listener address ("host:port") on LocalRouter.
+func WithMetricsListen(addr string) LocalRouterOption {
+	return localRouterOptFunc(func(c *localRouterConfig) { c.metricsListen = addr })
+}
+
+// WithAuthFile sets the path to the Router auth configuration file on LocalRouter.
+func WithAuthFile(path string) LocalRouterOption {
+	return localRouterOptFunc(func(c *localRouterConfig) { c.authFile = path })
+}
+
+// WithRouterLimits sets the per-connection outbox size and max concurrent connections on LocalRouter.
+func WithRouterLimits(outboxSize, maxConnections int) LocalRouterOption {
+	return localRouterOptFunc(func(c *localRouterConfig) {
+		c.outboxSize = outboxSize
+		c.maxConnections = maxConnections
+	})
+}
+
+// WithRouterBinary overrides the path to the meshcall-router executable for LocalRouter.
+func WithRouterBinary(binaryPath string) LocalRouterOption {
+	return localRouterOptFunc(func(c *localRouterConfig) { c.binaryPath = binaryPath })
+}
+
+// LocalRouter manages a local meshcall-router OS subprocess (Layer 2).
+type LocalRouter struct {
+	cfg       localRouterConfig
+	mu        sync.Mutex
+	spawned   *spawnedRouter
+	url       string
+	boundPort int
+	pid       int
+	running   bool
+}
+
+// NewLocalRouter creates a new LocalRouter subprocess manager (not started yet).
+// Call Start(ctx) or use StartLocalRouter(ctx, opts...) to launch the subprocess.
+func NewLocalRouter(opts ...LocalRouterOption) *LocalRouter {
+	cfg := localRouterConfig{
+		host: "127.0.0.1",
+		port: 8765,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt.applyLocalRouter(&cfg)
+		}
+	}
+	var initialURL string
+	switch {
+	case cfg.unixPath != "":
+		p := cfg.unixPath
+		if !strings.HasPrefix(p, "unix://") {
+			p = "unix://" + p
+		}
+		initialURL = p
+	case cfg.pipe != "":
+		p := cfg.pipe
+		if !strings.HasPrefix(p, "pipe://") {
+			p = "pipe://" + p
+		}
+		initialURL = p
+	default:
+		initialURL = fmt.Sprintf("ws://%s:%d", cfg.host, cfg.port)
+	}
+	return &LocalRouter{
+		cfg:       cfg,
+		url:       initialURL,
+		boundPort: cfg.port,
+	}
+}
+
+// StartLocalRouter creates and starts a LocalRouter subprocess, waiting until it is ready.
+func StartLocalRouter(ctx context.Context, opts ...LocalRouterOption) (*LocalRouter, error) {
+	r := NewLocalRouter(opts...)
+	if err := r.Start(ctx); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (*LocalRouter) isRouterEndpoint() {}
+
+// Start spawns the meshcall-router subprocess and waits until it signals readiness.
+func (r *LocalRouter) Start(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running {
+		return nil
+	}
+
+	var args []string
+	switch {
+	case r.cfg.unixPath != "":
+		sockPath := strings.TrimPrefix(r.cfg.unixPath, "unix://")
+		args = append(args, "--unix-socket", sockPath)
+	case r.cfg.pipe != "":
+		name := strings.TrimPrefix(r.cfg.pipe, "pipe://")
+		args = append(args, "--pipe", name)
+	default:
+		args = append(args, "--host", r.cfg.host, "--port", strconv.Itoa(r.cfg.port))
+	}
+
+	args = append(args, "--shutdown-on-stdin-close")
+	if r.cfg.httpDefaultTimeout > 0 {
+		args = append(args, "--http-default-timeout", r.cfg.httpDefaultTimeout.String())
+	}
+	for _, origin := range r.cfg.httpCorsOrigins {
+		args = append(args, "--http-cors-origin", origin)
+	}
+	if r.cfg.metricsListen != "" {
+		args = append(args, "--metrics-listen", r.cfg.metricsListen)
+	}
+	if r.cfg.authFile != "" {
+		args = append(args, "--auth-file", r.cfg.authFile)
+	}
+	if r.cfg.outboxSize > 0 {
+		args = append(args, "--outbox-size", strconv.Itoa(r.cfg.outboxSize))
+	}
+	if r.cfg.maxConnections > 0 {
+		args = append(args, "--max-connections", strconv.Itoa(r.cfg.maxConnections))
+	}
+
+	binary, err := findRouterBinary(r.cfg.binaryPath)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command(binary, args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	type readyResult struct {
+		url  string
+		port int
+		err  error
+	}
+	readyCh := make(chan readyResult, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			var payload struct {
+				Kind       string `json:"kind"`
+				Status     string `json:"status"`
+				URL        string `json:"url"`
+				Host       string `json:"host"`
+				Port       int    `json:"port"`
+				UnixPath   string `json:"unix_path"`
+				UnixSocket string `json:"unix_socket"`
+				Pipe       string `json:"pipe"`
+			}
+			if err := json.Unmarshal(scanner.Bytes(), &payload); err == nil && (payload.Kind == "router.ready" || payload.Kind == "ready" || payload.Status == "ready") {
+				resolved := payload.URL
+				if resolved == "" {
+					if payload.UnixPath != "" {
+						resolved = "unix://" + payload.UnixPath
+					} else if payload.UnixSocket != "" {
+						resolved = "unix://" + payload.UnixSocket
+					} else if payload.Pipe != "" {
+						resolved = "pipe://" + payload.Pipe
+					} else if payload.Port > 0 {
+						h := payload.Host
+						if h == "" {
+							h = r.cfg.host
+						}
+						resolved = fmt.Sprintf("ws://%s:%d", h, payload.Port)
+					} else {
+						resolved = r.url
+					}
+				}
+				readyCh <- readyResult{url: resolved, port: payload.Port}
+				_, _ = io.Copy(io.Discard, stdout)
+				return
+			}
+		}
+		_ = cmd.Wait()
+		readyCh <- readyResult{err: fmt.Errorf("meshcall-router exited before ready: %s", strings.TrimSpace(stderr.String()))}
+	}()
+
+	select {
+	case res := <-readyCh:
+		if res.err != nil {
+			_ = stdin.Close()
+			return res.err
+		}
+		r.spawned = &spawnedRouter{cmd: cmd, stdin: stdin}
+		r.url = res.url
+		if res.port > 0 {
+			r.boundPort = res.port
+		} else if strings.HasPrefix(res.url, "ws://") {
+			if u, err := url.Parse(res.url); err == nil {
+				if p, err := strconv.Atoi(u.Port()); err == nil {
+					r.boundPort = p
+				}
+			}
+		}
+		if cmd.Process != nil {
+			r.pid = cmd.Process.Pid
+		}
+		r.running = true
+		return nil
+	case <-ctx.Done():
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		return ctx.Err()
+	}
+}
+
+// Stop terminates the LocalRouter subprocess and waits for it to exit.
+func (r *LocalRouter) Stop() error {
+	r.mu.Lock()
+	spawned := r.spawned
+	r.spawned = nil
+	r.running = false
+	r.pid = 0
+	r.mu.Unlock()
+	if spawned != nil {
+		spawned.close()
+	}
+	return nil
+}
+
+// Close is an alias for Stop.
+func (r *LocalRouter) Close() error {
+	return r.Stop()
+}
+
+// URL returns the WebSocket/Unix/Pipe endpoint URL of the LocalRouter.
+func (r *LocalRouter) URL() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.url
+}
+
+// HTTPURL returns the HTTP gateway URL ("http://host:port") if listening on TCP, or "".
+func (r *LocalRouter) HTTPURL() string {
+	u := r.URL()
+	if strings.HasPrefix(u, "ws://") {
+		return "http://" + strings.TrimPrefix(u, "ws://")
+	}
+	return ""
+}
+
+// Endpoints returns the single-element slice containing URL().
+func (r *LocalRouter) Endpoints() []string {
+	return []string{r.URL()}
+}
+
+// IsHTTP returns false (LocalRouter always exposes its primary WebSocket/Unix/Pipe endpoint).
+func (r *LocalRouter) IsHTTP() bool {
+	return false
+}
+
+// BoundPort returns the TCP port the LocalRouter is bound to (or 0 for Unix/Pipe).
+func (r *LocalRouter) BoundPort() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.boundPort
+}
+
+// PID returns the OS process ID of the running meshcall-router subprocess, or 0 if not running.
+func (r *LocalRouter) PID() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pid
+}
+
+// IsRunning reports whether the LocalRouter subprocess is currently running.
+func (r *LocalRouter) IsRunning() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running
+}
+
+// --- Built-in Sub-clients: RegistryClient & AuthClient ---------------------
+
+// RegistryClient provides access to the Router's built-in Registry service (mesh.Registry()).
+type RegistryClient struct {
+	caller Caller
+}
+
+// List calls meshcall.router.v1.Registry/list to list all registered services visible to this caller.
+func (rc *RegistryClient) List(ctx context.Context, opts ...CallOption) ([]RegistryService, error) {
+	return listServices(ctx, rc.caller, opts...)
+}
+
+// Describe calls meshcall.router.v1.Registry/describe for one service.
+func (rc *RegistryClient) Describe(ctx context.Context, service string, opts ...CallOption) (RegistryServiceDetail, error) {
+	return describeService(ctx, rc.caller, service, opts...)
+}
+
+// AuthClient provides access to the Router's built-in AuthService (mesh.Auth()).
+type AuthClient struct {
+	caller Caller
 }
 
 // Whoami calls meshcall.router.v1.AuthService/whoami to inspect the caller's identity and scopes.
-func (r *Router) Whoami(ctx context.Context, opts ...CallOption) (WhoamiResponse, error) {
-	return whoami(ctx, r.Client(), opts...)
+func (ac *AuthClient) Whoami(ctx context.Context, opts ...CallOption) (WhoamiResponse, error) {
+	return whoami(ctx, ac.caller, opts...)
 }
 
 // IssueToken calls meshcall.router.v1.AuthService/issue_token to mint a scoped bearer token.
-func (r *Router) IssueToken(ctx context.Context, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
-	return issueToken(ctx, r.Client(), scopes, ttlSeconds, opts...)
+func (ac *AuthClient) IssueToken(ctx context.Context, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
+	return issueToken(ctx, ac.caller, scopes, ttlSeconds, opts...)
 }
 
 // RevokeToken calls meshcall.router.v1.AuthService/revoke_token to revoke a token by its ID.
-func (r *Router) RevokeToken(ctx context.Context, tokenID string, opts ...CallOption) (RevokeTokenResponse, error) {
-	return revokeToken(ctx, r.Client(), tokenID, opts...)
+func (ac *AuthClient) RevokeToken(ctx context.Context, tokenID string, opts ...CallOption) (RevokeTokenResponse, error) {
+	return revokeToken(ctx, ac.caller, tokenID, opts...)
 }
 
-// The built-in calls take any transport, so Router and HTTPRouter share them.
-
 func listServices(ctx context.Context, c Caller, opts ...CallOption) ([]RegistryService, error) {
-	var resp struct {
-		Services []RegistryService `json:"services"`
-	}
 	callOpts := append([]CallOption{IdempotentCall()}, opts...)
 	resp, err := Unary[struct{}, struct {
 		Services []RegistryService `json:"services"`
@@ -504,11 +732,377 @@ func revokeToken(ctx context.Context, c Caller, tokenID string, opts ...CallOpti
 	return Unary[revokeReq, RevokeTokenResponse](ctx, c, routerAuthService, "revoke_token", revokeReq{TokenID: tokenID}, opts...)
 }
 
-// --- Serve / Run & local Router launcher -----------------------------------
+// --- Layer 3: Mesh ---------------------------------------------------------
+
+type meshConfig struct {
+	token              string
+	auth               string
+	headers            map[string]string
+	httpTimeout        time.Duration
+	httpClient         *http.Client
+	peerID             string
+	pingInterval       time.Duration
+	pingTimeout        time.Duration
+	reconnect          *ReconnectPolicy
+	retry              *RetryPolicy
+	deadlineGrace      time.Duration
+	handshakeTimeout   time.Duration
+	maxFrameSize       int
+	clientInterceptors []ClientInterceptor
+	logger             *slog.Logger
+}
+
+// MeshOption configures a Mesh (Layer 3).
+type MeshOption interface {
+	applyMesh(*meshConfig)
+}
+
+type meshOptFunc func(*meshConfig)
+
+func (f meshOptFunc) applyMesh(c *meshConfig) { f(c) }
+
+// WithToken authenticates the Mesh with a Bearer token ("mk_…" API key or issued token).
+func WithToken(token string) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.token = token })
+}
+
+// WithAuth sets the Authorization header value (e.g. BearerToken(...) or BasicAuth(...)).
+func WithAuth(authorization string) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.auth = authorization })
+}
+
+// WithHeaders adds custom HTTP headers when connecting to an HTTP(S) Router gateway.
+func WithHeaders(headers map[string]string) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.headers = headers })
+}
+
+// WithHTTPTimeout bounds HTTP requests that set no per-call timeout.
+func WithHTTPTimeout(timeout time.Duration) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.httpTimeout = timeout })
+}
+
+// WithHTTPClient overrides the underlying *http.Client used for HTTP(S) Router gateways.
+func WithHTTPClient(client *http.Client) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.httpClient = client })
+}
+
+// WithPeerID sets the client peer ID sent during handshake.
+func WithPeerID(peerID string) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.peerID = peerID })
+}
+
+// WithPing sets the keepalive ping interval and pong timeout.
+func WithPing(interval, timeout time.Duration) MeshOption {
+	return meshOptFunc(func(c *meshConfig) {
+		c.pingInterval = interval
+		c.pingTimeout = timeout
+	})
+}
+
+// WithReconnect sets the exponential backoff policy for reconnecting after a lost connection.
+func WithReconnect(policy ReconnectPolicy) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.reconnect = &policy })
+}
+
+// WithRetry sets the client-side unary retry policy.
+func WithRetry(policy RetryPolicy) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.retry = &policy })
+}
+
+// WithDeadlineGrace sets how long past a call's timeout the client waits for the peer's deadline error.
+func WithDeadlineGrace(grace time.Duration) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.deadlineGrace = grace })
+}
+
+// WithHandshakeTimeout bounds the WebSocket + hello handshake.
+func WithHandshakeTimeout(timeout time.Duration) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.handshakeTimeout = timeout })
+}
+
+// WithMaxFrameSize caps incoming and outgoing frame size in bytes.
+func WithMaxFrameSize(bytes int) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.maxFrameSize = bytes })
+}
+
+// WithClientInterceptors attaches client interceptors to the Mesh's underlying client.
+func WithClientInterceptors(interceptors ...ClientInterceptor) MeshOption {
+	return meshOptFunc(func(c *meshConfig) {
+		c.clientInterceptors = append(c.clientInterceptors, interceptors...)
+	})
+}
+
+// WithMeshLogger sets the structured logger used by the Mesh.
+func WithMeshLogger(logger *slog.Logger) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.logger = logger })
+}
+
+// WithRouterLogger is an alias for WithMeshLogger.
+func WithRouterLogger(logger *slog.Logger) MeshOption {
+	return WithMeshLogger(logger)
+}
+
+// Mesh is the Layer 3 RPC runtime for calling and serving services over a Router or LocalRouter.
+type Mesh struct {
+	router      RouterEndpoint
+	cfg         meshConfig
+	authHeader  string
+	wsClient    *Client
+	httpCaller  *httpTransport
+	registry    *RegistryClient
+	auth        *AuthClient
+	mountedRaw  []any
+	mountCfg    serveConfig
+	activeSrvMu sync.Mutex
+	activeSrv   *RunningServer
+}
+
+// NewMesh constructs a Layer 3 Mesh bound to a Router or LocalRouter.
+func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
+	if router == nil {
+		panic("meshcall: NewMesh requires a non-nil RouterEndpoint (*Router or *LocalRouter)")
+	}
+	var cfg meshConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt.applyMesh(&cfg)
+		}
+	}
+	if cfg.token != "" && cfg.auth != "" {
+		panic("meshcall: pass either WithToken or WithAuth to NewMesh, not both")
+	}
+	authHeader := cfg.auth
+	if cfg.token != "" {
+		authHeader = BearerToken(cfg.token)
+	}
+	m := &Mesh{
+		router:     router,
+		cfg:        cfg,
+		authHeader: authHeader,
+		mountCfg: serveConfig{
+			drainTimeout: 10 * time.Second,
+		},
+	}
+	m.registry = &RegistryClient{caller: m}
+	m.auth = &AuthClient{caller: m}
+	return m
+}
+
+// ConnectMesh creates a Mesh and eagerly establishes its client connection to the Router.
+func ConnectMesh(ctx context.Context, router RouterEndpoint, opts ...MeshOption) (*Mesh, error) {
+	m := NewMesh(router, opts...)
+	if err := m.Connect(ctx); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (m *Mesh) ensureCaller() (Caller, error) {
+	if m.router.IsHTTP() {
+		if m.httpCaller == nil {
+			reconnect := DefaultReconnect
+			if m.cfg.reconnect != nil {
+				reconnect = *m.cfg.reconnect
+			}
+			m.httpCaller = newHTTPTransport(m.router.URL(), httpTransportOptions{
+				Authorization: m.authHeader,
+				Headers:       m.cfg.headers,
+				Retry:         m.cfg.retry,
+				Reconnect:     reconnect,
+				Timeout:       m.cfg.httpTimeout,
+				Logger:        m.cfg.logger,
+				Client:        m.cfg.httpClient,
+			})
+		}
+		return m.httpCaller, nil
+	}
+	if m.wsClient == nil {
+		clientOpts := ClientOptions{
+			Authorization:    m.authHeader,
+			PeerID:           m.cfg.peerID,
+			MaxFrameSize:     m.cfg.maxFrameSize,
+			PingInterval:     m.cfg.pingInterval,
+			PingTimeout:      m.cfg.pingTimeout,
+			DeadlineGrace:    m.cfg.deadlineGrace,
+			HandshakeTimeout: m.cfg.handshakeTimeout,
+			Retry:            m.cfg.retry,
+			Interceptors:     m.cfg.clientInterceptors,
+			Logger:           m.cfg.logger,
+		}
+		if m.cfg.reconnect != nil {
+			clientOpts.Reconnect = *m.cfg.reconnect
+		}
+		c, err := NewClient(clientOpts, m.router.Endpoints()...)
+		if err != nil {
+			return nil, err
+		}
+		m.wsClient = c
+	}
+	return m.wsClient, nil
+}
+
+// Client returns the underlying Caller (*Client or *httpTransport).
+func (m *Mesh) Client() Caller {
+	c, err := m.ensureCaller()
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
+// Connect eagerly connects the Mesh client to the Router.
+func (m *Mesh) Connect(ctx context.Context) error {
+	if m.router.IsHTTP() {
+		_, err := m.ensureCaller()
+		return err
+	}
+	// Reset wsClient if endpoints changed (e.g., LocalRouter was started after NewMesh).
+	if m.wsClient != nil {
+		_ = m.wsClient.Close()
+		m.wsClient = nil
+	}
+	if _, err := m.ensureCaller(); err != nil {
+		return err
+	}
+	if _, err := m.wsClient.connection(ctx); err != nil {
+		_ = m.wsClient.Close()
+		m.wsClient = nil
+		return err
+	}
+	return nil
+}
+
+// Router returns the underlying RouterEndpoint (*Router or *LocalRouter).
+func (m *Mesh) Router() RouterEndpoint {
+	return m.router
+}
+
+// URL returns the primary Router endpoint URL.
+func (m *Mesh) URL() string {
+	return m.router.URL()
+}
+
+// Endpoints returns the resolved Router endpoint URLs.
+func (m *Mesh) Endpoints() []string {
+	return m.router.Endpoints()
+}
+
+// Registry returns the built-in RegistryClient for listing and describing services on the Mesh.
+func (m *Mesh) Registry() *RegistryClient {
+	return m.registry
+}
+
+// Auth returns the built-in AuthClient for inspecting identity and managing scoped tokens on the Mesh.
+func (m *Mesh) Auth() *AuthClient {
+	return m.auth
+}
+
+// WithOptions returns a shallow copy of Mesh that attaches default CallOptions to calls made through it.
+func (m *Mesh) WithOptions(opts CallOptions) *Mesh {
+	clone := &Mesh{
+		router:     m.router,
+		cfg:        m.cfg,
+		authHeader: m.authHeader,
+		mountedRaw: m.mountedRaw,
+		mountCfg:   m.mountCfg,
+	}
+	if m.router.IsHTTP() {
+		_, _ = m.ensureCaller()
+		clone.httpCaller = m.httpCaller.WithOptions(opts)
+	} else {
+		_, _ = m.ensureCaller()
+		clone.wsClient = m.wsClient.WithOptions(opts)
+	}
+	clone.registry = &RegistryClient{caller: clone}
+	clone.auth = &AuthClient{caller: clone}
+	return clone
+}
+
+// WithCallOptions implements Caller.
+func (m *Mesh) WithCallOptions(opts CallOptions) Caller {
+	return m.WithOptions(opts)
+}
+
+func (m *Mesh) unaryRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (json.RawMessage, map[string]string, error) {
+	c, err := m.ensureCaller()
+	if err != nil {
+		return nil, nil, err
+	}
+	return c.unaryRaw(ctx, service, method, request, opts)
+}
+
+func (m *Mesh) serverStreamRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (streamSource, error) {
+	c, err := m.ensureCaller()
+	if err != nil {
+		return nil, err
+	}
+	return c.serverStreamRaw(ctx, service, method, request, opts)
+}
+
+func (m *Mesh) clientStreamRaw(ctx context.Context, service, method string, request json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error) {
+	c, err := m.ensureCaller()
+	if err != nil {
+		return nil, nil, err
+	}
+	return c.clientStreamRaw(ctx, service, method, request, items, opts)
+}
+
+func (m *Mesh) duplexRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (rawDuplex, error) {
+	c, err := m.ensureCaller()
+	if err != nil {
+		return nil, err
+	}
+	return c.duplexRaw(ctx, service, method, request, opts)
+}
+
+func (m *Mesh) reconnectDelays() func() (time.Duration, bool) {
+	return m.Client().reconnectDelays()
+}
+
+func (m *Mesh) log() *slog.Logger {
+	return m.Client().log()
+}
+
+// Drain gracefully drains in-flight calls on the Mesh's active server, if serving.
+func (m *Mesh) Drain(ctx context.Context) error {
+	m.activeSrvMu.Lock()
+	srv := m.activeSrv
+	m.activeSrvMu.Unlock()
+	if srv != nil && srv.Server != nil {
+		return srv.Server.Drain(ctx)
+	}
+	return nil
+}
+
+// Close closes the Mesh's active server (if serving) and its client connection.
+// It does not stop a LocalRouter subprocess (LocalRouter owns its own OS lifecycle).
+func (m *Mesh) Close() error {
+	m.activeSrvMu.Lock()
+	srv := m.activeSrv
+	m.activeSrv = nil
+	m.activeSrvMu.Unlock()
+
+	var firstErr error
+	if srv != nil {
+		if err := srv.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.wsClient != nil {
+		if err := m.wsClient.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.httpCaller != nil {
+		if err := m.httpCaller.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// --- Server Mounting & Lifecycle on Mesh -----------------------------------
 
 type serveConfig struct {
-	routerCfg    routerConfig
-	router       *Router
 	instanceID   string
 	maxInflight  int
 	interceptors []ServerInterceptor
@@ -521,7 +1115,7 @@ type serveConfig struct {
 	dependencies []DependencyProvider
 }
 
-// ServeOption configures Serve and Run.
+// ServeOption configures service mounting and serving on a Mesh.
 type ServeOption interface {
 	applyServe(*serveConfig)
 }
@@ -529,16 +1123,6 @@ type ServeOption interface {
 type serveOptFunc func(*serveConfig)
 
 func (f serveOptFunc) applyServe(s *serveConfig) { f(s) }
-
-// WithRouter attaches an explicit *Router configuration to Serve or Run.
-func WithRouter(router *Router) ServeOption {
-	return serveOptFunc(func(s *serveConfig) {
-		s.router = router
-		if router != nil {
-			s.routerCfg = router.cfg
-		}
-	})
-}
 
 // WithInstanceID sets the server's instance ID.
 func WithInstanceID(id string) ServeOption {
@@ -582,73 +1166,96 @@ func WithDirectListen(addr string) ServeOption {
 	return serveOptFunc(func(s *serveConfig) { s.listenAddr = addr })
 }
 
-// RunningServer is an active server started by Serve.
+// RunningServer is an active server started by Mesh.StartServing.
 type RunningServer struct {
 	Server          *Server
 	RouterURL       string
 	RouterEndpoints []string
 	drainTimeout    time.Duration
-	spawned         *spawnedRouter
+	onClose         func()
 	closeOnce       sync.Once
 	closeErr        error
 }
 
-// Close gracefully drains in-flight calls and shuts down the server and any embedded Router.
+// Close gracefully drains in-flight calls and shuts down the server.
 func (r *RunningServer) Close() error {
 	r.closeOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), r.drainTimeout)
 		defer cancel()
 		_ = r.Server.Drain(ctx)
 		r.closeErr = r.Server.Close()
-		if r.spawned != nil {
-			r.spawned.close()
+		if r.onClose != nil {
+			r.onClose()
 		}
 	})
 	return r.closeErr
 }
 
-// Serve starts one or more services, auto-spawning a local Router when targeting
-// a local address that is not yet listening, and returns a *RunningServer handle.
-// Arguments may be *Service, []*Service, a struct (or pointer) embedding
-// ServiceMeta, *Router, ServeOption, or RouterOption.
-func Serve(ctx context.Context, args ...any) (*RunningServer, error) {
-	cfg := serveConfig{
-		routerCfg:    defaultRouterConfig(),
-		drainTimeout: 10 * time.Second,
+// Mount registers one or more services (and optional ServeOptions such as WithDependencies)
+// on the Mesh without performing any network I/O.
+// Arguments may be *Service, []*Service, a struct (or pointer) embedding ServiceMeta, or ServeOption.
+func (m *Mesh) Mount(args ...any) *Mesh {
+	if m.router.IsHTTP() {
+		panic("meshcall: cannot mount services on a Mesh configured with an HTTP(S) Router; serving requires ws://, wss://, unix://, or pipe://")
 	}
-	// Pass 1: apply options first so WithDependencies is available when reflecting structs.
-	for _, arg := range args {
-		switch v := arg.(type) {
-		case nil, *Service, []*Service:
-			continue
-		case *Router:
-			WithRouter(v).applyServe(&cfg)
-		case ServeOption:
-			v.applyServe(&cfg)
-		case RouterOption:
-			v.applyRouter(&cfg.routerCfg)
-		default:
-			if hasServiceMeta(arg) {
-				continue
-			}
-			return nil, fmt.Errorf("meshcall: unsupported Serve argument of type %T", arg)
-		}
+	m.activeSrvMu.Lock()
+	serving := m.activeSrv != nil
+	m.activeSrvMu.Unlock()
+	if serving {
+		panic("meshcall: cannot mount services while Mesh is already serving")
 	}
-	// Pass 2: collect and reflect services.
-	var services []*Service
+
 	for _, arg := range args {
 		switch v := arg.(type) {
 		case nil:
 			continue
+		case *Service, []*Service:
+			m.mountedRaw = append(m.mountedRaw, v)
+		case ServeOption:
+			v.applyServe(&m.mountCfg)
+		default:
+			if hasServiceMeta(arg) {
+				m.mountedRaw = append(m.mountedRaw, arg)
+				continue
+			}
+			panic(fmt.Sprintf("meshcall: unsupported Mount argument of type %T", arg))
+		}
+	}
+	return m
+}
+
+// StartServing connects the Mesh's mounted services to the Router in the background
+// and returns a *RunningServer handle.
+func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningServer, error) {
+	if m.router.IsHTTP() {
+		return nil, errors.New("meshcall: cannot serve on a Mesh configured with an HTTP(S) Router")
+	}
+	m.activeSrvMu.Lock()
+	if m.activeSrv != nil {
+		m.activeSrvMu.Unlock()
+		return nil, errors.New("meshcall: Mesh is already serving")
+	}
+	m.activeSrvMu.Unlock()
+
+	cfg := m.mountCfg
+	cfg.interceptors = append([]ServerInterceptor{}, m.mountCfg.interceptors...)
+	cfg.dependencies = append([]DependencyProvider{}, m.mountCfg.dependencies...)
+	for _, opt := range opts {
+		if opt != nil {
+			opt.applyServe(&cfg)
+		}
+	}
+
+	var services []*Service
+	for _, item := range m.mountedRaw {
+		switch v := item.(type) {
 		case *Service:
 			services = append(services, v)
 		case []*Service:
 			services = append(services, v...)
-		case *Router, ServeOption, RouterOption:
-			continue
 		default:
-			if hasServiceMeta(arg) {
-				svc, err := ReflectService(arg, WithDependencies(cfg.dependencies...))
+			if hasServiceMeta(item) {
+				svc, err := ReflectService(item, WithDependencies(cfg.dependencies...))
 				if err != nil {
 					return nil, err
 				}
@@ -656,27 +1263,36 @@ func Serve(ctx context.Context, args ...any) (*RunningServer, error) {
 			}
 		}
 	}
+	if len(services) == 0 {
+		return nil, errors.New("meshcall: no services mounted on Mesh (call mesh.Mount(...) before serving)")
+	}
+
+	logger := cfg.logger
+	if logger == nil {
+		logger = m.cfg.logger
+	}
 	serverOpts := ServerOptions{
 		Services:      services,
 		InstanceID:    cfg.instanceID,
 		MaxInflight:   cfg.maxInflight,
 		Interceptors:  cfg.interceptors,
-		Logger:        cfg.logger,
+		Logger:        logger,
 		AccessLog:     cfg.accessLog,
-		PingInterval:  cfg.routerCfg.pingInterval,
-		PingTimeout:   cfg.routerCfg.pingTimeout,
-		Authorization: cfg.routerCfg.auth,
+		PingInterval:  m.cfg.pingInterval,
+		PingTimeout:   m.cfg.pingTimeout,
+		Authorization: m.authHeader,
 		IdleTimeout:   cfg.idleTimeout,
-		MaxFrameSize:  cfg.routerCfg.maxFrameSize,
+		MaxFrameSize:  m.cfg.maxFrameSize,
 		Strict:        cfg.strict,
 	}
-	if cfg.routerCfg.reconnect != nil {
-		serverOpts.Reconnect = *cfg.routerCfg.reconnect
+	if m.cfg.reconnect != nil {
+		serverOpts.Reconnect = *m.cfg.reconnect
 	}
 	srv, err := NewServer(serverOpts)
 	if err != nil {
 		return nil, err
 	}
+
 	if cfg.listenAddr != "" {
 		if err := srv.Listen(cfg.listenAddr); err != nil {
 			_ = srv.Close()
@@ -686,55 +1302,53 @@ func Serve(ctx context.Context, args ...any) (*RunningServer, error) {
 		if addr := srv.Addr(); addr != nil {
 			urlStr = "ws://" + addr.String()
 		}
-		return &RunningServer{
+		running := &RunningServer{
 			Server:          srv,
 			RouterURL:       urlStr,
 			RouterEndpoints: []string{urlStr},
 			drainTimeout:    cfg.drainTimeout,
-		}, nil
+		}
+		running.onClose = func() {
+			m.activeSrvMu.Lock()
+			if m.activeSrv == running {
+				m.activeSrv = nil
+			}
+			m.activeSrvMu.Unlock()
+		}
+		m.activeSrvMu.Lock()
+		m.activeSrv = running
+		m.activeSrvMu.Unlock()
+		return running, nil
 	}
 
-	endpoints := resolveRouterEndpoints(cfg.routerCfg)
-	var spawned *spawnedRouter
-	if cfg.routerCfg.spawnIfLocal && len(endpoints) == 1 {
-		s, updatedURL, err := maybeSpawnLocalRouter(ctx, cfg.routerCfg, endpoints[0])
-		if err != nil {
-			_ = srv.Close()
-			return nil, err
-		}
-		if s != nil {
-			spawned = s
-			endpoints = []string{updatedURL}
-			if cfg.router != nil {
-				cfg.router.endpoints = []string{updatedURL}
-				if c, err := cfg.router.buildClient(endpoints); err == nil {
-					cfg.router.client = c
-				}
-			}
-		}
-	}
+	endpoints := m.router.Endpoints()
 	if err := srv.ConnectRouter(ctx, endpoints...); err != nil {
 		_ = srv.Close()
-		if spawned != nil {
-			spawned.close()
-		}
 		return nil, err
 	}
-	return &RunningServer{
+	running := &RunningServer{
 		Server:          srv,
 		RouterURL:       endpoints[0],
 		RouterEndpoints: endpoints,
 		drainTimeout:    cfg.drainTimeout,
-		spawned:         spawned,
-	}, nil
+	}
+	running.onClose = func() {
+		m.activeSrvMu.Lock()
+		if m.activeSrv == running {
+			m.activeSrv = nil
+		}
+		m.activeSrvMu.Unlock()
+	}
+	m.activeSrvMu.Lock()
+	m.activeSrv = running
+	m.activeSrvMu.Unlock()
+	return running, nil
 }
 
-// Run starts one or more services and blocks until SIGINT or SIGTERM is received,
-// then gracefully drains in-flight calls and closes the server.
-func Run(args ...any) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	running, err := Serve(ctx, args...)
+// Serve connects the Mesh's mounted services to the Router, blocks until ctx is done,
+// and then gracefully drains in-flight calls and closes the server.
+func (m *Mesh) Serve(ctx context.Context, opts ...ServeOption) error {
+	running, err := m.StartServing(ctx, opts...)
 	if err != nil {
 		return err
 	}
@@ -742,39 +1356,15 @@ func Run(args ...any) error {
 	return running.Close()
 }
 
-// --- Endpoint resolution & local subprocess management ---------------------
-
-func resolveRouterEndpoints(cfg routerConfig) []string {
-	if cfg.unixPath != "" {
-		p := cfg.unixPath
-		if !strings.HasPrefix(p, "unix://") {
-			p = "unix://" + p
-		}
-		return []string{p}
-	}
-	if cfg.pipe != "" {
-		p := cfg.pipe
-		if !strings.HasPrefix(p, "pipe://") {
-			p = "pipe://" + p
-		}
-		return []string{p}
-	}
-	if len(cfg.urls) > 0 {
-		return append([]string{}, cfg.urls...)
-	}
-	if env := strings.TrimSpace(os.Getenv("MESHCALL_ROUTER_URL")); env != "" {
-		var out []string
-		for _, part := range strings.Split(env, ",") {
-			if trimmed := strings.TrimSpace(part); trimmed != "" {
-				out = append(out, trimmed)
-			}
-		}
-		if len(out) > 0 {
-			return out
-		}
-	}
-	return []string{DefaultRouterURL}
+// Run connects the Mesh's mounted services to the Router and blocks until SIGINT
+// or SIGTERM is received, then gracefully drains in-flight calls and closes the server.
+func (m *Mesh) Run(opts ...ServeOption) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return m.Serve(ctx, opts...)
 }
+
+// --- Subprocess management helpers -----------------------------------------
 
 type spawnedRouter struct {
 	cmd   *exec.Cmd
@@ -833,178 +1423,4 @@ func findRouterBinary(explicit string) (string, error) {
 		return path, nil
 	}
 	return "", errors.New("meshcall: could not find meshcall-router binary (set MESHCALL_ROUTER_BINARY or install meshcall-router)")
-}
-
-func isLocalHost(host string) bool {
-	return host == "127.0.0.1" || host == "localhost" || host == "::1"
-}
-
-func tcpReachable(host string, port int) bool {
-	if port <= 0 {
-		return false
-	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 150*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-func unixReachable(path string) bool {
-	conn, err := net.DialTimeout("unix", path, 150*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-func maybeSpawnLocalRouter(ctx context.Context, cfg routerConfig, rawEndpoint string) (*spawnedRouter, string, error) {
-	var args []string
-	var checkReachable func() bool
-	var isZeroPort bool
-
-	switch {
-	case strings.HasPrefix(rawEndpoint, "unix://"):
-		sockPath := strings.TrimPrefix(rawEndpoint, "unix://")
-		if unixReachable(sockPath) {
-			return nil, rawEndpoint, nil
-		}
-		args = append(args, "--unix-socket", sockPath)
-		checkReachable = func() bool { return unixReachable(sockPath) }
-	case strings.HasPrefix(rawEndpoint, "pipe://"):
-		name := strings.TrimPrefix(rawEndpoint, "pipe://")
-		args = append(args, "--pipe", name)
-	case strings.HasPrefix(rawEndpoint, "ws://"):
-		u, err := url.Parse(rawEndpoint)
-		if err != nil {
-			return nil, rawEndpoint, err
-		}
-		host := u.Hostname()
-		if !isLocalHost(host) {
-			return nil, rawEndpoint, nil
-		}
-		port := 8765
-		if p := u.Port(); p != "" {
-			parsed, err := strconv.Atoi(p)
-			if err != nil {
-				return nil, rawEndpoint, err
-			}
-			port = parsed
-		}
-		if port > 0 && tcpReachable(host, port) {
-			return nil, rawEndpoint, nil
-		}
-		isZeroPort = port == 0
-		args = append(args, "--host", host, "--port", strconv.Itoa(port))
-		checkReachable = func() bool { return port > 0 && tcpReachable(host, port) }
-	default:
-		return nil, rawEndpoint, nil
-	}
-
-	args = append(args, "--shutdown-on-stdin-close")
-	if cfg.httpDefaultTimeout > 0 {
-		args = append(args, "--http-default-timeout", cfg.httpDefaultTimeout.String())
-	}
-	for _, origin := range cfg.httpCorsOrigins {
-		args = append(args, "--http-cors-origin", origin)
-	}
-	if cfg.metricsListen != "" {
-		args = append(args, "--metrics-listen", cfg.metricsListen)
-	}
-	if cfg.authFile != "" {
-		args = append(args, "--auth-file", cfg.authFile)
-	}
-	if cfg.outboxSize > 0 {
-		args = append(args, "--outbox-size", strconv.Itoa(cfg.outboxSize))
-	}
-	if cfg.maxConnections > 0 {
-		args = append(args, "--max-connections", strconv.Itoa(cfg.maxConnections))
-	}
-
-	binary, err := findRouterBinary(cfg.binaryPath)
-	if err != nil {
-		return nil, rawEndpoint, err
-	}
-
-	cmd := exec.Command(binary, args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, rawEndpoint, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, rawEndpoint, err
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return nil, rawEndpoint, err
-	}
-
-	type readyResult struct {
-		url string
-		err error
-	}
-	readyCh := make(chan readyResult, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			var payload struct {
-				Kind       string `json:"kind"`
-				Status     string `json:"status"`
-				URL        string `json:"url"`
-				Host       string `json:"host"`
-				Port       int    `json:"port"`
-				UnixPath   string `json:"unix_path"`
-				UnixSocket string `json:"unix_socket"`
-				Pipe       string `json:"pipe"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &payload); err == nil && (payload.Kind == "router.ready" || payload.Kind == "ready" || payload.Status == "ready") {
-				resolved := payload.URL
-				if resolved == "" {
-					if payload.UnixPath != "" {
-						resolved = "unix://" + payload.UnixPath
-					} else if payload.UnixSocket != "" {
-						resolved = "unix://" + payload.UnixSocket
-					} else if payload.Pipe != "" {
-						resolved = "pipe://" + payload.Pipe
-					} else if payload.Port > 0 {
-						h := payload.Host
-						if h == "" {
-							h = "127.0.0.1"
-						}
-						resolved = fmt.Sprintf("ws://%s:%d", h, payload.Port)
-					} else {
-						resolved = rawEndpoint
-					}
-				}
-				readyCh <- readyResult{url: resolved}
-				// Drain remaining stdout so the subprocess never blocks.
-				_, _ = io.Copy(io.Discard, stdout)
-				return
-			}
-		}
-		_ = cmd.Wait()
-		readyCh <- readyResult{err: fmt.Errorf("meshcall-router exited before ready: %s", strings.TrimSpace(stderr.String()))}
-	}()
-
-	select {
-	case res := <-readyCh:
-		if res.err != nil {
-			_ = stdin.Close()
-			if !isZeroPort && checkReachable != nil && checkReachable() {
-				return nil, rawEndpoint, nil
-			}
-			return nil, rawEndpoint, res.err
-		}
-		return &spawnedRouter{cmd: cmd, stdin: stdin}, res.url, nil
-	case <-ctx.Done():
-		_ = stdin.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		return nil, rawEndpoint, ctx.Err()
-	}
 }

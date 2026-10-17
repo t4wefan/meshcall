@@ -21,7 +21,7 @@ type ExpandedServiceClient struct {
 	rpc meshcall.Caller
 }
 
-// NewExpandedServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewExpandedServiceClient wraps a Mesh (or any Caller).
 func NewExpandedServiceClient(rpc meshcall.Caller) *ExpandedServiceClient {
 	return &ExpandedServiceClient{rpc: rpc}
 }

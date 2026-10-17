@@ -1,8 +1,8 @@
 // Command go-client calls the best-practice LLM service through the Router.
 //
-// It connects with meshcall.NewRouter (MESHCALL_ROUTER_URL, default
-// ws://127.0.0.1:8765), creates a session, streams one answer, and lists the
-// sessions it can see, using the generated typed client.
+// It connects with meshcall.NewMesh(meshcall.NewRouter()) (MESHCALL_ROUTER_URL,
+// default ws://127.0.0.1:8765), creates a session, streams one answer, and lists
+// the sessions it can see, using the generated typed client.
 package main
 
 import (
@@ -27,10 +27,10 @@ func main() {
 func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	router := meshcall.NewRouter()
-	defer func() { _ = router.Close() }()
+	mesh := meshcall.NewMesh(meshcall.NewRouter())
+	defer func() { _ = mesh.Close() }()
 
-	client := llmclient.NewLlmServiceClient(router).WithOptions(meshcall.CallOptions{
+	client := llmclient.NewLlmServiceClient(mesh).WithOptions(meshcall.CallOptions{
 		Metadata: map[string]string{"x-caller-id": "go-client"},
 		Timeout:  20 * time.Second,
 	})

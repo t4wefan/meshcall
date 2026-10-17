@@ -1,4 +1,4 @@
-import { Router } from "meshcall";
+import { Mesh, Router } from "meshcall";
 
 import { PythonGreetingServiceClient } from "./dist/index.js";
 
@@ -7,11 +7,11 @@ if (url === undefined) {
   throw new Error("Expected the Router URL");
 }
 
-const router = await Router.connect(url);
-const client = await PythonGreetingServiceClient.connect(router);
+const mesh = await Mesh.connect(new Router(url));
+const client = new PythonGreetingServiceClient(mesh);
 try {
   const result = await client.greet("TypeScript", 2);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally {
-  await router.close();
+  await mesh.close();
 }

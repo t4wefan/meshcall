@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  MeshCallError, Router, WebSocketRouter, mutates, query, serve, service, stream, z,
+  LocalRouter, Mesh, MeshCallError, Router, mutates, query, service, stream, z,
   type DuplexChannel,
 } from "../src/index.js";
-import { HTTPRouter } from "../src/web.js";
 
 const Sum = z.object({ total: z.int() }).meta({ id: "Sum" });
 const Item = z.object({ value: z.int() }).meta({ id: "Item" });
@@ -13,8 +12,6 @@ const Tick = z.object({ seq: z.int() }).meta({ id: "Tick" });
 
 @service("test.v1.HttpShape", { description: "Shapes over the HTTP client." })
 class HttpShape {
-  private subscriptionCalls = 0;
-
   @query({ description: "Add two numbers.", input: { a: z.int(), b: z.int() }, output: Sum })
   async add(a: number, b: number) {
     return { total: a + b };
@@ -50,12 +47,11 @@ class HttpShape {
 }
 
 async function running() {
-  const router = new WebSocketRouter();
-  await router.start();
-  const server = await serve(new HttpShape(), {
-    router: new Router({ url: `ws://127.0.0.1:${router.boundPort}` }),
-  });
-  const http = await HTTPRouter.connect(`http://127.0.0.1:${router.boundPort}`);
+  const router = await LocalRouter.start({ port: 0 });
+  const serverMesh = new Mesh(router);
+  serverMesh.mount(new HttpShape());
+  const server = await serverMesh.startServing();
+  const http = await Mesh.connect(new Router(router.httpUrl!));
   return {
     http,
     close: async () => {
@@ -66,7 +62,7 @@ async function running() {
   };
 }
 
-test("HTTPRouter carries every HTTP call shape", { timeout: 20000 }, async () => {
+test("Mesh with HTTP Router carries every HTTP call shape", { timeout: 20000 }, async () => {
   const { http, close } = await running();
   try {
     assert.deepEqual(await http.unary("test.v1.HttpShape", "add", { a: 2, b: 3 }), { total: 5 });
@@ -96,14 +92,14 @@ test("HTTPRouter carries every HTTP call shape", { timeout: 20000 }, async () =>
       return true;
     });
 
-    const services = await http.listServices();
+    const services = await http.registry.list();
     assert.deepEqual(services.map((entry) => entry.name), ["test.v1.HttpShape"]);
   } finally {
     await close();
   }
 });
 
-test("HTTPRouter.WithOptions applies metadata and timeouts", { timeout: 20000 }, async () => {
+test("Mesh.withOptions over HTTP applies metadata and timeouts", { timeout: 20000 }, async () => {
   const { http, close } = await running();
   try {
     const scoped = http.withOptions({ metadata: { "x-trace": "t1" }, timeoutMs: 5000 });

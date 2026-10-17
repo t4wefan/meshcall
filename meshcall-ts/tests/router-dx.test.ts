@@ -7,10 +7,11 @@ import test from "node:test";
 
 import {
   findRouterBinary,
+  LocalRouter,
+  Mesh,
   method,
   Router,
   RouterCredentials,
-  serve,
   service,
   z,
   type CallOptions,
@@ -80,26 +81,43 @@ class EchoTestClient {
   }
 }
 
+test("strict layering between Router/LocalRouter and Mesh", () => {
+  assert.throws(
+    () => new Mesh("ws://127.0.0.1:8765" as unknown as Router),
+    (err: unknown) => err instanceof TypeError && /Router or LocalRouter instance/u.test(err.message),
+  );
+  const httpMesh = new Mesh(new Router("http://127.0.0.1:8765"));
+  assert.throws(
+    () => httpMesh.mount(new EchoService()),
+    (err: unknown) => err instanceof TypeError,
+  );
+});
+
 test(
-  "serve auto-spawns a local Router, shares HTTP+WS on the same port, and Router.connect multiplexes clients and built-in services",
+  "LocalRouter starts a managed subprocess, shares HTTP+WS on the same port, and Mesh multiplexes clients and built-in services",
   { timeout: 10000, skip: routerMissing },
   async () => {
-    const serverRouter = new Router({
-      url: "ws://127.0.0.1:0",
+    await using router = await LocalRouter.start({
+      port: 0,
       httpCorsOrigins: ["https://app.example.com"],
       httpDefaultTimeoutMs: 5000,
     });
-    await using running = await serve(new MathService(), new EchoService(), {
-      router: serverRouter,
+
+    assert.match(router.url, /^ws:\/\/127\.0\.0\.1:\d+$/u);
+    assert.equal(router.isRunning, true);
+    assert.ok(router.boundPort && router.boundPort > 0);
+    assert.ok(router.pid && router.pid > 0);
+
+    const serverMesh = new Mesh(router);
+    serverMesh.mount(new MathService(), new EchoService(), {
       instanceId: "dx-node-1",
       accessLog: false,
     });
-
-    assert.match(running.routerUrl, /^ws:\/\/127\.0\.0\.1:\d+$/u);
-    assert.equal(serverRouter.url, running.routerUrl);
+    await using running = await serverMesh.startServing();
+    assert.equal(running.routerUrl, router.url);
 
     // Verify HTTP and WS share the exact same port (/healthz and /v1/call/* on the same port)
-    const httpBase = running.routerUrl.replace(/^ws:/u, "http:");
+    const httpBase = router.httpUrl!;
     const healthResp = await fetch(`${httpBase}/healthz`);
     assert.equal(healthResp.status, 200);
     const httpCallResp = await fetch(`${httpBase}/v1/call/echo.v0/repeat`, {
@@ -111,19 +129,19 @@ test(
     assert.equal(httpCallResp.headers.get("access-control-allow-origin"), "https://app.example.com");
     assert.deepEqual(await httpCallResp.json(), { text: "over-same-port-http" });
 
-    // Connect a single Router client and share it across multiple service clients + built-in Registry calls
-    await using clientRouter = await Router.connect(running.routerUrl);
-    const services = await clientRouter.listServices();
+    // Connect a single Mesh client via Router(url) and share it across multiple service clients + built-in Registry calls
+    await using clientMesh = await Mesh.connect(new Router(router.url));
+    const services = await clientMesh.registry.list();
     const names = services.map((s) => s.name).sort();
     assert.ok(names.includes("math.v0"));
     assert.ok(names.includes("echo.v0"));
 
-    const mathInfo = await clientRouter.describeService("math");
+    const mathInfo = await clientMesh.registry.describe("math");
     assert.equal(mathInfo.name, "math.v0");
     assert.equal(mathInfo.instances[0]?.id, "dx-node-1");
 
-    const math = new MathTestClient(clientRouter);
-    const echo = new EchoTestClient(clientRouter);
+    const math = new MathTestClient(clientMesh);
+    const echo = new EchoTestClient(clientMesh);
 
     const res1 = await math.add(10, 32);
     assert.deepEqual(res1, { sum: 42, caller: "" });
@@ -137,7 +155,7 @@ test(
 );
 
 test(
-  "Router built-in AuthService methods (whoami, issueToken, revokeToken) work with RouterCredentials",
+  "Mesh built-in AuthClient methods (whoami, issueToken, revokeToken) work with RouterCredentials and token",
   { timeout: 10000, skip: routerMissing },
   async (t) => {
     const dir = await mkdtemp(join(tmpdir(), "meshcall-ts-router-dx-"));
@@ -165,32 +183,33 @@ test(
       }),
     );
 
-    const routerCfg = new Router({
-      url: "ws://127.0.0.1:0",
+    await using router = await LocalRouter.start({
+      port: 0,
       authFile,
-      auth: RouterCredentials.basic("admin", password),
     });
-    await using running = await serve(new EchoService(), { router: routerCfg, accessLog: false });
+    const serverMesh = new Mesh(router, {
+      credentials: RouterCredentials.basic("admin", password),
+    });
+    serverMesh.mount(new EchoService(), { accessLog: false });
+    await using _running = await serverMesh.startServing();
 
-    await using adminRouter = await Router.connect({
-      url: running.routerUrl,
-      auth: RouterCredentials.basic("admin", password),
+    await using adminMesh = await Mesh.connect(new Router(router.url), {
+      credentials: RouterCredentials.basic("admin", password),
     });
-    const identity = await adminRouter.whoami();
+    const identity = await adminMesh.auth.whoami();
     assert.equal(identity.username, "admin");
 
-    const issued = await adminRouter.issueToken([{ service: "echo", methods: ["repeat"] }], 300);
+    const issued = await adminMesh.auth.issueToken([{ service: "echo", methods: ["repeat"] }], 300);
     assert.ok(issued.token);
     assert.ok(issued.token_id);
 
-    await using scopedRouter = await Router.connect({
-      url: running.routerUrl,
-      auth: RouterCredentials.bearer(issued.token),
+    await using scopedMesh = await Mesh.connect(new Router(router.url), {
+      token: issued.token,
     });
-    const echo = new EchoTestClient(scopedRouter);
+    const echo = new EchoTestClient(scopedMesh);
     assert.deepEqual(await echo.repeat("hello"), { text: "hello" });
 
-    const revoked = await adminRouter.revokeToken(issued.token_id);
+    const revoked = await adminMesh.auth.revokeToken(issued.token_id);
     assert.equal(revoked, true);
   },
 );

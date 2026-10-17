@@ -7,15 +7,12 @@ import inspect
 import time
 import uuid
 from collections.abc import AsyncIterable, Generator, Iterator, Mapping, Sequence
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from loguru import logger as default_logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from meshcall.context import (
-    DEFAULT_PING_INTERVAL,
-    DEFAULT_PING_TIMEOUT,
     DEFAULT_RECONNECT,
     DEFAULT_RETRY,
     CallOptions,
@@ -49,20 +46,18 @@ from meshcall.protocol import (
 from meshcall.server import INITIAL_STREAM_CREDIT
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 from meshcall.transport import (
-    DEFAULT_MAX_FRAME_SIZE,
     FrameConnection,
     is_frame_too_large,
 )
 
 if TYPE_CHECKING:
-    from meshcall.router import Router
-    from meshcall.router_auth import RouterCredentials
+    from meshcall.router import Mesh
 
 _STREAM_END = object()
 
 
 class ClientBase:
-    """Runtime base class inherited by generated service clients.
+    """Runtime base class for low-level and manual service clients.
 
     ``deadline_grace`` is how long past a call's ``timeout`` the client keeps
     waiting for the peer's own ``deadline_exceeded`` before failing the call
@@ -76,7 +71,7 @@ class ClientBase:
 
     def __init__(
         self,
-        driver: ClientDriver | Router | ClientBase,
+        driver: ClientDriver | Mesh | ClientBase,
         *,
         deadline_grace: float | None = None,
         reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
@@ -120,53 +115,6 @@ class ClientBase:
         self._state_lock = asyncio.Lock()
         self._receive_task: asyncio.Task[None] | None = None
         self._ever_connected = False
-
-    @classmethod
-    def connect(
-        cls,
-        router: Router | str | Sequence[str] | None = None,
-        *,
-        url: str | Sequence[str] | None = None,
-        unix_path: str | Path | None = None,
-        pipe: str | None = None,
-        auth: RouterCredentials | None = None,
-        peer_id: str | None = None,
-        reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
-        retry: RetryPolicy = DEFAULT_RETRY,
-        ping_interval: float | None = DEFAULT_PING_INTERVAL,
-        ping_timeout: float = DEFAULT_PING_TIMEOUT,
-        deadline_grace: float | None = None,
-        max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
-        interceptors: Sequence[ClientInterceptor] = (),
-    ) -> Self:
-        """Create and connect a service client.
-
-        May be used either as ``async with MyClient.connect(...) as client:`` or
-        ``client = MyClient.connect(...)``.
-        """
-        from meshcall.router import Router as RouterClass
-
-        if isinstance(router, RouterClass):
-            instance = cls(router)
-            instance._owns_root = not router.is_connected
-            return instance
-        router_obj = RouterClass(
-            url=url if url is not None else router,
-            unix_path=unix_path,
-            pipe=pipe,
-            auth=auth,
-            peer_id=peer_id,
-            reconnect=reconnect,
-            retry=retry,
-            ping_interval=ping_interval,
-            ping_timeout=ping_timeout,
-            deadline_grace=deadline_grace,
-            max_frame_size=max_frame_size,
-            interceptors=interceptors,
-        )
-        instance = cls(router_obj._ensure_client())
-        instance._owns_root = True
-        return instance
 
     def with_options(
         self,

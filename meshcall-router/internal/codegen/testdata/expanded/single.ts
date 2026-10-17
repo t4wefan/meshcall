@@ -28,14 +28,6 @@ export const ExpandedResultSchema: JsonSchema = {
 export class ExpandedServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
-  /** Connect the Router or client it is given (when it can) and return this typed client. */
-  public static async connect(rpc: MeshCallRpc): Promise<ExpandedServiceClient> {
-    const opener = rpc as unknown as { connect?: () => Promise<void>; open?: () => Promise<unknown> };
-    if (typeof opener.connect === "function") await opener.connect();
-    else if (typeof opener.open === "function") await opener.open();
-    return new ExpandedServiceClient(rpc);
-  }
-
   public withOptions(options: CallOptions): ExpandedServiceClient {
     return new ExpandedServiceClient(this.rpc.withOptions(options));
   }

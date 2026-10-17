@@ -1,4 +1,4 @@
-"""HTTPRouter: the client-only Router transport for generated clients."""
+"""Mesh with an HTTP(S) Router: the HTTP transport for generated clients."""
 
 from __future__ import annotations
 
@@ -14,14 +14,14 @@ import pytest
 from pydantic import BaseModel
 
 from meshcall import (
-    HTTPRouter,
+    LocalRouter,
+    Mesh,
     MeshCallError,
+    RetryPolicy,
     Router,
-    WebSocketRouter,
     method,
     mutates,
     query,
-    serve,
     service,
     stream,
 )
@@ -103,17 +103,18 @@ def generated(
 
 
 @pytest.fixture
-async def router_url() -> AsyncIterator[str]:
-    async with WebSocketRouter(host="127.0.0.1", port=0) as router:
-        url = f"ws://127.0.0.1:{router.bound_port}"
-        async with serve(HttpShape(), router=Router(url), access_log=False):
-            yield url
+async def router_http_url() -> AsyncIterator[str]:
+    async with LocalRouter(host="127.0.0.1", port=0) as local_router:
+        server_mesh = Mesh(local_router)
+        server_mesh.mount(HttpShape())
+        async with server_mesh.serve(access_log=False):
+            assert local_router.http_url is not None
+            yield local_router.http_url
 
 
-async def test_generated_client_over_http(generated: Any, router_url: str) -> None:
-    http = HTTPRouter(router_url)
-    try:
-        client = generated.HttpShapeClient.connect(http)
+async def test_generated_client_over_http(generated: Any, router_http_url: str) -> None:
+    async with Mesh(Router(router_http_url)) as mesh:
+        client = generated.HttpShapeClient(mesh)
         assert (await client.add(2, 3)).total == 5
         assert [item.value async for item in client.count(4)] == [0, 1, 2, 3]
 
@@ -125,49 +126,38 @@ async def test_generated_client_over_http(generated: Any, router_url: str) -> No
 
         assert (await client.upload(items())).total == 3
 
-        shared = generated.HttpShapeClient(http)
+        shared = generated.HttpShapeClient(mesh)
         assert (await shared.add(1, 1)).total == 2
-    finally:
-        await http.close()
 
 
 async def test_http_errors_and_builtin_registry(
-    generated: Any, router_url: str
+    generated: Any, router_http_url: str
 ) -> None:
-    http = HTTPRouter(router_url)
-    try:
-        client = generated.HttpShapeClient(http)
+    async with Mesh(Router(router_http_url)) as mesh:
+        client = generated.HttpShapeClient(mesh)
         with pytest.raises(MeshCallError) as failure:
             await client.fail()
         assert failure.value.code == "app.nope"
         assert (failure.value.details or {})["from"] == "service"
 
-        services = await http.list_services()
+        services = await mesh.registry.list()
         assert [entry.name for entry in services] == ["test.v1.HttpShape"]
-    finally:
-        await http.close()
 
 
 async def test_http_subscription_resumes_from_cursor(
-    generated: Any, router_url: str
+    generated: Any, router_http_url: str
 ) -> None:
-    http = HTTPRouter(router_url)
-    try:
-        client = generated.HttpShapeClient(http)
+    async with Mesh(Router(router_http_url)) as mesh:
+        client = generated.HttpShapeClient(mesh)
         ticks = [tick.seq async for tick in client.ticks()]
         assert ticks == [0, 1, 2, 3, 4, 5]
-    finally:
-        await http.close()
 
 
-async def test_duplex_is_refused_over_http(router_url: str) -> None:
-    http = HTTPRouter(router_url)
-    try:
+async def test_duplex_is_refused_over_http(router_http_url: str) -> None:
+    async with Mesh(Router(router_http_url)) as mesh:
         with pytest.raises(MeshCallError) as failure:
-            http.call_duplex("test.v1.HttpShape", "talk", Sum(total=0))
+            mesh._ensure_client().call_duplex("test.v1.HttpShape", "talk", Sum(total=0))
         assert failure.value.reason == "duplex_over_http"
-    finally:
-        await http.close()
 
 
 class _Ping(BaseModel):
@@ -197,14 +187,14 @@ async def test_unary_retry_follows_idempotency() -> None:
             )
         return httpx.Response(200, json={"value": json.loads(request.content)["value"]})
 
-    http = HTTPRouter("http://router.test")
-    http._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    http._owns_client = True
-    import meshcall.context as context_module
-
-    http.retry = context_module.RetryPolicy(initial_delay=0.001, max_delay=0.002)
-    try:
-        result = await http.call_unary(
+    mock_http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with Mesh(
+        Router("http://router.test"),
+        http_client=mock_http_client,
+        retry=RetryPolicy(initial_delay=0.001, max_delay=0.002),
+    ) as mesh:
+        transport = mesh._ensure_client()
+        result = await transport.call_unary(
             "test.v1.Ping", "ping", _Ping(value=7), _Pong, idempotent=True
         )
         assert result.value == 7
@@ -212,18 +202,15 @@ async def test_unary_retry_follows_idempotency() -> None:
 
         attempts = 0
         with pytest.raises(MeshCallError):
-            await http.call_unary("test.v1.Ping", "ping", _Ping(value=7), _Pong)
+            await transport.call_unary("test.v1.Ping", "ping", _Ping(value=7), _Pong)
         assert attempts == 1
-    finally:
-        await http.close()
+    await mock_http_client.aclose()
 
 
-async def test_websocket_router_still_accepts_generated_clients(
-    generated: Any, router_url: str
+async def test_websocket_mesh_also_accepts_generated_clients(
+    generated: Any, router_http_url: str
 ) -> None:
-    router = await Router.connect(router_url)
-    try:
-        client = generated.HttpShapeClient(router)
+    ws_url = "ws://" + router_http_url.removeprefix("http://")
+    async with Mesh(Router(ws_url)) as mesh:
+        client = generated.HttpShapeClient(mesh)
         assert (await client.add(4, 5)).total == 9
-    finally:
-        await router.close()

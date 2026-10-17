@@ -55,36 +55,18 @@ removed while extracting the request model and supplied by the server per call,
 so generated clients do not expose them. Docstrings and the method options are
 carried into the contract as `description`, `annotations` and `deprecated`.
 
-## The Router object and the run / serve / connect lifecycle
+## The 4-layer API: `Router` / `LocalRouter`, `Mesh`, and generated clients
 
-A single `Router` object (Python `Router`, TypeScript `Router`, Go
-`NewRouter` / `ConnectRouter`) covers three roles that used to need separate
-types:
+MeshCall separates endpoint topology (Layer 2) from peer runtime (Layer 3) and business services/clients (Layer 4):
 
-1. **Server configuration** — pass it to `run` / `serve` (Go `Run` / `Serve`)
-   to set endpoints, credentials, reconnect and retry policies, and the
-   options of a locally spawned Router.
-2. **A multiplexed client connection** — `Router.connect(...)` opens one
-   underlying WebSocket that any number of generated clients share. All three
-   runtimes also accept per-call defaults through `with_options` /
-   `withOptions` / `WithOptions`.
-3. **Typed built-in services** — `list_services` / `describe_service` /
-   `whoami` / `issue_token` / `revoke_token` (camelCase in TypeScript,
-   `ListServices` / … in Go) call the Router's Registry and AuthService
-   directly.
-
-`run` is the one-line entry point: it resolves the endpoint from
-`MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`), starts a bundled
-`meshcall-router` when the target is a local address with nothing listening,
-registers every service passed to it, and drains on SIGINT / SIGTERM before
-exiting. `serve` is the async building block underneath: it returns a
-`RunningServer` (`.url`, `.instance_id`, `.stop(drain=True)`), which tests and
-demos use to start a Router on an ephemeral port (`ws://127.0.0.1:0`) and to
-stop or drain it explicitly. A spawn that loses a bind race falls back to
-connecting to the process that won; `spawn_if_local=False` turns auto-spawn
-off. Python generated clients offer `MyClient.connect(router_or_url)`;
-TypeScript's `MyClient.connect(router)` and Go's `NewMyClient(router)` wrap an
-existing `Router`, so its connection is shared instead of opening another.
+1. **Layer 2 (`Router` and `LocalRouter`)**:
+   - `Router` (Python `Router`, TypeScript `Router`, Go `NewRouter` / `NewRouterWithOptions`) is a pure endpoint descriptor for a remote or external `meshcall-router`. When constructed with no arguments, it resolves `MESHCALL_ROUTER_URL` (default `ws://127.0.0.1:8765`). It accepts one or more URLs (`ws(s)://`, `http(s)://`, `unix://`, `pipe://`), `unix_path` / `unixPath` / `WithUnixSocket`, or `pipe` / `WithPipe`. It performs zero I/O and owns no network connections.
+   - `LocalRouter` (Python `LocalRouter`, TypeScript `LocalRouter`, Go `NewLocalRouter` / `StartLocalRouter`) explicitly manages a local `meshcall-router` OS subprocess (`async with LocalRouter(port=0) as router:` / `await using router = await LocalRouter.start({ port: 0 })` / `StartLocalRouter(ctx, WithPort(0))`), exposing `.url`, `.http_url`, `.bound_port`, `.pid` and `.is_running`. There is no implicit auto-spawning on `Router` or `Mesh`.
+2. **Layer 3 (`Mesh`)**:
+   - `Mesh` (Python `Mesh(router, ...)`, TypeScript `new Mesh(router, ...)` / `Mesh.connect(router, ...)`, Go `NewMesh(router, ...)` / `ConnectMesh(ctx, router, ...)`) strictly requires a `Router` or `LocalRouter` instance and represents a peer connected to that Router.
+   - **Automatic transport selection**: `Mesh` inspects the `Router`'s URL scheme and selects WebSocket (`ws(s)://`, `unix://`, `pipe://`) or HTTP (`http(s)://`) automatically (`meshcall/web` in TypeScript provides a browser-safe `fetch`-only `Mesh` and `Router`).
+   - **Multiplexed client & built-in services**: Any number of generated clients (`MyClient(mesh)`) share the `Mesh`'s underlying connection. Built-in Router services are exposed as sub-namespaces on `Mesh`: `mesh.registry.list()` / `mesh.registry.describe(service)` (Go `mesh.Registry().List(ctx)` / `Describe(ctx, service)`) and `mesh.auth.whoami()` / `issue_token(...)` / `revoke_token(...)` (Go `mesh.Auth().Whoami(ctx)` / `IssueToken(...)` / `RevokeToken(...)`).
+   - **Service mounting & server lifecycle**: `mesh.mount(*services, ...)` (Go `mesh.Mount(...)`) synchronously mounts local services onto the `Mesh` (failing immediately if the `Router` uses `http(s)://`). `mesh.run()` blocks until `SIGINT` / `SIGTERM` and drains in-flight calls; `mesh.serve()` (TS `mesh.serve()` / `mesh.startServing()`, Go `mesh.Serve()` / `mesh.StartServing()`) runs or starts the server asynchronously and drains on exit.
 
 Per-call control parameters are deliberately kept out of the generated
 *business* parameter list. `with_options` / `withOptions` / `WithOptions`
@@ -219,12 +201,7 @@ exclusive Driver binding. Any startup failure rolls the Server back to `IDLE` an
 releases the binding. `stop()` closes the Driver before releasing it, so a stale
 task can't operate through a newly acquired generation.
 
-`serve` wraps one `RpcServer` and a Router driver owned by the `Router` object;
-its `RunningServer.stop(drain=True)` drains the server and then stops a Router
-the handle spawned itself. `run` wraps `serve` with signal handling: SIGINT /
-SIGTERM trigger the same drain path and then exit. A generated client opened
-with `connect(router_or_url)` either shares the `Router`'s connection or owns
-the one it opened.
+`mesh.serve` (TypeScript `mesh.serve` / `mesh.startServing`, Go `mesh.Serve` / `mesh.StartServing`) wraps one server instance and a Router driver configured from the `Mesh`'s `Router` or `LocalRouter`; its `RunningServer.stop(drain=True)` / `Close()` drains the server before disconnecting. `mesh.run` wraps `mesh.serve` with signal handling: SIGINT / SIGTERM trigger the same drain path and then exit. `LocalRouter` owns its spawned OS subprocess lifecycle explicitly (`async with LocalRouter() as router:` / `await using router = await LocalRouter.start()` / `StartLocalRouter(ctx)`). Generated clients wrap a `Mesh` (`MyClient(mesh)`), sharing its multiplexed connection.
 
 ## Failure boundaries
 

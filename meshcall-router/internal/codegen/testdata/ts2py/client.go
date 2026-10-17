@@ -39,7 +39,7 @@ type TypeScriptGreetingServiceClient struct {
 	rpc meshcall.Caller
 }
 
-// NewTypeScriptGreetingServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewTypeScriptGreetingServiceClient wraps a Mesh (or any Caller).
 func NewTypeScriptGreetingServiceClient(rpc meshcall.Caller) *TypeScriptGreetingServiceClient {
 	return &TypeScriptGreetingServiceClient{rpc: rpc}
 }

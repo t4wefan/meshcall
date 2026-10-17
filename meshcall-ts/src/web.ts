@@ -4,12 +4,13 @@
  * browsers, Deno, Bun, edge runtimes and Node 18+. Browsers cannot set
  * `Authorization` on a WebSocket, which is why the web client speaks HTTP.
  *
- *   import { MeshCallHttpClient } from "meshcall/web";
- *   const rpc = new MeshCallHttpClient("https://router.example", { token: "mk_…" });
- *   const chat = new ChatClient(rpc); // any generated client without duplex methods
+ *   import { Router, Mesh } from "meshcall/web";
+ *   const router = new Router("https://router.example");
+ *   const mesh = new Mesh(router, { token: "mk_…" });
+ *   const chat = new ChatClient(mesh); // any generated client without duplex methods
  *
  * Unary, server-stream, client-stream and subscription calls behave like
- * `MeshCallClient`'s: the same options, errors, trailers, local schema
+ * WebSocket `Mesh`'s: the same options, errors, trailers, local schema
  * validation, unary retry policy and subscription resume. A client stream's
  * items are collected and sent as one NDJSON body. Duplex is WebSocket-only.
  * Calling from another origin needs `--http-cors-origin` on the Router.
@@ -37,7 +38,161 @@ export {
 export type { MeshCallRpc, RpcStream } from "./rpc.js";
 export { MeshCallSubscription } from "./subscription.js";
 
-export interface MeshCallHttpClientOptions {
+export const DEFAULT_ROUTER_URL = "ws://127.0.0.1:8765";
+
+export type RouterEndpoint = string | { readonly unixPath: string } | { readonly pipe: string };
+
+export interface RouterOptions {
+  readonly url?: RouterEndpoint | ReadonlyArray<RouterEndpoint>;
+  /** Unix socket path (not on Windows: use `pipe`). */
+  readonly unixPath?: string;
+  /** Named pipe `\\.\pipe\NAME` (Windows only). */
+  readonly pipe?: string;
+}
+
+const VALID_ROUTER_OPTION_KEYS = new Set(["url", "unixPath", "pipe"]);
+
+function defaultRouterEndpoint(): string {
+  const envUrl = (
+    (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.MESHCALL_ROUTER_URL ?? ""
+  ).trim();
+  return envUrl !== "" ? envUrl : DEFAULT_ROUTER_URL;
+}
+
+function isHttpEndpoint(endpoint: RouterEndpoint): boolean {
+  return typeof endpoint === "string" && (endpoint.startsWith("http://") || endpoint.startsWith("https://"));
+}
+
+function validateEndpointScheme(endpoint: RouterEndpoint): void {
+  if (typeof endpoint !== "string") return;
+  if (
+    endpoint.startsWith("ws://") ||
+    endpoint.startsWith("wss://") ||
+    endpoint.startsWith("http://") ||
+    endpoint.startsWith("https://") ||
+    endpoint.startsWith("unix://") ||
+    endpoint.startsWith("pipe://")
+  ) {
+    return;
+  }
+  throw new TypeError(
+    `Router URL must use ws://, wss://, http://, https://, unix:// or pipe://, got ${JSON.stringify(endpoint)}`,
+  );
+}
+
+export function formatRouterEndpointUrl(endpoint: RouterEndpoint): string {
+  if (typeof endpoint === "string") return endpoint;
+  if ("unixPath" in endpoint) {
+    return endpoint.unixPath.startsWith("unix://") ? endpoint.unixPath : `unix://${endpoint.unixPath}`;
+  }
+  const bare = endpoint.pipe.startsWith("pipe://")
+    ? endpoint.pipe.slice("pipe://".length)
+    : endpoint.pipe.replace(/^\\\\\.\\pipe\\/u, "");
+  return `pipe://${bare}`;
+}
+
+function resolveRouterEndpoints(options: RouterOptions): {
+  endpoints: ReadonlyArray<RouterEndpoint>;
+  isHttp: boolean;
+} {
+  for (const key of Object.keys(options)) {
+    if (!VALID_ROUTER_OPTION_KEYS.has(key)) {
+      throw new TypeError(
+        `Router only describes an endpoint (url, unixPath, or pipe); unknown option ${JSON.stringify(key)} — pass connection and auth options to new Mesh(router, options)`,
+      );
+    }
+  }
+  const count = [options.url, options.unixPath, options.pipe].filter((v) => v !== undefined).length;
+  if (count > 1) {
+    throw new TypeError("Choose one of url, unixPath (not on Windows) or pipe (Windows)");
+  }
+  let endpoints: ReadonlyArray<RouterEndpoint>;
+  if (options.unixPath !== undefined) {
+    if (options.unixPath.trim() === "") throw new RangeError("unixPath must not be empty");
+    endpoints = [{ unixPath: options.unixPath }];
+  } else if (options.pipe !== undefined) {
+    if (options.pipe.trim() === "") throw new RangeError("pipe must not be empty");
+    endpoints = [{ pipe: options.pipe }];
+  } else if (options.url !== undefined) {
+    const list = Array.isArray(options.url)
+      ? [...(options.url as ReadonlyArray<RouterEndpoint>)]
+      : [options.url as RouterEndpoint];
+    if (list.length === 0) throw new RangeError("At least one Router endpoint is required");
+    endpoints = list;
+  } else {
+    endpoints = [defaultRouterEndpoint()];
+  }
+
+  for (const ep of endpoints) {
+    validateEndpointScheme(ep);
+  }
+  const httpCount = endpoints.filter(isHttpEndpoint).length;
+  if (httpCount > 0 && httpCount !== endpoints.length) {
+    throw new TypeError("Cannot mix HTTP(S) and WebSocket/Unix/pipe endpoints in the same Router");
+  }
+  return { endpoints, isHttp: httpCount > 0 };
+}
+
+/**
+ * Pure endpoint descriptor for a remote or external `meshcall-router`.
+ * Performs zero I/O; pass it to `new Mesh(router)` or `await Mesh.connect(router)`.
+ */
+export class Router {
+  public readonly options: RouterOptions;
+  public readonly endpoints: ReadonlyArray<RouterEndpoint>;
+  public readonly isHttp: boolean;
+
+  public constructor(
+    options: RouterOptions | RouterEndpoint | ReadonlyArray<RouterEndpoint> = {},
+  ) {
+    if (typeof options === "string") {
+      this.options = { url: options };
+    } else if (Array.isArray(options)) {
+      this.options = { url: options };
+    } else if (typeof options === "object" && options !== null) {
+      if ("unixPath" in options && Object.keys(options).length === 1 && typeof options.unixPath === "string") {
+        this.options = { unixPath: options.unixPath };
+      } else if ("pipe" in options && Object.keys(options).length === 1 && typeof options.pipe === "string") {
+        this.options = { pipe: options.pipe };
+      } else {
+        this.options = options as RouterOptions;
+      }
+    } else {
+      throw new TypeError("Router expects a URL string, array of endpoints, or RouterOptions object");
+    }
+    const resolved = resolveRouterEndpoints(this.options);
+    this.endpoints = resolved.endpoints;
+    this.isHttp = resolved.isHttp;
+  }
+
+  public get url(): string {
+    return formatRouterEndpointUrl(this.endpoints[0]!);
+  }
+
+  public get urls(): ReadonlyArray<string> {
+    return this.endpoints.map(formatRouterEndpointUrl);
+  }
+}
+
+export interface HttpTransportOptions {
+  /** Authorization header value (e.g. `Bearer mk_...` or `Basic ...`), or built from `token`. */
+  readonly authorization?: string;
+  /** An API key (`mk_…`) or temporary token (`mt_…`), sent as a Bearer token. */
+  readonly token?: string;
+  /** Extra headers on every request. */
+  readonly headers?: Readonly<Record<string, string>>;
+  /** Defaults to the global `fetch`. */
+  readonly fetch?: typeof fetch;
+  /** Built-in retry for unary calls; `false` disables. */
+  readonly retry?: RetryPolicy | false;
+  /** Backoff between subscription resubscriptions. */
+  readonly reconnect?: ReconnectPolicy;
+  /** Extra time past `timeoutMs` before failing locally. Defaults to `max(1s, 10%)`. */
+  readonly deadlineGraceMs?: number;
+  readonly logger?: RpcLogger;
+}
+
+export interface MeshWebOptions {
   /** An API key (`mk_…`) or temporary token (`mt_…`), sent as a Bearer token. */
   readonly token?: string;
   /** Extra headers on every request. */
@@ -125,19 +280,19 @@ function errorOf(body: unknown, status: number): MeshCallError {
   return new UnavailableError("HTTP " + status + " without a MeshCall error", { retryable: status >= 500 });
 }
 
-export class MeshCallHttpClient implements MeshCallRpc {
+/** @internal HTTP v1 transport used by `Mesh` when connecting over HTTP(S). */
+export class HttpTransport implements MeshCallRpc {
   private readonly base: string;
   private readonly fetcher: typeof fetch;
   private defaultCallOptions: CallOptions = {};
 
-  /** `url` is the Router's address, e.g. `https://router.example` (ws:// also accepted). */
-  public constructor(url: string, private readonly options: MeshCallHttpClientOptions = {}) {
+  public constructor(url: string, private readonly options: HttpTransportOptions = {}) {
     this.base = url.replace(/^ws(s?):/u, "http$1:").replace(/\/+$/u, "");
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   public withOptions(options: CallOptions): this {
-    const clone = Object.create(MeshCallHttpClient.prototype) as this;
+    const clone = Object.create(HttpTransport.prototype) as this;
     Object.assign(clone, {
       base: this.base,
       fetcher: this.fetcher,
@@ -214,6 +369,14 @@ export class MeshCallHttpClient implements MeshCallRpc {
     );
   }
 
+  public duplex<Request, InputItem, OutputItem>(
+    _service: string, _method: string, _request: Request, _options?: DuplexCallOptions,
+  ): MeshCallDuplexCall<InputItem, OutputItem> {
+    throw new MeshCallError("method_not_found", "duplex methods are WebSocket-only", {
+      details: { source: "client", reason: "duplex_over_http" },
+    });
+  }
+
   private budget(options: CallOptions): number | undefined {
     if (options.timeoutMs === undefined) return undefined;
     return options.timeoutMs + (this.options.deadlineGraceMs ?? clientDeadlineGraceMs(options.timeoutMs));
@@ -246,7 +409,11 @@ export class MeshCallHttpClient implements MeshCallRpc {
     service: string, method: string, body: string, contentType: string, options: CallOptions, control: CallControl,
   ): Promise<Response> {
     const headers: Record<string, string> = { ...(this.options.headers ?? {}), "Content-Type": contentType };
-    if (this.options.token !== undefined) headers.Authorization = "Bearer " + this.options.token;
+    if (this.options.authorization !== undefined) {
+      headers.Authorization = this.options.authorization;
+    } else if (this.options.token !== undefined) {
+      headers.Authorization = "Bearer " + this.options.token;
+    }
     if (options.timeoutMs !== undefined) headers["MeshCall-Timeout-Ms"] = String(Math.max(1, Math.round(options.timeoutMs)));
     if (options.idleTimeoutMs !== undefined) headers["MeshCall-Idle-Timeout-Ms"] = String(Math.max(1, Math.round(options.idleTimeoutMs)));
     if (options.idempotencyKey !== undefined) headers["Idempotency-Key"] = options.idempotencyKey;
@@ -366,30 +533,94 @@ class HttpServerStream<Item> implements RpcStream<Item> {
   }
 }
 
+/** Sub-client for the Router's built-in `meshcall.router.v1.Registry` service (`mesh.registry`). */
+export class RegistryClient {
+  public constructor(private readonly rpc: MeshCallRpc) {}
+
+  public async list(options?: CallOptions): Promise<RegistryService[]> {
+    const result = await this.rpc.unary<Record<string, never>, { services: RegistryService[] }>(
+      REGISTRY_SERVICE, "list", {}, { idempotent: true, ...options },
+    );
+    return result.services ?? [];
+  }
+
+  public describe(service: string, options?: CallOptions): Promise<RegistryService> {
+    return this.rpc.unary(
+      REGISTRY_SERVICE, "describe", { service: normalizeScopeService(service) }, { idempotent: true, ...options },
+    );
+  }
+}
+
+/** Sub-client for the Router's built-in `meshcall.router.v1.AuthService` (`mesh.auth`). */
+export class AuthClient {
+  public constructor(private readonly rpc: MeshCallRpc) {}
+
+  public whoami(options?: CallOptions): Promise<RouterIdentity> {
+    return this.rpc.unary(ROUTER_AUTH_SERVICE, "whoami", {}, { idempotent: true, ...options });
+  }
+
+  public issueToken(
+    scopes: ReadonlyArray<RouterScope>, ttlSeconds = 900, options?: CallOptions,
+  ): Promise<IssuedToken> {
+    if (scopes.length === 0) throw new RangeError("issueToken needs at least one scope");
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) throw new RangeError("ttlSeconds must be a positive integer");
+    return this.rpc.unary(ROUTER_AUTH_SERVICE, "issue_token", {
+      scopes: scopes.map((scope) => ({ ...scope, service: normalizeScopeService(scope.service) })),
+      ttl_seconds: ttlSeconds,
+    }, options);
+  }
+
+  public async revokeToken(tokenId: string, options?: CallOptions): Promise<boolean> {
+    if (tokenId === "") throw new RangeError("tokenId must not be empty");
+    const result = await this.rpc.unary<{ token_id: string }, { revoked: boolean }>(
+      ROUTER_AUTH_SERVICE, "revoke_token", { token_id: tokenId }, { idempotent: true, ...options },
+    );
+    return result.revoked;
+  }
+}
 
 /**
- * A client-only Router that speaks HTTP. Pass it to generated clients exactly
- * like a WebSocket `Router` (`await ChatClient.connect(httpRouter)` or
- * `new ChatClient(httpRouter)`); duplex methods are WebSocket-only and throw
- * `method_not_found` with `reason: "duplex_over_http"`. It also exposes the
- * built-in Registry and AuthService calls.
+ * Browser-safe `Mesh` participant over the Router's HTTP v1 API.
+ * Pass a `Router` instance (`new Mesh(new Router("https://router.example"), { token })`)
+ * and share `mesh` across generated clients (`new ChatClient(mesh)`), `mesh.registry`, and `mesh.auth`.
  */
-export class HTTPRouter implements MeshCallRpc {
-  public constructor(private readonly client: MeshCallHttpClient) {}
+export class Mesh implements MeshCallRpc {
+  public readonly router: Router;
+  public readonly registry: RegistryClient;
+  public readonly auth: AuthClient;
+  private readonly transport: HttpTransport;
 
-  /** Connect to the Router at `url` (`http(s)://` or `ws(s)://`). */
-  public static async connect(url: string, options: MeshCallHttpClientOptions = {}): Promise<HTTPRouter> {
-    return new HTTPRouter(new MeshCallHttpClient(url, options));
+  public constructor(router: Router, options: MeshWebOptions = {}) {
+    if (!(router instanceof Router)) {
+      throw new TypeError(
+        "Mesh requires a Router instance; pass new Router(url) instead of a raw URL or options object",
+      );
+    }
+    this.router = router;
+    this.transport = new HttpTransport(router.url, options);
+    this.registry = new RegistryClient(this);
+    this.auth = new AuthClient(this);
+  }
+
+  public static async connect(router: Router, options: MeshWebOptions = {}): Promise<Mesh> {
+    const mesh = new Mesh(router, options);
+    await mesh.connect();
+    return mesh;
   }
 
   public withOptions(options: CallOptions): this {
-    const clone = Object.create(HTTPRouter.prototype) as this;
-    Object.assign(clone, { client: this.client.withOptions(options) });
+    const clone = Object.create(Mesh.prototype) as this;
+    const transport = this.transport.withOptions(options);
+    Object.assign(clone, {
+      router: this.router,
+      transport,
+      registry: new RegistryClient(clone),
+      auth: new AuthClient(clone),
+    });
     return clone;
   }
 
-  /** HTTP has no connection to open; present so generated `connect` is uniform. */
-  public async open(): Promise<this> {
+  public async connect(): Promise<this> {
     return this;
   }
 
@@ -397,64 +628,33 @@ export class HTTPRouter implements MeshCallRpc {
     // fetch keeps no persistent connection.
   }
 
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
+  }
+
   public unary<Request, Response>(service: string, method: string, request: Request, options?: CallOptions): Promise<Response> {
-    return this.client.unary(service, method, request, options);
+    return this.transport.unary(service, method, request, options);
   }
 
   public serverStream<Request, Item>(service: string, method: string, request: Request, options?: CallOptions): RpcStream<Item> {
-    return this.client.serverStream(service, method, request, options);
+    return this.transport.serverStream(service, method, request, options);
   }
 
   public clientStream<Request, Item, Response>(
     service: string, method: string, request: Request, items: AsyncIterable<Item>, options?: CallOptions,
   ): Promise<Response> {
-    return this.client.clientStream(service, method, request, items, options);
+    return this.transport.clientStream(service, method, request, items, options);
   }
 
   public subscribe<Request extends object, Item>(
     service: string, method: string, request: Request, options?: SubscriptionOptions,
   ): MeshCallSubscription<Item> {
-    return this.client.subscribe(service, method, request, options);
+    return this.transport.subscribe(service, method, request, options);
   }
 
   public duplex<Request, InputItem, OutputItem>(
     service: string, method: string, request: Request, options?: DuplexCallOptions,
   ): MeshCallDuplexCall<InputItem, OutputItem> {
-    throw new MeshCallError("method_not_found", "duplex methods are WebSocket-only", {
-      details: { source: "client", reason: "duplex_over_http" },
-    });
-  }
-
-  // -- built-in Router services -----------------------------------------
-
-  public async listServices(options?: CallOptions): Promise<RegistryService[]> {
-    const result = await this.unary<Record<string, never>, { services: RegistryService[] }>(
-      REGISTRY_SERVICE, "list", {}, { idempotent: true, ...options },
-    );
-    return result.services ?? [];
-  }
-
-  public describeService(service: string, options?: CallOptions): Promise<RegistryService> {
-    return this.unary(REGISTRY_SERVICE, "describe", { service: normalizeScopeService(service) }, { idempotent: true, ...options });
-  }
-
-  public whoami(options?: CallOptions): Promise<RouterIdentity> {
-    return this.unary(ROUTER_AUTH_SERVICE, "whoami", {}, { idempotent: true, ...options });
-  }
-
-  public issueToken(
-    scopes: ReadonlyArray<RouterScope>, ttlSeconds = 900, options?: CallOptions,
-  ): Promise<IssuedToken> {
-    return this.unary(ROUTER_AUTH_SERVICE, "issue_token", {
-      scopes: scopes.map((scope) => ({ ...scope, service: normalizeScopeService(scope.service) })),
-      ttl_seconds: ttlSeconds,
-    }, options);
-  }
-
-  public async revokeToken(tokenId: string, options?: CallOptions): Promise<boolean> {
-    const result = await this.unary<{ token_id: string }, { revoked: boolean }>(
-      ROUTER_AUTH_SERVICE, "revoke_token", { token_id: tokenId }, { idempotent: true, ...options },
-    );
-    return result.revoked;
+    return this.transport.duplex(service, method, request, options);
   }
 }

@@ -10,7 +10,8 @@ from meshcall import (
     ClientBase,
     ContractError,
     DuplexChannel,
-    Router,
+    LocalRouter,
+    Mesh,
     RpcContext,
     StreamKind,
     dependency,
@@ -19,7 +20,6 @@ from meshcall import (
     meta,
     mutates,
     query,
-    serve,
     service,
     stream,
 )
@@ -246,11 +246,14 @@ async def test_di_meta_and_four_shapes_end_to_end() -> None:
     from meshcall import InvalidArgumentError
 
     _lifecycle_events.clear()
-    router = Router(listen="ws://127.0.0.1:0")
+    local_router = LocalRouter(port=0)
+    server_mesh = Mesh(local_router).mount(Workspace())
     async with (
-        serve(Workspace(), router=router, access_log=False) as server,
-        WorkspaceClient.connect(server.url) as ws,
+        local_router,
+        server_mesh.serve(access_log=False),
+        Mesh(local_router) as client_mesh,
     ):
+        ws = WorkspaceClient(client_mesh)
         # Missing required metadata -> InvalidArgumentError
         with pytest.raises(InvalidArgumentError, match="x-user-id"):
             await ws.stat_file("/etc/hosts")

@@ -1,14 +1,4 @@
-"""An HTTP-only Router for clients.
-
-``HTTPRouter`` speaks the Router's HTTP v1 API instead of a WebSocket. It is a
-drop-in client transport: pass it to a generated client
-(``ChatClient(http_router)`` / ``await ChatClient.connect(http_router)``) and
-the same typed methods work over HTTP. It has no server side: it cannot
-register services, and duplex methods are unavailable (the Router answers
-405).
-
-Requires ``httpx``; install ``meshcall[http]``.
-"""
+"""Internal HTTP v1 transport used by :class:`meshcall.Mesh` for ``http(s)://`` Router endpoints."""
 
 from __future__ import annotations
 
@@ -25,21 +15,7 @@ from pydantic import BaseModel, ValidationError
 
 from meshcall.context import DEFAULT_RETRY, RetryPolicy
 from meshcall.errors import MeshCallError, ProtocolError
-from meshcall.router_auth import (
-    AUTH_SERVICE,
-    REGISTRY_SERVICE,
-    IssuedToken,
-    RegistryService,
-    RouterCredentials,
-    RouterIdentity,
-    _DescribeServiceRequest,
-    _Empty,
-    _IssueRequest,
-    _ListServicesResult,
-    _normalize_scope_service,
-    _RevokeRequest,
-    _RevokeResult,
-)
+from meshcall.router_auth import RouterCredentials
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 
 
@@ -122,14 +98,8 @@ def _error_from(status: int, body: Any) -> MeshCallError:
     )
 
 
-class HTTPRouter:
-    """A client-only Router that talks HTTP instead of WebSocket.
-
-    ``url`` is the Router's origin (``http://``, ``https://``, or ``ws(s)://``,
-    which is converted). ``credentials`` (or ``token``) authenticate every
-    request. ``headers`` add request headers (for a gateway in front of the
-    Router).
-    """
+class _HttpTransport:
+    """Internal HTTP v1 client transport used by :class:`Mesh`."""
 
     def __init__(
         self,
@@ -145,12 +115,8 @@ class HTTPRouter:
         if credentials is not None and token is not None:
             raise ValueError("Pass credentials or token, not both")
         self.base = url.rstrip("/")
-        if self.base.startswith("ws://"):
-            self.base = "http://" + self.base.removeprefix("ws://")
-        elif self.base.startswith("wss://"):
-            self.base = "https://" + self.base.removeprefix("wss://")
         if not self.base.startswith(("http://", "https://")):
-            raise ValueError("HTTPRouter needs an http(s):// Router URL")
+            raise ValueError("HTTP transport needs an http(s):// Router URL")
         self.credentials = credentials or (
             RouterCredentials.bearer(token) if token is not None else None
         )
@@ -163,11 +129,6 @@ class HTTPRouter:
         self._closed = False
 
     # -- lifecycle ---------------------------------------------------------
-
-    @classmethod
-    async def connect(cls, url: str, **options: Any) -> Self:
-        """Construct a client; HTTP connects per request."""
-        return cls(url, **options)
 
     @property
     def is_connected(self) -> bool:
@@ -462,54 +423,6 @@ class HTTPRouter:
             details={"source": "client", "reason": "duplex_over_http"},
         )
 
-    # -- built-in Router services -----------------------------------------
-
-    async def list_services(self) -> list[RegistryService]:
-        result = await self.call_unary(
-            REGISTRY_SERVICE, "list", _Empty(), _ListServicesResult
-        )
-        return result.services
-
-    async def describe_service(self, service: str) -> RegistryService:
-        from meshcall.contract import normalize_service_name
-
-        try:
-            normalized = normalize_service_name(service)[0]
-        except Exception:  # noqa: BLE001
-            normalized = service
-        return await self.call_unary(
-            REGISTRY_SERVICE,
-            "describe",
-            _DescribeServiceRequest(service=normalized),
-            RegistryService,
-        )
-
-    async def whoami(self) -> RouterIdentity:
-        return await self.call_unary(AUTH_SERVICE, "whoami", _Empty(), RouterIdentity)
-
-    async def issue_token(self, scopes: Any, ttl_seconds: int = 900) -> IssuedToken:
-        normalized = [
-            scope.model_copy(
-                update={"service": _normalize_scope_service(scope.service)}
-            )
-            for scope in scopes
-        ]
-        return await self.call_unary(
-            AUTH_SERVICE,
-            "issue_token",
-            _IssueRequest(ttl_seconds=ttl_seconds, scopes=normalized),
-            IssuedToken,
-        )
-
-    async def revoke_token(self, token_id: str) -> bool:
-        result = await self.call_unary(
-            AUTH_SERVICE,
-            "revoke_token",
-            _RevokeRequest(token_id=token_id),
-            _RevokeResult,
-        )
-        return result.revoked
-
 
 def _dump_item(input_type: type[BaseModel | str | bytes], item: Any) -> Any:
     if isinstance(item, BaseModel):
@@ -527,7 +440,7 @@ class _HTTPServerStream(RpcServerStream[Any]):
 
     def __init__(
         self,
-        router: HTTPRouter,
+        router: _HttpTransport,
         service: str,
         method: str,
         request: BaseModel,
@@ -566,7 +479,7 @@ class _HTTPServerStream(RpcServerStream[Any]):
             body = await response.aread()
             await self._context.__aexit__(None, None, None)
             self._response = None
-            raise _error_from(response.status_code, HTTPRouter._env(body))
+            raise _error_from(response.status_code, _HttpTransport._env(body))
         self._lines = response.aiter_lines()
 
     def __aiter__(self) -> Self:
@@ -637,7 +550,7 @@ class _HTTPSubscription(RpcServerStream[Any]):
 
     def __init__(
         self,
-        router: HTTPRouter,
+        router: _HttpTransport,
         service: str,
         method: str,
         request: BaseModel,

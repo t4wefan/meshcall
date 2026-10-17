@@ -52,9 +52,9 @@ the same JSON envelope with an HTTP status (400, 401, 403, 404, 429, 503,
 504…). `GET /v1/openapi.json` describes every method you may call (feed it to
 Swagger UI or a client generator); `GET /v1/services` is the Registry.
 `meshcall call … --http` does the same from the CLI. In a browser or edge
-runtime, pass `new MeshCallHttpClient(url, { token })` from `meshcall/web`
-to the generated TypeScript client instead of `MeshCallClient` (no duplex;
-add `--http-cors-origin` for other origins).
+runtime, pass `new Mesh(new Router("https://…"), { token })` from
+`meshcall/web` to the generated TypeScript client (no duplex; add
+`--http-cors-origin` for other origins).
 
 ## Read errors
 
@@ -85,13 +85,13 @@ normalised (`chat` → `chat.v0`; `chat.v1`, `demo.v1.Greeting` are fine).
 Docstrings/descriptions and annotations are part of the contract: tooling,
 retries and LLM tool exposure depend on them.
 
-Python (`@query`, `@stream`, `@mutates`, `DuplexChannel`, `@dependency`, `meta`):
+Python (`@query`, `@stream`, `@mutates`, `DuplexChannel`, `@dependency`, `meta`, `Router`, `Mesh`):
 
 ```python
 from collections.abc import AsyncIterator
 from typing import Annotated
 from pydantic import BaseModel
-from meshcall import DuplexChannel, Router, dependency, meta, mutates, query, run, service, stream
+from meshcall import DuplexChannel, Mesh, Router, dependency, meta, mutates, query, service, stream
 
 class Message(BaseModel):
     text: str
@@ -132,13 +132,15 @@ class Chat:
             await channel.send(Message(text=f"ack {msg.text}"))
 
 if __name__ == "__main__":
-    run(Chat(), router=Router("ws://127.0.0.1:8765"))
+    mesh = Mesh(Router("ws://127.0.0.1:8765"))
+    mesh.mount(Chat())
+    mesh.run()
 ```
 
-TypeScript (`@query`, `@stream`, `@mutates`, `dependency`, `meta`, `serve`, `Router`):
+TypeScript (`@query`, `@stream`, `@mutates`, `dependency`, `meta`, `Router`, `Mesh`):
 
 ```typescript
-import { dependency, meta, mutates, query, Router, serve, service, stream, z, type DuplexChannel } from "meshcall";
+import { dependency, meta, Mesh, mutates, query, Router, service, stream, z, type DuplexChannel } from "meshcall";
 
 const Message = z.object({ text: z.string() }).meta({ id: "Message" });
 
@@ -159,11 +161,13 @@ export class Chat {
   }
 }
 
-await serve(new Chat(), { router: new Router("ws://127.0.0.1:8765") });
+const mesh = new Mesh(new Router("ws://127.0.0.1:8765"));
+mesh.mount(new Chat());
+await mesh.serve();
 ```
 
-Go (`github.com/t4wefan/meshcall/meshcall-go`; `HandleUnary` and friends,
-`Dependency`, `Meta[T]`, `WithDependencies`, `Serve`, `NewRouter`):
+Go (`github.com/t4wefan/meshcall/meshcall-go`; `ServiceMeta` or `HandleUnary` and friends,
+`Dependency`, `Meta[T]`, `WithDependencies`, `NewRouter`, `NewMesh`):
 
 ```go
 chat := meshcall.NewService("chat.v1.Chat", meshcall.Describe("Chat sessions."))
@@ -171,7 +175,9 @@ meshcall.HandleUnary(chat, "send", func(ctx *meshcall.Context, req SendRequest) 
 	return Message{Text: "echo " + req.Text}, nil
 }, meshcall.Doc("Append a message and return the reply."), meshcall.Idempotent())
 
-_ = meshcall.Serve(ctx, []meshcall.Service{chat}, meshcall.WithRouter(meshcall.NewRouter("ws://127.0.0.1:8765")))
+mesh := meshcall.NewMesh(meshcall.NewRouter("ws://127.0.0.1:8765"))
+mesh.Mount(chat)
+_ = mesh.Serve(ctx)
 ```
 
 Rules the runtime enforces or warns about (set `MESHCALL_STRICT=1` while
@@ -188,12 +194,12 @@ you edit so warnings fail fast with a `hint` that says exactly what to add):
   only retry idempotent calls.
 - Raise `MeshCallError(code, message, retryable=…, details=…)` for
   application errors; anything else becomes a sanitised `internal`.
-- Dependencies (`@dependency` / `dependency()` / `Provide()`) and `meta("key")`
+- Dependencies (`@dependency` / `dependency()` / `Dependency()`) and `meta("key")`
   are resolved before the handler runs and are never exposed in the public
   contract or generated clients. `ctx: RpcContext` and `logger: RpcLogger`
   remain available when needed.
 
-## Unified `Router` Object & Calling from Code
+## 4-Layer Architecture: `Router` / `LocalRouter` + `Mesh` + Generated Client
 
 Generate a typed client instead of hand-writing frames:
 
@@ -203,35 +209,35 @@ uv run meshcall generate my_app.service:Chat --language typescript --output gene
 meshcall generate service.meshcall.json --language go --output generated/chatgo
 ```
 
-`Router` is the unified handle for:
-1. Passing to `serve(...)` / `run(...)` when starting services,
-2. Sharing a single connection across multiple generated clients (`ChatClient.connect(router)`), and
-3. Calling built-in Router services (`router.list_services()`, `router.describe_service(name)`, `router.whoami()`, `router.issue_token(...)`, `router.revoke_token(...)`).
+MeshCall separates endpoint topology (`Router` / `LocalRouter`) from peer runtime (`Mesh`):
+1. **`Router(url)`** is a pure endpoint descriptor for a remote/external Router (defaults to `MESHCALL_ROUTER_URL` or `"ws://127.0.0.1:8765"` when called with no arguments; accepts `ws(s)://`, `http(s)://`, `unix://`, `pipe://`, or a list of failover URLs). **`LocalRouter(port=0)`** explicitly starts and stops a local `meshcall-router` OS subprocess.
+2. **`Mesh(router, ...)`** is the peer runtime that connects to a `Router` or `LocalRouter`, mounts services (`mesh.mount(...)` then `mesh.serve()` / `mesh.run()`), multiplexes client calls (`ChatClient(mesh)`), and exposes built-in Router services via `mesh.registry` (`list`, `describe`) and `mesh.auth` (`whoami`, `issue_token`, `revoke_token`). Passing an `http(s)://` URL to `Router` automatically selects the HTTP client transport on `Mesh`.
 
 Per-call options (`timeout`, `idle_timeout`, `metadata`, `idempotency_key`, `instance`)
 are configured via `.with_options(...)` / `.withOptions(...)` / `.WithOptions(...)` so
 business method signatures stay 100% identical to the server handler:
 
 ```python
-router = Router("ws://127.0.0.1:8765", auth=RouterCredentials.bearer("..."))
-async with router:
-    services = await router.list_services()
-    chat = ChatClient.connect(router)
+async with Mesh(Router("ws://127.0.0.1:8765"), token="...") as mesh:
+    services = await mesh.registry.list()
+    chat = ChatClient(mesh)
     reply = await chat.with_options(timeout=5.0, idempotency_key="k1").send("s1", "hello")
 ```
 
 TypeScript:
 ```typescript
-const router = new Router("ws://127.0.0.1:8765", { token: "..." });
-const chat = ChatClient.connect(router);
+await using mesh = await Mesh.connect(new Router("ws://127.0.0.1:8765"), { token: "..." });
+const services = await mesh.registry.list();
+const chat = new ChatClient(mesh);
 const reply = await chat.withOptions({ timeoutMs: 5000, idempotencyKey: "k1" }).send("s1", "hello");
 ```
 
 Go:
 ```go
-router := meshcall.NewRouter("ws://127.0.0.1:8765", meshcall.WithAuthToken("..."))
-defer router.Close()
-chat := chatclient.NewChatClient(router)
+mesh, err := meshcall.ConnectMesh(ctx, meshcall.NewRouter("ws://127.0.0.1:8765"), meshcall.WithToken("..."))
+defer mesh.Close()
+services, err := mesh.Registry().List(ctx)
+chat := chatclient.NewChatClient(mesh)
 reply, err := chat.WithOptions(meshcall.CallOptions{Timeout: 5 * time.Second}).Send(ctx, "s1", "hello")
 ```
 
@@ -350,10 +356,7 @@ my_app/
 
 **Testing**
 
-- Start a real `WebSocketRouter(host="127.0.0.1", port=0)` and register `RpcServer`
-  with `WebSocketRouterServerDriver` (TypeScript: `new MeshCallServer({ services, router: { endpoint } })`)
-  in a fixture, then call it through the generated client: this exercises
-  routing, validation, streaming and error mapping end to end.
+- Start a real `LocalRouter(port=0)` (`async with LocalRouter(port=0) as router:`), mount the service on `Mesh(router)` (`mesh.mount(svc)` and `async with mesh.serve():`), and call it through the generated client (`ChatClient(mesh)`): this exercises routing, validation, streaming and error mapping end to end.
 - Assert on error *classes* and `details`, not message text.
 
 ## Operate

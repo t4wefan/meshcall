@@ -1,8 +1,7 @@
 /**
- * What generated clients need from a client runtime. `MeshCallClient`
- * (WebSocket), `Router` (WebSocket) and `MeshCallHttpClient` (fetch over HTTP
- * v1, from `meshcall/web`) satisfy it; duplex calls need `MeshCallClient` or
- * `Router`.
+ * What generated clients need from a client runtime. `Mesh` (from `meshcall`
+ * or `meshcall/web`) and `MeshCallClient` satisfy it; duplex calls need a
+ * WebSocket `Mesh` or `MeshCallClient`.
  */
 import type { CallOptions, DuplexCallOptions, MeshCallDuplexCall, SubscriptionOptions } from "./client.js";
 import type { Metadata } from "./protocol.js";

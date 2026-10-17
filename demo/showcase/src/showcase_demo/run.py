@@ -1,11 +1,11 @@
-"""Run the complete MeshCall showcase against an embedded Router."""
+"""Run the complete MeshCall showcase against a LocalRouter."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
 
-from meshcall import Router, serve
+from meshcall import LocalRouter, Mesh, Router
 from showcase_demo.generated_client import (
     NumberItem,
     ShowcaseServiceClient,
@@ -21,19 +21,18 @@ async def number_items() -> AsyncIterator[NumberItem]:
 
 async def run_demo() -> None:
     """Serve the service, then call it with one generated client."""
-    async with serve(
-        ShowcaseService(greeting_prefix="Hi"),
-        router=Router("ws://127.0.0.1:0"),
-        access_log=False,
-    ) as server:
-        router = await Router.connect(server.url)
-        client = (ShowcaseServiceClient.connect(router)).with_options(
-            metadata={"x-caller-id": "showcase"},
-            timeout=10,
-        )
-        try:
+    async with LocalRouter(port=0) as local_router:
+        server_mesh = Mesh(local_router).mount(ShowcaseService(greeting_prefix="Hi"))
+        async with (
+            server_mesh.serve(access_log=False),
+            Mesh(Router(local_router.url)) as mesh,
+        ):
+            client = ShowcaseServiceClient(mesh).with_options(
+                metadata={"x-caller-id": "showcase"},
+                timeout=10,
+            )
             print("0. Router registry")
-            services = await router.list_services()
+            services = await mesh.registry.list()
             print(f"   services={[service.name for service in services]}")
 
             print("1. query with expanded parameters")
@@ -57,8 +56,6 @@ async def run_demo() -> None:
             print("5. client stream")
             total = await client.sum_values(10, number_items())
             print(f"   total={total.total}")
-        finally:
-            await router.close()
 
 
 def main() -> None:

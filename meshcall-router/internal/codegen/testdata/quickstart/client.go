@@ -21,7 +21,7 @@ type CounterServiceClient struct {
 	rpc meshcall.Caller
 }
 
-// NewCounterServiceClient wraps a WebSocket client, a Router or an HTTPRouter.
+// NewCounterServiceClient wraps a Mesh (or any Caller).
 func NewCounterServiceClient(rpc meshcall.Caller) *CounterServiceClient {
 	return &CounterServiceClient{rpc: rpc}
 }

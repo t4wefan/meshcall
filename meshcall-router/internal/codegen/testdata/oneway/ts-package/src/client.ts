@@ -6,14 +6,6 @@ import { StreamItemSchema, StreamResultSchema } from "./models.js";
 export class OneWayStreamServiceClient {
   public constructor(private readonly rpc: MeshCallRpc) {}
 
-  /** Connect the Router or client it is given (when it can) and return this typed client. */
-  public static async connect(rpc: MeshCallRpc): Promise<OneWayStreamServiceClient> {
-    const opener = rpc as unknown as { connect?: () => Promise<void>; open?: () => Promise<unknown> };
-    if (typeof opener.connect === "function") await opener.connect();
-    else if (typeof opener.open === "function") await opener.open();
-    return new OneWayStreamServiceClient(rpc);
-  }
-
   public withOptions(options: CallOptions): OneWayStreamServiceClient {
     return new OneWayStreamServiceClient(this.rpc.withOptions(options));
   }

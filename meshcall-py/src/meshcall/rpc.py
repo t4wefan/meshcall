@@ -1,9 +1,9 @@
 """The transport-neutral client surface generated clients are built on.
 
-A generated client calls ``MeshCallRpc.call_*``; the WebSocket ``ClientBase``,
-``Router`` and the HTTP-only ``HTTPRouter`` all implement it. Swapping the
-transport therefore never touches generated code: pass a different RPC object
-to the generated client's constructor (or to ``connect``).
+A generated client calls ``MeshCallRpc.call_*``; ``Mesh`` and the low-level
+``ClientBase`` implement it. Swapping the transport therefore never touches
+generated code: pass a ``Mesh`` configured with any ``Router`` or
+``LocalRouter`` to the generated client's constructor.
 
 The methods mirror ``ClientBase``'s, so the protocol is structural: anything
 with those methods works, including a hand-written test double.
@@ -116,9 +116,8 @@ class MeshCallRpc(Protocol):
 class RpcClient:
     """Base class for generated clients.
 
-    Wraps any :class:`MeshCallRpc`; for convenience it also accepts a
-    ``ClientDriver`` (wrapped in the WebSocket ``ClientBase``) so existing
-    ``Client(WebSocketClientDriver(...))`` construction keeps working.
+    Wraps a :class:`Mesh` (or any :class:`MeshCallRpc`); for low-level tests it
+    also accepts a ``ClientDriver`` (wrapped in ``ClientBase``).
     """
 
     def __init__(self, rpc: MeshCallRpc | Any) -> None:
@@ -130,6 +129,13 @@ class RpcClient:
             self._rpc = rpc
             self._owns_rpc = False
             return
+        from meshcall.router import LocalRouter, Router
+
+        if isinstance(rpc, (Router, LocalRouter)):
+            raise TypeError(
+                "Generated clients wrap a Mesh, not a Router directly; "
+                "pass Mesh(router) instead"
+            )
         from meshcall.client import ClientBase
 
         self._rpc = cast(MeshCallRpc, ClientBase(rpc))  # type: ignore[arg-type]
@@ -137,7 +143,7 @@ class RpcClient:
 
     @property
     def rpc(self) -> MeshCallRpc:
-        """The transport behind this client (for ``Router.connect``-style sharing)."""
+        """The transport behind this client."""
         return self._rpc
 
     def with_options(
@@ -163,41 +169,8 @@ class RpcClient:
         )
         return clone
 
-    @classmethod
-    def connect(
-        cls,
-        router: MeshCallRpc | str | list[str] | None = None,
-        *,
-        url: str | list[str] | None = None,
-        unix_path: str | None = None,
-        pipe: str | None = None,
-        **options: Any,
-    ) -> Self:
-        """Wrap an RPC/Router, or build a client for a Router address.
-
-        With no argument it uses ``MESHCALL_ROUTER_URL`` (default
-        ``ws://127.0.0.1:8765``). The connection is opened lazily by the
-        first call, so this stays synchronous and works as
-        ``async with ChatClient.connect() as client:``. Pass a ``Router`` or
-        an ``HTTPRouter`` to share its connection.
-        """
-        if hasattr(router, "call_unary"):
-            return cls(router)  # type: ignore[arg-type]
-        from meshcall.router import Router
-
-        instance = cls(
-            Router(
-                router if router is not None else url,  # type: ignore[arg-type]
-                unix_path=unix_path,
-                pipe=pipe,
-                **options,
-            )
-        )
-        instance._owns_rpc = True
-        return instance
-
     async def close(self) -> None:
-        """Close the transport this client owns; a shared one is left open."""
+        """Close the transport this client owns; a shared Mesh is left open."""
         if not self._owns_rpc:
             return
         stop = getattr(self._rpc, "close", None) or getattr(self._rpc, "stop", None)
@@ -205,7 +178,7 @@ class RpcClient:
             await stop()
 
     async def stop(self) -> None:
-        """Alias for :meth:`close`, kept for generated clients' earlier API."""
+        """Alias for :meth:`close`, kept for low-level driver tests."""
         await self.close()
 
     async def __aenter__(self) -> Self:
