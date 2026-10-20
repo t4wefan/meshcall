@@ -9,8 +9,11 @@
  * here, because they may run before any binary exists.
  */
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { findCliBinary, findRouterBinary, installRouter } from "./router.js";
+
+const exportHelper = fileURLToPath(new URL("./export.js", import.meta.url));
 
 const args = process.argv.slice(2);
 try {
@@ -34,7 +37,14 @@ try {
       await installRouter(); // first use in a fresh environment
       binary = findCliBinary();
     }
-    const result = spawnSync(binary, args, { stdio: "inherit" });
+    const result = spawnSync(binary, args, {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        MESHCALL_NODE: process.execPath,
+        MESHCALL_TS_EXPORT: exportHelper,
+      },
+    });
     process.exit(result.status ?? 1);
   }
 } catch (error) {

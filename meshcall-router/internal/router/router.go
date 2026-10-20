@@ -75,6 +75,9 @@ type Config struct {
 	// MetricsListen, when set, serves Prometheus metrics on this TCP address
 	// (never on the public listener: labels name services and methods).
 	MetricsListen string
+	// InspectOnly, when true, retains registered service contracts after
+	// instances disconnect and refuses calls to non-management services.
+	InspectOnly bool
 }
 
 const (
@@ -224,6 +227,7 @@ type Router struct {
 	peers        map[*peer]struct{}
 	instances    map[string]*peer
 	services     map[string]*pool
+	serviceOrder []string
 	routes       map[string]*route
 	deadlines    deadlineHeap
 	deadlineWake chan struct{}
@@ -456,6 +460,19 @@ func (r *Router) Snapshot() Snapshot {
 		}
 	}
 	return snapshot
+}
+
+// OrderedContracts returns registered portable contract entries in registration order.
+func (r *Router) OrderedContracts() []json.RawMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]json.RawMessage, 0, len(r.serviceOrder))
+	for _, name := range r.serviceOrder {
+		if pool := r.services[name]; pool != nil && pool.contract != nil {
+			out = append(out, pool.contract)
+		}
+	}
+	return out
 }
 
 func (r *Router) Ready() Ready          { return r.ready }
@@ -808,6 +825,9 @@ func (r *Router) register(p *peer, f frame) error {
 	for _, s := range f.Services {
 		if r.services[s.Name] == nil {
 			r.services[s.Name] = &pool{targeted: s.Targeted, methods: make(map[string]method), cursors: make(map[string]int)}
+			if !slices.Contains(r.serviceOrder, s.Name) {
+				r.serviceOrder = append(r.serviceOrder, s.Name)
+			}
 		}
 		pool := r.services[s.Name]
 		for _, m := range s.Methods {
@@ -852,6 +872,10 @@ func (r *Router) forward(p *peer, f frame) {
 		}
 		if strings.HasPrefix(f.Service, reservedPrefix) {
 			r.management(p, f)
+			return
+		}
+		if r.config.InspectOnly {
+			refuse(routerError(f.CallID, "permission_denied", "Router is inspect-only", false, "inspect_only", ""))
 			return
 		}
 		if limit := r.config.MaxCallsPerConnection; limit > 0 && p.calls >= limit {
@@ -990,7 +1014,10 @@ func (r *Router) leavePools(p *peer) {
 		}
 		pool.instances = slices.DeleteFunc(pool.instances, func(candidate *peer) bool { return candidate == p })
 		if len(pool.instances) == 0 {
-			delete(r.services, s.Name)
+			if !r.config.InspectOnly {
+				delete(r.services, s.Name)
+				r.serviceOrder = slices.DeleteFunc(r.serviceOrder, func(name string) bool { return name == s.Name })
+			}
 			continue
 		}
 		pool.rebuildMethods()

@@ -30,6 +30,11 @@ type PackageOptions struct {
 // PythonPackage renders every file of an installable uv package, keyed by
 // path relative to the package root.
 func PythonPackage(service *contract.Service, opts PackageOptions) map[string]string {
+	return PythonPackageForServices([]*contract.Service{service}, opts)
+}
+
+// PythonPackageForServices renders every file of an installable uv package for one or more services.
+func PythonPackageForServices(services []*contract.Service, opts PackageOptions) map[string]string {
 	if opts.PackageVersion == "" {
 		opts.PackageVersion = "0.1.0"
 	}
@@ -38,27 +43,39 @@ func PythonPackage(service *contract.Service, opts PackageOptions) map[string]st
 	}
 	distribution := opts.PackageName
 	if distribution == "" {
-		distribution = defaultPackageName(service)
+		distribution = defaultPackageName(services[0])
 	}
 	module := pythonModuleName(distribution)
-	className := opts.ClassName
-	if className == "" {
-		className = PythonClientClassName(service)
+	var classNames []string
+	for _, service := range services {
+		cn := ""
+		if len(services) == 1 {
+			cn = opts.ClassName
+		}
+		if cn == "" {
+			cn = PythonClientClassName(service)
+		}
+		classNames = append(classNames, cn)
 	}
-	typeNames := PythonTypeNames(service)
+	typeNames := PythonTypeNamesForServices(services)
 	src := filepath.ToSlash(filepath.Join("src", module))
 	return map[string]string{
 		"pyproject.toml":     pythonPyproject(distribution, module, opts.PackageVersion, opts.MeshcallRequirement),
-		"README.md":          pythonReadme(distribution, module, className, typeNames),
-		src + "/models.py":   RenderPythonModels(service),
-		src + "/client.py":   RenderPythonClientModule(service, PythonOptions{ClassName: className}),
-		src + "/__init__.py": pythonInit(className, typeNames),
+		"README.md":          pythonReadme(distribution, module, classNames, typeNames),
+		src + "/models.py":   RenderPythonModelsForServices(services),
+		src + "/client.py":   RenderPythonClientModuleForServices(services, PythonOptions{ClassName: opts.ClassName}),
+		src + "/__init__.py": pythonInit(classNames, typeNames),
 		src + "/py.typed":    "",
 	}
 }
 
 // TypeScriptPackage renders every file of a Yarn package.
 func TypeScriptPackage(service *contract.Service, opts PackageOptions) (map[string]string, error) {
+	return TypeScriptPackageForServices([]*contract.Service{service}, opts)
+}
+
+// TypeScriptPackageForServices renders every file of a Yarn package for one or more services.
+func TypeScriptPackageForServices(services []*contract.Service, opts PackageOptions) (map[string]string, error) {
 	if opts.PackageVersion == "" {
 		opts.PackageVersion = "0.1.0"
 	}
@@ -70,28 +87,35 @@ func TypeScriptPackage(service *contract.Service, opts PackageOptions) (map[stri
 	}
 	name := opts.PackageName
 	if name == "" {
-		name = defaultPackageName(service)
+		name = defaultPackageName(services[0])
 	}
-	className := opts.ClassName
-	if className == "" {
-		className = TypeScriptClientClassName(service)
+	var classNames []string
+	for _, service := range services {
+		cn := ""
+		if len(services) == 1 {
+			cn = opts.ClassName
+		}
+		if cn == "" {
+			cn = TypeScriptClientClassName(service)
+		}
+		classNames = append(classNames, cn)
 	}
-	models, err := RenderTypeScriptModels(service, TypeScriptOptions{RuntimeImport: opts.RuntimeImport})
+	models, err := RenderTypeScriptModelsForServices(services, TypeScriptOptions{RuntimeImport: opts.RuntimeImport})
 	if err != nil {
 		return nil, err
 	}
-	client, err := RenderTypeScriptClientModule(service, TypeScriptOptions{ClassName: className, RuntimeImport: opts.RuntimeImport})
+	client, err := RenderTypeScriptClientModuleForServices(services, TypeScriptOptions{ClassName: opts.ClassName, RuntimeImport: opts.RuntimeImport})
 	if err != nil {
 		return nil, err
 	}
 	return map[string]string{
 		"package.json":  typescriptPackageJSON(name, opts.PackageVersion, opts.RuntimeImport, opts.RuntimeVersion),
 		"tsconfig.json": typescriptTsconfig(),
-		"README.md":     typescriptReadme(name, className, TypeScriptTypeNames(service)),
+		"README.md":     typescriptReadme(name, classNames, TypeScriptTypeNamesForServices(services)),
 		".gitignore":    "node_modules/\ndist/\n",
 		"src/models.ts": models,
 		"src/client.ts": client,
-		"src/index.ts":  "export * from \"./models.js\";\nexport { " + className + " } from \"./client.js\";\n",
+		"src/index.ts":  "export * from \"./models.js\";\nexport { " + strings.Join(classNames, ", ") + " } from \"./client.js\";\n",
 	}, nil
 }
 
@@ -159,24 +183,26 @@ func pythonPyproject(distribution, module, version, requirement string) string {
 		"package = true\n"
 }
 
-func pythonReadme(distribution, module, className string, typeNames []string) string {
-	imports := strings.Join(append([]string{className}, typeNames...), ", ")
+func pythonReadme(distribution, module string, classNames, typeNames []string) string {
+	imports := strings.Join(append(append([]string(nil), classNames...), typeNames...), ", ")
 	return "# " + distribution + "\n\n" +
 		"Generated MeshCall Python client package.\n\n" +
 		"```bash\nuv sync\nuv build\n```\n\n" +
 		"```python\nfrom " + module + " import " + imports + "\n```\n"
 }
 
-func pythonInit(className string, typeNames []string) string {
+func pythonInit(classNames, typeNames []string) string {
+	classes := append([]string(nil), classNames...)
+	sort.Strings(classes)
 	models := append([]string(nil), typeNames...)
 	sort.Strings(models)
-	exports := append([]string{className}, typeNames...)
+	exports := append(append([]string(nil), classNames...), typeNames...)
 	sort.Strings(exports)
 	quoted := make([]string, len(exports))
 	for i, e := range exports {
 		quoted[i] = pyStringRepr(e)
 	}
-	return "from .client import " + className + "\n" +
+	return "from .client import " + strings.Join(classes, ", ") + "\n" +
 		"from .models import " + strings.Join(models, ", ") + "\n\n" +
 		"__all__ = [" + strings.Join(quoted, ", ") + "]\n"
 }
@@ -233,8 +259,8 @@ func typescriptTsconfig() string {
 		"}\n"
 }
 
-func typescriptReadme(name, className string, typeNames []string) string {
-	imports := strings.Join(append([]string{className}, typeNames...), ", ")
+func typescriptReadme(name string, classNames, typeNames []string) string {
+	imports := strings.Join(append(append([]string(nil), classNames...), typeNames...), ", ")
 	return "# " + name + "\n\n" +
 		"Generated MeshCall TypeScript client package.\n\n" +
 		"```bash\nyarn install\nyarn build\n```\n\n" +

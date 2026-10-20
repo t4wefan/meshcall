@@ -87,10 +87,10 @@ This snippet introduces the three foundational building blocks of MeshCall:
 
 ### 2. Generate Client Code from the Contract
 
-Run one command in the directory containing `service.py` to generate `greeter_client.py` from `Greeter`, turning the service contract into typed Python methods and model classes:
+Run one command in the directory containing `service.py` to generate `greeter_client.py` from `Greeter`, turning the service contract into typed Python methods and model classes (single-file output is the default; pass `--package` when you want an installable package directory):
 
 ```bash
-uv run meshcall generate service:Greeter --single-file --output greeter_client.py
+uv run meshcall generate service:Greeter --output greeter_client.py
 ```
 
 Instead of passing string method names or raw dictionaries, you get full IDE autocomplete for methods and fields, along with static type checking for parameters and return values.
@@ -197,7 +197,7 @@ class Greeter:
 Regenerate the client and restart `server.py`, then consume the stream of `Tick` items in `client.py` with a standard `async for` loop:
 
 ```bash
-uv run meshcall generate service:Greeter --single-file --output greeter_client.py
+uv run meshcall generate service:Greeter --output greeter_client.py
 ```
 
 ```python
@@ -220,7 +220,7 @@ With `meshcall generate`, the same `service.py` generates a native TypeScript cl
 1. Generate the TypeScript client package directory `./greeter-ts` (named `meshcall-demo-v1-greeter-client` by default) from the `Greeter` class in `service.py`:
 
 ```bash
-uv run meshcall generate service:Greeter --language typescript --output ./greeter-ts
+uv run meshcall generate service:Greeter --language typescript --package --output ./greeter-ts
 ```
 
 2. Build the generated local package and add it to your TypeScript project:

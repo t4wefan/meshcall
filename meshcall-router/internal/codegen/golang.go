@@ -215,8 +215,13 @@ func goComment(text *string, indent string) string {
 
 // RenderGoClient renders one Go file: every payload type and a typed client.
 func RenderGoClient(service *contract.Service, opts GoOptions) string {
-	opts = opts.withDefaults(service)
-	registry := newTypeRegistry(service, goIdentifier)
+	return RenderGoClients([]*contract.Service{service}, opts)
+}
+
+// RenderGoClients renders one Go file for one or more services.
+func RenderGoClients(services []*contract.Service, opts GoOptions) string {
+	opts = opts.withDefaults(services[0])
+	registry := newMultiTypeRegistry(services, goIdentifier)
 	g := &goWriter{registry: registry}
 	var types strings.Builder
 	rendered := map[string]bool{}
@@ -239,21 +244,30 @@ func RenderGoClient(service *contract.Service, opts GoOptions) string {
 		}
 	}
 
-	className := goIdentifier(lastSegment(service.Name), "Service")
-	if majorVersion.MatchString(lastSegment(service.Name)) || numericPart.MatchString(lastSegment(service.Name)) {
-		className = goIdentifier(strings.TrimSuffix(GoPackageName(service), "client"), "Service")
-	}
-	className += "Client"
 	var client strings.Builder
-	client.WriteString(goComment(service.Description, ""))
-	client.WriteString("type " + className + " struct {\n\trpc meshcall.Caller\n}\n\n")
-	client.WriteString("// New" + className + " wraps a Mesh (or any Caller).\n")
-	client.WriteString("func New" + className + "(rpc meshcall.Caller) *" + className + " {\n\treturn &" + className + "{rpc: rpc}\n}\n\n")
-	client.WriteString("// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.\n")
-	client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithCallOptions(opts)}\n}\n\n")
-	client.WriteString("// ServiceName is the service these calls address.\nconst ServiceName = " + jsonDumps(service.Name) + "\n")
-	for _, m := range service.Methods {
-		g.writeMethod(&client, service, m, className)
+	for i, service := range services {
+		if i > 0 {
+			client.WriteString("\n")
+		}
+		className := goIdentifier(lastSegment(service.Name), "Service")
+		if majorVersion.MatchString(lastSegment(service.Name)) || numericPart.MatchString(lastSegment(service.Name)) {
+			className = goIdentifier(strings.TrimSuffix(GoPackageName(service), "client"), "Service")
+		}
+		className += "Client"
+		serviceConst := "ServiceName"
+		if len(services) > 1 {
+			serviceConst = className + "ServiceName"
+		}
+		client.WriteString(goComment(service.Description, ""))
+		client.WriteString("type " + className + " struct {\n\trpc meshcall.Caller\n}\n\n")
+		client.WriteString("// New" + className + " wraps a Mesh (or any Caller).\n")
+		client.WriteString("func New" + className + "(rpc meshcall.Caller) *" + className + " {\n\treturn &" + className + "{rpc: rpc}\n}\n\n")
+		client.WriteString("// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.\n")
+		client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithCallOptions(opts)}\n}\n\n")
+		client.WriteString("// " + serviceConst + " is the service these calls address.\nconst " + serviceConst + " = " + jsonDumps(service.Name) + "\n")
+		for _, m := range service.Methods {
+			g.writeMethod(&client, service, m, className, serviceConst)
+		}
 	}
 
 	var file strings.Builder
@@ -389,7 +403,7 @@ func (g *goWriter) goMethodParams(m *contract.Method, requestType string) ([]str
 	return decls, requestType + "{" + strings.Join(fields, ", ") + "}"
 }
 
-func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m *contract.Method, className string) {
+func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m *contract.Method, className, serviceConst string) {
 	reg := g.registry
 	request := reg.Name(m.Request)
 	name := goIdentifier(m.Name, "Call")
@@ -420,7 +434,7 @@ func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m 
 		options = "append([]meshcall.CallOption{" + strings.Join(defaults, ", ") + "}, opts...)..."
 	}
 	call := func(fn, types string, args ...string) string {
-		all := append([]string{"ctx", "c.rpc", "ServiceName", jsonDumps(m.Name)}, args...)
+		all := append([]string{"ctx", "c.rpc", serviceConst, jsonDumps(m.Name)}, args...)
 		return "meshcall." + fn + "[" + types + "](" + strings.Join(all, ", ") + ", " + options + ")"
 	}
 	switch m.Stream {

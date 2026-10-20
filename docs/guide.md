@@ -533,27 +533,30 @@ A duplex method streams input and output at the same time. Use it only when outp
 
 ## 4. Generating & Using Typed Clients
 
-**Benefit:** One Go CLI (`meshcall generate`) generates Python, TypeScript and Go clients from either a Python `module:Class` or a portable `.meshcall.json` file. Generated clients validate both requests **and** responses against the contract schema, and their method signatures mirror the server's business parameters 1:1 (generated TypeScript and Go methods additionally take an optional trailing options/opts argument).
+**Benefit:** One Go CLI (`meshcall generate` and `meshcall export`) extracts service contracts from one or more Python (`module[:Class]` / `file.py[:Class]`), TypeScript (`service.ts[:Class]`), Go (`./pkg[:Struct]`) or `.meshcall.json` sources by registering them against an ephemeral inspect-only Router, then generates Python, TypeScript or Go clients. Omitting `:Service` discovers all services in that source, and passing multiple services renders all of their client classes into the same output file or package with shared models deduplicated. Single-file output is the default; pass `--package` when you want an installable package directory. Generated clients validate both requests **and** responses against the contract schema, and their method signatures mirror the server's business parameters 1:1 (generated TypeScript and Go methods additionally take an optional trailing options/opts argument).
 
 ```bash
-# From a Python service -> Python uv package
-uv run meshcall generate my_app.service:TextProcessor --output generated/text-py
-
-# From a Python service -> Single-file Python client (great for scripts/demos)
+# Single-file Python client (the default) from a Python service
 uv run meshcall generate my_app.service:TextProcessor \
-  --single-file \
   --output src/my_app/text_client.py
 
-# From a Python service -> TypeScript Yarn/npm package
+# Installable Python uv package (--package)
+uv run meshcall generate my_app.service:TextProcessor \
+  --package \
+  --output generated/text-py
+
+# Installable TypeScript Yarn/npm package (--package)
 uv run meshcall generate my_app.service:TextProcessor \
   --language typescript \
+  --package \
   --output generated/text-ts
 
-# From a portable .meshcall.json contract (exported by TS `writeContract`,
-# Go `meshcall.WriteContract(path, svc)` or `meshcall export`)
-npx meshcall generate contract.meshcall.json \
+# Combine services across Python, TypeScript, and Go (auto-discovering all services
+# when :Service is omitted) into one client module or intermediate .meshcall.json:
+meshcall export my_app/service.py src/service.ts ./go_svc --output contract.meshcall.json
+meshcall generate my_app/service.py src/service.ts ./go_svc \
   --language python \
-  --output generated/py-client
+  --output generated/all_clients.py
 
 # Go client: one file, <output>/client.go (or the .go path you name)
 meshcall generate contract.meshcall.json \

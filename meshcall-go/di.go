@@ -767,6 +767,7 @@ func ReflectService(instance any, opts ...ServiceOption) (*Service, error) {
 	}
 	svc := &Service{
 		name:       full,
+		qualname:   st.Name(),
 		version:    version,
 		balance:    RoundRobin,
 		module:     st.PkgPath(),

@@ -27,36 +27,57 @@ type namedSchema struct {
 }
 
 func newTypeRegistry(service *contract.Service, identifier func(string, string) string) *typeRegistry {
+	return newMultiTypeRegistry([]*contract.Service{service}, identifier)
+}
+
+func newMultiTypeRegistry(services []*contract.Service, identifier func(string, string) string) *typeRegistry {
 	r := &typeRegistry{names: map[refKey]string{}, defNames: map[refKey]map[string]string{}}
 	seen := map[refKey]bool{}
-	for _, m := range service.Methods {
-		for _, ref := range []*contract.TypeRef{m.Request, m.Response, m.InputItem, m.OutputItem} {
-			if ref == nil {
-				continue
-			}
-			k := refKey{ref.Module, ref.Qualname}
-			if !seen[k] {
-				seen[k] = true
-				r.refs = append(r.refs, ref)
+	var allRefs []*contract.TypeRef
+	for _, service := range services {
+		for _, m := range service.Methods {
+			for _, ref := range []*contract.TypeRef{m.Request, m.Response, m.InputItem, m.OutputItem} {
+				if ref == nil {
+					continue
+				}
+				k := refKey{ref.Module, ref.Qualname}
+				if !seen[k] {
+					seen[k] = true
+					allRefs = append(allRefs, ref)
+				}
 			}
 		}
 	}
 	counts := map[string]int{}
-	for _, ref := range r.refs {
+	byBase := map[string][]namedSchema{}
+	for _, ref := range allRefs {
 		base := identifier(lastSegment(ref.Qualname), "Payload")
+		existing := ""
+		for _, candidate := range byBase[base] {
+			if contract.Equal(candidate.schema, ref.Schema) {
+				existing = candidate.name
+				break
+			}
+		}
+		if existing != "" {
+			r.names[refKey{ref.Module, ref.Qualname}] = existing
+			continue
+		}
+		r.refs = append(r.refs, ref)
 		counts[base]++
 		name := base
 		if counts[base] > 1 {
 			name = base + itoa(counts[base])
 		}
 		r.names[refKey{ref.Module, ref.Qualname}] = name
+		byBase[base] = append(byBase[base], namedSchema{name, ref.Schema})
 	}
 	taken := map[string]bool{}
 	for _, n := range r.names {
 		taken[n] = true
 	}
 	byKey := map[string][]namedSchema{}
-	for _, ref := range r.refs {
+	for _, ref := range allRefs {
 		names := map[string]string{}
 		if defs := ref.Schema.Obj("$defs"); defs != nil {
 			for _, key := range defs.Keys {

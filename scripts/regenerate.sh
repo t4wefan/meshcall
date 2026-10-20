@@ -59,7 +59,7 @@ single_file() { # single_file <target> <demo-dir> <module:Class> <relative outpu
   local dir=$2 spec=$3 out=$4
   # Assigned separately: `local a=$1 b="$(f "$a")"` expands $a before it is set.
   local tmp="$SCRATCH/$(basename "$dir").py"
-  py "$dir" meshcall generate "$spec" --single-file --output "$tmp"
+  py "$dir" meshcall generate "$spec" --output "$tmp"
   format_py "$tmp"
   compare "$tmp" "$dir/$out"
 }
@@ -72,7 +72,7 @@ ts_package() { # ts_package <target> <dir> <module:Class> <package-name> <runtim
   wanted "$1" || return 0
   local dir=$2 spec=$3 name=$4 runtime=$5 out=$6
   local tmp="$SCRATCH/$(basename "$dir")-ts"
-  py "$dir" meshcall generate "$spec" --language typescript --runtime-version "$runtime" --package-name "$name" --output "$tmp"
+  py "$dir" meshcall generate "$spec" --language typescript --package --runtime-version "$runtime" --package-name "$name" --output "$tmp"
   for f in client.ts models.ts index.ts; do compare "$tmp/src/$f" "$dir/$out/src/$f"; done
 }
 ts_package py2ts demo/py2ts py2ts_demo.service:PythonGreetingService meshcall-demo-py2ts-client file:../../../meshcall-ts ts-client
@@ -86,14 +86,13 @@ if wanted best-practice; then
   compare "$SCRATCH/best-practice-go/llmclient/client.go" best-practice/go-client/llmclient/client.go
 fi
 
-# --- Python package generated from a TypeScript service's contract ----------
+# --- Python package generated from a TypeScript service ---------------------
 if wanted ts2py; then
 (cd meshcall-ts && yarn -s install --frozen-lockfile && yarn -s build) >/dev/null
-# yarn keeps a stale copy of a file: dependency whose version did not change;
-# drop it so the contract is exported with the current runtime.
-(cd demo/ts2py/ts-server && rm -rf node_modules/meshcall && yarn -s install --frozen-lockfile --check-files >/dev/null && yarn -s run export-contract >/dev/null)
+py demo/ts2py meshcall export ts-server/src/service.ts --output "$SCRATCH/ts2py-service.meshcall.json"
+compare "$SCRATCH/ts2py-service.meshcall.json" demo/ts2py/ts-server/service.meshcall.json
 tmp="$SCRATCH/ts2py-py"
-py demo/ts2py meshcall generate ts-server/service.meshcall.json --language python --package-name meshcall-demo-ts2py-client --output "$tmp"
+py demo/ts2py meshcall generate ts-server/src/service.ts --language python --package --package-name meshcall-demo-ts2py-client --output "$tmp"
 format_py "$tmp"/src/meshcall_demo_ts2py_client/*.py
 for f in client.py models.py; do compare "$tmp/src/meshcall_demo_ts2py_client/$f" "demo/ts2py/py-client/src/meshcall_demo_ts2py_client/$f"; done
 fi
