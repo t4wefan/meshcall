@@ -1,13 +1,13 @@
 # TypeScript service
 
 This is the TypeScript side of the `ts2py` demo. It is a complete Yarn
-project, and its service exports a portable MeshCall contract:
+project:
 
 ```bash
 yarn install --frozen-lockfile
 yarn run check
-yarn run export-contract
+npx meshcall export src/service.ts --output service.meshcall.json
 ```
 
-The generated Python client in the parent demo project consumes
-`service.meshcall.json`.
+The parent demo project uses `meshcall generate ts-server/src/service.ts` to
+generate its Python client directly from `src/service.ts`.

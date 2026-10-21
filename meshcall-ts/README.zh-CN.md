@@ -179,13 +179,16 @@ npx meshcall router inspect --router ws://127.0.0.1:8765
 # 在终端直接发起调用
 npx meshcall call chat.v1.Chat.greet '{"name": "Alice"}'
 
-# 从可移植契约文件或 Python 服务生成 Python、TypeScript 或 Go 客户端
-npx meshcall generate service.meshcall.json --language typescript --output generated/chat-ts
-npx meshcall generate service.meshcall.json --language python --output generated/chat-py
-npx meshcall generate service.meshcall.json --language go --output internal/chat
+# 直接从源文件生成单文件客户端（默认）或完整包（--package）
+npx meshcall generate src/service.ts --language typescript --output src/generated_client.ts
+npx meshcall generate src/service.ts --language python --output chat_client.py
+npx meshcall generate src/service.ts --language go --output internal/chat
+
+# 通过临时只读 Router 导出可移植契约中间表示（*.meshcall.json）
+npx meshcall export src/service.ts --output service.meshcall.json
 ```
 
-`--language` 默认为 `python`。使用 `await writeContract([Chat], "service.meshcall.json")` 即可导出 TypeScript 服务的可移植契约文件。生成的客户端面向 `MeshCallRpc` 接口，方法与处理函数的参数列表一一对应。
+`--language` 默认为 `python`。`meshcall export` 与 `meshcall generate` 支持直接传入一个或多个 `.py`、`.ts` / `.js`、Go 包（`./pkg`）或 `.json` 契约文件（`file:Service` 指定单个服务，省略 `:Service` 自动发现源文件中的所有服务），并在进程内启动仅供查看的临时 Router 收集契约（也可以在代码中调用 `await writeContract([Chat], "service.meshcall.json")`）。生成的客户端面向 `MeshCallRpc` 接口，方法与处理函数的参数列表一一对应。
 
 ## 子路径导出
 

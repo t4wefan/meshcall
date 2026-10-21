@@ -151,12 +151,17 @@ when you want Python to start and stop a local `meshcall-router` subprocess.
 ## Generate and call a typed client
 
 ```bash
-# Generate an installable Python uv package (or add --single-file for a single .py file)
-uv run meshcall generate my_app.service:Chat --output generated/chat-client
+# Generate a single-file Python client (default) or an installable uv package (--package)
+uv run meshcall generate my_app/service.py:Chat --output generated/chat_client.py
+uv run meshcall generate my_app.service:Chat --package --output generated/chat-client
 
-# Generate a TypeScript package or a Go package from the same Python service
-uv run meshcall generate my_app.service:Chat --language typescript --output generated/chat-ts
+# Generate a TypeScript or Go client from one or more services in any language
+uv run meshcall generate my_app/service.py ts-service/src/service.ts ./go-svc \
+  --language typescript --output generated/clients.ts
 uv run meshcall generate my_app.service:Chat --language go --output internal/chatclient
+
+# Export the unified portable contract IR (*.meshcall.json)
+uv run meshcall export my_app/service.py --output chat.meshcall.json
 ```
 
 Call the service through the generated client in a second terminal while `server.py` is running:

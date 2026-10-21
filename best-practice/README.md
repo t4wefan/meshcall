@@ -123,6 +123,7 @@ cd best-practice
 uv run --locked --reinstall-package meshcall meshcall generate \
   best_practice.service:LlmService \
   --language typescript \
+  --package \
   --runtime-version file:../../meshcall-ts \
   --package-name meshcall-best-practice-client \
   --output ts-client

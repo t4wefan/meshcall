@@ -335,7 +335,7 @@ greeter := greeterclient.NewGreeterClient(mesh)
 
 ## Go
 
-Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)：同样的调用、错误、超时、流与 Router 特性，并通过同一套一致性测试（conformance suite）验证。`meshcall generate service.meshcall.json --language go --output internal/chatclient` 可为任一语言编写的服务生成类型化的 Go 客户端，`meshcall.WriteContract` 则导出 Go 服务的契约，供 Python 与 TypeScript 客户端使用。
+Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)：同样的调用、错误、超时、流与 Router 特性，并通过同一套一致性测试（conformance suite）验证。`meshcall generate <sources>... --language go --output internal/chatclient` 可为任一语言编写的服务生成类型化的 Go 客户端，而 `meshcall generate ./internal/workspace --language python|typescript` 则可直接从 Go 包生成 Python 与 TypeScript 客户端。
 
 ---
 

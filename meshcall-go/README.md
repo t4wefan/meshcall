@@ -169,11 +169,16 @@ writes the contract document for `meshcall generate`.
 
 ## A client
 
-Generate a typed client from any service's contract — written in Python,
-TypeScript or Go. For Go, `meshcall generate` writes a single `client.go`:
+Generate a typed client directly from one or more service sources — written in
+Python, TypeScript or Go — or from a `.meshcall.json` contract file. `meshcall
+export` and `meshcall generate` spin up an in-process inspect-only Router,
+register the discovered services, and extract their portable contract IR. For
+Go, `meshcall generate` writes a single `client.go`:
 
 ```bash
-meshcall generate chat.meshcall.json --language go --package-name chatclient --output internal/chatclient
+meshcall generate ./internal/workspace:Workspace --language go --package-name workspaceclient --output internal/workspaceclient
+meshcall generate ./internal/workspace --language python --output workspace_client.py
+meshcall export ./internal/workspace --output workspace.meshcall.json
 ```
 
 The file holds every payload type and a typed client whose methods mirror

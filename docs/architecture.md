@@ -5,15 +5,15 @@
 ## Layers
 
 ```text
-Python/Pydantic service ---- contract extraction ---+
-                                                    |
-TypeScript schema service ---- contract export -----+--> portable contract
-                                                    |       |
-Go struct-tagged service ---- WriteContract --------+       +--> Python uv package
-                                                            |
-                                                            +--> TypeScript Yarn package
-                                                            |
-                                                            +--> Go client file
+Python/Pydantic service ------+
+                              |
+TypeScript schema service ----+-- ephemeral inspect-only Router --> portable contract
+                              |    (meshcall export / generate)           |
+Go struct-tagged service -----+                                           +--> Python single file / uv package
+                                                                          |
+                                                                          +--> TypeScript single file / Yarn package
+                                                                          |
+                                                                          +--> Go client file
 
 Python RPC event loop <---- thread-safe bridge ----> service worker event loop
         |
