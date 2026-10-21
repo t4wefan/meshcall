@@ -35,6 +35,7 @@ func Sticky(field string) BalancePolicy {
 // NewService and add methods with HandleUnary, HandleServerStream, … .
 type Service struct {
 	name         string
+	qualname     string
 	version      string
 	description  *string
 	targeted     bool
@@ -417,7 +418,7 @@ func HandleDuplex[Req, In, Out any](s *Service, name, reason string, handler fun
 
 // --- contract --------------------------------------------------------------
 
-func typeRef(t reflect.Type, schema *orderedObject, module, qualnameOverride string) *orderedObject {
+func typeRef(t reflect.Type, schema *orderedObject, module, qualnameOverride, fallback string) *orderedObject {
 	pkg := module
 	qname := qualnameOverride
 	if t != nil {
@@ -428,12 +429,19 @@ func typeRef(t reflect.Type, schema *orderedObject, module, qualnameOverride str
 			if qname == "" {
 				qname = st.Name()
 			}
+			if qname == "" {
+				qname = fallback
+			}
 		} else {
 			if t.PkgPath() != "" {
 				pkg = t.PkgPath()
 			}
 			if qname == "" {
-				if t.Name() != "" {
+				if t.PkgPath() != "" && t.Name() != "" {
+					qname = t.Name()
+				} else if fallback != "" {
+					qname = fallback
+				} else if t.Name() != "" {
 					qname = t.Name()
 				} else {
 					qname = t.String()
@@ -444,9 +452,31 @@ func typeRef(t reflect.Type, schema *orderedObject, module, qualnameOverride str
 	return newObject().set("module", pkg).set("qualname", qname).set("schema", schema)
 }
 
+func pascalFromSnake(s string) string {
+	var b strings.Builder
+	for _, part := range strings.Split(s, "_") {
+		if part == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(part[:1]) + part[1:])
+	}
+	return b.String()
+}
+
 // Contract returns the service's portable contract entry, the object a
 // *.meshcall.json document holds (docs/protocol.md → Frames).
 func (s *Service) Contract() json.RawMessage {
+	qualname := s.qualname
+	if qualname == "" {
+		parts := strings.Split(s.name, ".")
+		qualname = parts[len(parts)-1]
+		for i := len(parts) - 1; i >= 0; i-- {
+			if !majorSegment.MatchString(parts[i]) && !numericSegment.MatchString(parts[i]) && !patchSegment.MatchString(parts[i]) {
+				qualname = parts[i]
+				break
+			}
+		}
+	}
 	methods := []any{}
 	for _, m := range s.methods {
 		var params []any
@@ -462,11 +492,12 @@ func (s *Service) Contract() json.RawMessage {
 		if params == nil {
 			params = []any{}
 		}
-		ref := func(t reflect.Type, schema *orderedObject, qname string) any {
+		base := pascalFromSnake(qualname) + pascalFromSnake(m.name)
+		ref := func(t reflect.Type, schema *orderedObject, qname, fallback string) any {
 			if t == nil && schema == nil {
 				return nil
 			}
-			return typeRef(t, schema, s.module, qname)
+			return typeRef(t, schema, s.module, qname, fallback)
 		}
 		balance := s.balance
 		if m.opts.balance != nil {
@@ -475,11 +506,11 @@ func (s *Service) Contract() json.RawMessage {
 		entry := newObject().
 			set("name", m.name).
 			set("stream", string(m.stream)).
-			set("request", ref(m.request, m.schemas.request, m.requestQualname)).
+			set("request", ref(m.request, m.schemas.request, m.requestQualname, base+"Request")).
 			set("parameters", params).
-			set("response", ref(m.response, m.schemas.response, "")).
-			set("input_item", ref(m.input, m.schemas.input, "")).
-			set("output_item", ref(m.output, m.schemas.output, "")).
+			set("response", ref(m.response, m.schemas.response, "", base+"Response")).
+			set("input_item", ref(m.input, m.schemas.input, "", base+"InputItem")).
+			set("output_item", ref(m.output, m.schemas.output, "", base+"OutputItem")).
 			set("balance", balance).
 			set("binding", "instance").
 			set("description", m.opts.description).
@@ -494,10 +525,6 @@ func (s *Service) Contract() json.RawMessage {
 			entry.set("duplex_reason", nil)
 		}
 		methods = append(methods, entry)
-	}
-	qualname := s.name
-	if i := strings.LastIndexByte(qualname, '.'); i >= 0 {
-		qualname = qualname[i+1:]
 	}
 	doc := newObject().
 		set("name", s.name).

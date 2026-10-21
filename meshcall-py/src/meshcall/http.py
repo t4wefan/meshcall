@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from types import TracebackType
 from typing import Any, Self, cast
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from meshcall.context import DEFAULT_RETRY, RetryPolicy
 from meshcall.errors import MeshCallError, ProtocolError
@@ -57,7 +58,9 @@ def _validate(model: type[BaseModel | str | bytes], payload: Any, subject: str) 
             )
         return payload
     try:
-        return cast(type[BaseModel], model).model_validate(payload)
+        if inspect.isclass(model) and issubclass(model, BaseModel):
+            return model.model_validate(payload)
+        return TypeAdapter(model).validate_python(payload)
     except ValidationError as exc:
         raise ProtocolError(
             "Invalid response"

@@ -20,6 +20,7 @@ changing the Python service:
 uv run meshcall generate \
   py2ts_demo.service:PythonGreetingService \
   --language typescript \
+  --package \
   --runtime-version file:../../../meshcall-ts \
   --package-name meshcall-demo-py2ts-client \
   --output ts-client

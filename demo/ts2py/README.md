@@ -21,7 +21,7 @@ Python uv client package is in `py-client/`. To regenerate it after changing
 the TypeScript service:
 
 ```bash
-cd ts-server && yarn run export-contract
-uv run meshcall generate ts-server/service.meshcall.json --language python \
+uv run meshcall export ts-server/src/service.ts --output ts-server/service.meshcall.json
+uv run meshcall generate ts-server/src/service.ts --language python --package \
   --package-name meshcall-demo-ts2py-client --output py-client
 ```

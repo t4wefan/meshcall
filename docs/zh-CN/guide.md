@@ -535,27 +535,29 @@ duplex 方法同时流式传输输入与输出。只有当输出必须与仍在�
 
 ## 4. 生成与使用跨语言强类型客户端
 
-**核心优势：** 统一的 Go CLI（`meshcall generate`）既可以直接读取 Python `module:Class`，也可以读取通用的 `.meshcall.json` 契约文件，一键生成 Python、TypeScript 或 Go 客户端。**生成的客户端不仅校验入参，还会自动校验服务端返回的响应与流条目**，并且方法签名与服务端业务参数 1:1 镜像（生成的 TypeScript 与 Go 方法还会额外接受一个可选的尾部 options/opts 参数）。
+**核心优势：** 统一的 Go CLI（`meshcall generate` 与 `meshcall export`）支持直接传入一个或多个 Python（`module[:Class]` / `file.py[:Class]`）、TypeScript（`service.ts[:Class]`）、Go（`./pkg[:Struct]`）源文件或 `.meshcall.json` 契约文件，在内部拉起临时的只读（inspect-only）Router 收集标准中间契约，并一键生成 Python、TypeScript 或 Go 客户端。省略 `:Service` 时会自动发现源文件中的全部服务；传入多个服务时会将所有客户端类渲染到同一个输出文件或包中，并自动去重共享模型。默认输出单文件，传入 `--package` 则生成可安装的包目录。**生成的客户端不仅校验入参，还会自动校验服务端返回的响应与流条目**，并且方法签名与服务端业务参数 1:1 镜像（生成的 TypeScript 与 Go 方法还会额外接受一个可选的尾部 options/opts 参数）。
 
 ```bash
-# 1. 从 Python 服务 -> 生成可安装的 Python uv 客户端包
-uv run meshcall generate my_app.service:TextProcessor --output generated/text-py
-
-# 2. 从 Python 服务 -> 生成单文件 Python 客户端（适合脚本或快速集成）
+# 1. 从 Python 服务 -> 生成单文件 Python 客户端（默认模式）
 uv run meshcall generate my_app.service:TextProcessor \
-  --single-file \
   --output src/my_app/text_client.py
 
-# 3. 从 Python 服务 -> 生成 TypeScript Yarn/npm 客户端包
+# 2. 从 Python 服务 -> 生成可安装的 Python uv 客户端包（--package）
+uv run meshcall generate my_app.service:TextProcessor \
+  --package \
+  --output generated/text-py
+
+# 3. 从 Python 服务 -> 生成 TypeScript Yarn/npm 客户端包（--package）
 uv run meshcall generate my_app.service:TextProcessor \
   --language typescript \
+  --package \
   --output generated/text-ts
 
-# 4. 从通用 .meshcall.json 契约文件（由 TS `writeContract`、Go `meshcall.WriteContract(path, svc)`
-#    或 `meshcall export` 导出）生成客户端
-npx meshcall generate contract.meshcall.json \
+# 4. 同时从多个跨语言源文件（省略 :Service 时自动发现全部服务）导出契约或生成聚合客户端
+meshcall export my_app/service.py src/service.ts ./go_svc --output contract.meshcall.json
+meshcall generate my_app/service.py src/service.ts ./go_svc \
   --language python \
-  --output generated/py-client
+  --output generated/all_clients.py
 
 # 5. 生成 Go 客户端：单个文件 <output>/client.go（或你指定的 .go 路径）
 meshcall generate contract.meshcall.json \

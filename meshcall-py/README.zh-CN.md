@@ -130,12 +130,17 @@ asyncio.run(main())
 ## 生成并调用强类型客户端
 
 ```bash
-# 生成可安装的 Python uv 包（或添加 --single-file 生成单文件 .py 客户端）
-uv run meshcall generate my_app.service:Chat --output generated/chat-client
+# 生成单文件 Python 客户端（默认）或可安装的 uv 包（--package）
+uv run meshcall generate my_app/service.py:Chat --output generated/chat_client.py
+uv run meshcall generate my_app.service:Chat --package --output generated/chat-client
 
-# 从同一个 Python 服务生成 TypeScript 客户端包或 Go 客户端包
-uv run meshcall generate my_app.service:Chat --language typescript --output generated/chat-ts
+# 从任意语言的一个或多个服务源文件生成 TypeScript 或 Go 客户端
+uv run meshcall generate my_app/service.py ts-service/src/service.ts ./go-svc \
+  --language typescript --output generated/clients.ts
 uv run meshcall generate my_app.service:Chat --language go --output internal/chatclient
+
+# 导出统一的可移植契约中间表示（*.meshcall.json）
+uv run meshcall export my_app/service.py --output chat.meshcall.json
 ```
 
 保持服务端运行，在另一个终端通过生成的客户端发起调用：

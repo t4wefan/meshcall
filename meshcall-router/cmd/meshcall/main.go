@@ -60,10 +60,10 @@ func run(args []string) error {
 		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; with --stdin, client streams and duplex calls read JSON lines from stdin")
 		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D   --instance ID")
 		fmt.Fprintln(os.Stderr, "    --stdin  input items as JSON lines (a duplex call sends each line as it is read)   --http  through the Router's HTTP entry point (not for duplex)")
-		fmt.Fprintln(os.Stderr, "  generate <contract.json|module:Class> --output PATH [--language python|typescript|go] [--single-file]")
+		fmt.Fprintln(os.Stderr, "  generate <source>... --output PATH [--language python|typescript|go] [--package]")
 		fmt.Fprintln(os.Stderr, "    [--service NAME] [--class-name N] [--package-name N] [--package-version V]")
 		fmt.Fprintln(os.Stderr, "    [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]")
-		fmt.Fprintln(os.Stderr, "  export module:Class --output contract.json   write a Python service's portable contract")
+		fmt.Fprintln(os.Stderr, "  export <source>... --output contract.json     write portable contract via inspect-only Router")
 		fmt.Fprintln(os.Stderr, "  init [dir] [--agent universal|claude|cursor|copilot|windsurf|all] [--force]")
 		fmt.Fprintln(os.Stderr, "                                 install the MeshCall skill for coding agents into a project")
 		fmt.Fprintln(os.Stderr, "  version")
@@ -100,11 +100,11 @@ func run(args []string) error {
 		return nil
 	case "generate":
 		if len(positional) < 2 {
-			return errors.New("usage: meshcall generate <contract.json|module:Class> --output PATH")
+			return errors.New("usage: meshcall generate <source>... --output PATH")
 		}
 		opts := cli.GenerateOptions{
-			Source: positional[1], Service: callFlags.service, Language: callFlags.language, Output: callFlags.output,
-			SingleFile: callFlags.singleFile, ClassName: callFlags.className, PackageName: callFlags.packageName,
+			Sources: positional[1:], Service: callFlags.service, Language: callFlags.language, Output: callFlags.output,
+			Package: callFlags.pkg, SingleFile: callFlags.singleFile, ClassName: callFlags.className, PackageName: callFlags.packageName,
 			PackageVersion: callFlags.packageVersion, RuntimeImport: callFlags.runtimeImport,
 			RuntimeVersion: callFlags.runtimeVersion, MeshcallRequirement: callFlags.meshcallRequirement,
 		}
@@ -119,9 +119,9 @@ func run(args []string) error {
 		return nil
 	case "export":
 		if len(positional) < 2 || callFlags.output == "" {
-			return errors.New("usage: meshcall export module:Class --output contract.json")
+			return errors.New("usage: meshcall export <source>... --output contract.json")
 		}
-		if err := cli.Export(ctx, positional[1], callFlags.output); err != nil {
+		if err := cli.Export(ctx, positional[1:], callFlags.output); err != nil {
 			return err
 		}
 		fmt.Println(callFlags.output)
@@ -205,7 +205,7 @@ type callFlagSet struct {
 	// generate / export
 	output, service, language, className, packageName, packageVersion string
 	runtimeImport, runtimeVersion, meshcallRequirement                string
-	singleFile                                                        bool
+	pkg, singleFile                                                   bool
 }
 
 // extractCallFlags pulls call-specific flags out before the global parse.
@@ -261,6 +261,8 @@ func extractCallFlags(flags *[]string) callFlagSet {
 			out.runtimeVersion = next()
 		case "meshcall-requirement":
 			out.meshcallRequirement = next()
+		case "package":
+			out.pkg = true
 		case "single-file":
 			out.singleFile = true
 		default:

@@ -244,15 +244,15 @@ you edit so warnings fail fast with a `hint` that says exactly what to add):
 
 ## Generate and use a typed client
 
-Generate a typed client instead of hand-writing frames:
+Generate a typed client (or export the intermediate `.meshcall.json` contract IR) from one or more Python (`module[:Class]` / `file.py[:Class]`), TypeScript (`service.ts[:Class]`), Go (`./pkg[:Struct]`) or `.meshcall.json` sources. When `:Service` is omitted, all services in that source are discovered automatically via an ephemeral inspect-only Router; multiple services are rendered into the same output file or package with shared models deduplicated. Single-file output is the default; pass `--package` when you want an installable package directory:
 
 ```bash
-uv run meshcall generate my_app.service:Chat --output generated/chat-client
-uv run meshcall generate my_app.service:Chat --language typescript --output generated/chat-ts
-meshcall generate service.meshcall.json --language go --output generated/chatgo
+uv run meshcall generate my_app.service:Chat --output src/my_app/chat_client.py
+uv run meshcall generate src/service.ts ./go_svc --language python --output clients.py
+uv run meshcall generate my_app.service:Chat --language typescript --package --output generated/chat-ts
+meshcall export my_app.service:Chat src/service.ts --output contract.meshcall.json
+meshcall generate contract.meshcall.json --language go --output generated/chatgo
 ```
-
-Pass `--single-file --output chat_client.py` (Python) when you want a single module instead of an installable package directory. In TypeScript or Go projects without Python, pass a `.ts` service file (`npx meshcall generate src/service.ts:Chat ...`) or a contract JSON file (`meshcall.WriteContract` in Go).
 
 Per-call options (`timeout`, `idle_timeout`, `metadata`, `idempotency_key`, `instance`)
 are configured via `.with_options(...)` / `.withOptions(...)` / `.WithOptions(...)` so
@@ -355,7 +355,7 @@ my_app/
 **Calling a service**
 
 - Use the generated client, check it in, regenerate when the contract
-  changes (`uv run meshcall generate … --output generated/<svc>-client`); a
+  changes (`uv run meshcall generate … --output …`); a
   CI step that regenerates and diffs catches a drifted client at compile
   time of the consumer.
 - Always pass a `timeout=`; streams also get `idle_timeout=`. The service,

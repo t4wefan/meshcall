@@ -5,15 +5,15 @@
 ## 1. 分层架构概览
 
 ```text
-Python/Pydantic 服务定义 ---- 契约提取 (export) ----+
-                                                    |
-TypeScript Schema 服务定义 --- 契约导出 -------------+--> 跨语言可移植契约 (.meshcall.json)
-                                                    |       |
-Go 结构体标签服务定义 ---- WriteContract -------------+       +--> 生成 Python uv 客户端包
-                                                            |
-                                                            +--> 生成 TypeScript Yarn 客户端包
-                                                            |
-                                                            +--> 生成 Go 客户端文件
+Python/Pydantic 服务定义 ------+
+                              |
+TypeScript Schema 服务定义 ----+-- 临时只读 Router (InspectOnly) --> 跨语言可移植契约 (.meshcall.json)
+                              |    (meshcall export / generate)           |
+Go 结构体标签服务定义 ---------+                                           +--> 生成 Python 单文件 / uv 客户端包
+                                                                          |
+                                                                          +--> 生成 TypeScript 单文件 / Yarn 客户端包
+                                                                          |
+                                                                          +--> 生成 Go 客户端文件
 
 Python RPC 事件循环 <---- 线程安全桥接 ----> 业务工作线程事件循环 (Service Worker Loop)
         |

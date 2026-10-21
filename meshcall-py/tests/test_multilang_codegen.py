@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import uuid
 from collections.abc import AsyncIterator
 from importlib.metadata import version
 from pathlib import Path
@@ -165,12 +167,42 @@ def test_typescript_generator_preserves_one_way_streaming_shapes(
     )
 
 
-def test_default_generators_write_complete_packages(meshcall_cli, tmp_path) -> None:
+def test_default_generators_write_single_files_and_package_flag_writes_packages(
+    meshcall_cli, tmp_path
+) -> None:
+    default_py = tmp_path / "default_client.py"
+    default_ts = tmp_path / "default_client.ts"
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen:GreetingService",
+        "--output",
+        str(default_py),
+        cwd=TESTS,
+    )
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen:GreetingService",
+        "--language",
+        "typescript",
+        "--output",
+        str(default_ts),
+        cwd=TESTS,
+    )
+    assert default_py.is_file()
+    assert "class GreetingServiceClient(RpcClient):" in default_py.read_text(
+        encoding="utf-8"
+    )
+    assert default_ts.is_file()
+    assert "export class GreetingServiceClient" in default_ts.read_text(
+        encoding="utf-8"
+    )
+
     python_root = tmp_path / "python-client"
     typescript_root = tmp_path / "typescript-client"
     meshcall_cli(
         "generate",
         "test_multilang_codegen:GreetingService",
+        "--package",
         "--output",
         str(python_root),
         cwd=TESTS,
@@ -180,6 +212,7 @@ def test_default_generators_write_complete_packages(meshcall_cli, tmp_path) -> N
         "test_multilang_codegen:GreetingService",
         "--language",
         "typescript",
+        "--package",
         "--output",
         str(typescript_root),
         cwd=TESTS,
@@ -215,6 +248,7 @@ def test_python_package_generation_preserves_all_stream_shapes(
     meshcall_cli(
         "generate",
         "test_contract:TestService",
+        "--package",
         "--output",
         str(package_root),
         cwd=TESTS,
@@ -230,3 +264,183 @@ def test_python_package_generation_preserves_all_stream_shapes(
     assert "RpcServerStream[Item]" in source
     assert "AsyncIterable[Item]" in source
     assert "RpcDuplexClient[Item, Item]" in source
+
+
+def test_export_and_generate_multi_source_and_autodiscovery(
+    meshcall_cli, tmp_path
+) -> None:
+    # Auto-discover all services in a Python file when :Service is omitted,
+    # export to contract JSON via inspect-only router, and generate multi-service
+    # clients in Python, TypeScript, and Go.
+    contract_path = tmp_path / "all_services.meshcall.json"
+    meshcall_cli(
+        "export",
+        "test_multilang_codegen.py",
+        "--output",
+        str(contract_path),
+        cwd=TESTS,
+    )
+    doc = load_contract(contract_path)
+    assert [s.name for s in doc.services] == [
+        "test.v1.GreetingService",
+        "test.v1.ExpandedService",
+        "test.v1.OneWayStreamService",
+    ]
+
+    # Generate multi-service single-file clients directly from two source specs
+    py_multi = tmp_path / "multi_client.py"
+    ts_multi = tmp_path / "multi_client.ts"
+    go_multi = tmp_path / "multi_client"
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen.py:GreetingService",
+        "test_multilang_codegen.py:ExpandedService",
+        "--output",
+        str(py_multi),
+        cwd=TESTS,
+    )
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen.py:GreetingService",
+        "test_multilang_codegen.py:ExpandedService",
+        "--language",
+        "typescript",
+        "--output",
+        str(ts_multi),
+        cwd=TESTS,
+    )
+    meshcall_cli(
+        "generate",
+        "test_multilang_codegen.py:GreetingService",
+        "test_multilang_codegen.py:ExpandedService",
+        "--language",
+        "go",
+        "--output",
+        str(go_multi),
+        cwd=TESTS,
+    )
+
+    py_src = py_multi.read_text(encoding="utf-8")
+    compile(py_src, str(py_multi), "exec")
+    assert "class GreetingServiceClient(RpcClient):" in py_src
+    assert "class ExpandedServiceClient(RpcClient):" in py_src
+
+    ts_src = ts_multi.read_text(encoding="utf-8")
+    assert "export class GreetingServiceClient" in ts_src
+    assert "export class ExpandedServiceClient" in ts_src
+
+    go_src = (go_multi / "client.go").read_text(encoding="utf-8")
+    assert "type GreetingServiceClient struct" in go_src
+    assert "type ExpandedServiceClient struct" in go_src
+
+
+def test_cross_language_multi_source_export_and_generate(
+    meshcall_cli, tmp_path
+) -> None:
+    repo_root = TESTS.parent.parent
+    ts_service = repo_root / "demo" / "ts2py" / "ts-server" / "src" / "service.ts"
+    go_pkg_dir = (
+        repo_root / "meshcall-go" / "testdata" / f"codegen-{uuid.uuid4().hex[:8]}"
+    )
+    go_pkg_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        (go_pkg_dir / "service.go").write_text(
+            """package codegentest
+
+import (
+\t"context"
+\tmeshcall "github.com/t4wefan/meshcall/meshcall-go"
+)
+
+type CalcReply struct {
+\tSum int `json:"sum"`
+}
+
+type GoCalcService struct {
+\tmeshcall.ServiceMeta `name:"test.v1.GoCalcService" description:"Go calculator service."`
+}
+
+// Add two integers and return a struct. @readonly
+func (s *GoCalcService) Add(ctx context.Context, a int, b int) (CalcReply, error) {
+\treturn CalcReply{Sum: a + b}, nil
+}
+
+// Negate an integer and return a primitive. @readonly
+func (s *GoCalcService) Negate(ctx context.Context, x int) (int, error) {
+\treturn -x, nil
+}
+""",
+            encoding="utf-8",
+        )
+        ir_path = tmp_path / "polyglot.meshcall.json"
+        meshcall_cli(
+            "export",
+            "test_multilang_codegen.py:GreetingService",
+            str(ts_service),
+            str(go_pkg_dir),
+            "--output",
+            str(ir_path),
+            cwd=TESTS,
+        )
+        doc = load_contract(ir_path)
+        assert [s.name for s in doc.services] == [
+            "test.v1.GreetingService",
+            "demo.v1.TypeScriptGreetingService",
+            "test.v1.GoCalcService",
+        ]
+
+        py_out = tmp_path / "polyglot_client.py"
+        ts_out = tmp_path / "polyglot_client.ts"
+        go_out = tmp_path / "polyglot_go"
+        meshcall_cli(
+            "generate",
+            "test_multilang_codegen.py:GreetingService",
+            str(ts_service),
+            f"{go_pkg_dir}:GoCalcService",
+            "--output",
+            str(py_out),
+            cwd=TESTS,
+        )
+        meshcall_cli(
+            "generate",
+            "test_multilang_codegen.py:GreetingService",
+            str(ts_service),
+            f"{go_pkg_dir}:GoCalcService",
+            "--language",
+            "typescript",
+            "--output",
+            str(ts_out),
+            cwd=TESTS,
+        )
+        meshcall_cli(
+            "generate",
+            "test_multilang_codegen.py:GreetingService",
+            str(ts_service),
+            f"{go_pkg_dir}:GoCalcService",
+            "--language",
+            "go",
+            "--output",
+            str(go_out),
+            cwd=TESTS,
+        )
+
+        py_code = py_out.read_text(encoding="utf-8")
+        compile(py_code, str(py_out), "exec")
+        assert "class GreetingServiceClient(RpcClient):" in py_code
+        assert "class TypeScriptGreetingServiceClient(RpcClient):" in py_code
+        assert "class GoCalcServiceClient(RpcClient):" in py_code
+        assert "GoCalcServiceNegateResponse = int" in py_code
+
+        ts_code = ts_out.read_text(encoding="utf-8")
+        assert "export class GreetingServiceClient" in ts_code
+        assert "export class TypeScriptGreetingServiceClient" in ts_code
+        assert "export class GoCalcServiceClient" in ts_code
+        assert "export type GoCalcServiceNegateResponse = number;" in ts_code
+
+        go_code = (go_out / "client.go").read_text(encoding="utf-8")
+        assert "type GreetingServiceClient struct" in go_code
+        assert "type TypeScriptGreetingServiceClient struct" in go_code
+        assert "type GoCalcServiceClient struct" in go_code
+        assert "type GoCalcServiceNegateResponse = int64" in go_code
+    finally:
+        shutil.rmtree(go_pkg_dir, ignore_errors=True)

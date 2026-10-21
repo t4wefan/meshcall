@@ -331,6 +331,9 @@ func (r *Router) registry(p *peer, f frame) {
 
 // allowsAnyCall reports whether u may call at least one method of the pool.
 func (u *User) allowsAnyCall(service string, pool *pool) bool {
+	if len(pool.methods) == 0 {
+		return u.allowsCall(service, "*")
+	}
 	for name := range pool.methods {
 		if u.allowsCall(service, name) {
 			return true

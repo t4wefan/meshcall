@@ -309,3 +309,82 @@ func TestLocalTransport(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectOnlyRouter(t *testing.T) {
+	r, err := router.Start(router.Config{Host: "127.0.0.1", Port: 0, InspectOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	url := fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port)
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func(v any) {
+		data, _ := json.Marshal(v)
+		_ = conn.Write(ctx, websocket.MessageText, data)
+	}
+	recv := func() map[string]any {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var f map[string]any
+		_ = json.Unmarshal(data, &f)
+		return f
+	}
+	send(map[string]any{"kind": "hello", "protocol": "meshcall/1", "role": "server", "peer_id": "ephemeral", "instance_id": "ephemeral"})
+	if recv()["kind"] != "hello.ack" {
+		t.Fatal("expected hello.ack")
+	}
+	contract := map[string]any{
+		"name":            "demo.v1.Greeter",
+		"version":         "1",
+		"source_module":   "demo",
+		"source_qualname": "Greeter",
+		"balance":         map[string]any{"kind": "round_robin", "key": nil},
+		"description":     "Ephemeral greeter.",
+		"targeted":        false,
+		"methods":         []any{},
+	}
+	send(map[string]any{
+		"kind":         "server.register",
+		"instance_id":  "ephemeral",
+		"max_inflight": 1,
+		"services": []map[string]any{{
+			"name":     "demo.v1.Greeter",
+			"contract": contract,
+			"methods": []map[string]any{{
+				"name":    "greet",
+				"stream":  "unary",
+				"balance": map[string]any{"kind": "round_robin"},
+			}},
+		}},
+	})
+	if recv()["kind"] != "server.register.ack" {
+		t.Fatal("expected server.register.ack")
+	}
+	// Close the helper connection immediately; InspectOnly router must retain the contract.
+	_ = conn.Close(websocket.StatusNormalClosure, "exported")
+	time.Sleep(50 * time.Millisecond)
+
+	contracts := r.OrderedContracts()
+	if len(contracts) != 1 {
+		t.Fatalf("expected 1 retained contract, got %d", len(contracts))
+	}
+	opts := Options{Router: url, Timeout: 3 * time.Second}
+	described, err := Inspect(ctx, opts, "demo.v1.Greeter")
+	if err != nil || described["contract"] == nil {
+		t.Fatalf("expected inspect to return retained contract after disconnect, got err=%v described=%v", err, described)
+	}
+
+	var out bytes.Buffer
+	var failure *Failure
+	err = Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "greet", Payload: map[string]any{"name": "x"}}, &out)
+	if !errors.As(err, &failure) || failure.Code != "permission_denied" || failure.Details["reason"] != "inspect_only" {
+		t.Fatalf("expected permission_denied (reason=inspect_only) on InspectOnly router, got %v", err)
+	}
+}

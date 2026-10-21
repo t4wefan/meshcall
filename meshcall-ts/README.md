@@ -179,13 +179,16 @@ npx meshcall router inspect --router ws://127.0.0.1:8765
 # Call a method from the terminal
 npx meshcall call chat.v1.Chat.greet '{"name": "Alice"}'
 
-# Generate a Python, TypeScript or Go client from a contract or a Python service
-npx meshcall generate service.meshcall.json --language typescript --output generated/chat-ts
-npx meshcall generate service.meshcall.json --language python --output generated/chat-py
-npx meshcall generate service.meshcall.json --language go --output internal/chat
+# Generate a single-file client (default) or a package (--package) directly from source files
+npx meshcall generate src/service.ts --language typescript --output src/generated_client.ts
+npx meshcall generate src/service.ts --language python --output chat_client.py
+npx meshcall generate src/service.ts --language go --output internal/chat
+
+# Export the portable contract IR (*.meshcall.json) via an ephemeral inspect-only Router
+npx meshcall export src/service.ts --output service.meshcall.json
 ```
 
-`--language` defaults to `python`. Export a TypeScript service's portable contract with `await writeContract([Chat], "service.meshcall.json")`. Generated clients are typed against `MeshCallRpc`, and their methods mirror the handler's parameter list one to one.
+`--language` defaults to `python`. `meshcall export` and `meshcall generate` accept one or more `.py`, `.ts` / `.js`, Go package (`./pkg`), or `.json` sources (`file:Service` selects a specific service; omitting `:Service` discovers all services in the source) and spin up an in-process inspect-only Router to collect their contracts (`writeContract([Chat], "service.meshcall.json")` is also available programmatically). Generated clients are typed against `MeshCallRpc`, and their methods mirror the handler's parameter list one to one.
 
 ## Subpath Exports
 

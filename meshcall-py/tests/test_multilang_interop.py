@@ -103,6 +103,7 @@ async def test_python_service_with_generated_typescript_package(
         str(contract_path),
         "--language",
         "typescript",
+        "--package",
         "--runtime-version",
         f"file:{TYPESCRIPT_ROOT}",
         "--output",
@@ -167,7 +168,12 @@ async def test_typescript_service_with_generated_python_package(
 
         package_root = tmp_path / "python-client"
         _generate(
-            str(contract_path), "--language", "python", "--output", str(package_root)
+            str(contract_path),
+            "--language",
+            "python",
+            "--package",
+            "--output",
+            str(package_root),
         )
         await _run_process("uv", "build", "--project", str(package_root))
         wheel_files = tuple((package_root / "dist").glob("*.whl"))
@@ -226,7 +232,14 @@ async def running_typescript(root: Path, options: dict):
 @contextmanager
 def generated_typescript_client(contract_path: Path, root: Path):
     package = root / "generated"
-    _generate(str(contract_path), "--language", "python", "--output", str(package))
+    _generate(
+        str(contract_path),
+        "--language",
+        "python",
+        "--package",
+        "--output",
+        str(package),
+    )
     name = "meshcall_test_v1_typescriptinteropservice_client"
     sys.path.insert(0, str(package / "src"))
     try:
@@ -574,7 +587,14 @@ def _go_required() -> None:
 @contextmanager
 def generated_python_client(contract_path: Path, root: Path, module: str):
     package = root / f"generated-{uuid.uuid4().hex}"
-    _generate(str(contract_path), "--language", "python", "--output", str(package))
+    _generate(
+        str(contract_path),
+        "--language",
+        "python",
+        "--package",
+        "--output",
+        str(package),
+    )
     sys.path.insert(0, str(package / "src"))
     try:
         yield importlib.import_module(module)

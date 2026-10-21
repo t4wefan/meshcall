@@ -387,18 +387,15 @@ comma-separated) writes the named agents' files instead: `claude`
 `windsurf` `.windsurf/rules/meshcall.md` + `AGENTS.md`; `all` every one.
 Re-running is idempotent; an edited skill file is kept unless `--force`.
 
-`meshcall generate <contract.json | module:Class> --output PATH
-[--language python|typescript|go] [--single-file] [--service NAME]
+`meshcall generate <source[:Service]>... --output PATH
+[--language python|typescript|go] [--package] [--single-file] [--service NAME]
 [--package-name N] [--package-version V] [--class-name N]
 [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]`
-writes a typed client package (or one file). Go output is always one file,
+writes a typed single-file client by default (or an installable package directory when `--package` is set). Each `<source[:Service]>` may be a Python module or `.py` file (`module[:Class]`, `service.py[:Class]`), a TypeScript file (`service.ts[:Class]`), a Go package directory or `.go` file (`./pkg[:Struct]`), or a portable `.meshcall.json` contract file; omitting `:Service` discovers all services defined in that source. Go output is always one file,
 `PATH` if it ends in `.go`, else `PATH/client.go`, in package
 `--package-name` (default: the last name segment, lower-cased, plus
-`client`: `demo.v1.Greeting` → `greetingclient`);
-`meshcall export module:Class --output contract.json` writes a Python
-service's contract (Go services write theirs with `meshcall.WriteContract`,
-TypeScript ones with `writeContract`). A `module:Class` source is exported through the interpreter in `MESHCALL_PYTHON`, which
-`uv run meshcall` sets to the project's own.
+`client`: `demo.v1.Greeting` → `greetingclient`).
+`meshcall export <source[:Service]>... --output contract.json` starts an ephemeral, inspect-only Router in-process, registers the specified Python/TypeScript/Go services against it, and writes their unified `.meshcall.json` contract IR (which `meshcall generate` also uses directly). Python sources run through `MESHCALL_PYTHON` (`uv run meshcall` sets it to the project's interpreter), TypeScript sources through `MESHCALL_NODE` (`npx meshcall` sets it to the current Node binary), and Go sources through `go run`.
 
 Errors print the code, message, `details` and a hint: an unknown method
 lists the available ones, `invalid_argument` shows the request shape from the

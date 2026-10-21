@@ -146,7 +146,8 @@ interface Pending {
 // Method decorators run before their class's decorator, so the class
 // decorator collects what its methods recorded here.
 let pending: Pending[] = [];
-const specs = new WeakMap<object, ServiceSpec>();
+const SPECS_KEY = Symbol.for("meshcall.serviceSpecs");
+const specs: WeakMap<object, ServiceSpec> = ((globalThis as Record<symbol, WeakMap<object, ServiceSpec>>)[SPECS_KEY] ??= new WeakMap());
 
 function record(context: ClassMethodDecoratorContext<any>, fn: unknown, spec: Omit<MethodSpec, "name">): void {
   if (context.static || context.private || typeof context.name !== "string") {

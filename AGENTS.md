@@ -73,15 +73,18 @@ skill` (the Go CLI embeds a copy; drift fails CI).
 
 ## One CLI
 
-Client generation lives only in the Go `meshcall` CLI
+Contract export and client generation live in the Go `meshcall` CLI
 (`meshcall-router/internal/codegen`, driven by `internal/cli/generate.go`).
-Python keeps just the exporter (`python -m meshcall.export module:Class`),
-which the CLI calls through `MESHCALL_PYTHON`; `uv run meshcall` and
-`npx meshcall` are launchers (`launcher.py`, `launcher.ts`) that exec the
-binary. Generator output is pinned byte-for-byte by
-`internal/codegen/testdata/*` (contracts plus expected files); when you
-change a generator, update the expected files in the same commit, then
-`scripts/regenerate.sh` and commit the regenerated demo clients.
+Given `.py`, `.ts` / `.js`, or Go package (`./pkg`) sources, `meshcall export`
+and `meshcall generate` start an in-process inspect-only Router (`InspectOnly:
+true`) and invoke the language runtime exporter (`python -m meshcall.export`,
+`node .../dist/export.js`, or `go run`) to register the discovered services over
+WebSocket and collect their portable contracts. `uv run meshcall` and `npx
+meshcall` are launchers (`launcher.py`, `launcher.ts`) that exec the binary.
+Generator output is pinned byte-for-byte by `internal/codegen/testdata/*`
+(contracts plus expected files); when you change a generator, update the
+expected files in the same commit, then `scripts/regenerate.sh` and commit the
+regenerated demo clients.
 
 ## Verify
 

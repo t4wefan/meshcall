@@ -87,10 +87,10 @@ class Greeter:
 
 ### 2. 从契约生成客户端代码
 
-在 `service.py` 所在目录执行一条命令，即可从 `Greeter` 类生成带完整类型签名的客户端文件 `greeter_client.py`，把服务契约还原为可直接调用的 Python 方法与模型类：
+在 `service.py` 所在目录执行一条命令，即可从 `Greeter` 类生成带完整类型签名的客户端文件 `greeter_client.py`，把服务契约还原为可直接调用的 Python 方法与模型类（默认输出单文件；如需生成可安装的包目录可传 `--package`）：
 
 ```bash
-uv run meshcall generate service:Greeter --single-file --output greeter_client.py
+uv run meshcall generate service:Greeter --output greeter_client.py
 ```
 
 这样调用方无需手写方法名字符串或拼装字典，在编辑器中即可获得完整的方法与字段自动补全，并由类型检查器对参数和返回值做静态检查。
@@ -197,7 +197,7 @@ class Greeter:
 重新生成客户端并重启 `server.py` 后，调用方即可直接用 `async for` 逐项接收 `Tick` 结果：
 
 ```bash
-uv run meshcall generate service:Greeter --single-file --output greeter_client.py
+uv run meshcall generate service:Greeter --output greeter_client.py
 ```
 
 ```python
@@ -220,7 +220,7 @@ async with Mesh(Router()) as mesh:
 1. 从 `service.py` 中的 `Greeter` 类生成 TypeScript 客户端目录 `./greeter-ts`（默认包名为 `meshcall-demo-v1-greeter-client`）：
 
 ```bash
-uv run meshcall generate service:Greeter --language typescript --output ./greeter-ts
+uv run meshcall generate service:Greeter --language typescript --package --output ./greeter-ts
 ```
 
 2. 构建生成的本地包，并安装到你的 TypeScript 项目中：
@@ -335,7 +335,7 @@ greeter := greeterclient.NewGreeterClient(mesh)
 
 ## Go
 
-Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)：同样的调用、错误、超时、流与 Router 特性，并通过同一套一致性测试（conformance suite）验证。`meshcall generate service.meshcall.json --language go --output internal/chatclient` 可为任一语言编写的服务生成类型化的 Go 客户端，`meshcall.WriteContract` 则导出 Go 服务的契约，供 Python 与 TypeScript 客户端使用。
+Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)：同样的调用、错误、超时、流与 Router 特性，并通过同一套一致性测试（conformance suite）验证。`meshcall generate <sources>... --language go --output internal/chatclient` 可为任一语言编写的服务生成类型化的 Go 客户端，而 `meshcall generate ./internal/workspace --language python|typescript` 则可直接从 Go 包生成 Python 与 TypeScript 客户端。
 
 ---
 
