@@ -582,7 +582,11 @@ class _RouterLink:
             if self.connection is not connection:
                 return  # stop() took the connection away
             self.connection = None
+            refusal = connection.refusal
             await connection.close()  # releases the sender task of the dead socket
+            if isinstance(refusal, UnauthenticatedError):
+                self.refuse(runtime, refusal)  # the Router closed it with 4401
+                return
 
     async def close(self) -> None:
         connection, self.connection = self.connection, None

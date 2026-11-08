@@ -75,8 +75,9 @@ async def test_an_instance_stops_when_every_router_refuses_its_credentials(
                         await asyncio.sleep(0.02)
                 assert await auth.revoke_token(issued.token_id)
                 # It does not retry: serving ends, saying why.
-                with pytest.raises(UnauthenticatedError):
+                with pytest.raises(UnauthenticatedError) as refused:
                     await asyncio.wait_for(task, 5)
+                assert refused.value.reason == "token_revoked"
 
 
 async def test_accounts_issue_scoped_tokens_and_revoke_active_calls(

@@ -265,6 +265,11 @@ class FrameConnection:
             name="meshcall-keepalive",
         )
 
+    @property
+    def refusal(self) -> MeshCallError | None:
+        """The error the peer's close status stood for (a 4401 and its reason)."""
+        return self._closed.error if isinstance(self._closed, PeerClosedError) else None
+
     async def close(self) -> None:
         if self._closed is None:
             self._closed = ConnectionError("WebSocket connection is closed")
