@@ -236,14 +236,20 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 | 方法 | 请求参数 | 所需权限 |
 | --- | --- | --- |
 | `whoami` | `{}` | 任何已认证的客户端身份（含临时 Token） |
-| `issue_token` | `ttl_seconds` (1–3600), `scopes` | `call` 列表包含 `meshcall.router.v1.AuthService/issue_token` 的账号 |
+| `issue_token` | `ttl_seconds`（1 到 `--token-max-ttl`）, `scopes` | `call` 列表包含 `meshcall.router.v1.AuthService/issue_token` 的账号 |
+| `renew_token` | `token_id`, `ttl_seconds` | `call` 列表包含 `renew_token` 的账号（仅可续期自己签发的 Token） |
 | `revoke_token` | `token_id` | `call` 列表包含 `revoke_token` 的账号（仅可吊销自己签发的 Token） |
+| `list_tokens` | `{}` | `call` 列表包含 `list_tokens` 的账号；列出自己签发的 Token，从不返回密钥 |
 
 身份绑定了实例 id 时 `whoami` 还会返回 `instance_ids`，在隧道连接上返回 `tunnel`。
 
 `scopes` 中每项为 `{"service": …, "methods": [...]}`；`methods: ["*"]` 允许该服务全部方法，省略 `methods` 不授予调用权限；`register: true`（Python 为 `RouterScope(register_service=True)`）授予注册该服务的权限，适合短生命周期的 Worker；此类 scope 上的 `instance_ids` 把它限制在这些实例 id 上（受 `instance_ids` 限制的签发方只能收窄自己的列表，未指定的 scope 继承签发方的列表）。Scope 中的服务名必须是具体且不重复的，不接受命名空间通配符与 Router 保留命名空间。
 
-**安全边界**：Router 会严格校验所请求的 `scopes` 是否属于签发账号自身的权限子集（权限委托绝不能超越母账号自身权限，超出时返回 `permission_denied`），且临时 Token 与 API Key 都不能再签发或吊销其他 Token。Router 内存中仅保存 Token 的 SHA-256 摘要，明文只在签发时返回一次；默认有效期 900 秒，最多同时存在 4096 个 Token、每个 Token 最多 128 个服务 Scope。一旦 Token 过期或被吊销，新连接将被拒绝，正在使用该 Token 的连接会被立即关闭。Token 只属于签发它的 Router 进程，Router 重启后失效，没有共享 Token 数据库或复制的 Router 状态。
+**安全边界**：Router 会严格校验所请求的 `scopes` 是否属于签发账号自身的权限子集（权限委托绝不能超越母账号自身权限，超出时返回 `permission_denied`），且临时 Token 与 API Key 都不能再签发或吊销其他 Token。Router 内存中仅保存 Token 的 SHA-256 摘要，明文只在签发时返回一次；SDK 默认有效期 900 秒，可接受 1 秒到 `--token-max-ttl`（默认 30 天，更长返回 `invalid_argument` 并带 `details.max_ttl_seconds`）；最多同时存在 `--max-tokens` 个 Token（默认 4096）、每个 Token 最多 128 个服务 Scope。
+
+过期只阻止*新*连接：过期前建立的连接连同其调用与注册保持在线，直到连接关闭或 Token 被吊销，因此长期运行的实例不会因计时器到点而掉线。`renew_token` 在不换密钥、不重连的情况下把过期时间后移（已过期、已吊销或未知的 Token 返回 `invalid_argument` / `token_expired`）。吊销会立即关闭该 Token 上的所有连接（过期后同样有效）：客户端调用被取消，分配给被吊销服务实例的调用以可重试的 `unavailable` 失败。`meshcall router inspect` 列出你签发的 Token 及其过期时间与活跃连接数（包括仍持有连接的过期 Token）；`meshcall token renew TOKEN_ID --ttl 720h` 可续期。Token 只属于签发它的 Router 进程，Router 重启后失效，没有共享 Token 数据库或复制的 Router 状态。
+
+设备或容器守护进程是典型的长期持有方：控制面为它签发绑定实例 id 的 Token（`register: true`、`instance_ids: ["box-a"]`、以天计的 `ttl_seconds`），在容器存在期间定期续期，容器删除时吊销。
 
 **Python 签发与使用示例：**
 

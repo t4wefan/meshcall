@@ -61,7 +61,7 @@ MeshCall 将**路由平面在哪里**（第 2 层）与**你的连接和运行�
   - `LocalRouter(port=0)` 显式拉起并持有一个本地 `meshcall-router` 子进程，适用于测试、演示或单机自包含编排。
 - **第 3 层（`Mesh`）**：
   - `Mesh(router, ...)` 持有你的多路复用连接、鉴权凭据、重试/重连策略与客户端拦截器。
-  - `mesh.registry`（`list`、`describe`）与 `mesh.auth`（`whoami`、`issue_token`、`revoke_token`）提供对 Router 内置发现服务与 Token 服务的强类型访问。
+  - `mesh.registry`（`list`、`describe`）与 `mesh.auth`（`whoami`、`issue_token`、`renew_token`、`revoke_token`、`list_tokens`）提供对 Router 内置发现服务与 Token 服务的强类型访问。
 
 ```python
 from meshcall import Mesh, Router, RouterScope
@@ -952,7 +952,9 @@ downstream = Mesh(Router("ws://127.0.0.1:8765"), token=issued.token)
 chat = ChatClient(downstream)
 ```
 
-`mesh.auth.revoke_token(issued.token_id)`（TypeScript `mesh.auth.revokeToken(tokenId)`，Go `mesh.Auth().RevokeToken(ctx, issued.TokenID)`）可让 Token 在到期前失效。
+`mesh.auth.revoke_token(issued.token_id)`（TypeScript `mesh.auth.revokeToken(tokenId)`，Go `mesh.Auth().RevokeToken(ctx, issued.TokenID)`）可让 Token 在到期前失效，并关闭所有使用它的连接。
+
+过期只拒绝*新*连接：过期前建立的连接连同调用与注册照常工作，长期运行的持有方不会因计时器到点而掉线。`ttl_seconds` 最长可到 Router 的 `--token-max-ttl`（默认 30 天）。若要让 Token 在重连时仍可用，请在过期前续期：`mesh.auth.renew_token(issued.token_id, ttl_seconds=86400)`（TypeScript `renewToken(tokenId, ttlSeconds)`，Go `RenewToken(ctx, id, ttlSeconds)`）保留密钥与 scope，持有方无需任何改动。`mesh.auth.list_tokens()`（以及 `meshcall router inspect`）列出你签发的 Token 及其过期时间与活跃连接数。
 
 ### 匿名调用方与 API Key
 

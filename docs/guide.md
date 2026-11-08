@@ -61,7 +61,7 @@ MeshCall separates **where the Router is** (Layer 2) from **your connection and 
   - `LocalRouter(port=0)` explicitly spawns and owns a local `meshcall-router` child process for tests, demos, or single-machine orchestration.
 - **Layer 3 (`Mesh`)**:
   - `Mesh(router, ...)` holds your multiplexed connection, credentials, retry/reconnect policies, and client interceptors.
-  - `mesh.registry` (`list`, `describe`) and `mesh.auth` (`whoami`, `issue_token`, `revoke_token`) provide typed access to the Router's built-in discovery and token services.
+  - `mesh.registry` (`list`, `describe`) and `mesh.auth` (`whoami`, `issue_token`, `renew_token`, `revoke_token`, `list_tokens`) provide typed access to the Router's built-in discovery and token services.
 
 ```python
 from meshcall import Mesh, Router, RouterScope
@@ -948,7 +948,9 @@ downstream = Mesh(Router("ws://127.0.0.1:8765"), token=issued.token)
 chat = ChatClient(downstream)
 ```
 
-`mesh.auth.revoke_token(issued.token_id)` (TypeScript `mesh.auth.revokeToken(tokenId)`, Go `mesh.Auth().RevokeToken(ctx, issued.TokenID)`) invalidates a token before it expires.
+`mesh.auth.revoke_token(issued.token_id)` (TypeScript `mesh.auth.revokeToken(tokenId)`, Go `mesh.Auth().RevokeToken(ctx, issued.TokenID)`) invalidates a token before it expires and closes every connection using it.
+
+Expiry refuses *new* connections only: a connection made before it keeps working, calls and registrations included, so a long-running holder does not drop off the mesh on a timer. `ttl_seconds` may reach the Router's `--token-max-ttl` (30 days by default). To keep a token usable for reconnects, renew it before it expires: `mesh.auth.renew_token(issued.token_id, ttl_seconds=86400)` (TypeScript `renewToken(tokenId, ttlSeconds)`, Go `RenewToken(ctx, id, ttlSeconds)`) keeps the secret and scopes, so the holder changes nothing. `mesh.auth.list_tokens()` (and `meshcall router inspect`) shows your tokens with their expiry and live connections.
 
 ### Anonymous Callers and API Keys
 

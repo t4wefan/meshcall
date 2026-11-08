@@ -75,8 +75,26 @@ matching `meshcall-go/vX.Y.Z` tag.
   `closed_tunnels`. `Router.DropInstance` lets tests drop an instance's
   connection.
 
+- **Renewable, long-lived temporary tokens** (#67). `AuthService/renew_token`
+  moves a token's expiry forward without a new secret or a reconnect
+  (`mesh.auth.renew_token(id, ttl_seconds=…)`, TypeScript `renewToken`, Go
+  `RenewToken`, CLI `meshcall token renew TOKEN_ID --ttl DURATION`); only the
+  issuer may renew, and an expired, revoked or unknown token answers
+  `invalid_argument` / `token_expired`. `AuthService/list_tokens`
+  (`list_tokens()`, `listTokens()`, `ListTokens`) and `meshcall router
+  inspect` show the caller's tokens with expiry and live connection count,
+  never secrets. New Router flags `--token-max-ttl` (default 30 days; longer
+  requests answer `invalid_argument` / `ttl_too_long` with `max_ttl_seconds`)
+  and `--max-tokens` (default 4096).
+
 ### Changed
 
+- Temporary-token expiry bounds new connections only, as for tunnel
+  credentials: a connection authenticated before expiry keeps its calls and
+  registrations until it closes or the token is revoked (it was closed at
+  expiry). `revoke_token` still closes every connection at once, past expiry
+  too. `issue_token` accepts TTLs up to `--token-max-ttl` (was 3600 s); the
+  runtime default stays 900 s.
 - `meshcall/web`'s `Mesh` picks its transport from the Router URL like the
   Node `Mesh`: `ws://` / `wss://` now connects over WebSocket instead of HTTP.
   Use an `http://` / `https://` URL for the fetch-based HTTP transport.
