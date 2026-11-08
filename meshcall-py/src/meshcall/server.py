@@ -6,7 +6,7 @@ import importlib
 import inspect
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -65,6 +65,7 @@ from meshcall.protocol import (
 )
 from meshcall.streams import RpcDuplex, RpcInputStream
 from meshcall.transport import FrameConnection, is_frame_too_large
+from meshcall.tunnel import TUNNEL_HOST_SERVICE, TunnelHost, TunnelPolicy
 from meshcall.worker import WorkerLoop, submit_to_loop
 
 INITIAL_STREAM_CREDIT = 16
@@ -106,8 +107,10 @@ class ServerRuntime:
         interceptors: Sequence[ServerInterceptor] = (),
         max_inflight: int | None = None,
         instance_id: str = "",
+        tunnel_policies: Mapping[str, TunnelPolicy] | None = None,
     ) -> None:
         self.worker = worker
+        self.tunnels = TunnelHost(tunnel_policies or {}, worker)
         self.instance_id = instance_id
         self.access_log = access_log
         self.log_level = log_level
@@ -198,7 +201,15 @@ class ServerRuntime:
             for service in self._contracts
         )
 
-    async def serve_connection(self, connection: FrameConnection) -> None:
+    async def serve_connection(
+        self, connection: FrameConnection, *, from_router: bool = False
+    ) -> None:
+        """Serve calls on one connection.
+
+        ``from_router`` marks a registration with a Router: only a Router
+        offers tunnels and sets tunnel metadata, so a direct caller can do
+        neither.
+        """
         session = _ServerSession(
             self,
             connection,
@@ -209,6 +220,7 @@ class ServerRuntime:
             colorize=self.colorize,
             logger=self.logger,
             interceptors=self.interceptors,
+            from_router=from_router,
         )
         self._sessions.add(session)
         try:
@@ -256,8 +268,10 @@ class _ServerSession:
         colorize: bool,
         logger: RpcLogger,
         interceptors: tuple[ServerInterceptor, ...] = (),
+        from_router: bool = False,
     ) -> None:
         self.runtime = runtime
+        self.from_router = from_router
         self.connection = connection
         self.methods = methods
         self.worker = worker
@@ -267,9 +281,17 @@ class _ServerSession:
         self.logger = logger
         self.interceptors = interceptors
         self.calls: dict[str, _ServerCall] = {}
+        self._tunnel_tasks: set[asyncio.Task[None]] = set()
 
     async def handle(self, frame: Frame) -> None:
         if isinstance(frame, CallOpenFrame):
+            if frame.service == TUNNEL_HOST_SERVICE and self.from_router:
+                # The Router's own calls: answered by the runtime, outside
+                # max_inflight and the access log.
+                task = asyncio.create_task(self._tunnel_call(frame))
+                self._tunnel_tasks.add(task)
+                task.add_done_callback(self._tunnel_tasks.discard)
+                return
             await self._open(frame)
             return
         call_id = getattr(frame, "call_id", None)
@@ -420,6 +442,22 @@ class _ServerSession:
         self.calls[frame.call_id] = call
         call.start()
 
+    async def _tunnel_call(self, frame: CallOpenFrame) -> None:
+        try:
+            result = await self.runtime.tunnels.handle(frame.method, frame.payload)
+            reply: CallResultFrame | CallErrorFrame = CallResultFrame(
+                call_id=frame.call_id, payload=result
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(  # noqa: PLE1205
+                "Tunnel {} failed: {}", frame.method, exc
+            )
+            reply = _error_frame(
+                frame.call_id, ErrorCode.INTERNAL, "Tunnel request failed"
+            )
+        with contextlib.suppress(ConnectionError):
+            await self.connection.send(reply)
+
     def remove(self, call: _ServerCall) -> None:
         if self.calls.get(call.call_id) is call:
             self.calls.pop(call.call_id, None)
@@ -491,6 +529,11 @@ class _ServerCall:
             logger=self.logger,
             idempotency_key=open_frame.idempotency_key,
             instance_id=session.runtime.instance_id,
+            tunnel=(
+                session.runtime.tunnels.lookup(open_frame.metadata)
+                if session.from_router
+                else None
+            ),
             _deadline=(
                 time.monotonic() + self.timeout if self.timeout is not None else None
             ),
@@ -892,10 +935,12 @@ class RpcServer:
         logger: RpcLogger | None = None,
         interceptors: Sequence[ServerInterceptor] = (),
         max_inflight: int | None = None,
+        tunnel_policies: Mapping[str, TunnelPolicy] | None = None,
     ) -> None:
         if max_inflight is not None and max_inflight < 1:
             raise ValueError("max_inflight must be positive")
         self.max_inflight = max_inflight
+        self.tunnel_policies = dict(tunnel_policies or {})
         self._services = list(services)
         self.driver = driver
         self.access_log = access_log
@@ -947,6 +992,7 @@ class RpcServer:
                     interceptors=self.interceptors,
                     max_inflight=self.max_inflight,
                     instance_id=self.driver.instance_id,
+                    tunnel_policies=self.tunnel_policies,
                 )
                 await self.driver.start(binding, runtime)
             except BaseException:

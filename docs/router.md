@@ -20,7 +20,7 @@ flowchart LR
   R <-->|registered connection| PS[Python services]
   R <-->|registered connection| TS[TypeScript services]
   R <-->|registered connection| GS[Go services]
-  R --> A[Built-in AuthService / Registry]
+  R --> A[Built-in AuthService / Registry / TunnelService]
 ```
 
 Choose one launcher, or launch the binary directly. Clients and services initiate
@@ -220,10 +220,26 @@ on one service; `*` grants all entries in that permission list. Missing lists
 grant nothing. The two lists remain independent: permission to call a service
 does not imply permission to register an instance of it.
 
-Accounts use HTTP Basic authentication; temporary tokens (`mt_…`) and API keys
-(`mk_…`) use HTTP Bearer authentication. Credentials are sent in the
-`Authorization` header of the WebSocket upgrade or HTTP request, not in URL
-query strings or `hello` payloads.
+`instance_ids` (accounts and API keys; optional) lists the only instance ids
+the identity may register under; a registration under any other id is closed
+with 1008. Bind each instance's credential to its id — especially the target
+of a [tunnel](#tunnels), which a credential free to choose its id could
+otherwise impersonate while the real instance is offline:
+
+```json
+{ "username": "box-a", "password_hash": "…", "roles": ["server"],
+  "register": ["dev.v1.Workspace"], "instance_ids": ["box-a"] }
+```
+
+Accounts use HTTP Basic authentication; temporary tokens (`mt_…`), API keys
+(`mk_…`) and tunnel credentials (`mtun_…`) use HTTP Bearer authentication.
+Credentials are sent in the `Authorization` header of the WebSocket upgrade or
+HTTP request, never in URL query strings. A peer that cannot set that header
+(a browser) connects without it and sends the same value as `authorization`
+in its `hello` frame; credentials refused there close the connection with
+4000 plus the HTTP status the header would get (4401 failed, 4429 a tunnel
+at its `max_connections`, 4503 busy; see [the
+protocol](protocol.md#connection-handshake)), and sending both is refused.
 
 **Authenticate at connect, authorise at call.** A connection or HTTP request
 without any `Authorization` header is the reserved user `anonymous`; it is
@@ -283,8 +299,11 @@ Use `wss://` through a TLS reverse proxy across a network. The Go listener does
 not terminate TLS itself. The same checks apply to Unix sockets and named
 pipes; a named pipe admits only the Router's own user, SYSTEM and
 Administrators, as a Unix socket's file mode does. Browsers cannot set the
-`Authorization` header on a WebSocket, so they call over HTTP with
-`meshcall/web` (`new Mesh(new Router("https://…"), { token })`, see [HTTP calls](#http-calls)). The Router
+`Authorization` header on a WebSocket, so `meshcall/web` sends the
+credentials in `hello` (`new Mesh(new Router("wss://…"), { tunnel })` or
+`{ token }`); a cross-origin page needs its origin in `--http-cors-origin`,
+which also governs WebSocket upgrades. Over `https://` the same `Mesh` uses
+[HTTP calls](#http-calls) instead, without duplex. The Router
 does not implement JWT validation or an external login system directly. WebSocket clients and
 `LocalRouter` subprocess launchers run in Python, Node and Go.
 
@@ -359,8 +378,9 @@ contract entry. Both work without an account in development mode; with
 accounts they need `meshcall.router.v1.Registry/*` in `call`, and they show
 only what the caller may call: a service appears only if the caller may call
 at least one of its methods, and only those methods and their contract
-entries are listed. Describing a service the caller may not call returns the
-same error as describing one that does not exist, and a call to a method the
+entries are listed. Describing a service the caller may not call (or, on a
+tunnel, one outside the tunnel's view) returns `method_not_found`, the same
+error as describing one that does not exist, by design, and a call to a method the
 caller may not call is `permission_denied` whether or not it exists, so
 neither can be used to discover services.
 
@@ -417,6 +437,9 @@ same `code` / `message` / `details` / `hint` fields).
 | `issue_token` | `ttl_seconds`, `scopes` | Account with the method in its `call` ACL |
 | `revoke_token` | `token_id` | Account with the method in its `call` ACL; only its own tokens |
 
+`whoami` also reports `instance_ids` when the identity is bound to instance
+ids, and `tunnel` on a tunnel connection.
+
 An issuance request can grant one service or several explicitly named services:
 
 ```json
@@ -430,7 +453,9 @@ An issuance request can grant one service or several explicitly named services:
 
 `methods: ["*"]` permits all methods of that exact service. Omitting `methods`
 grants no call permission. `register: true` grants registration for that service,
-which supports short-lived workers. In Python that flag is exposed as
+which supports short-lived workers; `instance_ids` on such a scope restricts it
+to those instance ids (an issuer restricted by `instance_ids` may only narrow
+its own list, and a scope that names none inherits it). In Python that flag is exposed as
 `RouterScope(register_service=True)` and serialized as `register`. Scope service
 names must be concrete and unique; namespace wildcards and the reserved Router
 namespace are rejected.
@@ -489,6 +514,31 @@ await using scopedMesh = await Mesh.connect(new Router(uri), { token: issued.tok
 // Pass scopedMesh to the generated ChatService client: new ChatServiceClient(scopedMesh)
 await issuerMesh.auth.revokeToken(issued.token_id);
 ```
+
+## Tunnels
+
+`meshcall.router.v1.TunnelService` (`open`, `revoke`, `list`) issues
+credentials for one service instance; the full semantics are in
+[the protocol](protocol.md#tunnels). The issuer — typically a platform's
+control plane holding an account or API key — needs the methods in its `call`
+list and can scope a tunnel only to methods it may call itself:
+
+```json
+{ "id": "control-plane", "key_hash": "…", "roles": ["client"],
+  "call": ["meshcall.router.v1.TunnelService/*", "dev.v1.Workspace/*"] }
+```
+
+`open {instance_id, scopes, principal, ttl_seconds, max_connections?}` offers
+the tunnel to the instance, which must have opted in (Python
+`mesh.mount(svc, accept_tunnels=True)`, TypeScript `{ acceptTunnels: true }`,
+Go `mesh.Mount(svc, meshcall.WithAcceptTunnels(decide))`), and returns the `mtun_…` credential once the
+instance accepts. A client connecting with it sees only that instance's
+scoped methods, calls them without naming the instance, and cannot forge the
+`meshcall-tunnel-id` / `meshcall-tunnel-principal` metadata the Router sets
+on every call. The credential's TTL (1–86400 s) bounds new connections only;
+`revoke` closes the tunnel's connections at once. Tunnels are in-memory like
+tokens: a Router restart loses them, and the instance is offered its tunnels
+again when it reconnects. In development mode anyone may open tunnels.
 
 ## Connecting services
 

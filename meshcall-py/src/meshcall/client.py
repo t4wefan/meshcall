@@ -27,7 +27,9 @@ from meshcall.errors import (
     CallCancelledError,
     DeadlineExceededError,
     MeshCallError,
+    PermissionDeniedError,
     ProtocolError,
+    UnauthenticatedError,
     UnavailableError,
     violations_of,
 )
@@ -46,6 +48,7 @@ from meshcall.server import INITIAL_STREAM_CREDIT
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 from meshcall.transport import (
     FrameConnection,
+    connection_lost,
     is_frame_too_large,
 )
 
@@ -117,6 +120,9 @@ class ClientBase:
         self._state_lock = asyncio.Lock()
         self._receive_task: asyncio.Task[None] | None = None
         self._ever_connected = False
+        # The Router's 4401 answer (revoked or expired credentials): later
+        # calls fail with it, reason included, instead of reconnecting.
+        self._refused: UnauthenticatedError | None = None
 
     def with_options(
         self,
@@ -179,6 +185,8 @@ class ClientBase:
         async with self._state_lock:
             if self._connection is not None:
                 return
+            if self._refused is not None:
+                raise self._refused
             delays = (
                 self.reconnect.delays()
                 if self.reconnect.enabled and self._ever_connected
@@ -189,6 +197,8 @@ class ClientBase:
                     self._connection = await self.driver.connect()
                     break
                 except (OSError, ConnectionError, MeshCallError) as exc:
+                    if isinstance(exc, (UnauthenticatedError, PermissionDeniedError)):
+                        raise  # refused credentials fail the same way again
                     delay = next(delays, None)
                     if delay is None:
                         if isinstance(exc, MeshCallError):
@@ -550,7 +560,7 @@ class ClientBase:
         except ConnectionError as exc:
             call.disarm_timers()
             self._calls.pop(call_id, None)
-            raise UnavailableError("Connection was lost", retryable=True) from exc
+            raise connection_lost(exc) from exc
         except BaseException:
             call.disarm_timers()
             self._calls.pop(call_id, None)
@@ -593,11 +603,10 @@ class ClientBase:
                 await self._dispatch(frame)
         except asyncio.CancelledError:
             raise
-        except ConnectionError:
-            failure = UnavailableError(
-                "Connection was lost",
-                retryable=True,
-            )
+        except ConnectionError as exc:
+            failure = connection_lost(exc)
+            if isinstance(failure, UnauthenticatedError):
+                self._refused = failure
         except Exception as exc:  # noqa: BLE001
             failure = exc if isinstance(exc, MeshCallError) else ProtocolError(str(exc))
         finally:
@@ -847,7 +856,7 @@ class _ClientCall:
                     )
                 )
             except ConnectionError as exc:
-                error = UnavailableError("Connection was lost", retryable=True)
+                error = connection_lost(exc)
                 await self.fail(error)
                 raise error from exc
         return value

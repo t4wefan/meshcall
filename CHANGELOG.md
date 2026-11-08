@@ -10,6 +10,88 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **Tunnels: instance-scoped connections through the Router** (#63). A trusted
+  issuer (an account or API key with `meshcall.router.v1.TunnelService/*`)
+  opens a tunnel for one instance with `mesh.tunnels.open(instance=…,
+  scopes=…, principal=…, ttl_seconds=…)` (TypeScript `mesh.tunnels.open({…})`,
+  Go `mesh.Tunnels().Open(ctx, …)`); `revoke` and `list` complete the API.
+  The Router offers the tunnel to the instance, which opts in at mount
+  (`accept_tunnels=True` or a hook, `on_tunnel_closed=`; TypeScript
+  `acceptTunnels` / `onTunnelClosed`; Go `WithAcceptTunnels` /
+  `WithTunnelClosed`), and returns the `mtun_…` credential only once it
+  accepts. A client connecting with it (`Mesh(router, tunnel=cred)`,
+  `{ tunnel }`, `WithTunnel(cred)`) sees only that instance's scoped methods —
+  Registry and `/v1/openapi.json` included — without naming the instance,
+  and cannot register or issue. The Router sets `meshcall-tunnel-id` /
+  `meshcall-tunnel-principal` on every call and strips those keys from every
+  other client; services read them as `ctx.tunnel` (Go `ctx.Tunnel`). The TTL
+  bounds new connections only, `revoke` closes connections at once, and a
+  reconnecting instance is offered its tunnels again. New error reasons:
+  `tunnel_rejected`, `tunnel_scope`, `instance_offline`.
+- **Instance-bound registration credentials**: `instance_ids` on accounts, API
+  keys and token scopes (`RouterScope(instance_ids=[…])`) restricts the ids a
+  credential may register under.
+- **Browser WebSocket transport in `meshcall/web`**: a `ws://` / `wss://`
+  Router now uses the platform `WebSocket`, with every call shape including
+  duplex; credentials travel in the new `hello.authorization` field (failures
+  close with 4401). `--http-cors-origin` also governs cross-origin WebSocket
+  upgrades.
+- CLI: `meshcall --tunnel mtun_… call …`; `meshcall router inspect` lists the
+  caller's tunnels (never their credentials); a `tunnel_scope` error hints at
+  the tunnel's instance.
+- Conformance: six tunnel scenarios (consent, scoping across every shape and
+  over HTTP, unforgeable identity, revoke vs. expiry, instance reconnect,
+  instance-bound registration); fixtures gain `tunnel_info` and
+  `closed_tunnels`. `Router.DropInstance` lets tests drop an instance's
+  connection.
+
+### Changed
+
+- `meshcall/web`'s `Mesh` picks its transport from the Router URL like the
+  Node `Mesh`: `ws://` / `wss://` now connects over WebSocket instead of HTTP.
+  Use an `http://` / `https://` URL for the fetch-based HTTP transport.
+- `MeshCallRpc.duplex` and generated TypeScript clients return the
+  `RpcDuplex` interface instead of the Node-only `MeshCallDuplexCall` class,
+  so generated duplex methods work on a browser `Mesh`.
+- `token=` / `{ token }` / `WithToken` refuse a tunnel credential with a hint
+  to pass it as `tunnel`.
+
+- Request metadata keys starting with `meshcall-` are refused in any letter
+  case, with `invalid_argument` / `reserved_metadata` in every runtime (was
+  `ValueError` in Python and `RangeError` in TypeScript; Go did not check).
+  `meta()` / `Meta[T]` match reserved keys exactly.
+- Clients report how the Router ended a connection, alike in Python,
+  TypeScript and Go: an upgrade refused with HTTP 401 / 403 / 429 is
+  `unauthenticated` / `permission_denied` / `resource_exhausted` (Python no
+  longer raises websockets' `InvalidStatus`); a close with 4401 is
+  `unauthenticated`, a close with 1008 `permission_denied` /
+  `policy_violation` carrying the Router's reason (a refused registration now
+  says why, e.g. an `instance_id` outside `instance_ids`). Clients stop
+  reconnecting after either. Credentials in `hello` are refused with close
+  status 4000 + the HTTP status the header path gets (4401, 4403, 4429,
+  4503), so a browser sees a tunnel at its `max_connections` as retryable
+  `resource_exhausted`, not an authentication failure. After a 4401 a client
+  fails later calls with the same error, reason included, without
+  reconnecting. `TunnelService` errors carry `details.source: "router"`.
+- `TunnelService/open` is checked by the Router only: a TTL out of range is
+  `invalid_argument` in every runtime (was pydantic's `ValidationError` in
+  Python and `RangeError` in TypeScript).
+- `issue_token` returns the effective scopes, including `instance_ids`
+  inherited from the issuer.
+
+### Fixed
+
+- A tunnel call with `"metadata": null` no longer drops the connection.
+- The Router strips `meshcall-tunnel-*` metadata in any letter case, so a
+  mixed-case key cannot reach a handler that reads metadata case-insensitively.
+- Revoking a tunnel closes its connections with 4401 `tunnel_revoked`, so calls
+  in flight fail with `unauthenticated` / `tunnel_revoked` instead of a bare
+  "Connection was lost".
+- `meshcall --tunnel … call` reports the Router's `tunnel_scope` for a method
+  outside the tunnel instead of its own `method_not_found`.
+
 ## [0.3.0] - 2026-10-18
 
 ### Added

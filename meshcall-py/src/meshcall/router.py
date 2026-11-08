@@ -56,6 +56,14 @@ from meshcall.router_install import find_router_binary
 from meshcall.server import RpcServer
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 from meshcall.transport import DEFAULT_MAX_FRAME_SIZE
+from meshcall.tunnel import (
+    TUNNEL_CREDENTIAL_PREFIX,
+    TunnelClosedHook,
+    TunnelOfferHook,
+    TunnelPolicy,
+    TunnelsClient,
+    check_tunnel_credential,
+)
 
 if TYPE_CHECKING:
     import httpx
@@ -492,6 +500,7 @@ class RunningServer:
         colorize: bool = False,
         logger: RpcLogger | None = None,
         interceptors: Sequence[ServerInterceptor] = (),
+        tunnel_policies: Mapping[str, TunnelPolicy] | None = None,
     ) -> None:
         self.mesh = mesh
         self.router = mesh.router
@@ -517,6 +526,7 @@ class RunningServer:
             logger=logger,
             interceptors=interceptors,
             max_inflight=max_inflight,
+            tunnel_policies=tunnel_policies,
         )
         self._stopped = False
 
@@ -590,6 +600,7 @@ class _ServeHandle:
             colorize=self._colorize,
             logger=self._logger if self._logger is not None else self._mesh.logger,
             interceptors=self._mesh._server_interceptors,
+            tunnel_policies=self._mesh._tunnel_policies,
         )
         self._mesh._running_server = srv
         self._server = srv
@@ -661,6 +672,7 @@ class Mesh:
         *,
         token: str | None = None,
         credentials: RouterCredentials | None = None,
+        tunnel: str | None = None,
         headers: Mapping[str, str] | None = None,
         peer_id: str | None = None,
         ping_interval: float | None = DEFAULT_PING_INTERVAL,
@@ -679,11 +691,23 @@ class Mesh:
                 "Mesh requires a Router or LocalRouter instance "
                 "(e.g. Mesh(Router(...)) or Mesh(local_router))"
             )
-        if credentials is not None and token is not None:
-            raise ValueError("Pass credentials or token, not both")
+        if sum(x is not None for x in (credentials, token, tunnel)) > 1:
+            raise ValueError("Pass one of credentials, token or tunnel")
+        bearer = token if token is not None else (credentials and credentials.token)
+        if bearer is not None and bearer.startswith(TUNNEL_CREDENTIAL_PREFIX):
+            raise ValueError(
+                "This is a tunnel credential: pass it as Mesh(router, tunnel=...)"
+            )
         self.router = router
+        #: The tunnel credential this Mesh connects with, if any. A tunnel
+        #: Mesh reaches one instance and cannot mount services.
+        self.tunnel = check_tunnel_credential(tunnel) if tunnel is not None else None
         self.credentials = credentials or (
-            RouterCredentials.bearer(token) if token is not None else None
+            RouterCredentials.bearer(token)
+            if token is not None
+            else RouterCredentials.bearer(tunnel)
+            if tunnel is not None
+            else None
         )
         self.headers = dict(headers or {})
         self.peer_id = peer_id
@@ -702,6 +726,7 @@ class Mesh:
         self._mounted_services: list[object] = []
         self._instance_id: str | None = None
         self._max_inflight: int | None = None
+        self._tunnel_policies: dict[str, TunnelPolicy] = {}
         self._server_interceptors: list[ServerInterceptor] = []
         self._running_server: RunningServer | None = None
         self._owns_local_router = False
@@ -721,6 +746,11 @@ class Mesh:
     def auth(self) -> AuthClient:
         """Built-in ``meshcall.router.AuthService`` client."""
         return AuthClient(self)
+
+    @property
+    def tunnels(self) -> TunnelsClient:
+        """Built-in ``meshcall.router.v1.TunnelService`` client: open, revoke, list."""
+        return TunnelsClient(self)
 
     @property
     def is_connected(self) -> bool:
@@ -840,10 +870,26 @@ class Mesh:
         max_inflight: int | None = None,
         interceptors: Sequence[ServerInterceptor] = (),
         strict: bool = False,
+        accept_tunnels: bool | TunnelOfferHook = False,
+        on_tunnel_closed: TunnelClosedHook | None = None,
     ) -> Self:
-        """Register one or more ``@service`` objects to be served by this Mesh."""
+        """Register one or more ``@service`` objects to be served by this Mesh.
+
+        ``accept_tunnels`` opts these services in to tunnels: ``True`` accepts
+        every offer naming them, a callable ``(TunnelOffer) -> bool`` (sync or
+        async) decides each one. An offer is accepted only if every service it
+        scopes accepts. ``on_tunnel_closed`` is told when an accepted tunnel
+        ends. Calls through a tunnel see it as ``ctx.tunnel``.
+        """
         if not services:
             raise ValueError("At least one service is required")
+        if self.tunnel is not None:
+            raise ContractError(
+                "A tunnel Mesh reaches one instance and cannot serve; "
+                "mount services on a Mesh with registration credentials"
+            )
+        if on_tunnel_closed is not None and accept_tunnels is False:
+            raise ValueError("on_tunnel_closed needs accept_tunnels")
         if self.router._is_http:
             raise ContractError(
                 "Cannot mount or serve services over an HTTP(S) Router URL; "
@@ -859,6 +905,11 @@ class Mesh:
         if strict:
             _check_strict_services(services)
         self._mounted_services.extend(services)
+        if accept_tunnels is not False:
+            policy = TunnelPolicy(accept_tunnels, on_tunnel_closed)
+            for svc in services:
+                svc_type = svc if inspect.isclass(svc) else type(svc)
+                self._tunnel_policies[get_service_contract(svc_type).name] = policy
         if instance_id is not None:
             self._instance_id = instance_id
         if max_inflight is not None:

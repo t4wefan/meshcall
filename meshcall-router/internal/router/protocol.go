@@ -65,7 +65,10 @@ type frame struct {
 	Sequence     *int64          `json:"sequence,omitempty"`
 	Credit       *int64          `json:"credit,omitempty"`
 	Nonce        string          `json:"nonce,omitempty"`
-	raw          []byte
+	// Authorization on hello carries credentials for peers that cannot set
+	// the upgrade's Authorization header (browsers); same value format.
+	Authorization string `json:"authorization,omitempty"`
+	raw           []byte
 }
 
 // decode accepts unknown fields (the meshcall/1 compatibility rule) but rejects
@@ -180,6 +183,14 @@ func (f frame) bytes() []byte {
 
 func callError(id, code, message string, retryable bool) frame {
 	return frame{Kind: "call.error", CallID: id, Error: &errorPayload{Code: code, Message: message, Retryable: retryable}}
+}
+
+// sourcedError is a Router-synthesised error without a reason: details say
+// only that the Router answered.
+func sourcedError(id, code, message string) frame {
+	f := callError(id, code, message, false)
+	f.Error.Details = json.RawMessage(`{"source":"router"}`)
+	return f
 }
 
 // routerError is a Router-synthesised error carrying a machine-readable reason

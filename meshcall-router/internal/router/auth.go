@@ -27,11 +27,17 @@ type User struct {
 	Roles        []string `json:"roles"`
 	Register     []string `json:"register,omitempty"`
 	Call         []string `json:"call,omitempty"`
-	salt         []byte
-	key          []byte
-	expires      time.Time
-	tokenID      string
-	kind         identityKind
+	// InstanceIDs, when set, are the only instance ids this identity may
+	// register under, so it cannot impersonate another instance.
+	InstanceIDs []string `json:"instance_ids,omitempty"`
+	salt        []byte
+	key         []byte
+	expires     time.Time
+	tokenID     string
+	kind        identityKind
+	// registerInstances restricts a token's registration per service.
+	registerInstances map[string][]string
+	tunnel            *tunnel // set for the identity of a tunnel connection
 }
 
 // identityKind says how a caller authenticated. Only accounts may issue
@@ -43,6 +49,7 @@ const (
 	identityToken
 	identityAPIKey
 	identityAnonymous
+	identityTunnel
 )
 
 // AnonymousUser is the reserved username for callers without credentials.
@@ -57,6 +64,8 @@ type APIKey struct {
 	Roles    []string `json:"roles"`
 	Register []string `json:"register,omitempty"`
 	Call     []string `json:"call,omitempty"`
+	// InstanceIDs restricts registration as for accounts.
+	InstanceIDs []string `json:"instance_ids,omitempty"`
 }
 
 const apiKeyPrefix = "mk_"
@@ -149,6 +158,9 @@ func ParseAuth(data []byte) (*Auth, error) {
 		if err := validatePermissions(u.Roles, u.Register, u.Call); err != nil {
 			return nil, err
 		}
+		if err := validateInstanceIDs(u.InstanceIDs); err != nil {
+			return nil, err
+		}
 		if u.Username == AnonymousUser {
 			// Reserved: no password, client only, never registers or issues.
 			if u.PasswordHash != "" || len(u.Register) > 0 || !slices.Equal(u.Roles, []string{"client"}) {
@@ -197,7 +209,10 @@ func ParseAuth(data []byte) (*Auth, error) {
 		if err := validatePermissions(k.Roles, k.Register, k.Call); err != nil {
 			return nil, err
 		}
-		entry := apiKeyEntry{user: &User{Username: "api-key:" + k.ID, Roles: k.Roles, Register: k.Register, Call: k.Call, kind: identityAPIKey}}
+		if err := validateInstanceIDs(k.InstanceIDs); err != nil {
+			return nil, err
+		}
+		entry := apiKeyEntry{user: &User{Username: "api-key:" + k.ID, Roles: k.Roles, Register: k.Register, Call: k.Call, InstanceIDs: k.InstanceIDs, kind: identityAPIKey}}
 		copy(entry.digest[:], digest)
 		auth.apiKeys[k.ID] = entry
 	}
@@ -235,6 +250,19 @@ func validatePermissions(roles, register, call []string) error {
 	return nil
 }
 
+// validateInstanceIDs accepts an absent list or a non-empty one of non-empty ids.
+func validateInstanceIDs(ids []string) error {
+	if ids != nil && len(ids) == 0 {
+		return errors.New("instance_ids must list at least one id; omit it to allow any")
+	}
+	for _, id := range ids {
+		if id == "" || strings.ContainsAny(id, "*\r\n") {
+			return errors.New("instance_ids requires exact, non-empty instance ids")
+		}
+	}
+	return nil
+}
+
 // NewAPIKey generates a key for id and the digest to put in the auth file.
 func NewAPIKey(id string) (key, keyHash string, err error) {
 	if id == "" || strings.ContainsAny(id, "_:\r\n ") {
@@ -260,10 +288,15 @@ type authFailure struct {
 // check authenticates an HTTP request (a WebSocket upgrade or an HTTP call).
 // It never writes a response, so each entry point answers in its own format.
 func (a *Auth) check(r *http.Request) (*User, *authFailure) {
+	return a.checkHeader(r.Header.Get("Authorization"))
+}
+
+// checkHeader authenticates an Authorization value, from a request header or
+// a hello frame.
+func (a *Auth) checkHeader(header string) (*User, *authFailure) {
 	if a == nil {
 		return nil, nil
 	}
-	header := r.Header.Get("Authorization")
 	if header == "" {
 		// No credentials at all: the anonymous user. Presented credentials
 		// that fail are refused below, never downgraded to anonymous.
@@ -307,7 +340,7 @@ func (a *Auth) check(r *http.Request) (*User, *authFailure) {
 	default:
 		return nil, &authFailure{status: http.StatusServiceUnavailable, message: "authentication busy"}
 	}
-	username, password, ok := r.BasicAuth()
+	username, password, ok := (&http.Request{Header: http.Header{"Authorization": {header}}}).BasicAuth()
 	if !ok || len(password) > 1024 {
 		return nil, &authFailure{status: http.StatusUnauthorized, message: "authentication required", challenge: true}
 	}
@@ -330,8 +363,7 @@ func (a *Auth) check(r *http.Request) (*User, *authFailure) {
 
 // authenticate is check for WebSocket upgrades: failures are plain-text HTTP
 // errors before the upgrade.
-func (a *Auth) authenticate(w http.ResponseWriter, r *http.Request) (*User, bool) {
-	user, failure := a.check(r)
+func authenticate(w http.ResponseWriter, user *User, failure *authFailure) (*User, bool) {
 	if failure == nil {
 		return user, true
 	}
@@ -357,6 +389,17 @@ func (u *User) allowsRole(role string) bool {
 
 func (u *User) allowsRegistration(name string) bool {
 	return u == nil || slices.Contains(u.Register, "*") || slices.Contains(u.Register, name)
+}
+
+// allowsInstance reports whether u may register service under instanceID.
+func (u *User) allowsInstance(service, instanceID string) bool {
+	if u == nil {
+		return true
+	}
+	if ids, ok := u.registerInstances[service]; ok {
+		return slices.Contains(ids, instanceID)
+	}
+	return u.InstanceIDs == nil || slices.Contains(u.InstanceIDs, instanceID)
 }
 
 func (u *User) allowsCall(service, method string) bool {

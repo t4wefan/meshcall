@@ -436,7 +436,9 @@ func (s *depScope) resolveMeta(spec *depSpec) (reflect.Value, error) {
 	if s.ctx != nil && s.ctx.Metadata != nil {
 		if v, ok := s.ctx.Metadata[spec.metaKey]; ok {
 			raw, found = v, true
-		} else {
+		} else if !strings.HasPrefix(spec.metaKey, "meshcall-") {
+			// Reserved keys match exactly (they are set lower-case): a
+			// case-insensitive match would let a caller's "MESHCALL-…" stand in.
 			for k, val := range s.ctx.Metadata {
 				if strings.EqualFold(k, spec.metaKey) {
 					raw, found = val, true

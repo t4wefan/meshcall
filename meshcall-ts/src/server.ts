@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { closeSocket, createSocket, namedPipePath, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
 import { bindService, contractEntry } from "./contract.js";
 import { contractWarnings, renderWarning } from "./diagnostics.js";
-import { DeadlineExceededError, ProtocolError, UnavailableError } from "./errors.js";
+import { closeError, DeadlineExceededError, handshakeError, ProtocolError, UnavailableError } from "./errors.js";
 import {
   DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS, Liveness,
   reconnectDelays, type ReconnectPolicy,
@@ -22,6 +22,7 @@ import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import { methodValidators } from "./validation.js";
 
 import type { RouterCredentials } from "./router-auth.js";
+import { TUNNEL_CAPABILITY, TunnelHost, type TunnelPolicy } from "./tunnel.js";
 
 export type { RpcContext, ServerCallNext, ServerInterceptor, DuplexChannel } from "./service.js";
 
@@ -80,6 +81,8 @@ export interface MeshCallServerOptions {
   readonly logLevel?: LogLevel;
   readonly colorize?: boolean;
   readonly logger?: RpcLogger;
+  /** Router mode: tunnel consent per service name (`mesh.mount(..., { acceptTunnels })`). */
+  readonly tunnelPolicies?: ReadonlyMap<string, TunnelPolicy>;
 }
 
 export class MeshCallServer {
@@ -97,8 +100,10 @@ export class MeshCallServer {
   private readonly maxFrameSize: number;
   private readonly handshakeTimeout: number;
   private readonly instanceId: string;
+  private readonly tunnels: TunnelHost;
 
   public constructor(private readonly options: MeshCallServerOptions) {
+    this.tunnels = new TunnelHost(options.tunnelPolicies ?? new Map());
     if (options.router !== undefined &&
       (options.host !== undefined || options.port !== undefined || options.unixPath !== undefined || options.pipe !== undefined)) {
       throw new TypeError("Router mode cannot be combined with a Direct listener");
@@ -324,6 +329,7 @@ export class MeshCallServer {
       targeted: this.targeted,
       inflight: () => [...this.sessions.values()].reduce((sum, s) => sum + s.inFlight, 0),
       ...(this.options.maxInflight === undefined ? {} : { maxInflight: this.options.maxInflight }),
+      ...(role === "router" ? { tunnels: this.tunnels } : {}),
     }, liveness);
     this.sessions.set(socket, session);
     socket.on("close", () => {
@@ -436,14 +442,22 @@ export class MeshCallServer {
         this.handshakeTimeout,
       );
       socket.once("error", fail);
-      socket.once("close", () => {
+      socket.once("unexpected-response", (request, response) => {
+        const status = response.statusCode ?? 0;
+        response.resume();
+        request.on("error", () => undefined);
+        fail(handshakeError(status) ?? new UnavailableError("Unexpected server response: " + String(status)));
+      });
+      socket.once("close", (code: number, reason: Buffer) => {
         clearTimeout(timer);
-        reject(new UnavailableError("Router disconnected during registration"));
+        // A refused registration says why (1008 with the Router's reason).
+        reject(closeError(code, reason.toString()) ?? new UnavailableError("Router disconnected during registration"));
       });
       socket.once("open", () => {
         void session.writer.send({
           kind: "hello", protocol: PROTOCOL_VERSION, role: "server",
           peer_id: this.instanceId, instance_id: this.instanceId,
+          ...(this.tunnels.enabled ? { capabilities: [TUNNEL_CAPABILITY] } : {}),
         }).catch(fail);
       });
       socket.on("message", (data: RawData) => {

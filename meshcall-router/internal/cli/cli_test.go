@@ -47,7 +47,7 @@ func fakeInstance(t *testing.T, routerURL string) {
 		_ = json.Unmarshal(data, &f)
 		return f
 	}
-	send(map[string]any{"kind": "hello", "protocol": "meshcall/1", "role": "server", "peer_id": "fake", "instance_id": "fake"})
+	send(map[string]any{"kind": "hello", "protocol": "meshcall/1", "role": "server", "peer_id": "fake", "instance_id": "fake", "capabilities": []string{"tunnels"}})
 	if recv()["kind"] != "hello.ack" {
 		t.Fatal("hello")
 	}
@@ -103,6 +103,10 @@ func fakeInstance(t *testing.T, routerURL string) {
 			switch f["kind"] {
 			case "call.open":
 				payload, _ := f["payload"].(map[string]any)
+				if f["service"] == "meshcall.router.v1.TunnelHost" { // accepts every offer
+					send(map[string]any{"kind": "call.result", "call_id": id, "payload": map[string]any{"accept": true}})
+					continue
+				}
 				switch f["method"] {
 				case "greet":
 					name, ok := payload["name"].(string)
@@ -306,6 +310,64 @@ func TestLocalTransport(t *testing.T) {
 		err := Call(ctx, opts, CallOptions{Service: "demo.v1.Greeter", Method: "greet", Payload: map[string]any{"name": "local"}, JSON: true, HTTP: overHTTP}, &out)
 		if err != nil || !strings.Contains(out.String(), "hello local") {
 			t.Fatalf("call (http=%v): %v\n%s", overHTTP, err, out.String())
+		}
+	}
+}
+
+func TestTunnelCallAndInspect(t *testing.T) {
+	r, err := router.Start(router.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	url := fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port)
+	fakeInstance(t, url)
+	ctx := context.Background()
+	issuer := Options{Router: url, Timeout: 5 * time.Second}
+	conn, err := issuer.dial(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	opened, err := conn.Unary(tunnelService, "open", map[string]any{"instance_id": "fake", "principal": "user:cli",
+		"ttl_seconds": 60, "scopes": []map[string]any{{"service": "demo.v1.Greeter", "methods": []string{"greet"}}}}, nil)
+	if err != nil || opened["kind"] != "call.result" {
+		t.Fatalf("open: %v %v", err, opened)
+	}
+	credential := asMap(opened["payload"])["credential"].(string)
+
+	// Inspecting as the issuer lists the tunnel, never its credential.
+	var out bytes.Buffer
+	result, err := Inspect(ctx, issuer, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	FormatInspect(result, &out)
+	if !strings.Contains(out.String(), "principal=user:cli") || strings.Contains(out.String(), credential) {
+		t.Fatalf("inspect tunnels:\n%s", out.String())
+	}
+
+	tunnel := Options{Router: url, Authorization: "Bearer " + credential, Timeout: 5 * time.Second}
+	out.Reset()
+	if err := Call(ctx, tunnel, CallOptions{Service: "demo.v1.Greeter", Method: "greet", Payload: map[string]any{"name": "x"}, JSON: true, Timeout: 5 * time.Second}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "meshcall-tunnel-principal") {
+		t.Fatalf("tunnel call: %s", out.String())
+	}
+	// Outside the tunnel's view — another method, another service, another
+	// instance — the Router's own tunnel_scope answer is reported, with a hint
+	// naming the tunnel's instance.
+	for _, c := range []CallOptions{
+		{Service: "demo.v1.Greeter", Method: "count", Payload: map[string]any{"n": 1}},
+		{Service: "other.v1.Other", Method: "ping"},
+		{Service: "demo.v1.Greeter", Method: "greet", Payload: map[string]any{"name": "x"}, Instance: "other"},
+	} {
+		c.Timeout = 5 * time.Second
+		err = Call(ctx, tunnel, c, &out)
+		var failure *Failure
+		if !errors.As(err, &failure) || failure.Details["reason"] != "tunnel_scope" || !strings.Contains(failure.Hint, "instance fake") {
+			t.Fatalf("%s.%s outside the scope: %v", c.Service, c.Method, err)
 		}
 	}
 }

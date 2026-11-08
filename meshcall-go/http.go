@@ -176,6 +176,9 @@ func (h *httpTransport) callURL(service, method string) string {
 
 func (h *httpTransport) unaryRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (json.RawMessage, map[string]string, error) {
 	options := h.optionsFor(opts)
+	if err := checkMetadata(options.Metadata); err != nil {
+		return nil, nil, err
+	}
 	mayRetry := !h.retry.Disabled && (options.Idempotent || options.IdempotencyKey != "")
 	var deadline time.Time
 	if options.Timeout > 0 {
@@ -241,6 +244,9 @@ func (h *httpTransport) withTimeout(ctx context.Context, options CallOptions) (c
 
 func (h *httpTransport) serverStreamRaw(ctx context.Context, service, method string, request json.RawMessage, opts []CallOption) (streamSource, error) {
 	options := h.optionsFor(opts)
+	if err := checkMetadata(options.Metadata); err != nil {
+		return nil, err
+	}
 	callCtx, cancel := h.withTimeout(ctx, options)
 	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, h.callURL(service, method), bytes.NewReader(request))
 	if err != nil {
@@ -266,6 +272,9 @@ func (h *httpTransport) serverStreamRaw(ctx context.Context, service, method str
 
 func (h *httpTransport) clientStreamRaw(ctx context.Context, service, method string, request json.RawMessage, items func(yield func(json.RawMessage) bool), opts []CallOption) (json.RawMessage, map[string]string, error) {
 	options := h.optionsFor(opts)
+	if err := checkMetadata(options.Metadata); err != nil {
+		return nil, nil, err
+	}
 	callCtx, cancel := h.withTimeout(ctx, options)
 	defer cancel()
 	reader, writer := io.Pipe()

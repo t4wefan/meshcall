@@ -35,6 +35,13 @@ var scenarios = []scenario{
 	{"http: client stream from an NDJSON body", httpClientStream},
 	{"http: closing the request cancels the call", httpCancelOnDisconnect},
 	{"idempotency: duplicate keys join once and replay", idempotency},
+	{"tunnel: open waits for the instance's consent", tunnelConsent},
+	{"tunnel: every shape reaches only the target, Registry and OpenAPI too", tunnelScope},
+	{"tunnel: the instance sees an identity no client can forge", tunnelIdentity},
+	{"tunnel: revoke ends connections, expiry does not", tunnelLifetime},
+	{"tunnel: max_connections is a temporary limit on every auth path", tunnelLimit},
+	{"tunnel: calls resume when the instance reconnects", tunnelReconnect},
+	{"tunnel: a bound credential cannot register as another instance", tunnelBoundRegistration},
 	{"keepalive: instance pings within the router idle window", keepalive},
 	{"reconnect: instance re-registers after a router shutdown", routerRestart},
 	{"drain: leaves the pool, finishes streams, disconnects", drain},
@@ -48,6 +55,7 @@ func registration(h *harness) error {
 		"count": "server_stream", "sum": "client_stream", "metadata_echo": "unary", "drain_self": "unary",
 		"chat": "duplex", "announce": "duplex",
 		"big": "unary", "big_items": "server_stream",
+		"tunnel_info": "unary", "closed_tunnels": "unary",
 	}
 	if !reflect.DeepEqual(methods, want) {
 		return fmt.Errorf("registered methods %v, want %v", methods, want)

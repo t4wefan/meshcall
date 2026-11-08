@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -303,11 +304,22 @@ type client struct {
 	errors chan error
 }
 
-func (h *harness) client() (*client, error) {
+func (h *harness) client() (*client, error) { return h.clientWith("", "") }
+
+// clientWith connects with credentials in the upgrade's Authorization header,
+// or in hello (as a browser must) when helloAuth is set.
+func (h *harness) clientWith(header, helloAuth string) (*client, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, h.opts.Timeout)
 	defer cancel()
 	endpoint := h.endpoint()
-	conn, _, err := websocket.Dial(ctx, endpoint.URL, &websocket.DialOptions{HTTPClient: endpoint.HTTPClient()})
+	options := &websocket.DialOptions{HTTPClient: endpoint.HTTPClient()}
+	if header != "" {
+		options.HTTPHeader = http.Header{"Authorization": {header}}
+	}
+	conn, resp, err := websocket.Dial(ctx, endpoint.URL, options)
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dial router: %w", err)
 	}
@@ -349,7 +361,11 @@ func (h *harness) client() (*client, error) {
 			}
 		}
 	}()
-	if err := c.send(frame{"kind": "hello", "protocol": protocol, "role": "client", "peer_id": "conformance"}); err != nil {
+	hello := frame{"kind": "hello", "protocol": protocol, "role": "client", "peer_id": "conformance"}
+	if helloAuth != "" {
+		hello["authorization"] = helloAuth
+	}
+	if err := c.send(hello); err != nil {
 		return nil, err
 	}
 	ack, err := c.receive()

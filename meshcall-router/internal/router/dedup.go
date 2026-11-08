@@ -32,9 +32,14 @@ type dedupEntry struct {
 	element      *list.Element
 }
 
-func dedupKey(f frame) string {
-	// A targeted duplicate is only a duplicate on the same instance.
-	return f.Service + "\x00" + f.Method + "\x00" + f.Idempotency + "\x00" + f.InstanceID
+func dedupKey(f frame, p *peer) string {
+	// A targeted duplicate is only a duplicate on the same instance, and a
+	// tunnel's calls never join another principal's.
+	tunnel := ""
+	if p.user != nil && p.user.tunnel != nil {
+		tunnel = p.user.tunnel.id
+	}
+	return f.Service + "\x00" + f.Method + "\x00" + f.Idempotency + "\x00" + f.InstanceID + "\x00" + tunnel
 }
 
 // dedupLookup returns the entry for a keyed call.open, evicting expired ones.

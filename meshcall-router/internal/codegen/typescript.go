@@ -204,7 +204,7 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 		case "duplex":
 			input := registry.Name(requiredRef(m.InputItem, "duplex input item"))
 			output := registry.Name(requiredRef(m.OutputItem, "duplex output item"))
-			resultType = "MeshCallDuplexCall<" + input + ", " + output + ">"
+			resultType = "RpcDuplex<" + input + ", " + output + ">"
 			rpcCall = "duplex<" + request + ", " + input + ", " + output + ">"
 		}
 		optionsType := "CallOptions"
@@ -221,6 +221,7 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 			lines = append(lines, "    "+p+",")
 		}
 		if service.Targeted {
+			// Required on tunnel connections too: see renderPythonClientClass.
 			lines = append(lines, "    options: "+optionsType+" & { instance: string },")
 		} else {
 			lines = append(lines, "    options?: "+optionsType+",")
@@ -428,7 +429,7 @@ func tsRuntimeTypes(service *contract.Service) string {
 		names = append(names, "RpcStream")
 	}
 	if hasStream(service, "duplex") {
-		names = append(names, "MeshCallDuplexCall", "DuplexCallOptions")
+		names = append(names, "RpcDuplex", "DuplexCallOptions")
 	}
 	return strings.Join(names, ", ")
 }

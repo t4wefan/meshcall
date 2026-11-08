@@ -15,17 +15,19 @@
  * Duplex is WebSocket-only.
  * Calling from another origin needs `--http-cors-origin` on the Router.
  */
-import type { CallOptions, DuplexCallOptions, MeshCallDuplexCall } from "./client.js";
+import type { CallOptions, DuplexCallOptions } from "./client.js";
 import { CallCancelledError, DeadlineExceededError, MeshCallError, ProtocolError, UnavailableError } from "./errors.js";
 import type { RpcLogger } from "./log.js";
 import {
-  clientDeadlineGraceMs, DEFAULT_RETRY, retryDelayMs, validateMetadata, type ReconnectPolicy, type RetryPolicy,
+  clientDeadlineGraceMs, retryUnary, validateMetadata, type ReconnectPolicy, type RetryPolicy,
 } from "./policy.js";
 import type { Metadata } from "./protocol.js";
-import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
+import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 // Types only: importing router-auth's values would pull contract.ts (and Node's
 // crypto/fs/path) into browser bundles.
 import type { IssuedToken, RegistryService, RouterIdentity, RouterScope } from "./router-auth.js";
+import { checkTunnelCredential, normalizeScopeService, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient } from "./tunnel.js";
+import { WebSocketTransport } from "./web-socket.js";
 import { checkReceived } from "./validation.js";
 
 export type { CallOptions } from "./client.js";
@@ -34,7 +36,10 @@ export {
   MethodNotFoundError, PermissionDeniedError, ProtocolError, ResourceExhaustedError, UnauthenticatedError,
   UnavailableError, type Violation,
 } from "./errors.js";
-export type { MeshCallRpc, RpcStream } from "./rpc.js";
+export type { MeshCallRpc, RpcDuplex, RpcStream } from "./rpc.js";
+export {
+  TunnelsClient, type OpenedTunnel, type OpenTunnelRequest, type TunnelInfo, type TunnelScope,
+} from "./tunnel.js";
 
 export const DEFAULT_ROUTER_URL = "ws://127.0.0.1:8765";
 
@@ -193,6 +198,13 @@ export interface HttpTransportOptions {
 export interface MeshWebOptions {
   /** An API key (`mk_…`) or temporary token (`mt_…`), sent as a Bearer token. */
   readonly token?: string;
+  /**
+   * A tunnel credential (`mtun_…`): the Mesh reaches only the tunnel's
+   * instance. Over `ws(s)://` it is sent in `hello`, never in the URL.
+   */
+  readonly tunnel?: string;
+  /** WebSocket keepalive ping cadence; `null` disables. Default 15 s. */
+  readonly pingIntervalMs?: number | null;
   /** Extra headers on every request. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Defaults to the global `fetch`. */
@@ -209,11 +221,6 @@ export interface MeshWebOptions {
 const REGISTRY_SERVICE = "meshcall.router.v1.Registry";
 const ROUTER_AUTH_SERVICE = "meshcall.router.v1.AuthService";
 
-/** The Router normalises a service name without a version segment to `.v0`. */
-function normalizeScopeService(service: string): string {
-  if (service === "*" || service === "" || /\.v\d/u.test(service)) return service;
-  return `${service}.v0`;
-}
 
 /** Local deadline and caller signal folded into one AbortController. */
 class CallControl {
@@ -294,33 +301,13 @@ export class HttpTransport implements MeshCallRpc {
   public async unary<Request, Response>(
     service: string, method: string, request: Request, options: CallOptions = {},
   ): Promise<Response> {
-    options = mergeCallOptions(this.defaultCallOptions, options);
-    const policy = { ...DEFAULT_RETRY, ...(this.options.retry === false ? { enabled: false } : this.options.retry ?? {}) };
-    const mayRetry = policy.enabled && (options.idempotent === true || options.idempotencyKey !== undefined);
-    const deadline = options.timeoutMs === undefined ? undefined : performance.now() + options.timeoutMs;
-    for (let attempt = 1; ; attempt += 1) {
-      const remaining = deadline === undefined ? undefined : deadline - performance.now();
-      const attemptOptions = remaining === undefined ? options : { ...options, timeoutMs: Math.max(1, remaining) };
-      try {
-        const { body } = await this.call(service, method, JSON.stringify(request ?? null), "application/json", attemptOptions);
-        checkReceived(options.responseSchema, body, "response");
-        return body as Response;
-      } catch (error) {
-        const delay = retryDelayMs(policy, attempt);
-        const retry = mayRetry && error instanceof MeshCallError && error.retryable
-          && policy.retryCodes.includes(error.code) && attempt < policy.maxAttempts
-          && (deadline === undefined || deadline - performance.now() > delay);
-        if (!retry) {
-          if (attempt > 1 && error instanceof MeshCallError) {
-            throw MeshCallError.fromCode(error.code, error.message, {
-              retryable: error.retryable, details: { ...(error.details ?? {}), attempts: attempt },
-            });
-          }
-          throw error;
-        }
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
+    const merged = mergeCallOptions(this.defaultCallOptions, options);
+    return retryUnary(this.options.retry, merged, async (timeoutMs) => {
+      const attemptOptions = timeoutMs === undefined ? merged : { ...merged, timeoutMs };
+      const { body } = await this.call(service, method, JSON.stringify(request ?? null), "application/json", attemptOptions);
+      checkReceived(merged.responseSchema, body, "response");
+      return body as Response;
+    });
   }
 
   public async clientStream<Request, Item, Response>(
@@ -345,7 +332,7 @@ export class HttpTransport implements MeshCallRpc {
 
   public duplex<Request, InputItem, OutputItem>(
     _service: string, _method: string, _request: Request, _options?: DuplexCallOptions,
-  ): MeshCallDuplexCall<InputItem, OutputItem> {
+  ): RpcDuplex<InputItem, OutputItem> {
     throw new MeshCallError("method_not_found", "duplex methods are WebSocket-only", {
       details: { source: "client", reason: "duplex_over_http" },
     });
@@ -554,15 +541,21 @@ export class AuthClient {
 }
 
 /**
- * Browser-safe `Mesh` participant over the Router's HTTP v1 API.
- * Pass a `Router` instance (`new Mesh(new Router("https://router.example"), { token })`)
- * and share `mesh` across generated clients (`new ChatClient(mesh)`), `mesh.registry`, and `mesh.auth`.
+ * Browser-safe `Mesh` participant. The Router URL picks the transport:
+ * `wss://` / `ws://` is a WebSocket (every call shape, duplex included; the
+ * credentials travel in `hello`), `https://` / `http://` the HTTP v1 API over
+ * `fetch` (no duplex). Pass a `Router` instance
+ * (`new Mesh(new Router("wss://router.example"), { tunnel })`) and share
+ * `mesh` across generated clients (`new ChatClient(mesh)`), `mesh.registry`,
+ * `mesh.auth` and `mesh.tunnels`.
  */
 export class Mesh implements MeshCallRpc {
   public readonly router: Router;
   public readonly registry: RegistryClient;
   public readonly auth: AuthClient;
-  private readonly transport: HttpTransport;
+  /** The Router's `TunnelService`: open, revoke and list tunnels. */
+  public readonly tunnels: TunnelsClient;
+  private readonly transport: HttpTransport | WebSocketTransport;
 
   public constructor(router: Router, options: MeshWebOptions = {}) {
     if (!(router instanceof Router)) {
@@ -570,10 +563,32 @@ export class Mesh implements MeshCallRpc {
         "Mesh requires a Router instance; pass new Router(url) instead of a raw URL or options object",
       );
     }
+    if (options.token !== undefined && options.tunnel !== undefined) {
+      throw new TypeError("Specify either token or tunnel on Mesh, not both");
+    }
+    if (options.token?.startsWith(TUNNEL_CREDENTIAL_PREFIX) === true) {
+      throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
+    }
+    const bearer = options.tunnel !== undefined ? checkTunnelCredential(options.tunnel) : options.token;
     this.router = router;
-    this.transport = new HttpTransport(router.url, options);
+    if (router.isHttp) {
+      this.transport = new HttpTransport(router.url, { ...options, ...(bearer === undefined ? {} : { token: bearer }) });
+    } else {
+      const urls = router.urls.filter((url) => /^wss?:\/\//u.test(url));
+      if (urls.length !== router.urls.length) {
+        throw new TypeError("meshcall/web connects to ws://, wss://, http:// or https:// Routers only");
+      }
+      this.transport = new WebSocketTransport(urls, {
+        ...(bearer === undefined ? {} : { authorization: "Bearer " + bearer }),
+        ...(options.retry === undefined ? {} : { retry: options.retry }),
+        ...(options.deadlineGraceMs === undefined ? {} : { deadlineGraceMs: options.deadlineGraceMs }),
+        ...(options.pingIntervalMs === undefined ? {} : { pingIntervalMs: options.pingIntervalMs }),
+        ...(options.logger === undefined ? {} : { logger: options.logger }),
+      });
+    }
     this.registry = new RegistryClient(this);
     this.auth = new AuthClient(this);
+    this.tunnels = new TunnelsClient(this);
   }
 
   public static async connect(router: Router, options: MeshWebOptions = {}): Promise<Mesh> {
@@ -590,16 +605,19 @@ export class Mesh implements MeshCallRpc {
       transport,
       registry: new RegistryClient(clone),
       auth: new AuthClient(clone),
+      tunnels: new TunnelsClient(clone),
     });
     return clone;
   }
 
   public async connect(): Promise<this> {
+    if (this.transport instanceof WebSocketTransport) await this.transport.connect();
     return this;
   }
 
   public async close(): Promise<void> {
     // fetch keeps no persistent connection.
+    if (this.transport instanceof WebSocketTransport) await this.transport.close();
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {
@@ -622,7 +640,7 @@ export class Mesh implements MeshCallRpc {
 
   public duplex<Request, InputItem, OutputItem>(
     service: string, method: string, request: Request, options?: DuplexCallOptions,
-  ): MeshCallDuplexCall<InputItem, OutputItem> {
+  ): RpcDuplex<InputItem, OutputItem> {
     return this.transport.duplex(service, method, request, options);
   }
 }

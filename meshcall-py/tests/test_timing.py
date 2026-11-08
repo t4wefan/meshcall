@@ -15,7 +15,7 @@ from meshcall import RpcContext, RpcInputStream, RpcServer, method, service
 from meshcall.client import ClientBase
 from meshcall.context import NO_RECONNECT, ReconnectPolicy
 from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
-from meshcall.errors import ErrorCode, MeshCallError
+from meshcall.errors import ErrorCode, InvalidArgumentError, MeshCallError
 from meshcall.protocol import (
     PROTOCOL_VERSION,
     CallOpenFrame,
@@ -141,8 +141,10 @@ async def test_metadata_context_and_trailers_round_trip() -> None:
         assert result == Result(
             total=3, echoed={"traceparent": "00-abc", "tenant": "t1"}
         )
-        with pytest.raises(ValueError, match="reserved"):
-            await client.echo_metadata(Request(), metadata={"meshcall-x": "1"})
+        for key in ("meshcall-x", "MeshCall-Tunnel-Principal"):
+            with pytest.raises(InvalidArgumentError, match="reserved") as refused:
+                await client.echo_metadata(Request(), metadata={key: "1"})
+            assert refused.value.reason == "reserved_metadata"
     finally:
         await client.stop()
         await server.stop()

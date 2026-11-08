@@ -7,7 +7,6 @@ import pytest
 from router_fixtures import PASSWORD, write_auth_file
 from test_direct import NumberRequest, NumberResult, NumberService, NumberServiceClient
 from test_router import RouteServiceA
-from websockets.exceptions import InvalidStatus
 
 from meshcall import (
     RouterAuthClient,
@@ -19,7 +18,11 @@ from meshcall import (
 )
 from meshcall.context import ReconnectPolicy
 from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
-from meshcall.errors import MeshCallError, PermissionDeniedError
+from meshcall.errors import (
+    MeshCallError,
+    PermissionDeniedError,
+    UnauthenticatedError,
+)
 
 
 async def test_accounts_issue_scoped_tokens_and_revoke_active_calls(
@@ -73,7 +76,7 @@ async def test_accounts_issue_scoped_tokens_and_revoke_active_calls(
                     with pytest.raises(MeshCallError):
                         _ = [item async for item in pending]
                     assert not await auth.revoke_token(issued.token_id)
-                with pytest.raises(InvalidStatus):
+                with pytest.raises(UnauthenticatedError, match="HTTP 401"):
                     await WebSocketClientDriver(uri, auth=token_auth).connect()
                 with pytest.raises(MeshCallError) as denied:
                     await auth.issue_token(
@@ -103,7 +106,9 @@ async def test_service_registration_scope_and_revocation(tmp_path: Path) -> None
                 for task in asyncio.all_tasks()
                 if task.get_name() == "meshcall-frame-sender"
             }
-            with pytest.raises(ConnectionError):
+            with pytest.raises(
+                PermissionDeniedError, match="permission denied for role"
+            ):
                 await WebSocketClientDriver(uri, auth=token).connect()
             assert {
                 task
@@ -115,7 +120,9 @@ async def test_service_registration_scope_and_revocation(tmp_path: Path) -> None
                 driver=WebSocketRouterServerDriver(uri, auth=token),
             )
             try:
-                with pytest.raises(ConnectionError):
+                with pytest.raises(
+                    PermissionDeniedError, match="registration rejected"
+                ):
                     await forbidden.start()
             finally:
                 await forbidden.stop()
@@ -221,7 +228,7 @@ async def test_anonymous_callers_connect_and_are_authorised_per_call(
                 ),
                 reconnect=ReconnectPolicy(enabled=False),
             )
-            with pytest.raises((InvalidStatus, MeshCallError)):
+            with pytest.raises(UnauthenticatedError):
                 async with wrong:
                     await wrong.call_unary(
                         name, "unary", NumberRequest(value=1), NumberResult

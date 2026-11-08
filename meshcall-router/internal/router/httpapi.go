@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // HTTP calls (docs/protocol.md → HTTP calls). Each request becomes a virtual
@@ -124,6 +126,17 @@ func (r *Router) cors(w http.ResponseWriter, req *http.Request) bool {
 	return false
 }
 
+// acceptOptions applies the --http-cors-origin allowlist to WebSocket
+// upgrades: a browser on a listed origin may connect; same-origin and
+// Origin-less clients always may.
+func (r *Router) acceptOptions(req *http.Request) *websocket.AcceptOptions {
+	origin := req.Header.Get("Origin")
+	if origin == "" || !slices.ContainsFunc(r.config.HTTPCORSOrigins, func(o string) bool { return o == "*" || o == origin }) {
+		return nil // the library refuses cross-origin upgrades by default
+	}
+	return &websocket.AcceptOptions{InsecureSkipVerify: true} // checked above, exactly
+}
+
 // serveHTTP answers every request under /v1/.
 func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 	if !r.cors(w, req) {
@@ -165,16 +178,19 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	user, failure := r.config.Auth.check(req)
+	user, failure := r.authenticateRequest(req.Header.Get("Authorization"))
 	if failure != nil {
 		if failure.challenge {
 			w.Header().Set("WWW-Authenticate", `Basic realm="meshcall", charset="UTF-8"`)
 		}
 		code := "unauthenticated"
-		if failure.status == http.StatusServiceUnavailable {
+		switch failure.status {
+		case http.StatusServiceUnavailable:
 			code = "unavailable"
+		case http.StatusTooManyRequests:
+			code = "resource_exhausted"
 		}
-		writeHTTPError(w, &errorPayload{Code: code, Message: failure.message, Retryable: code == "unavailable"})
+		writeHTTPError(w, &errorPayload{Code: code, Message: failure.message, Retryable: code != "unauthenticated"})
 		return
 	}
 	if !user.allowsRole("client") {
@@ -327,7 +343,7 @@ func (r *Router) virtualClient(parent context.Context, user *User) (*peer, func(
 	p := &peer{ctx: ctx, cancel: cancel, user: user, role: "client", id: hex.EncodeToString(id),
 		out: newOutbox(r.config.OutboxSize), drops: &r.metrics.outboxDrops}
 	r.mu.Lock()
-	if r.closed || !r.config.Auth.valid(user) {
+	if r.closed || !r.admit(p) {
 		r.mu.Unlock()
 		cancel()
 		return nil, nil, false

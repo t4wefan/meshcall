@@ -14,7 +14,7 @@ flowchart LR
   R <-->|"已注册连接"| PS["Python 服务实例群"]
   R <-->|"已注册连接"| TS["TypeScript 服务实例群"]
   R <-->|"已注册连接"| GS["Go 服务实例群"]
-  R --> A["内置 AuthService / Registry"]
+  R --> A["内置 AuthService / Registry / TunnelService"]
 ```
 
 所有客户端与服务端实例均主动向 Router 发起 WebSocket 连接。TCP 与本地传输（Linux、macOS、FreeBSD 上为 Unix Domain Socket，Windows 上为命名管道：`--pipe NAME`，客户端以 `pipe://NAME` 寻址）承载完全相同的逻辑帧。关于二进制独立运行与容器化部署，请参阅 [Go Router 部署指南](../../meshcall-router/README.zh-CN.md)。
@@ -131,7 +131,8 @@ MeshCall 不需要复杂的分布式共识（Raft/Etcd）即可实现 Router 层
 - 使用 `meshcall-router hash-password` 从标准输入读取密码并生成 PBKDF2-HMAC-SHA256（600,000 次迭代 + 16 字节随机盐）哈希值，Router 配置文件中绝不存储明文密码。配置只在启动时加载一次，修改账号或权限需重启 Router。
 - `roles` 控制允许连接的角色（`client`、`server` 或两者皆可）。
 - `register` 控制允许注册的服务名列表；`call` 控制允许调用的 `服务名/方法名` 列表（支持 `service/*` 通配某个服务下的全部方法，或 `*` 通配全部）。缺失的列表不授予任何权限。注册权限与调用权限完全正交隔离。
-- 凭据通过 WebSocket 升级或 HTTP 请求的 `Authorization` 头传输：账号使用 `Basic`，临时 Token（`mt_…`）与 API Key（`mk_…`）使用 `Bearer`。绝不放在 URL 查询字符串或 `hello` 负载中。生产环境跨网络传输请务必配合 TLS 反向代理使用 `wss://`；Go 监听器自身不终结 TLS。同样的检查也适用于 Unix 套接字与命名管道；命名管道只允许 Router 自身用户、SYSTEM 与 Administrators 访问，与 Unix 套接字的文件权限效果相同。
+- `instance_ids`（账号与 API Key，可选）列出该身份唯一允许注册的实例 id，以其他 id 注册时连接以 1008 关闭。请把每个实例的凭据绑定到它的 id——尤其是[隧道](#隧道)的目标实例，否则可自选 id 的凭据可能在真实实例离线时冒充它：`{ "username": "box-a", "password_hash": "…", "roles": ["server"], "register": ["dev.v1.Workspace"], "instance_ids": ["box-a"] }`。
+- 凭据通过 WebSocket 升级或 HTTP 请求的 `Authorization` 头传输：账号使用 `Basic`，临时 Token（`mt_…`）、API Key（`mk_…`）与隧道凭据（`mtun_…`）使用 `Bearer`。绝不放在 URL 查询字符串中。无法设置该头的对端（浏览器）不带该头连接，并把同样的值放在 `hello` 帧的 `authorization` 字段中；那里的凭据被拒时，连接以 4000 加请求头方式对应的 HTTP 状态码关闭（4401 校验失败，4429 隧道已达 `max_connections`，4503 繁忙；见[协议规范](protocol.md#连接握手与服务注册)），两处同时发送会被拒绝。生产环境跨网络传输请务必配合 TLS 反向代理使用 `wss://`；Go 监听器自身不终结 TLS。同样的检查也适用于 Unix 套接字与命名管道；命名管道只允许 Router 自身用户、SYSTEM 与 Administrators 访问，与 Unix 套接字的文件权限效果相同。
 
 ### 连接时认证，调用时授权
 
@@ -162,7 +163,7 @@ API Key 是面向机器调用方（Webhook、外部服务）的长期凭据。`m
 
 Key 是 256 位随机串，以 SHA-256 摘要保存，因此校验只是一次哈希查找（不同于需要 PBKDF2 的密码）。它们属于配置，Router 重启后依然有效；轮换方式是先添加新 Key 再删除旧 Key。与临时 Token 一样，API Key 不能签发 Token。
 
-成功的 Basic 校验会在内存中缓存一分钟（以凭据摘要为键，失败不缓存），同一账号的重复调用无需每次都付出 PBKDF2 的代价；缓存在重启时丢失，无害。频繁的 HTTP 调用方仍应优先使用 API Key 或 Token。浏览器无法在 WebSocket 握手上设置 `Authorization` 头，因此通过 `meshcall/web`（`new Mesh(new Router("https://…"), { token })`）走 HTTP 调用（见[第 6 节 HTTP 调用](#6-http-调用)）。Router 不直接实现 JWT 校验或外部登录系统；WebSocket 客户端与 `LocalRouter` 子进程启动器可在 Python、Node 与 Go 中运行。
+成功的 Basic 校验会在内存中缓存一分钟（以凭据摘要为键，失败不缓存），同一账号的重复调用无需每次都付出 PBKDF2 的代价；缓存在重启时丢失，无害。频繁的 HTTP 调用方仍应优先使用 API Key 或 Token。浏览器无法在 WebSocket 握手上设置 `Authorization` 头，因此 `meshcall/web` 把凭据放在 `hello` 中（`new Mesh(new Router("wss://…"), { tunnel })` 或 `{ token }`）；跨源页面需要把其源加入 `--http-cors-origin`，它同样约束 WebSocket 升级。使用 `https://` 时同一个 `Mesh` 改走 [HTTP 调用](#6-http-调用)，不支持 duplex。Router 不直接实现 JWT 校验或外部登录系统；WebSocket 客户端与 `LocalRouter` 子进程启动器可在 Python、Node 与 Go 中运行。
 
 ---
 
@@ -208,7 +209,7 @@ meshcall call demo.v1.Counter.add '{"a": 1, "b": 2}' --http   # 通过 HTTP 调�
 
 ## 8. 内置 `Registry` 服务与 `meshcall` CLI
 
-服务实例注册时会将自身的完整契约上报给 Router，Router 通过内置的 `meshcall.router.v1.Registry` 服务对外提供查询：`list` 返回每个服务及其实例（进行中调用数、上限、熔断状态、是否排空）与方法（形状、描述、注解、参数）；`describe {service}` 额外返回完整契约条目。开发模式下无需账号即可使用；启用账号后需要在 `call` 中包含 `meshcall.router.v1.Registry/*`，并且**只显示调用方有权调用的内容**：调用方至少能调用其中一个方法的服务才会出现，且只列出这些方法及其契约条目。描述一个无权调用的服务与描述不存在的服务返回同样的错误。
+服务实例注册时会将自身的完整契约上报给 Router，Router 通过内置的 `meshcall.router.v1.Registry` 服务对外提供查询：`list` 返回每个服务及其实例（进行中调用数、上限、熔断状态、是否排空）与方法（形状、描述、注解、参数）；`describe {service}` 额外返回完整契约条目。开发模式下无需账号即可使用；启用账号后需要在 `call` 中包含 `meshcall.router.v1.Registry/*`，并且**只显示调用方有权调用的内容**：调用方至少能调用其中一个方法的服务才会出现，且只列出这些方法及其契约条目。描述一个无权调用的服务（或在隧道上描述隧道视图外的服务）与描述不存在的服务返回同样的 `method_not_found`，这是有意为之。
 
 `meshcall` CLI（由 `cmd/meshcall` 构建，与 `meshcall-router` 一同发布）正是基于该服务构建的交互式前端：
 
@@ -238,7 +239,9 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 | `issue_token` | `ttl_seconds` (1–3600), `scopes` | `call` 列表包含 `meshcall.router.v1.AuthService/issue_token` 的账号 |
 | `revoke_token` | `token_id` | `call` 列表包含 `revoke_token` 的账号（仅可吊销自己签发的 Token） |
 
-`scopes` 中每项为 `{"service": …, "methods": [...]}`；`methods: ["*"]` 允许该服务全部方法，省略 `methods` 不授予调用权限；`register: true`（Python 为 `RouterScope(register_service=True)`）授予注册该服务的权限，适合短生命周期的 Worker。Scope 中的服务名必须是具体且不重复的，不接受命名空间通配符与 Router 保留命名空间。
+身份绑定了实例 id 时 `whoami` 还会返回 `instance_ids`，在隧道连接上返回 `tunnel`。
+
+`scopes` 中每项为 `{"service": …, "methods": [...]}`；`methods: ["*"]` 允许该服务全部方法，省略 `methods` 不授予调用权限；`register: true`（Python 为 `RouterScope(register_service=True)`）授予注册该服务的权限，适合短生命周期的 Worker；此类 scope 上的 `instance_ids` 把它限制在这些实例 id 上（受 `instance_ids` 限制的签发方只能收窄自己的列表，未指定的 scope 继承签发方的列表）。Scope 中的服务名必须是具体且不重复的，不接受命名空间通配符与 Router 保留命名空间。
 
 **安全边界**：Router 会严格校验所请求的 `scopes` 是否属于签发账号自身的权限子集（权限委托绝不能超越母账号自身权限，超出时返回 `permission_denied`），且临时 Token 与 API Key 都不能再签发或吊销其他 Token。Router 内存中仅保存 Token 的 SHA-256 摘要，明文只在签发时返回一次；默认有效期 900 秒，最多同时存在 4096 个 Token、每个 Token 最多 128 个服务 Scope。一旦 Token 过期或被吊销，新连接将被拒绝，正在使用该 Token 的连接会被立即关闭。Token 只属于签发它的 Router 进程，Router 重启后失效，没有共享 Token 数据库或复制的 Router 状态。
 
@@ -277,6 +280,17 @@ await using scopedMesh = await Mesh.connect(new Router(uri), { token: issued.tok
 // 将 scopedMesh 传给生成的客户端：new ChatServiceClient(scopedMesh)
 await issuerMesh.auth.revokeToken(issued.token_id);
 ```
+
+### 隧道
+
+`meshcall.router.v1.TunnelService`（`open`、`revoke`、`list`）签发只通向一个服务实例的凭据，完整语义见[协议规范](protocol.md#隧道tunnels)。签发方——通常是平台控制面持有的账号或 API Key——需要在 `call` 列表中拥有这些方法，并且只能把隧道限定在自己有权调用的方法上：
+
+```json
+{ "id": "control-plane", "key_hash": "…", "roles": ["client"],
+  "call": ["meshcall.router.v1.TunnelService/*", "dev.v1.Workspace/*"] }
+```
+
+`open {instance_id, scopes, principal, ttl_seconds, max_connections?}` 把隧道 offer 给实例；实例必须已选择加入（Python `mesh.mount(svc, accept_tunnels=True)`，TypeScript `{ acceptTunnels: true }`，Go `mesh.Mount(svc, meshcall.WithAcceptTunnels(decide))`），接受后才返回 `mtun_…` 凭据。用它连接的客户端只能看到该实例在 scope 内的方法，调用时无需指定实例，也无法伪造 Router 在每次调用上设置的 `meshcall-tunnel-id` / `meshcall-tunnel-principal` 元数据。凭据的 TTL（1–86400 秒）只限制新连接；`revoke` 立即关闭隧道的所有连接。隧道与 Token 一样保存在内存中：Router 重启会丢失它们，实例重连时会再次收到其隧道的 offer。开发模式下任何人都可以开启隧道。
 
 ---
 

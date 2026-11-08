@@ -3,9 +3,15 @@
  * backoff, deadline grace, metadata rules. Shared by the WebSocket client
  * and the HTTP web client.
  */
+import { InvalidArgumentError, MeshCallError } from "./errors.js";
 import type { Metadata } from "./protocol.js";
 
 export const RESERVED_METADATA_PREFIX = "meshcall-";
+
+/** `meshcall-…` in any letter case: set only by the runtime and the Router. */
+export function isReservedKey(key: string): boolean {
+  return key.slice(0, RESERVED_METADATA_PREFIX.length).toLowerCase() === RESERVED_METADATA_PREFIX;
+}
 
 /**
  * Exponential backoff with jitter for re-establishing a lost connection.
@@ -52,6 +58,42 @@ export function retryDelayMs(policy: Required<RetryPolicy>, attempt: number): nu
   return Math.max(0, base + (Math.random() * 2 - 1) * spread);
 }
 
+/**
+ * Runs a unary attempt under the retry policy: re-sent only for a `retryable`
+ * error whose code is in `retryCodes`, when the method is idempotent or the
+ * call carries an idempotency key, within the call's `timeoutMs`. The final
+ * error carries `details.attempts` when more than one attempt was made.
+ */
+export async function retryUnary<Result>(
+  retry: RetryPolicy | false | undefined,
+  options: { readonly timeoutMs?: number; readonly idempotent?: boolean; readonly idempotencyKey?: string },
+  attempt: (timeoutMs: number | undefined) => Promise<Result>,
+): Promise<Result> {
+  const policy = { ...DEFAULT_RETRY, ...(retry === false ? { enabled: false } : retry ?? {}) };
+  const mayRetry = policy.enabled && (options.idempotent === true || options.idempotencyKey !== undefined);
+  const deadline = options.timeoutMs === undefined ? undefined : performance.now() + options.timeoutMs;
+  for (let n = 1; ; n += 1) {
+    const remaining = deadline === undefined ? undefined : Math.max(1, deadline - performance.now());
+    try {
+      return await attempt(remaining);
+    } catch (error) {
+      const delay = retryDelayMs(policy, n);
+      const again = mayRetry && error instanceof MeshCallError && error.retryable
+        && policy.retryCodes.includes(error.code) && n < policy.maxAttempts
+        && (deadline === undefined || deadline - performance.now() > delay);
+      if (!again) {
+        if (n > 1 && error instanceof MeshCallError) {
+          throw MeshCallError.fromCode(error.code, error.message, {
+            retryable: error.retryable, details: { ...(error.details ?? {}), attempts: n },
+          });
+        }
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 export function* reconnectDelays(policy: ReconnectPolicy): Generator<number> {
   const p = { ...DEFAULT_RECONNECT, ...policy };
   if (p.initialDelayMs <= 0 || p.maxDelayMs < p.initialDelayMs || p.multiplier < 1
@@ -74,9 +116,13 @@ export function clientDeadlineGraceMs(timeoutMs: number): number {
 export function validateMetadata(metadata: Metadata | undefined | null): Metadata | null {
   if (metadata === undefined || metadata === null) return null;
   for (const [key, value] of Object.entries(metadata)) {
-    if (key.length === 0) throw new RangeError("metadata keys must not be empty");
-    if (key.startsWith(RESERVED_METADATA_PREFIX)) {
-      throw new RangeError("metadata key " + JSON.stringify(key) + " uses the reserved prefix");
+    if (key.length === 0) {
+      throw new InvalidArgumentError("metadata keys must not be empty", { details: { source: "client", reason: "invalid_metadata" } });
+    }
+    if (isReservedKey(key)) {
+      throw new InvalidArgumentError("metadata key " + JSON.stringify(key) + " uses the reserved prefix \"meshcall-\"", {
+        details: { source: "client", reason: "reserved_metadata" },
+      });
     }
     if (typeof value !== "string") {
       throw new TypeError("metadata value for " + JSON.stringify(key) + " must be a string");

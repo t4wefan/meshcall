@@ -2,13 +2,15 @@ import {
   CallCancelledError, DeadlineExceededError, ErrorCode, InvalidArgumentError, MeshCallError, ProtocolError, UnavailableError,
 } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
-import { validateMetadata, type Liveness } from "./liveness.js";
+import type { Liveness } from "./liveness.js";
+import { isReservedKey } from "./policy.js";
 import { safelyLog, type LogLevel, type RpcLogger } from "./logging.js";
 import type {
   CallOpenFrame, ErrorPayload, Frame, Metadata, StreamEndFrame, StreamItemFrame, StreamWindowFrame,
 } from "./protocol.js";
 import type { DuplexChannel, RpcContext, ServerCallNext, ServerInterceptor, ServiceMethod } from "./service.js";
 import { isFrameTooLarge, type FrameWriter } from "./transport.js";
+import { TUNNEL_HOST_SERVICE, type TunnelHost } from "./tunnel.js";
 import { InvalidOutputError, validatePayload, type MethodValidators } from "./validation.js";
 
 export interface RuntimeMethod {
@@ -29,6 +31,11 @@ export interface SessionOptions {
   /** Server-wide in-flight count and cap, for local max_inflight enforcement. */
   inflight?: () => number;
   maxInflight?: number;
+  /**
+   * Set on Router connections only: only a Router offers tunnels and sets
+   * tunnel metadata, so a direct caller can do neither.
+   */
+  tunnels?: TunnelHost;
 }
 
 export class ServerSession {
@@ -54,6 +61,20 @@ export class ServerSession {
     if (frame.kind === "pong") return;
     if (frame.kind === "server.drain.ack") {
       this.drainAcked?.();
+      return;
+    }
+    if (frame.kind === "call.open" && frame.service === TUNNEL_HOST_SERVICE && this.options.tunnels !== undefined) {
+      // The Router's own calls: answered by the runtime, outside max_inflight and the access log.
+      const tunnels = this.options.tunnels;
+      void tunnels.handle(frame.method, frame.payload).then(
+        (payload) => this.writer.send({ kind: "call.result", call_id: frame.call_id, payload }),
+        (error: unknown) => {
+          safelyLog(() => this.options.logger.warning("Tunnel " + frame.method + " failed: " + String(error)));
+          return this.writer.send({
+            kind: "call.error", call_id: frame.call_id, error: { code: "internal", message: "Tunnel request failed" },
+          });
+        },
+      ).catch(() => undefined);
       return;
     }
     if (frame.kind === "call.open") {
@@ -224,8 +245,10 @@ class ServerCall {
       metadata: Object.freeze({ ...(frame.metadata ?? {}) }),
       idempotencyKey: frame.idempotency_key ?? null,
       instanceId: session.options.instanceId,
+      tunnel: session.options.tunnels?.lookup(frame.metadata) ?? null,
       setTrailer(key: string, value: string): void {
-        validateMetadata({ [key]: value });
+        if (key === "" || isReservedKey(key)) throw new RangeError("trailer key " + JSON.stringify(key) + " is empty or reserved (\"meshcall-\")");
+        if (typeof value !== "string") throw new TypeError("trailer value for " + JSON.stringify(key) + " must be a string");
         trailers[key] = value;
       },
       get trailers(): Readonly<Metadata> { return { ...trailers }; },

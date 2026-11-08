@@ -39,7 +39,10 @@ Each method line shows shape (`unary` / `server_stream` / `client_stream` /
 and, for duplex, its reason. `--router ws://host:port` or
 `MESHCALL_ROUTER_URL` selects the Router (default `ws://127.0.0.1:8765`;
 `unix:///path` for a Unix socket, `pipe://NAME` for a Windows named pipe);
-`--auth user:pass` / `--token T` when accounts are configured.
+`--auth user:pass` / `--token T` when accounts are configured;
+`--tunnel mtun_…` connects through a tunnel (one instance's scoped methods
+only, no `--instance` needed). `inspect` also lists the tunnels you opened,
+never their credentials.
 
 ## Call
 
@@ -68,9 +71,11 @@ the same JSON envelope with an HTTP status (400, 401, 403, 404, 429, 503,
 504…). `GET /v1/openapi.json` describes every method you may call (feed it to
 Swagger UI or a client generator); `GET /v1/services` is the Registry.
 `meshcall call … --http` does the same from the CLI. In a browser or edge
-runtime, pass `new Mesh(new Router("https://…"), { token })` from
-`meshcall/web` to the generated TypeScript client (no duplex; add
-`--http-cors-origin` for other origins).
+runtime, pass `new Mesh(new Router("wss://…"), { token })` (or `{ tunnel }`)
+from `meshcall/web` to the generated TypeScript client: `wss://` is a
+WebSocket with every shape including duplex (credentials go in `hello`),
+`https://` the HTTP API without duplex; add `--http-cors-origin` for pages on
+other origins.
 
 ## Read errors
 
@@ -79,13 +84,14 @@ Every error has `code`, `message`, `details.source` (`client` | `router` |
 
 | code | meaning | what to do |
 | --- | --- | --- |
-| `invalid_argument` | your request failed validation; `details.violations` lists `{path, code, message}` per field. `reason: instance_required` means the service is targeted; `idempotency_key_on_duplex` that duplex calls take no key | fix the named fields; pass `--instance` / `instance=` for targeted services; drop the key |
+| `invalid_argument` | your request failed validation; `details.violations` lists `{path, code, message}` per field. `reason: instance_required` means the service is targeted; `idempotency_key_on_duplex` that duplex calls take no key; `reserved_metadata` that a metadata key starts with `meshcall-` (any case) | fix the named fields; pass `--instance` / `instance=` for targeted services; drop the key; rename the metadata key |
 | `method_not_found` | wrong service or method | the hint lists available methods |
-| `unavailable` | no instance (`no_instances`), instance lost, every breaker open (`circuit_open`), the named instance is unknown / draining, or the Router is stopping (`router_draining`, `router_shutdown`) | `router inspect`; retry if `retryable` (another Router if you have several) |
-| `resource_exhausted` | Router, connection or every instance at capacity (`overloaded`); a request, response or stream item over the frame limit (`frame_too_large`, not retryable) | back off and retry; split oversized data into stream items |
+| `unavailable` | no instance (`no_instances`), instance lost, every breaker open (`circuit_open`), the named instance is unknown / draining, a tunnel's instance is reconnecting (`instance_offline`), or the Router is stopping (`router_draining`, `router_shutdown`) | `router inspect`; retry if `retryable` (another Router if you have several) |
+| `resource_exhausted` | Router, connection or every instance at capacity (`overloaded`); a tunnel at its `max_connections` (HTTP 429 / close 4429); a request, response or stream item over the frame limit (`frame_too_large`, not retryable) | back off and retry; split oversized data into stream items |
 | `protocol_error` | a stream item beyond the consumer's credit (`flow_control_violation`) or another frame that broke the protocol | fix the producer; regenerate a hand-patched client |
 | `deadline_exceeded` | `timeout_ms` elapsed (source says who noticed) | raise the timeout or make the handler faster |
-| `permission_denied` | the caller (possibly the anonymous user: no credentials sent) may not make this call; the same error whether or not the method exists | send credentials, or add `service/method` to the account, key or token |
+| `permission_denied` | the caller (possibly the anonymous user: no credentials sent) may not make this call; the same error whether or not the method exists. `reason: tunnel_scope`: on a tunnel connection, outside the tunnel (`details.instance_id` is its instance); `tunnel_rejected`: the instance refused `tunnels.open`; `policy_violation`: the Router closed the connection (1008) and the message says why, e.g. an `instance_id` outside the credential's `instance_ids` | send credentials, or add `service/method` to the account, key or token; on a tunnel pass its instance or ask the issuer for wider scopes |
+| `unauthenticated` | the credentials are wrong, expired or revoked (HTTP 401 at connect, or close 4401); `reason: tunnel_revoked` / `tunnel_closed`: the tunnel ended (later calls on the same Mesh keep that answer) | get a new credential (on a tunnel: ask the issuer again); retrying with the same one fails the same way |
 | `internal` | the service failed; `reason: invalid_response` means its own handler broke its contract | read the service's log, fix the service |
 
 Never guess at parameters when `invalid_argument` tells you the path.
@@ -411,6 +417,16 @@ my_app/
   `resource_exhausted` / `overloaded`.
 - Several Routers: give services and clients `Router([uri1, uri2])`; no
   coordination is needed because the Router keeps no state peers cannot rebuild.
+- Tunnels (one instance for one caller, e.g. a person's browser to their dev
+  container): the instance opts in at mount (`accept_tunnels=True` or a
+  `(TunnelOffer) -> bool` hook, `on_tunnel_closed=`; TS `acceptTunnels` /
+  `onTunnelClosed`; Go `WithAcceptTunnels` / `WithTunnelClosed`) and reads
+  the caller from `ctx.tunnel` (id, principal), never from metadata; an
+  issuer account or API key calls `mesh.tunnels.open(instance=…, scopes=…,
+  principal=…)` and hands the `mtun_…` credential to the client, which
+  connects with `Mesh(router, tunnel=cred)`. Targeted clients still pass
+  `instance` (the tunnel's id). Bind registration credentials with
+  `instance_ids` so nothing can impersonate the instance.
 - Configure the Router with flags or `MESHCALL_ROUTER_<FLAG>` variables
   (`MESHCALL_ROUTER_PORT`, `MESHCALL_ROUTER_IDLE_TIMEOUT`, …); put accounts in
   `MESHCALL_ROUTER_AUTH` (the auth JSON itself) or `MESHCALL_ROUTER_AUTH_FILE`.

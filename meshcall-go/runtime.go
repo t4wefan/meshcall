@@ -23,13 +23,16 @@ type Context struct {
 	IdempotencyKey string
 	// InstanceID is this server's instance id; what a targeted caller addressed.
 	InstanceID string
-	Logger     *slog.Logger
-	call       *serverCall
+	// Tunnel is the tunnel the call arrived through (its id and the principal
+	// the issuer set), or nil. Set by the Router; callers cannot forge it.
+	Tunnel *Tunnel
+	Logger *slog.Logger
+	call   *serverCall
 }
 
 // SetTrailer attaches a trailer to the call's terminal frame.
 func (c *Context) SetTrailer(key, value string) {
-	if key == "" || len(key) >= 9 && key[:9] == "meshcall-" {
+	if key == "" || isReservedKey(key) {
 		panic(fmt.Sprintf("meshcall: invalid trailer key %q", key))
 	}
 	c.call.trailerMu.Lock()

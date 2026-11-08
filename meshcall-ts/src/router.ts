@@ -15,9 +15,8 @@ import {
   type ClientInterceptor,
   type DuplexCallOptions,
   type MeshCallClientOptions,
-  type MeshCallDuplexCall,
 } from "./client.js";
-import { isService } from "./contract.js";
+import { bindService, isService } from "./contract.js";
 import { namedPipePath, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
 import type { ReconnectPolicy, RetryPolicy } from "./liveness.js";
 import type { LogLevel, RpcLogger } from "./logging.js";
@@ -26,9 +25,13 @@ import {
   authorizationHeader,
   RouterCredentials,
 } from "./router-auth.js";
-import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
+import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 import { MeshCallServer, type MeshCallServerOptions, type ServerInterceptor } from "./server.js";
 import { DEFAULT_MAX_FRAME_SIZE } from "./transport.js";
+import {
+  checkTunnelCredential, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient,
+  type TunnelClosedHook, type TunnelOfferHook, type TunnelPolicy,
+} from "./tunnel.js";
 import {
   AuthClient,
   DEFAULT_ROUTER_URL,
@@ -436,10 +439,15 @@ export const WebSocketRouter = LocalRouter;
 export type WebSocketRouter = LocalRouter;
 
 export interface MeshOptions {
-  /** Bearer token (`mk_…` or `mt_…`); mutually exclusive with `credentials`. */
+  /** Bearer token (`mk_…` or `mt_…`); mutually exclusive with `credentials` and `tunnel`. */
   readonly token?: string;
-  /** Router credentials (Bearer or Basic); mutually exclusive with `token`. */
+  /** Router credentials (Bearer or Basic); mutually exclusive with `token` and `tunnel`. */
   readonly credentials?: RouterCredentials;
+  /**
+   * A tunnel credential (`mtun_…`, from `mesh.tunnels.open`): this Mesh then
+   * reaches only the tunnel's instance and cannot mount services.
+   */
+  readonly tunnel?: string;
   /** Extra HTTP headers when connecting to an HTTP(S) Router. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Custom `fetch` implementation when connecting to an HTTP(S) Router. */
@@ -470,7 +478,16 @@ export interface ServeOptions {
   readonly idleTimeoutMs?: number | null;
 }
 
-export type MountOptions = ServeOptions;
+export interface MountOptions extends ServeOptions {
+  /**
+   * Opt these services in to tunnels: `true` accepts every offer naming them,
+   * a function decides each one. An offer is accepted only if every service
+   * it scopes accepts. Calls through a tunnel see it as `ctx.tunnel`.
+   */
+  readonly acceptTunnels?: boolean | TunnelOfferHook;
+  /** Told when a tunnel these services accepted ends. */
+  readonly onTunnelClosed?: TunnelClosedHook;
+}
 
 export class RunningServer {
   public constructor(
@@ -539,7 +556,10 @@ export class Mesh implements MeshCallRpc {
   public readonly options: MeshOptions;
   public readonly registry: RegistryClient;
   public readonly auth: AuthClient;
+  /** The Router's `TunnelService`: open, revoke and list tunnels. */
+  public readonly tunnels: TunnelsClient;
   private readonly credentials: RouterCredentials | undefined;
+  private readonly tunnelPolicies = new Map<string, TunnelPolicy>();
   private root: Mesh;
   private ownsRoot = true;
   private ownsLocalRouter = false;
@@ -555,15 +575,22 @@ export class Mesh implements MeshCallRpc {
         "Mesh requires a Router or LocalRouter instance; pass new Router(url) or new LocalRouter(...) instead of a raw URL or options object",
       );
     }
-    if (options.token !== undefined && options.credentials !== undefined) {
-      throw new TypeError("Specify either token or credentials on Mesh, not both");
+    if ([options.token, options.credentials, options.tunnel].filter((v) => v !== undefined).length > 1) {
+      throw new TypeError("Specify one of token, credentials or tunnel on Mesh");
+    }
+    const bearer = options.token ?? options.credentials?.token;
+    if (bearer?.startsWith(TUNNEL_CREDENTIAL_PREFIX) === true) {
+      throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
     }
     this.router = router;
     this.options = options;
-    this.credentials = options.credentials ?? (options.token !== undefined ? RouterCredentials.bearer(options.token) : undefined);
+    this.credentials = options.credentials ?? (options.token !== undefined
+      ? RouterCredentials.bearer(options.token)
+      : options.tunnel !== undefined ? RouterCredentials.bearer(checkTunnelCredential(options.tunnel)) : undefined);
     this.root = this;
     this.registry = new RegistryClient(this);
     this.auth = new AuthClient(this);
+    this.tunnels = new TunnelsClient(this);
   }
 
   private async ensureRouterStarted(): Promise<void> {
@@ -596,6 +623,7 @@ export class Mesh implements MeshCallRpc {
       defaultCallOptions: mergeCallOptions(this.defaultCallOptions, options),
       registry: new RegistryClient(clone),
       auth: new AuthClient(clone),
+      tunnels: new TunnelsClient(clone),
     });
     return clone;
   }
@@ -661,12 +689,15 @@ export class Mesh implements MeshCallRpc {
    * Register one or more `@service` instances locally on this `Mesh` (zero I/O).
    * Call `await mesh.serve()` or `await using srv = await mesh.startServing()` to publish them to the Router.
    */
-  public mount(...args: [...services: object[], options: ServeOptions]): this;
+  public mount(...args: [...services: object[], options: MountOptions]): this;
   public mount(...services: object[]): this;
-  public mount(...args: Array<object | ServeOptions>): this {
+  public mount(...args: Array<object | MountOptions>): this {
     if (this.root !== this) {
-      (this.root.mount as (...a: Array<object | ServeOptions>) => Mesh)(...args);
+      (this.root.mount as (...a: Array<object | MountOptions>) => Mesh)(...args);
       return this;
+    }
+    if (this.options.tunnel !== undefined) {
+      throw new TypeError("A tunnel Mesh reaches one instance and cannot serve; mount services on a Mesh with registration credentials");
     }
     if (this.router.isHttp) {
       throw new TypeError(
@@ -676,14 +707,22 @@ export class Mesh implements MeshCallRpc {
     if (this.activeServer !== undefined) {
       throw new Error("Cannot mount services while Mesh is already serving");
     }
-    const { services, options } = splitServicesAndOptions(args);
+    const { services, options: mountOptions } = splitServicesAndOptions(args);
+    const { acceptTunnels, onTunnelClosed, ...options } = mountOptions as MountOptions;
     for (const svc of services) {
       if (!isService(svc)) {
         throw new TypeError("mount() requires @service instances");
       }
     }
+    if (onTunnelClosed !== undefined && (acceptTunnels === undefined || acceptTunnels === false)) {
+      throw new TypeError("onTunnelClosed needs acceptTunnels");
+    }
     this.mountedServices.push(...services);
     this.mountOptions = { ...this.mountOptions, ...options };
+    if (acceptTunnels !== undefined && acceptTunnels !== false) {
+      const policy: TunnelPolicy = { accept: acceptTunnels, ...(onTunnelClosed === undefined ? {} : { onClosed: onTunnelClosed }) };
+      for (const svc of services) this.tunnelPolicies.set(bindService(svc).definition.name, policy);
+    }
     return this;
   }
 
@@ -739,6 +778,7 @@ export class Mesh implements MeshCallRpc {
           ? { logger: this.options.logger }
           : {}),
       ...(merged.interceptors === undefined ? {} : { interceptors: merged.interceptors }),
+      tunnelPolicies: this.tunnelPolicies,
     };
 
     const server = new MeshCallServer(serverOptions);
@@ -854,7 +894,7 @@ export class Mesh implements MeshCallRpc {
 
   public duplex<Request, InputItem, OutputItem>(
     service: string, method: string, request: Request, options?: DuplexCallOptions,
-  ): MeshCallDuplexCall<InputItem, OutputItem> {
+  ): RpcDuplex<InputItem, OutputItem> {
     const transport = this.ensureTransport();
     if (transport.duplex === undefined) {
       throw new Error("Duplex is not supported by this transport");

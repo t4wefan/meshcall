@@ -4,7 +4,10 @@ import WebSocket, { type RawData } from "ws";
 
 import type { JsonSchema } from "./contract.js";
 import { closeSocket, createSocket, type WebSocketEndpoint } from "./endpoint.js";
-import { CallCancelledError, DeadlineExceededError, MeshCallError, ProtocolError, UnavailableError } from "./errors.js";
+import {
+  CallCancelledError, closeError, DeadlineExceededError, handshakeError, MeshCallError, PermissionDeniedError, ProtocolError,
+  UnauthenticatedError, UnavailableError,
+} from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import {
   clientDeadlineGraceMs,
@@ -19,7 +22,7 @@ import {
   validateMetadata,
 } from "./liveness.js";
 import { ConsoleRpcLogger, type RpcLogger } from "./logging.js";
-import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
+import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter, isFrameTooLarge } from "./transport.js";
 import { checkReceived } from "./validation.js";
 import {
@@ -188,7 +191,7 @@ export class MeshCallServerStream<Item>
  * iteration. Read output concurrently with sending: a caller that only sends
  * stalls once the server's output credit runs out.
  */
-export class MeshCallDuplexCall<Input, Output> extends MeshCallServerStream<Output> {
+export class MeshCallDuplexCall<Input, Output> extends MeshCallServerStream<Output> implements RpcDuplex<Input, Output> {
   public async send(item: Input): Promise<void> {
     await (await this.opened).sendInput(item);
   }
@@ -209,6 +212,9 @@ export class MeshCallClient implements MeshCallRpc {
   private liveness: Liveness | undefined;
   private connectPromise: Promise<void> | undefined;
   private everConnected = false;
+  // The Router's 4401 answer (revoked or expired credentials): later calls
+  // fail with it, reason included, instead of reconnecting.
+  private refused: UnauthenticatedError | undefined;
   private closed = false;
   private readonly calls = new Map<string, PendingCall>();
   private readonly streams = new Map<string, ServerStreamState<unknown>>();
@@ -291,6 +297,7 @@ export class MeshCallClient implements MeshCallRpc {
   }
 
   private async openWithRetry(): Promise<void> {
+    if (this.refused !== undefined) throw this.refused;
     const policy = this.options.reconnect ?? {};
     const retry = (policy.enabled ?? true) && this.everConnected;
     const delays = retry ? reconnectDelays(policy) : undefined;
@@ -300,6 +307,8 @@ export class MeshCallClient implements MeshCallRpc {
         this.everConnected = true;
         return;
       } catch (error) {
+        // Refused credentials fail the same way again: report them at once.
+        if (error instanceof UnauthenticatedError || error instanceof PermissionDeniedError) throw error;
         const next = delays?.next();
         if (next === undefined || next.done === true || this.closed) {
           throw error instanceof MeshCallError ? error
@@ -757,11 +766,24 @@ export class MeshCallClient implements MeshCallRpc {
             fail(error);
           }
         });
-        socket.on("close", () => {
+        socket.on("unexpected-response", (request, response) => {
+          // The Router refused the upgrade (401, 403, 429): say why.
+          let body = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk: string) => { body += chunk; });
+          response.on("end", () => {
+            const status = response.statusCode ?? 0;
+            fail(handshakeError(status, body) ?? new UnavailableError("Unexpected server response: " + String(status), { retryable: true }));
+          });
+          response.on("error", () => undefined);
+          request.on("error", () => undefined);
+        });
+        socket.on("close", (code: number, reason: Buffer) => {
           clearTimeout(timer);
           liveness.stop();
           writer.close();
-          const error = new UnavailableError("Connection was lost", { retryable: true });
+          const error = closeError(code, reason.toString()) ?? new UnavailableError("Connection was lost", { retryable: true });
+          if (ready && error instanceof UnauthenticatedError) this.refused = error;
           if (this.socket === socket) {
             this.socket = undefined;
             this.writer = undefined;

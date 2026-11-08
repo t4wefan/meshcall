@@ -5,7 +5,7 @@
 //	meshcall version
 //
 // Global flags: --router URL (ws://, unix:///path, pipe://NAME; default $MESHCALL_ROUTER_URL or ws://127.0.0.1:8765),
-// --auth user:password, --token BEARER, --json, --timeout DURATION.
+// --auth user:password, --token BEARER, --tunnel mtun_…, --json, --timeout DURATION.
 package main
 
 import (
@@ -47,15 +47,16 @@ func main() {
 
 func run(args []string) error {
 	global := flag.NewFlagSet("meshcall", flag.ContinueOnError)
-	var router, auth, token string
+	var router, auth, token, tunnel string
 	var timeout time.Duration
 	global.StringVar(&router, "router", envOr("MESHCALL_ROUTER_URL", "ws://127.0.0.1:8765"), "Router URL: ws://host:port, unix:///path or pipe://NAME (Windows)")
 	global.StringVar(&auth, "auth", "", "user:password for Basic authentication")
-	global.StringVar(&token, "token", "", "temporary token for Bearer authentication")
+	global.StringVar(&token, "token", "", "API key or temporary token for Bearer authentication")
+	global.StringVar(&tunnel, "tunnel", "", "tunnel credential (mtun_…): reach one instance as its own Router")
 	global.BoolVar(&asJSON, "json", false, "machine-readable output")
 	global.DurationVar(&timeout, "timeout", 30*time.Second, "call timeout (also the Router-enforced deadline)")
 	global.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: meshcall [--router URL] [--auth user:pass | --token T] [--json] [--timeout D] <command>")
+		fmt.Fprintln(os.Stderr, "usage: meshcall [--router URL] [--auth user:pass | --token T | --tunnel C] [--json] [--timeout D] <command>")
 		fmt.Fprintln(os.Stderr, "  router inspect [service]       list services, instances, health and methods")
 		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; with --stdin, client streams and duplex calls read JSON lines from stdin")
 		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D   --instance ID")
@@ -86,7 +87,18 @@ func run(args []string) error {
 		return errors.New("a command is required")
 	}
 	opts := cli.Options{Router: router, Timeout: 10 * time.Second}
+	if (auth != "" && token != "") || (tunnel != "" && (auth != "" || token != "")) {
+		return errors.New("pass one of --auth, --token or --tunnel")
+	}
+	if strings.HasPrefix(token, "mtun_") {
+		return errors.New("this is a tunnel credential: pass it as --tunnel")
+	}
+	if tunnel != "" && !strings.HasPrefix(tunnel, "mtun_") {
+		return errors.New("a tunnel credential starts with mtun_ (the credential returned by TunnelService/open)")
+	}
 	switch {
+	case tunnel != "":
+		opts.Authorization = "Bearer " + tunnel
 	case auth != "":
 		opts.Authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
 	case token != "":
@@ -273,7 +285,7 @@ func extractCallFlags(flags *[]string) callFlagSet {
 
 func needsValue(flag string) bool {
 	switch strings.TrimLeft(flag, "-") {
-	case "router", "auth", "token", "timeout", "metadata", "idempotency-key", "idle-timeout", "instance",
+	case "router", "auth", "token", "tunnel", "timeout", "metadata", "idempotency-key", "idle-timeout", "instance",
 		"agent", "output", "o", "service", "language", "class-name", "package-name", "package-version",
 		"runtime-import", "runtime-version", "meshcall-requirement":
 		return true

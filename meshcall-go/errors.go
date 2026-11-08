@@ -3,6 +3,7 @@ package meshcall
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Error codes (docs/protocol.md → Errors). Applications may use namespaced
@@ -86,4 +87,76 @@ func detailed(code, message, source, reason string, retryable bool) *Error {
 		details["reason"] = reason
 	}
 	return &Error{Code: code, Message: message, Retryable: retryable, Details: details}
+}
+
+// checkMetadata refuses request metadata keys that are empty or use the
+// reserved "meshcall-" prefix, in any letter case (docs/protocol.md →
+// Metadata): reserved keys are set by the runtime and the Router only.
+func checkMetadata(md map[string]string) *Error {
+	for key := range md {
+		if key == "" {
+			return detailed(CodeInvalidArgument, "metadata keys must not be empty", "client", "invalid_metadata", false)
+		}
+		if isReservedKey(key) {
+			return detailed(CodeInvalidArgument, fmt.Sprintf("metadata key %q uses the reserved prefix \"meshcall-\"", key), "client", "reserved_metadata", false)
+		}
+	}
+	return nil
+}
+
+func isReservedKey(key string) bool {
+	return len(key) >= 9 && strings.EqualFold(key[:9], "meshcall-")
+}
+
+// closeUnauthenticated is the WebSocket close status for credentials that
+// are not, or no longer, valid.
+const closeUnauthenticated = 4401
+
+// closeError is the error a Router close status stands for, or nil for a
+// plain loss: 4401 the credentials are not (or no longer) valid, a revoked
+// tunnel saying "tunnel_revoked"; 1008 the Router refused the connection's
+// request (a registration, a role) and says why.
+func closeError(code int, reason string) *Error {
+	switch code {
+	case closeUnauthenticated:
+		e := detailed(CodeUnauthenticated, "The Router closed the connection: "+orDefault(reason, "unauthenticated"), "router", "", false)
+		if reason == "tunnel_revoked" || reason == "tunnel_closed" {
+			e.Details["reason"] = reason
+		}
+		return e
+	case 1008:
+		return detailed(CodePermissionDenied, "The Router refused the connection: "+orDefault(reason, "policy violation"), "router", "policy_violation", false)
+	case 4403, 4429, 4503:
+		// Credentials in hello refused like their header counterparts: 4000 +
+		// the HTTP status. The last two are temporary.
+		return handshakeError(code-4000, reason)
+	}
+	return nil
+}
+
+// handshakeError is the error an HTTP status refusing a WebSocket upgrade
+// stands for, or nil.
+func handshakeError(status int, body string) *Error {
+	text := fmt.Sprintf(" (HTTP %d)", status)
+	if body = strings.TrimSpace(body); body != "" {
+		text += ": " + body
+	}
+	switch status {
+	case 401:
+		return detailed(CodeUnauthenticated, "The Router refused the credentials"+text, "router", "", false)
+	case 403:
+		return detailed(CodePermissionDenied, "The Router refused the connection"+text, "router", "", false)
+	case 429:
+		return detailed(CodeResourceExhausted, "The Router refused the connection"+text, "router", "", true)
+	case 503:
+		return detailed(CodeUnavailable, "The Router is busy"+text, "router", "", true)
+	}
+	return nil
+}
+
+func orDefault(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
