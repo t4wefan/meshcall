@@ -65,7 +65,10 @@ type frame struct {
 	Sequence     *int64          `json:"sequence,omitempty"`
 	Credit       *int64          `json:"credit,omitempty"`
 	Nonce        string          `json:"nonce,omitempty"`
-	raw          []byte
+	// Authorization on hello carries credentials for peers that cannot set
+	// the upgrade's Authorization header (browsers); same value format.
+	Authorization string `json:"authorization,omitempty"`
+	raw           []byte
 }
 
 // decode accepts unknown fields (the meshcall/1 compatibility rule) but rejects

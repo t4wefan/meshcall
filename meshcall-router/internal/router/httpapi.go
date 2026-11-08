@@ -165,16 +165,19 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	user, failure := r.config.Auth.check(req)
+	user, failure := r.authenticateRequest(req.Header.Get("Authorization"))
 	if failure != nil {
 		if failure.challenge {
 			w.Header().Set("WWW-Authenticate", `Basic realm="meshcall", charset="UTF-8"`)
 		}
 		code := "unauthenticated"
-		if failure.status == http.StatusServiceUnavailable {
+		switch failure.status {
+		case http.StatusServiceUnavailable:
 			code = "unavailable"
+		case http.StatusTooManyRequests:
+			code = "resource_exhausted"
 		}
-		writeHTTPError(w, &errorPayload{Code: code, Message: failure.message, Retryable: code == "unavailable"})
+		writeHTTPError(w, &errorPayload{Code: code, Message: failure.message, Retryable: code != "unauthenticated"})
 		return
 	}
 	if !user.allowsRole("client") {
@@ -327,7 +330,7 @@ func (r *Router) virtualClient(parent context.Context, user *User) (*peer, func(
 	p := &peer{ctx: ctx, cancel: cancel, user: user, role: "client", id: hex.EncodeToString(id),
 		out: newOutbox(r.config.OutboxSize), drops: &r.metrics.outboxDrops}
 	r.mu.Lock()
-	if r.closed || !r.config.Auth.valid(user) {
+	if r.closed || !r.admit(p) {
 		r.mu.Unlock()
 		cancel()
 		return nil, nil, false

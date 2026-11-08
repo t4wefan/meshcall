@@ -92,6 +92,10 @@ const (
 	DefaultShutdownTimeout       = 10 * time.Second
 )
 
+// StatusUnauthenticated closes a WebSocket whose hello credentials failed:
+// the HTTP 401 of an upgrade, sent after it.
+const StatusUnauthenticated websocket.StatusCode = 4401
+
 // closeGrace bounds how long Close waits for connections to flush their last
 // frames and finish the closing handshake before cutting them.
 const closeGrace = 2 * time.Second
@@ -124,6 +128,9 @@ type peer struct {
 	health      health
 	draining    bool
 	drops       *atomic.Uint64 // the Router's outbox-overflow counter
+	// capabilities from hello; "tunnels" means the instance answers offers.
+	capabilities []string
+	admitted     bool // counted against a tunnel's connections
 }
 
 func (p *peer) send(f frame) {
@@ -228,6 +235,12 @@ type Router struct {
 	deadlines    deadlineHeap
 	deadlineWake chan struct{}
 	dedup        map[string]*dedupEntry
+	// Tunnels (tunnel.go): by id, by credential digest, offers in flight by
+	// the Router's call id, and by the issuer's call id.
+	tunnels         map[string]*tunnel
+	tunnelsByDigest map[[32]byte]*tunnel
+	offers          map[string]*offer
+	opening         map[string]*offer
 	// connections counts admitted WebSocket connections; anonymous counts
 	// those among them made without credentials.
 	connections   atomic.Int64
@@ -363,8 +376,10 @@ func Start(config Config) (*Router, error) {
 		drained: make(chan struct{}), peersGone: make(chan struct{}),
 		deadlineWake: make(chan struct{}, 1),
 		dedup:        make(map[string]*dedupEntry),
-		dedupOrder:   list.New(),
-		metrics:      newMetrics(),
+		tunnels:      make(map[string]*tunnel), tunnelsByDigest: make(map[[32]byte]*tunnel),
+		offers: make(map[string]*offer), opening: make(map[string]*offer),
+		dedupOrder: list.New(),
+		metrics:    newMetrics(),
 	}
 	r.wg.Add(1)
 	go r.expireLoop()
@@ -408,6 +423,8 @@ type Snapshot struct {
 	Peers    int
 	// Health describes every registered instance.
 	Health map[string]InstanceHealth
+	// Tunnels lists open tunnels, without credentials.
+	Tunnels []TunnelInfo
 }
 
 type InstanceHealth struct {
@@ -429,6 +446,7 @@ func (r *Router) Snapshot() Snapshot {
 		Routes:    len(r.routes),
 		Peers:     len(r.peers),
 		Health:    make(map[string]InstanceHealth, len(r.instances)),
+		Tunnels:   r.tunnelSnapshot(),
 	}
 	now := time.Now()
 	for id, p := range r.instances {
@@ -585,10 +603,13 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer r.connections.Add(-1)
-	user, ok := r.config.Auth.authenticate(w, req)
+	header := req.Header.Get("Authorization")
+	user, failure := r.authenticateRequest(header)
+	user, ok := authenticate(w, user, failure)
 	if !ok {
 		return
 	}
+	anonymous := false
 	if user != nil && user.kind == identityAnonymous {
 		if r.anonymous.Add(1) > int64(r.config.MaxAnonymousConnections) {
 			r.anonymous.Add(-1)
@@ -596,7 +617,12 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "anonymous connection limit reached", http.StatusServiceUnavailable)
 			return
 		}
-		defer r.anonymous.Add(-1)
+		anonymous = true
+		defer func() {
+			if anonymous {
+				r.anonymous.Add(-1)
+			}
+		}()
 	}
 	// Default origin checks protect browser-originated connections. Node/Python
 	// clients do not send Origin. Cross-origin browser auth is a separate concern.
@@ -614,7 +640,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	}
 	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(r.config.OutboxSize), drops: &r.metrics.outboxDrops}
 	r.mu.Lock()
-	if r.draining || !r.config.Auth.valid(user) {
+	if r.draining || !r.admit(p) {
 		r.mu.Unlock()
 		cancel()
 		_ = conn.CloseNow()
@@ -642,6 +668,41 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	if err != nil || f.Kind != "hello" {
 		return
 	}
+	if f.Authorization != "" {
+		// Credentials in hello, for peers that cannot set the header. Only a
+		// connection that came without credentials may present them here.
+		if header != "" {
+			_ = conn.Close(websocket.StatusPolicyViolation, "credentials sent twice")
+			return
+		}
+		helloUser, failure := r.authenticateRequest(f.Authorization)
+		if failure != nil {
+			_ = conn.Close(StatusUnauthenticated, failure.message)
+			return
+		}
+		r.mu.Lock()
+		r.release(p)
+		previous := p.user
+		p.user = helloUser
+		admitted := r.admit(p)
+		if !admitted {
+			p.user = previous
+		}
+		r.mu.Unlock()
+		if !admitted {
+			_ = conn.Close(StatusUnauthenticated, "authentication failed")
+			return
+		}
+		if anonymous {
+			anonymous = false
+			r.anonymous.Add(-1)
+		}
+		if helloUser != nil && !helloUser.expires.IsZero() {
+			expiry := time.AfterFunc(time.Until(helloUser.expires), cancel)
+			defer expiry.Stop()
+		}
+	}
+	user = p.user
 	if !user.allowsRole(f.Role) {
 		_ = conn.Close(websocket.StatusPolicyViolation, "permission denied for role")
 		return
@@ -650,7 +711,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 	if _, err := rand.Read(id); err != nil {
 		return
 	}
-	p.id, p.role = hex.EncodeToString(id), f.Role
+	p.id, p.role, p.capabilities = hex.EncodeToString(id), f.Role, f.Capabilities
 	p.send(frame{Kind: "hello.ack", Protocol: Protocol, Connection: p.id})
 	if p.role == "server" {
 		registration, err := readFrame(handshake, conn)
@@ -763,7 +824,8 @@ func allowedFrame(role string, f frame) bool {
 func (r *Router) register(p *peer, f frame) error {
 	seen := make(map[string]bool)
 	for _, s := range f.Services {
-		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) {
+		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) ||
+			!p.user.allowsInstance(s.Name, f.InstanceID) {
 			return errors.New("duplicate, invalid, or unauthorized service")
 		}
 		seen[s.Name] = true
@@ -820,14 +882,24 @@ func (r *Router) register(p *peer, f frame) error {
 		pool.instances = append(pool.instances, p)
 		slices.SortFunc(pool.instances, func(a, b *peer) int { return strings.Compare(a.instanceID, b.instanceID) })
 	}
+	r.instanceRegistered(p)
 	return nil
 }
 
 func (r *Router) forward(p *peer, f frame) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if p.ctx.Err() != nil || !r.config.Auth.valid(p.user) {
+	if p.ctx.Err() != nil || !r.config.Auth.valid(p.user) || (p.user != nil && p.user.tunnel != nil && p.user.tunnel.closed) {
 		p.cancel()
+		return
+	}
+	if p.role == "server" {
+		if o := r.offers[f.CallID]; o != nil && o.instance == p {
+			r.answerOffer(o, f)
+			return
+		}
+	} else if o := r.opening[f.CallID]; o != nil && o.client == p && f.Kind == "call.cancel" {
+		r.abandonOffer(o)
 		return
 	}
 	if f.Kind == "call.open" {
@@ -854,6 +926,15 @@ func (r *Router) forward(p *peer, f frame) {
 			r.management(p, f)
 			return
 		}
+		if t := p.user.tunnelOf(); t != nil {
+			var refusal *frame
+			if f, refusal = r.tunnelCall(t, f); refusal != nil {
+				refuse(*refusal)
+				return
+			}
+		} else {
+			f = stripTunnelMetadata(f)
+		}
 		if limit := r.config.MaxCallsPerConnection; limit > 0 && p.calls >= limit {
 			refuse(routerError(f.CallID, "resource_exhausted", "Too many calls in flight on this connection", true, "overloaded", ""))
 			return
@@ -870,7 +951,7 @@ func (r *Router) forward(p *peer, f frame) {
 		var entry *dedupEntry
 		var avoid *peer
 		if f.Idempotency != "" && stream == "unary" {
-			key := dedupKey(f)
+			key := dedupKey(f, p)
 			if entry = r.dedupLookup(key); entry != nil {
 				if entry.result != nil {
 					p.send(withCallID(*entry.result, f.CallID))
@@ -899,7 +980,7 @@ func (r *Router) forward(p *peer, f frame) {
 			r.track(rt, time.Duration(*f.TimeoutMS)*time.Millisecond)
 		}
 		if f.Idempotency != "" && stream == "unary" {
-			r.dedupInsert(dedupKey(f), rt)
+			r.dedupInsert(dedupKey(f, p), rt)
 		}
 		instance.send(f)
 		return
@@ -1012,6 +1093,8 @@ func (r *Router) remove(p *peer) {
 		delete(r.instances, p.instanceID)
 		r.leavePools(p)
 	}
+	r.tunnelPeerGone(p)
+	r.release(p)
 	for id, rt := range r.routes {
 		switch {
 		case rt.client == p:

@@ -23,6 +23,10 @@ type Scope struct {
 	Service  string   `json:"service"`
 	Methods  []string `json:"methods,omitempty"`
 	Register bool     `json:"register,omitempty"`
+	// InstanceIDs restricts a registration scope to these instance ids. An
+	// issuer restricted to instance ids must name a subset; omitted, the
+	// token inherits the issuer's restriction.
+	InstanceIDs []string `json:"instance_ids,omitempty"`
 }
 
 type IssueTokenRequest struct {
@@ -75,6 +79,26 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 				return result, &scopeError{"requested registration scope exceeds issuer permissions"}
 			}
 			user.Register = append(user.Register, scope.Service)
+			ids := scope.InstanceIDs
+			if err := validateInstanceIDs(ids); err != nil {
+				return result, err
+			}
+			if ids == nil {
+				ids = issuer.InstanceIDs
+			}
+			for _, id := range ids {
+				if !issuer.allowsInstance(scope.Service, id) {
+					return result, &scopeError{"requested instance_ids exceed issuer permissions"}
+				}
+			}
+			if ids != nil {
+				if user.registerInstances == nil {
+					user.registerInstances = map[string][]string{}
+				}
+				user.registerInstances[scope.Service] = slices.Clone(ids)
+			}
+		} else if scope.InstanceIDs != nil {
+			return result, errors.New("instance_ids applies to registration scopes only")
 		}
 	}
 	if len(user.Call) > 0 {
@@ -114,6 +138,10 @@ func (r *Router) management(p *peer, f frame) {
 		r.registry(p, f)
 		return
 	}
+	if f.Service == TunnelService {
+		r.tunnelService(p, f)
+		return
+	}
 	if p.user == nil {
 		fail("unauthenticated", "Router accounts are not configured")
 		return
@@ -135,13 +163,20 @@ func (r *Router) management(p *peer, f frame) {
 			value := p.user.expires.UnixMilli()
 			expires = &value
 		}
+		var tunnel *TunnelInfo
+		if p.user.tunnel != nil {
+			info := p.user.tunnel.info()
+			tunnel = &info
+		}
 		result = struct {
-			Username string   `json:"username"`
-			Roles    []string `json:"roles"`
-			Register []string `json:"register"`
-			Call     []string `json:"call"`
-			Expires  *int64   `json:"expires_at_unix_ms"`
-		}{p.user.Username, p.user.Roles, nonNil(p.user.Register), nonNil(p.user.Call), expires}
+			Username    string      `json:"username"`
+			Roles       []string    `json:"roles"`
+			Register    []string    `json:"register"`
+			Call        []string    `json:"call"`
+			InstanceIDs []string    `json:"instance_ids,omitempty"`
+			Expires     *int64      `json:"expires_at_unix_ms"`
+			Tunnel      *TunnelInfo `json:"tunnel,omitempty"`
+		}{p.user.Username, p.user.Roles, nonNil(p.user.Register), nonNil(p.user.Call), p.user.InstanceIDs, expires, tunnel}
 	case "issue_token":
 		if !p.user.mayIssueTokens() {
 			fail("permission_denied", "Temporary tokens cannot issue tokens")
@@ -287,7 +322,7 @@ func (r *Router) registry(p *peer, f frame) {
 		}
 		names := make([]string, 0, len(r.services))
 		for name := range r.services {
-			if p.user.allowsAnyCall(name, r.services[name]) {
+			if r.seesAny(p.user, name, r.services[name]) {
 				names = append(names, name)
 			}
 		}
@@ -308,7 +343,7 @@ func (r *Router) registry(p *peer, f frame) {
 			return
 		}
 		pool := r.services[request.Service]
-		if pool == nil || !p.user.allowsAnyCall(request.Service, pool) {
+		if pool == nil || !r.seesAny(p.user, request.Service, pool) {
 			fail("method_not_found", "No instances registered for "+request.Service)
 			return
 		}
@@ -316,7 +351,7 @@ func (r *Router) registry(p *peer, f frame) {
 		result = struct {
 			registryService
 			Contract json.RawMessage `json:"contract,omitempty"`
-		}{described, visibleContract(pool.contract, request.Service, p.user)}
+		}{described, r.visibleContract(pool.contract, request.Service, p.user)}
 	default:
 		fail("method_not_found", "Unknown Registry method "+f.Method)
 		return
@@ -329,19 +364,9 @@ func (r *Router) registry(p *peer, f frame) {
 	p.send(frame{Kind: "call.result", CallID: f.CallID, Payload: payload})
 }
 
-// allowsAnyCall reports whether u may call at least one method of the pool.
-func (u *User) allowsAnyCall(service string, pool *pool) bool {
-	for name := range pool.methods {
-		if u.allowsCall(service, name) {
-			return true
-		}
-	}
-	return false
-}
-
-// visibleContract keeps only the method entries u may call, preserving the
+// visibleContract keeps only the method entries u sees, preserving the
 // document's key order so schemas read the same as the service registered them.
-func visibleContract(raw json.RawMessage, service string, u *User) json.RawMessage {
+func (r *Router) visibleContract(raw json.RawMessage, service string, u *User) json.RawMessage {
 	if raw == nil || u == nil {
 		return raw
 	}
@@ -353,7 +378,7 @@ func visibleContract(raw json.RawMessage, service string, u *User) json.RawMessa
 	methods, _ := doc.Values["methods"].([]any)
 	kept := make([]any, 0, len(methods))
 	for _, m := range methods {
-		if entry, ok := m.(*contract.Object); ok && u.allowsCall(service, entry.Str("name")) {
+		if entry, ok := m.(*contract.Object); ok && r.sees(u, service, entry.Str("name")) {
 			kept = append(kept, m)
 		}
 	}
@@ -366,6 +391,9 @@ func (r *Router) describeService(name string, u *User) registryService {
 	out := registryService{Name: name, Targeted: pool.targeted, Instances: []RegistryInstance{}, Methods: []registryMethod{}}
 	now := time.Now()
 	for _, inst := range pool.instances {
+		if !seesInstance(u, inst.instanceID) {
+			continue
+		}
 		out.Instances = append(out.Instances, RegistryInstance{
 			ID: inst.instanceID, Inflight: inst.inflight, MaxInflight: inst.maxInflight,
 			Breaker: string(inst.health.state(now)), Draining: inst.draining,
@@ -373,7 +401,7 @@ func (r *Router) describeService(name string, u *User) registryService {
 	}
 	// Draining instances have left the pool but still hold the id.
 	for id, inst := range r.instances {
-		if inst.draining && slices.ContainsFunc(inst.services, func(s service) bool { return s.Name == name }) {
+		if inst.draining && seesInstance(u, id) && slices.ContainsFunc(inst.services, func(s service) bool { return s.Name == name }) {
 			out.Instances = append(out.Instances, RegistryInstance{ID: id, Inflight: inst.inflight, MaxInflight: inst.maxInflight,
 				Breaker: string(inst.health.state(now)), Draining: true})
 		}
@@ -383,12 +411,12 @@ func (r *Router) describeService(name string, u *User) registryService {
 		out.Version, out.Description = entry.Version, entry.Description
 	}
 	for _, m := range sortedMethods(pool.methods) {
-		if !u.allowsCall(name, m.Name) {
+		if !r.sees(u, name, m.Name) {
 			continue
 		}
 		rm := registryMethod{Name: m.Name, Stream: m.Stream, Balance: m.Balance, Instances: []string{}}
 		for _, inst := range pool.instances {
-			if inst.serves(name, m.Name) {
+			if inst.serves(name, m.Name) && seesInstance(u, inst.instanceID) {
 				rm.Instances = append(rm.Instances, inst.instanceID)
 			}
 		}

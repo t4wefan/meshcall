@@ -42,7 +42,7 @@ unique string chosen by the client. All time values are integer milliseconds.
 
 | Kind | Fields | Notes |
 | --- | --- | --- |
-| `hello` | `protocol`, `role`, `peer_id`, `instance_id?`, `capabilities?` | first frame from the connecting peer |
+| `hello` | `protocol`, `role`, `peer_id`, `instance_id?`, `capabilities?`, `authorization?` | first frame from the connecting peer |
 | `hello.ack` | `protocol`, `connection_id` | reply from the accepting peer |
 | `server.register` | `instance_id`, `services[{name, methods[], targeted?, contract?}]`, `max_inflight?` | Router mode only; one per connection |
 | `server.register.ack` | `instance_id` | |
@@ -103,8 +103,12 @@ while more than that is owed to it is disconnected.
 correlation ids, tenant identifiers). On `call.result` and `call.error` it
 carries server-supplied trailers. Keys are case-sensitive and must not be
 empty. Keys beginning with `meshcall-` are reserved for the runtime. Metadata is
-opaque to the Router, which forwards it unchanged. Runtimes expose request
-metadata to handlers and interceptors and expose trailers to callers.
+opaque to the Router, which forwards it unchanged, with one exception: keys
+beginning with `meshcall-tunnel-` are set only by the Router. It removes them
+from every `call.open` a client sends and, on a tunnel connection, sets
+`meshcall-tunnel-id` and `meshcall-tunnel-principal` (see
+[Tunnels](#tunnels)). Runtimes expose request metadata to handlers and
+interceptors and expose trailers to callers.
 
 ## Service names
 
@@ -121,9 +125,18 @@ Routing matches the full normalised name exactly; `chat.v1` and `chat.v1.2.0`
 are different services. `meshcall.router.` is reserved for the Router's own
 services.
 
-`capabilities` is reserved for negotiating optional features (binary
-encodings, compression, byte credit) in later minor revisions; peers ignore
-entries they do not know.
+`capabilities` negotiates optional features; peers ignore entries they do
+not know. A service instance that answers tunnel offers lists `tunnels`
+(see [Tunnels](#tunnels)). Further entries (binary encodings, compression,
+byte credit) are reserved for later minor revisions.
+
+`authorization` carries credentials, in the format of the HTTP
+`Authorization` header (`Basic …`, `Bearer mk_…`, `Bearer mt_…`,
+`Bearer mtun_…`), for a peer that cannot set that header on the WebSocket
+upgrade: a browser. Credentials never go in the URL. A connection that sent
+an `Authorization` header and also `authorization` in `hello` is closed with
+1008; credentials in `hello` that fail are closed with 4401
+(unauthenticated), the WebSocket counterpart of the upgrade's HTTP 401.
 
 ## Capacity and health
 
@@ -237,6 +250,110 @@ service is `instance_required`.
 Idempotency deduplication includes the target: the same key sent to two
 instances is two calls. After `instance_lost` a targeted call has no other
 instance to prefer.
+
+## Tunnels
+
+A **tunnel** lets a trusted issuer hand a client a credential for **one
+service instance**. On a connection made with it, the Router behaves like
+that instance's own Router: only that instance's services within the
+tunnel's scopes exist, no `instance_id` needs naming, and nothing else is
+reachable. The Router relays and enforces the scope; the instance learns who
+is calling from the Router, not from caller-supplied metadata.
+
+A tunnel is a record in one Router's memory: `tunnel_id`, a digest of its
+credential, the target `instance_id`, its `scopes` (services of the instance
+and the methods allowed on each, `"*"` for all), an opaque `principal`
+chosen by the issuer (for example `user:alice/device:phone`, at most 512
+bytes), `expires_at` and an optional `max_connections`. A Router restart
+loses every tunnel; clients then ask the issuer again.
+
+### Opening, revoking, listing
+
+The Router's built-in `meshcall.router.v1.TunnelService` (unary methods):
+
+| Method | Request | Result |
+| --- | --- | --- |
+| `open` | `instance_id`, `scopes[{service, methods[]}]`, `principal`, `ttl_seconds` (1–86400), `max_connections?` | `credential` (`mtun_…`, returned once), `tunnel_id`, `instance_id`, `principal`, `scopes`, `expires_at_unix_ms`, `max_connections?`, `connections`, `online` |
+| `revoke` | `tunnel_id` | `revoked` |
+| `list` | `{}` | `tunnels[]`: the same fields as `open` without `credential` |
+
+The caller needs the method in its call permissions and must be an account
+or API key (development mode: anyone); temporary tokens, the anonymous user
+and tunnel connections cannot issue tunnels. Every scope must name a service
+the instance registered and methods it serves, within the issuer's own call
+permissions. `revoke` and `list` see only the caller's own tunnels.
+
+`open` fails with `unavailable` / `instance_unknown` when the instance is
+not registered, `unavailable` / `instance_draining` while it drains,
+`invalid_argument` for scopes the instance does not serve, and
+`permission_denied` for scopes beyond the issuer or, with
+`reason: "tunnel_rejected"`, when the instance does not accept the tunnel.
+
+### Instance consent
+
+Before `open` returns, the Router offers the tunnel to the instance, and only
+an instance that listed `tunnels` in its `hello` capabilities receives
+offers (any other refuses at once, `tunnel_rejected`). The offer is an
+ordinary unary call the Router opens on the instance's connection to the
+reserved service `meshcall.router.v1.TunnelHost`, which runtimes answer
+themselves:
+
+- `offer` — `{tunnel_id, instance_id, principal, scopes, expires_at_unix_ms,
+  resumed}`; the instance answers `{"accept": true}` to accept and anything
+  else (`false`, an error, no answer within 10 s) to refuse. Only after
+  acceptance does the tunnel become usable and `open` return.
+- `closed` — `{tunnel_id, reason}`: the tunnel ended (`revoked`, `expired`,
+  `rejected`, `offer_timeout`, `instance_changed`, `abandoned` when the
+  issuer gave up before the instance answered). The Router does not wait for
+  the answer.
+
+These calls carry `timeout_ms` and are not counted against `max_inflight`.
+A runtime keeps the tunnels it accepted (id → principal, scopes) and drops
+one on `closed`.
+
+### Tunnel connections
+
+A client connects with the credential as a Bearer token: the `Authorization`
+header of the WebSocket upgrade or HTTP request, or `authorization` in
+`hello` for browsers. A credential past `expires_at` is refused (HTTP 401, or
+4401 after `hello`), and one at its `max_connections` with HTTP 429; HTTP
+requests in progress count as connections. On a tunnel connection:
+
+- a `call.open` resolves only to the target instance and only for methods in
+  the tunnel's scopes. `instance_id` is implied: omitted, or equal to the
+  target. Anything else — another instance, another service, a method
+  outside the scopes, the Router's management services — is
+  `permission_denied`, identical whether or not it exists;
+- `Registry/list` and `describe` (always allowed) and `/v1/openapi.json`
+  show only that view: the scoped methods the target serves, with the target
+  as the only instance;
+- the connection is a `client`; it cannot register services or issue tokens
+  or tunnels. `AuthService/whoami` returns `tunnel` with the record above;
+- the Router sets `meshcall-tunnel-id` and `meshcall-tunnel-principal` on
+  every `call.open` it routes and `instance_id` to the target, replacing
+  whatever the client sent. Runtimes expose them as `ctx.tunnel`;
+- idempotency deduplication is per tunnel: a tunnel's call never joins
+  another principal's.
+
+**Lifetime.** `expires_at` bounds *new* connections only: an established
+connection lives until the tunnel is revoked or closed, and an expired
+tunnel closes when its last connection ends. Revoking closes every
+connection at once. While the instance is disconnected, calls fail with
+retryable `unavailable` / `instance_offline`. When an instance registers
+under the target id again, with the same identity and the `tunnels`
+capability, the Router offers it each of its tunnels again with
+`resumed: true`; accepting resumes the tunnel, refusing or not answering
+closes it, and a registration under another identity or without the
+capability closes it (`instance_changed`).
+
+### Instance-bound registration
+
+A registration credential may name the instance ids it registers under
+(`instance_ids` on accounts, API keys and token scopes, see
+[the Router](router.md#accounts-and-permissions)); the Router closes a
+registration under any other id with 1008. Without it, a credential allowed
+to register a service could register as a tunnel's target while that
+instance is offline.
 
 ## Timeouts
 
@@ -432,7 +549,10 @@ instances), `cancelled` (a joined idempotent call
 was cancelled by its first caller), `instance_unknown` / `instance_draining`
 (a targeted call named an instance that is not registered or is leaving) and
 `instance_required` (an `invalid_argument` for a targeted service called
-without `instance_id`), `idempotency_key_on_duplex` (an
+without `instance_id`), `instance_offline` (a retryable `unavailable`: a
+tunnel's target is not connected), `tunnel_rejected` (a `permission_denied`
+from `TunnelService/open`: the instance refused or does not accept tunnels),
+`idempotency_key_on_duplex` (an
 `invalid_argument` for a duplex call carrying an idempotency key) and
 `flow_control_violation` (a `protocol_error`: a stream item beyond the
 consumer's credit, see [Flow control](#flow-control)), `router_draining` and
@@ -495,7 +615,7 @@ This mapping is stable under `/v1`; breaking changes need a new prefix.
 
 | Header | Meaning |
 | --- | --- |
-| `Authorization` | `Basic …` (account), `Bearer mk_…` (API key) or `Bearer mt_…` (token), as for WebSocket connections; none means the `anonymous` user |
+| `Authorization` | `Basic …` (account), `Bearer mk_…` (API key), `Bearer mt_…` (token) or `Bearer mtun_…` (tunnel), as for WebSocket connections; none means the `anonymous` user |
 | `MeshCall-Timeout-Ms` | `timeout_ms`; at most the Router's `--http-max-timeout` |
 | `MeshCall-Idle-Timeout-Ms` | `idle_timeout_ms` |
 | `Idempotency-Key` | `idempotency_key` |
@@ -571,7 +691,7 @@ connections are counted separately.
 `GET /v1/services/{service}` is `describe`. `GET /v1/openapi.json` is an
 OpenAPI 3.1 document generated from the registered contracts. All three need
 the Registry permission and show only the services and methods the caller
-may call. `GET /healthz` (the process is up) and `GET /readyz` (it accepts
+may call (on a tunnel: the tunnel's view). `GET /healthz` (the process is up) and `GET /readyz` (it accepts
 calls; `503` while stopping) need no credentials and reveal no services.
 
 ### Browsers

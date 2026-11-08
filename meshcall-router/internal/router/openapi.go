@@ -135,7 +135,7 @@ func (r *Router) openAPI(user *User) *contract.Object {
 
 	names := make([]string, 0, len(r.services))
 	for name, pool := range r.services {
-		if user.allowsAnyCall(name, pool) {
+		if r.seesAny(user, name, pool) {
 			names = append(names, name)
 		}
 	}
@@ -145,7 +145,7 @@ func (r *Router) openAPI(user *User) *contract.Object {
 	for _, name := range names {
 		pool := r.services[name]
 		var service *contract.Service
-		if raw := visibleContract(pool.contract, name, user); raw != nil {
+		if raw := r.visibleContract(pool.contract, name, user); raw != nil {
 			if doc, err := contract.Parse([]byte(`{"services":[` + string(raw) + `]}`)); err == nil && len(doc.Services) == 1 {
 				service = doc.Services[0]
 			}
@@ -156,7 +156,7 @@ func (r *Router) openAPI(user *User) *contract.Object {
 		}
 		tags = append(tags, tag)
 		for _, m := range sortedMethods(pool.methods) {
-			if m.Stream == "duplex" || !user.allowsCall(name, m.Name) {
+			if m.Stream == "duplex" || !r.sees(user, name, m.Name) {
 				continue // duplex is WebSocket-only
 			}
 			var cm *contract.Method
@@ -224,7 +224,7 @@ func (r *Router) openAPI(user *User) *contract.Object {
 	)
 	if r.config.Auth != nil {
 		components.Set("securitySchemes", obj(
-			"bearer", obj("type", "http", "scheme", "bearer", "description", "API key (mk_…) or temporary token (mt_…)"),
+			"bearer", obj("type", "http", "scheme", "bearer", "description", "API key (mk_…), temporary token (mt_…) or tunnel credential (mtun_…)"),
 			"basic", obj("type", "http", "scheme", "basic"),
 		))
 		doc.Set("security", []any{obj("bearer", []any{}), obj("basic", []any{}), &contract.Object{}})
