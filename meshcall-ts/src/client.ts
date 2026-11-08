@@ -19,7 +19,7 @@ import {
   validateMetadata,
 } from "./liveness.js";
 import { ConsoleRpcLogger, type RpcLogger } from "./logging.js";
-import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
+import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter, isFrameTooLarge } from "./transport.js";
 import { checkReceived } from "./validation.js";
 import {
@@ -188,7 +188,7 @@ export class MeshCallServerStream<Item>
  * iteration. Read output concurrently with sending: a caller that only sends
  * stalls once the server's output credit runs out.
  */
-export class MeshCallDuplexCall<Input, Output> extends MeshCallServerStream<Output> {
+export class MeshCallDuplexCall<Input, Output> extends MeshCallServerStream<Output> implements RpcDuplex<Input, Output> {
   public async send(item: Input): Promise<void> {
     await (await this.opened).sendInput(item);
   }

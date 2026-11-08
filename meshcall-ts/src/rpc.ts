@@ -1,9 +1,9 @@
 /**
  * What generated clients need from a client runtime. `Mesh` (from `meshcall`
  * or `meshcall/web`) and `MeshCallClient` satisfy it; duplex calls need a
- * WebSocket `Mesh` or `MeshCallClient`.
+ * WebSocket connection (`ws://`, `wss://`, a Unix socket or a named pipe).
  */
-import type { CallOptions, DuplexCallOptions, MeshCallDuplexCall } from "./client.js";
+import type { CallOptions, DuplexCallOptions } from "./client.js";
 import type { Metadata } from "./protocol.js";
 
 declare global {
@@ -35,6 +35,18 @@ export interface RpcStream<Item> extends AsyncIterableIterator<Item> {
   [Symbol.asyncDispose]?(): Promise<void>;
 }
 
+/**
+ * A duplex call: `send` input items while iterating output items. The output
+ * ends when the call ends successfully; a failure is thrown from the
+ * iteration. Read output concurrently with sending: a caller that only sends
+ * stalls once the server's output credit runs out.
+ */
+export interface RpcDuplex<Input, Output> extends RpcStream<Output> {
+  send(item: Input): Promise<void>;
+  /** Half-close the input; the server's iteration of it then ends. */
+  closeSend(): Promise<void>;
+}
+
 export interface MeshCallRpc {
   unary<Request, Response>(service: string, method: string, request: Request, options?: CallOptions): Promise<Response>;
   serverStream<Request, Item>(service: string, method: string, request: Request, options?: CallOptions): RpcStream<Item>;
@@ -43,7 +55,7 @@ export interface MeshCallRpc {
   ): Promise<Response>;
   duplex?<Request, InputItem, OutputItem>(
     service: string, method: string, request: Request, options?: DuplexCallOptions,
-  ): MeshCallDuplexCall<InputItem, OutputItem>;
+  ): RpcDuplex<InputItem, OutputItem>;
   withOptions(options: CallOptions): this;
   close?(): Promise<void>;
   [Symbol.asyncDispose]?(): Promise<void>;

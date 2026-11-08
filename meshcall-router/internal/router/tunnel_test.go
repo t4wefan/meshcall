@@ -468,3 +468,24 @@ func TestIssuerGivingUpLeavesNoTunnel(t *testing.T) {
 		t.Fatal("abandoned tunnel kept")
 	}
 }
+
+func TestBrowserWebSocketsFollowTheCORSAllowlist(t *testing.T) {
+	r, err := Start(Config{HTTPCORSOrigins: []string{"https://app.example"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	for origin, allowed := range map[string]bool{"https://app.example": true, "https://evil.example": false} {
+		header := http.Header{"Origin": {origin}}
+		conn, resp, err := websocket.Dial(context.Background(), fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port), &websocket.DialOptions{HTTPHeader: header})
+		if (err == nil) != allowed {
+			t.Fatalf("origin %s: allowed=%v, err=%v", origin, allowed, err)
+		}
+		if conn != nil {
+			_ = conn.CloseNow()
+		}
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+	}
+}

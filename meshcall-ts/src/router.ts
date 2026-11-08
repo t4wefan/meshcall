@@ -15,7 +15,6 @@ import {
   type ClientInterceptor,
   type DuplexCallOptions,
   type MeshCallClientOptions,
-  type MeshCallDuplexCall,
 } from "./client.js";
 import { bindService, isService } from "./contract.js";
 import { namedPipePath, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
@@ -26,7 +25,7 @@ import {
   authorizationHeader,
   RouterCredentials,
 } from "./router-auth.js";
-import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
+import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 import { MeshCallServer, type MeshCallServerOptions, type ServerInterceptor } from "./server.js";
 import { DEFAULT_MAX_FRAME_SIZE } from "./transport.js";
 import {
@@ -895,7 +894,7 @@ export class Mesh implements MeshCallRpc {
 
   public duplex<Request, InputItem, OutputItem>(
     service: string, method: string, request: Request, options?: DuplexCallOptions,
-  ): MeshCallDuplexCall<InputItem, OutputItem> {
+  ): RpcDuplex<InputItem, OutputItem> {
     const transport = this.ensureTransport();
     if (transport.duplex === undefined) {
       throw new Error("Duplex is not supported by this transport");

@@ -701,12 +701,16 @@ calls; `503` while stopping) need no credentials and reveal no services.
 
 Cross-origin calls are allowed only for origins listed with
 `--http-cors-origin` (exact origins, or `*`); preflight requests from other
-origins are refused. Cookies are never used, so credentials are always the
-`Authorization` header. Browsers cannot set that header on a WebSocket,
-which is why web clients use HTTP: the TypeScript package's `meshcall/web`
-entry (`new Mesh(new Router("https://…"), { token })`) implements this
-mapping over `fetch` with no Node dependency, and generated TypeScript
-clients accept it.
+origins are refused, and so is a WebSocket upgrade whose `Origin` is not
+listed (a same-origin page, or a client that sends no `Origin`, is always
+accepted). Cookies are never used, so credentials are always explicit: the
+`Authorization` header, or — on a WebSocket, where browsers cannot set it —
+`authorization` in `hello`. The TypeScript package's `meshcall/web` entry
+has no Node dependency and picks the transport from the Router URL:
+`new Mesh(new Router("wss://…"), { tunnel })` speaks these frames over the
+browser's WebSocket (every call shape, duplex included), and
+`new Mesh(new Router("https://…"), { token })` implements this HTTP mapping
+over `fetch`. Generated TypeScript clients accept either.
 
 ### Deployment
 

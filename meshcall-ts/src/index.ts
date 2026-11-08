@@ -119,7 +119,7 @@ export {
   type RouterIdentity,
   type RouterScope,
 } from "./router-auth.js";
-export { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
+export { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 export {
   TunnelsClient,
   TUNNEL_SERVICE,

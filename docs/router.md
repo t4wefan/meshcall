@@ -297,8 +297,11 @@ Use `wss://` through a TLS reverse proxy across a network. The Go listener does
 not terminate TLS itself. The same checks apply to Unix sockets and named
 pipes; a named pipe admits only the Router's own user, SYSTEM and
 Administrators, as a Unix socket's file mode does. Browsers cannot set the
-`Authorization` header on a WebSocket, so they call over HTTP with
-`meshcall/web` (`new Mesh(new Router("https://…"), { token })`, see [HTTP calls](#http-calls)). The Router
+`Authorization` header on a WebSocket, so `meshcall/web` sends the
+credentials in `hello` (`new Mesh(new Router("wss://…"), { tunnel })` or
+`{ token }`); a cross-origin page needs its origin in `--http-cors-origin`,
+which also governs WebSocket upgrades. Over `https://` the same `Mesh` uses
+[HTTP calls](#http-calls) instead, without duplex. The Router
 does not implement JWT validation or an external login system directly. WebSocket clients and
 `LocalRouter` subprocess launchers run in Python, Node and Go.
 

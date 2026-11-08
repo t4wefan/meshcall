@@ -624,9 +624,9 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 			}
 		}()
 	}
-	// Default origin checks protect browser-originated connections. Node/Python
-	// clients do not send Origin. Cross-origin browser auth is a separate concern.
-	conn, err := websocket.Accept(w, req, nil)
+	// Browsers send Origin; only the origins allowed for HTTP calls may open
+	// a WebSocket from another origin (Node/Python/Go clients send none).
+	conn, err := websocket.Accept(w, req, r.acceptOptions(req))
 	if err != nil {
 		return
 	}

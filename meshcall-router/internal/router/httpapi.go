@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // HTTP calls (docs/protocol.md → HTTP calls). Each request becomes a virtual
@@ -122,6 +124,17 @@ func (r *Router) cors(w http.ResponseWriter, req *http.Request) bool {
 	h.Set("Access-Control-Max-Age", "600")
 	w.WriteHeader(http.StatusNoContent)
 	return false
+}
+
+// acceptOptions applies the --http-cors-origin allowlist to WebSocket
+// upgrades: a browser on a listed origin may connect; same-origin and
+// Origin-less clients always may.
+func (r *Router) acceptOptions(req *http.Request) *websocket.AcceptOptions {
+	origin := req.Header.Get("Origin")
+	if origin == "" || !slices.ContainsFunc(r.config.HTTPCORSOrigins, func(o string) bool { return o == "*" || o == origin }) {
+		return nil // the library refuses cross-origin upgrades by default
+	}
+	return &websocket.AcceptOptions{InsecureSkipVerify: true} // checked above, exactly
 }
 
 // serveHTTP answers every request under /v1/.
