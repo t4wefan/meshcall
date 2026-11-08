@@ -519,7 +519,7 @@ reconnect is refused).
 | `revoke_token` | `token_id` | `revoked` |
 | `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
 
-Only an account or API key may call these (with the method in its `call`
+Only an account may call these (with the method in its `call`
 ACL), and `renew_token`, `revoke_token` and `list_tokens` see only the
 caller's own tokens. `ttl_seconds` is 1 up to the Router's maximum
 (`--token-max-ttl`, 30 days by default); above it the answer is
@@ -781,8 +781,9 @@ reasons above); a close with 1008 is `permission_denied` with
 outside `instance_ids`, a conflicting method). Any other loss is retryable
 `unavailable`. A client does not reconnect after `unauthenticated` or
 `permission_denied`: the same credentials fail the same way again. A service
-instance likewise stops re-registering with a Router that refuses its
-credentials (`unauthenticated`, at connect or on a 4401), and logs why; a
+instance likewise stops at once when a Router closes it with 4401 or refuses
+its credentials at connect (`unauthenticated`, the close reason kept), does not
+re-register there, and logs why; a
 refused registration (1008) is still retried, since the conflict may clear.
 When every Router has refused it, `run` / `serve` ends with that error, so a
 supervisor can restart it with new credentials.

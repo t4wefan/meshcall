@@ -237,7 +237,7 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 | `revoke_token` | `token_id` | `revoked` |
 | `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
 
-只有账号或 API Key 可以调用这些方法（且 `call` ACL 中包含该方法）；`renew_token`、`revoke_token` 与 `list_tokens` 只能看到调用方自己签发的令牌。`ttl_seconds` 取 1 到 Router 的上限（`--token-max-ttl`，默认 30 天）；超过上限返回 `invalid_argument`，`details.reason: "ttl_too_long"`，并带 `details.max_ttl_seconds`；小于 1 返回 `invalid_argument`，`details.reason: "ttl_invalid"`。运行时默认 900 秒。Router 同时最多持有 `--max-tokens` 个未失效令牌（默认 4096；超出返回 `resource_exhausted`）。
+只有账号可以调用这些方法（且 `call` ACL 中包含该方法）；`renew_token`、`revoke_token` 与 `list_tokens` 只能看到调用方自己签发的令牌。`ttl_seconds` 取 1 到 Router 的上限（`--token-max-ttl`，默认 30 天）；超过上限返回 `invalid_argument`，`details.reason: "ttl_too_long"`，并带 `details.max_ttl_seconds`；小于 1 返回 `invalid_argument`，`details.reason: "ttl_invalid"`。运行时默认 900 秒。Router 同时最多持有 `--max-tokens` 个未失效令牌（默认 4096；超出返回 `resource_exhausted`）。
 
 **生命周期。** 与隧道凭据一样，`expires_at` 只约束*新*连接与 HTTP 请求：过期令牌在连接时被拒绝（HTTP 401，或在 `hello` 中发送时为 4401），但过期前已认证的连接保持在线——其调用与实例注册照常工作——直到连接关闭或令牌被吊销。`revoke_token` 立即以 4401 `token_revoked` 关闭该令牌上的所有连接，过期后同样有效，也是切断活跃连接的唯一方式：进行中的调用以不可重试的 `unauthenticated` 和该 `details.reason` 失败（进行中的 HTTP 调用以同样的错误应答 401），客户端会像隧道被撤销时一样记住这个应答。仍持有连接的过期令牌会继续列出（`expired: true`），以便签发方吊销；没有连接的过期令牌会被遗忘。
 
@@ -359,7 +359,7 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 
 直连服务端使用同样的 reason，但 `source: "server"`；服务端执行自身 `max_inflight` 时返回 `resource_exhausted`（`source: "server"`，`reason: "overloaded"`）。超过帧大小上限而未发出的帧，由客户端或服务端以不可重试的 `resource_exhausted`（`reason: "frame_too_large"`）报告，`source` 为拒绝发送的一方（见[帧大小](#帧大小frame-size)）。客户端重试策略在进行了多次尝试时向最终错误加入 `attempts`。
 
-各运行时以同样方式报告 Router 如何结束连接：升级请求被 HTTP 401、403、429、503 拒绝，或 `hello` 被关闭码 4401、4403、4429、4503 拒绝（见[连接握手](#连接握手与服务注册)），分别报告为 `unauthenticated`、`permission_denied`、可重试的 `resource_exhausted`、可重试的 `unavailable`（`source: "router"`）；以 4401 关闭为不可重试的 `unauthenticated`（关闭原因是上表中的 reason 时放入 `details.reason`）；以 1008 关闭为 `permission_denied`，`reason: "policy_violation"`，消息中带有 Router 的关闭原因（注册被拒时说明原因：无权注册的服务、`instance_ids` 之外的 `instance_id`、冲突的方法）；其他断开为可重试的 `unavailable`。收到 `unauthenticated` 或 `permission_denied` 后客户端不再重连：同样的凭据会以同样的方式失败。 服务实例同样不再向拒绝其凭据的 Router 重新注册（`unauthenticated`，连接时或收到 4401），并记录原因；被拒绝的注册（1008）仍会重试，因为冲突可能消除。所有 Router 都拒绝后，`run` / `serve` 以该错误结束，以便进程管理器用新凭据重启它。
+各运行时以同样方式报告 Router 如何结束连接：升级请求被 HTTP 401、403、429、503 拒绝，或 `hello` 被关闭码 4401、4403、4429、4503 拒绝（见[连接握手](#连接握手与服务注册)），分别报告为 `unauthenticated`、`permission_denied`、可重试的 `resource_exhausted`、可重试的 `unavailable`（`source: "router"`）；以 4401 关闭为不可重试的 `unauthenticated`（关闭原因是上表中的 reason 时放入 `details.reason`）；以 1008 关闭为 `permission_denied`，`reason: "policy_violation"`，消息中带有 Router 的关闭原因（注册被拒时说明原因：无权注册的服务、`instance_ids` 之外的 `instance_id`、冲突的方法）；其他断开为可重试的 `unavailable`。收到 `unauthenticated` 或 `permission_denied` 后客户端不再重连：同样的凭据会以同样的方式失败。 服务实例同样在 Router 以 4401 关闭它或在连接时拒绝其凭据时立即停止（`unauthenticated`，保留关闭原因），不再向该 Router 重新注册，并记录原因；被拒绝的注册（1008）仍会重试，因为冲突可能消除。所有 Router 都拒绝后，`run` / `serve` 以该错误结束，以便进程管理器用新凭据重启它。
 
 ### 结构化校验错误（`details.violations`）
 
