@@ -79,6 +79,7 @@ async def test_sealed_calls_through_a_router() -> None:
             instance_id="box-a",
             accept_tunnels=True,
             e2e_private_key=keys.private_key,
+            require_e2e=True,
         )
 
     async with LocalRouter(port=0) as router, Mesh(router) as issuer:
@@ -91,6 +92,13 @@ async def test_sealed_calls_through_a_router() -> None:
             e2e_key=keys.public_key,
         )
         assert opened.e2e_key == keys.public_key
+        assert opened.credential.startswith("mtun_e2e.")
+        # The instance requires end-to-end tunnels: a plain offer is refused.
+        with pytest.raises(PermissionDeniedError, match="end-to-end") as plain:
+            await issuer.tunnels.open(
+                instance="box-a", scopes=["test.v1.Box"], principal="p"
+            )
+        assert plain.value.reason == "tunnel_rejected"
         with pytest.raises(PermissionDeniedError) as refused:
             await issuer.tunnels.open(
                 instance="box-a",
@@ -124,12 +132,13 @@ async def test_sealed_calls_through_a_router() -> None:
             assert app.value.code == "app.nope" and app.value.message == "secret 42"
             assert (app.value.details or {}).get("value") == 3
 
-            async with Mesh(url, tunnel=opened.credential) as plain:
-                with pytest.raises(PermissionDeniedError) as required:
-                    await plain.with_options(instance="box-a").call_unary(
-                        "test.v1.Box", "double", Num(value=1), Num
-                    )
-                assert required.value.reason == "tunnel_e2e_required"
+            # The Router's own services answer on an E2E connection: never sealed.
+            who = await mesh.auth.whoami()
+            assert who.tunnel is not None and who.tunnel.e2e_key == keys.public_key
+            assert [s.name for s in await mesh.registry.list()] == ["test.v1.Box"]
+            # Without the key the credential is refused before anything is sent.
+            with pytest.raises(ValueError, match="end-to-end tunnel credential"):
+                Mesh(url, tunnel=opened.credential)
             wrong = Mesh(url, tunnel=opened.credential, e2e_key=other.public_key)
             with pytest.raises(UnauthenticatedError) as failed:
                 async with wrong:  # connecting handshakes
@@ -138,10 +147,22 @@ async def test_sealed_calls_through_a_router() -> None:
                     )
                 assert failed.value.reason == "e2e_handshake_failed"
 
-            # The instance restarts with the same key and loses its sessions;
-            # this client handshakes again after e2e_session_unknown.
+            # The instance restarts with the same key and loses its sessions:
+            # a stream is told once, and the next call handshakes again.
             await first.aclose()
             async with instance(router).serve(access_log=False):
+                unknown = 0
+                for _ in range(100):
+                    try:
+                        stream = box.call_server_stream(
+                            "test.v1.Box", "count", Num(value=2), Num
+                        )
+                        assert [i.value async for i in stream] == [0, 1]
+                        break
+                    except MeshCallError as exc:
+                        unknown += exc.reason == "e2e_session_unknown"
+                        assert unknown <= 1, exc
+                        await asyncio.sleep(0.05)
                 result: Num | None = None
                 for _ in range(100):
                     try:
@@ -160,6 +181,12 @@ def test_e2e_key_needs_a_tunnel_and_a_websocket_router() -> None:
     with pytest.raises(ValueError, match="tunnel="):
         Mesh(Router("ws://127.0.0.1:1"), e2e_key=keys.public_key)
     with pytest.raises(ValueError, match="HTTP"):
-        Mesh(Router("http://127.0.0.1:1"), tunnel="mtun_x", e2e_key=keys.public_key)
+        Mesh(Router("http://127.0.0.1:1"), tunnel="mtun_e2e.x", e2e_key=keys.public_key)
     with pytest.raises(ValueError, match="32 bytes"):
-        Mesh(Router("ws://127.0.0.1:1"), tunnel="mtun_x", e2e_key="short")
+        Mesh(Router("ws://127.0.0.1:1"), tunnel="mtun_e2e.x", e2e_key="short")
+    with pytest.raises(ValueError, match="mtun_e2e"):
+        Mesh(Router("ws://127.0.0.1:1"), tunnel="mtun_x", e2e_key=keys.public_key)
+    with pytest.raises(ValueError, match="end-to-end tunnel credential"):
+        Mesh(Router("http://127.0.0.1:1"), tunnel="mtun_e2e.x")
+    with pytest.raises(ValueError, match="require_e2e needs accept_tunnels"):
+        Mesh(Router("ws://127.0.0.1:1")).mount(Box(), require_e2e=True)

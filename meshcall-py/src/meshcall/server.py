@@ -114,6 +114,10 @@ class ServerRuntime:
         e2e_private_key: str | None = None,
     ) -> None:
         self.worker = worker
+        if e2e_private_key is None and any(
+            p.require_e2e for p in (tunnel_policies or {}).values()
+        ):
+            raise ContractError("require_e2e needs e2e_private_key")
         self.tunnels = TunnelHost(
             tunnel_policies or {}, worker, e2e_private_key=e2e_private_key
         )
@@ -261,6 +265,13 @@ class ServerRuntime:
         return True
 
 
+def _frame_rejected(exc: Exception) -> UnauthenticatedError:
+    return UnauthenticatedError(
+        f"Sealed frame rejected: {exc}",
+        details={"source": "server", "reason": "e2e_frame_rejected"},
+    )
+
+
 class _ServerSession:
     def __init__(
         self,
@@ -311,9 +322,7 @@ class _ServerSession:
                 try:
                     opened = call.sealed.open(frame)
                 except ValueError as exc:
-                    await call._application_failure(
-                        ProtocolError(f"Sealed input item does not open: {exc}")
-                    )
+                    await call._application_failure(_frame_rejected(exc))
                     return
                 assert isinstance(opened, StreamItemFrame)
                 frame = opened
@@ -506,8 +515,9 @@ class _ServerSession:
         sealed = SealedCall(session, frame.service, frame.method)
         try:
             opened = sealed.open(frame)
-        except ValueError:
-            return None, frame, unknown
+        except ValueError as exc:
+            # The session is good; this frame was changed on the way.
+            return None, frame, _frame_rejected(exc)
         assert isinstance(opened, CallOpenFrame)
         return sealed, opened, None
 

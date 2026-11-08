@@ -19,10 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from meshcall.contract import normalize_service_name
 from meshcall.e2e import (
+    PROLOGUE,
     SessionStore,
     b64decode,
     b64encode,
-    check_public_key,
     e2e_public_key,
     handshake_failed,
     load_private_key,
@@ -122,6 +122,8 @@ class TunnelPolicy:
 
     accept: bool | TunnelOfferHook
     on_closed: TunnelClosedHook | None = None
+    #: Refuse offers without ``e2e_key`` that scope these services.
+    require_e2e: bool = False
 
 
 def check_tunnel_credential(credential: str) -> str:
@@ -206,7 +208,8 @@ class TunnelsClient:
         if max_connections is not None:
             request.max_connections = max_connections
         if e2e_key is not None:
-            request.e2e_key = check_public_key(e2e_key)
+            # The Router checks it (invalid_argument), as in every runtime.
+            request.e2e_key = e2e_key
         return await self._mesh.call_unary(
             TUNNEL_SERVICE, "open", request, OpenedTunnel
         )
@@ -250,6 +253,8 @@ class TunnelHost:
         self._policies = dict(policies)
         self._worker = worker
         self._tunnels: dict[str, Tunnel] = {}
+        # Tunnel id → credential digest, which the handshake prologue binds.
+        self._digests: dict[str, str] = {}
         self._e2e_private_key = e2e_private_key
         self._e2e_public_key = (
             e2e_public_key(e2e_private_key) if e2e_private_key is not None else None
@@ -278,12 +283,18 @@ class TunnelHost:
     ) -> dict[str, Any]:
         if method == "offer":
             offer = TunnelOffer.model_validate(payload)
-            # An E2E tunnel pins a key: only the instance holding it may accept.
-            pinned_ok = offer.e2e_key is None or (
-                self._e2e_public_key is not None
-                and _same_key(offer.e2e_key, self._e2e_public_key)
-            )
-            accepted = pinned_ok and await self._worker.run(self._decide(offer))
+            digest = str((payload or {}).get("credential_digest") or "")
+            if offer.e2e_key is not None:
+                # An E2E tunnel pins a key: only the instance holding it may accept.
+                if (
+                    self._e2e_public_key is None
+                    or not _same_key(offer.e2e_key, self._e2e_public_key)
+                    or not digest
+                ):
+                    return {"accept": False, "reason": "e2e_key_mismatch"}
+            elif self._requires_e2e(offer):
+                return {"accept": False, "reason": "e2e_required"}
+            accepted = await self._worker.run(self._decide(offer))
             if accepted:
                 self._tunnels[offer.tunnel_id] = Tunnel(
                     offer.tunnel_id,
@@ -291,12 +302,15 @@ class TunnelHost:
                     offer.scopes,
                     sealed=offer.e2e_key is not None,
                 )
+                if offer.e2e_key is not None:
+                    self._digests[offer.tunnel_id] = digest
             return {"accept": accepted}
         if method == "handshake":
             return self._handshake(metadata, payload)
         if method == "closed":
             tunnel_id = str(payload.get("tunnel_id", ""))
             self.sessions.drop(tunnel_id)
+            self._digests.pop(tunnel_id, None)
             tunnel = self._tunnels.pop(tunnel_id, None)
             if tunnel is not None:
                 closed = TunnelClosed(
@@ -312,21 +326,39 @@ class TunnelHost:
         """Answer a client's Noise NK message 1 on an E2E tunnel this instance
         accepted; the session is kept under that tunnel."""
         tunnel = self.lookup(metadata)
-        if tunnel is None or not tunnel.sealed or self._e2e_private_key is None:
+        digest = self._digests.get(tunnel.id, "") if tunnel is not None else ""
+        if (
+            tunnel is None
+            or not tunnel.sealed
+            or self._e2e_private_key is None
+            or not digest
+        ):
             raise handshake_failed(
                 "not an end-to-end tunnel of this instance", "server"
             )
         try:
             message = b64decode(str((payload or {}).get("message", "")))
+            # The prologue binds the tunnel the handshake came through: one
+            # made for another tunnel's credential does not open here.
             reply, _, session = nk_respond(
-                load_private_key(self._e2e_private_key), message
+                load_private_key(self._e2e_private_key),
+                message,
+                prologue=PROLOGUE + b"|" + digest.encode(),
             )
         except Exception as exc:
             raise handshake_failed(
-                "message 1 does not open with this instance's key", "server"
+                "message 1 does not open with this instance's key on this tunnel",
+                "server",
             ) from exc
         self.sessions.add(tunnel.id, session)
         return {"message": b64encode(reply)}
+
+    def _requires_e2e(self, offer: TunnelOffer) -> bool:
+        return any(
+            (policy := self._policies.get(scope.service)) is not None
+            and policy.require_e2e
+            for scope in offer.scopes
+        )
 
     async def _decide(self, offer: TunnelOffer) -> bool:
         # Every scoped service must have opted in, and every hook must agree.

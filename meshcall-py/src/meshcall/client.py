@@ -23,7 +23,7 @@ from meshcall.context import (
     client_deadline_grace,
 )
 from meshcall.driver import ClientDriver
-from meshcall.e2e import SealedCall, SealingConnection
+from meshcall.e2e import ROUTER_SERVICE_PREFIX, SealedCall, SealingConnection
 from meshcall.errors import (
     CallCancelledError,
     DeadlineExceededError,
@@ -118,6 +118,7 @@ class ClientBase:
             self.interceptors = tuple(interceptors)
         self._connection: FrameConnection | None = None
         self._calls: dict[str, _ClientCall] = {}
+        self._background: set[asyncio.Task[None]] = set()
         self._state_lock = asyncio.Lock()
         self._receive_task: asyncio.Task[None] | None = None
         self._ever_connected = False
@@ -216,10 +217,12 @@ class ClientBase:
                 name="meshcall-client-receiver",
             )
 
-    async def _reset_connection(self) -> None:
-        """Drop the connection (its session is stale); the next call reconnects."""
+    async def _reset_connection(self, stale: object | None = None) -> None:
+        """Drop the connection (its session is stale); the next call reconnects.
+
+        With ``stale``, only if that is still the connection in use."""
         async with self._state_lock:
-            if self._connection is not None:
+            if self._connection is not None and stale in (None, self._connection):
                 self._connection = None
                 self._receive_task = None
                 with contextlib.suppress(Exception):
@@ -529,9 +532,11 @@ class ClientBase:
         if connection is None:
             raise UnavailableError("Client is not connected")
         call_id = uuid.uuid4().hex
+        # The Router answers its own services itself: those calls stay clear.
         sealed = (
             SealedCall(connection.e2e, service, method)
             if connection.e2e is not None
+            and not service.startswith(ROUTER_SERVICE_PREFIX)
             else None
         )
         call = _ClientCall(
@@ -660,14 +665,27 @@ class ClientBase:
                 frame = call.sealed.open(frame)
             except ValueError as exc:
                 # A frame the instance did not seal: not from the other end.
+                # The session stays; only this call ends.
                 self._calls.pop(call_id, None)
+                with contextlib.suppress(Exception):
+                    await call.cancel("e2e_frame_rejected")
                 await call.fail(
-                    ProtocolError(
-                        f"Sealed call: {exc}",
-                        details={"source": "client", "reason": "e2e_open_failed"},
+                    UnauthenticatedError(
+                        f"Sealed frame rejected: {exc}",
+                        details={"source": "client", "reason": "e2e_frame_rejected"},
                     )
                 )
                 return
+            if (
+                isinstance(frame, CallErrorFrame)
+                and (frame.error.details or {}).get("reason") == "e2e_session_unknown"
+            ):
+                # The instance lost the session: whatever the call shape, the
+                # next call handshakes again on a new connection. Not awaited
+                # here: this is the connection's own receive loop.
+                task = asyncio.create_task(self._reset_connection(self._connection))
+                self._background.add(task)
+                task.add_done_callback(self._background.discard)
         if isinstance(frame, StreamWindowFrame):
             await call.receive_window(frame)
         elif isinstance(frame, StreamItemFrame):

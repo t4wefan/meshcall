@@ -32,6 +32,9 @@ PROLOGUE = b"meshcall-e2e/1"
 WINDOW = 1024
 MAX_SESSIONS = 16
 _RESERVED = "meshcall-"
+#: The Router answers these services itself: calls to them are never sealed.
+ROUTER_SERVICE_PREFIX = "meshcall.router."
+E2E_CREDENTIAL_PREFIX = "mtun_e2e."
 
 
 def _crypto() -> Any:
@@ -44,6 +47,21 @@ def _crypto() -> Any:
             "pip install 'meshcall[e2e]'"
         ) from exc
     return x25519, AESGCM
+
+
+def is_e2e_credential(credential: str) -> bool:
+    """End-to-end tunnel credentials say so ("." never occurs in a plain one)."""
+    return credential.startswith(E2E_CREDENTIAL_PREFIX)
+
+
+def tunnel_prologue(credential: str) -> bytes:
+    """The handshake prologue binding a session to one tunnel: the hex
+    SHA-256 of its credential (the instance learns it from the offer)."""
+    return PROLOGUE + b"|" + credential_digest(credential).encode()
+
+
+def credential_digest(credential: str) -> str:
+    return hashlib.sha256(credential.encode()).hexdigest()
 
 
 def b64encode(data: bytes) -> str:
