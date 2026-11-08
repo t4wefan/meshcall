@@ -36,6 +36,9 @@ type ClientOptions struct {
 	Retry        *RetryPolicy
 	Interceptors []ClientInterceptor
 	Logger       *slog.Logger
+	// E2EKey is the pinned public key of a tunnel's instance: every call is
+	// sealed end to end after a handshake on each connection.
+	E2EKey string
 }
 
 // RetryPolicy is the built-in unary retry (docs/protocol.md → Idempotency keys).
@@ -383,7 +386,61 @@ func (c *Client) handshake(ctx context.Context, e endpoint) (*conn, error) {
 		}
 		return nil, &Error{Code: CodeProtocolError, Message: "Expected a compatible hello.ack"}
 	}
+	if c.opts.E2EKey != "" {
+		if conn.e2e, err = c.e2eHandshake(conn); err != nil {
+			conn.close()
+			return nil, err
+		}
+	}
 	return conn, nil
+}
+
+// e2eHandshake runs Noise NK with the pinned instance key over a new
+// connection, before any call: TunnelHost/handshake, routed by the Router to
+// the tunnel's instance. It never falls back to plain calls.
+func (c *Client) e2eHandshake(conn *conn) (*e2eSession, error) {
+	failed := func(why string) *Error {
+		return detailed(CodeUnauthenticated, "End-to-end handshake failed: "+why, "client", "e2e_handshake_failed", false)
+	}
+	pinned, err := parsePublicKey(c.opts.E2EKey)
+	if err != nil {
+		return nil, failed(err.Error())
+	}
+	initiator, msg1, err := nkInitiate(pinned, nil, []byte(e2ePrologue), nil)
+	if err != nil {
+		return nil, failed(err.Error())
+	}
+	id := randomID()
+	request, _ := json.Marshal(map[string]string{"message": b64.EncodeToString(msg1)})
+	timeout := c.opts.HandshakeTimeout.Milliseconds()
+	if err := conn.send(frame{Kind: "call.open", CallID: id, Service: tunnelHostService, Method: "handshake", Payload: request, TimeoutMS: &timeout}); err != nil {
+		return nil, failed(err.Error())
+	}
+	for {
+		f, err := receiveWithin(conn, c.opts.HandshakeTimeout)
+		if err != nil {
+			return nil, failed(err.Error())
+		}
+		if f.CallID != id {
+			continue
+		}
+		if f.Kind == "call.error" {
+			e := errorFromPayload(f.Error)
+			return nil, failed(e.Code + ": " + e.Message)
+		}
+		var answer struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(f.Payload, &answer)
+		msg2, err := b64.DecodeString(answer.Message)
+		if err != nil {
+			return nil, failed("malformed message 2")
+		}
+		if _, sess, err := initiator.finish(msg2); err == nil {
+			return sess, nil
+		}
+		return nil, failed("message 2 is not from the pinned instance key")
+	}
 }
 
 func (c *Client) readLoop(conn *conn) {
@@ -446,6 +503,7 @@ type clientCall struct {
 	conn   *conn
 	id     string
 	stream string
+	e2e    *e2eCall // non-nil: sealed end to end
 
 	mu       sync.Mutex
 	queue    []frame
@@ -500,6 +558,9 @@ func (c *Client) open(ctx context.Context, info *CallInfo, payload json.RawMessa
 	if len(o.Metadata) > 0 {
 		open.Metadata = o.Metadata
 	}
+	if conn.e2e != nil {
+		call.e2e = &e2eCall{session: conn.e2e, service: info.Service, method: info.Method}
+	}
 	if timeout > 0 {
 		open.TimeoutMS = int64p(max(1, timeout.Milliseconds()))
 		budget := timeout + c.grace(timeout) - time.Since(started)
@@ -520,6 +581,9 @@ func (c *Client) open(ctx context.Context, info *CallInfo, payload json.RawMessa
 		}
 		call.abort(contextError(ctx), reason)
 	})
+	if call.e2e != nil {
+		open = call.e2e.sealFrame(open)
+	}
 	if err := conn.send(open); err != nil {
 		if e := frameTooLarge("client", err); e != nil {
 			call.fail(e)
@@ -544,6 +608,15 @@ func (c *Client) grace(timeout time.Duration) time.Duration {
 }
 
 func (call *clientCall) deliver(f frame) {
+	if call.e2e != nil {
+		opened, err := call.e2e.openFrame(f)
+		if err != nil {
+			// A frame the instance did not seal: not from the other end.
+			call.fail(detailed(CodeProtocolError, "Sealed call: "+err.Error(), "client", "e2e_open_failed", false))
+			return
+		}
+		f = opened
+	}
 	switch f.Kind {
 	case "stream.window":
 		if f.Direction != "client" || call.inputCredit == nil || f.Credit == nil || *f.Credit <= 0 {
@@ -706,7 +779,11 @@ func (call *clientCall) sendInput(ctx context.Context, payload json.RawMessage) 
 	seq := call.inputSeq
 	call.inputSeq++
 	call.mu.Unlock()
-	err := call.conn.send(frame{Kind: "stream.item", CallID: call.id, Direction: "client", Sequence: &seq, Payload: payload})
+	item := frame{Kind: "stream.item", CallID: call.id, Direction: "client", Sequence: &seq, Payload: payload}
+	if call.e2e != nil {
+		item = call.e2e.sealFrame(item)
+	}
+	err := call.conn.send(item)
 	if e := frameTooLarge("client", err); e != nil {
 		call.abort(e, "frame_too_large") // the call is open at the peer
 		return e
@@ -856,15 +933,28 @@ func (c *Client) unaryRaw(ctx context.Context, service, method string, payload j
 	var trailers map[string]string
 	info := c.buildInfo(service, method, "unary", opts)
 	err := c.runChain(ctx, info, func(ctx context.Context, info *CallInfo) error {
-		call, err := c.open(ctx, info, payload)
-		if err != nil {
+		for attempt := 0; ; attempt++ {
+			call, err := c.open(ctx, info, payload)
+			if err != nil {
+				return err
+			}
+			raw, terminal, err := call.result()
+			if e, ok := AsError(err); ok && e.Reason() == "e2e_session_unknown" && attempt == 0 {
+				// The instance lost the session (it reconnected): the call
+				// never ran. Handshake again on a new connection and retry.
+				c.mu.Lock()
+				if c.conn == call.conn {
+					c.conn = nil
+				}
+				c.mu.Unlock()
+				call.conn.close()
+				continue
+			}
+			info.Trailers = terminal
+			trailers = terminal
+			result = raw
 			return err
 		}
-		raw, terminal, err := call.result()
-		info.Trailers = terminal
-		trailers = terminal
-		result = raw
-		return err
 	})
 	return result, trailers, err
 }

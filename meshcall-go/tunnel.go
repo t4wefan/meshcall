@@ -2,6 +2,7 @@ package meshcall
 
 import (
 	"context"
+	"crypto/ecdh"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -37,6 +38,7 @@ type TunnelInfo struct {
 	Scopes          []TunnelScope `json:"scopes"`
 	ExpiresAtUnixMS int64         `json:"expires_at_unix_ms"`
 	MaxConnections  int           `json:"max_connections,omitempty"`
+	E2EKey          string        `json:"e2e_key,omitempty"`
 	Connections     int           `json:"connections"`
 	Online          bool          `json:"online"`
 }
@@ -57,6 +59,10 @@ type OpenTunnelRequest struct {
 	// TTLSeconds bounds new connections, 1..86400 (0: 3600).
 	TTLSeconds     int
 	MaxConnections int
+	// E2EKey pins the instance's public key (base64url): every call on the
+	// tunnel is then sealed end to end. Use the key you provisioned the
+	// instance with, not one learnt from the Router.
+	E2EKey string
 }
 
 // TunnelOffer is what an instance is asked to accept before a tunnel
@@ -69,6 +75,9 @@ type TunnelOffer struct {
 	ExpiresAtUnixMS int64         `json:"expires_at_unix_ms"`
 	// Resumed: offered again after this instance reconnected.
 	Resumed bool `json:"resumed"`
+	// E2EKey is the public key the issuer pinned for end-to-end sealing;
+	// empty for a plain tunnel. An offer pinning another key is refused.
+	E2EKey string `json:"e2e_key,omitempty"`
 }
 
 // Tunnel is the tunnel a call arrived through, as the instance accepted it.
@@ -76,6 +85,8 @@ type Tunnel struct {
 	ID        string
 	Principal string
 	Scopes    []TunnelScope
+	// Sealed: the tunnel carries end-to-end sealed calls only.
+	Sealed bool
 }
 
 // TunnelClosed tells an instance that a tunnel it accepted has ended.
@@ -134,6 +145,14 @@ func WithTunnel(credential string) MeshOption {
 	return meshOptFunc(func(c *meshConfig) { c.tunnel = credential })
 }
 
+// WithE2EKey seals every call on the tunnel end to end with the instance's
+// public key, as the issuer pinned it (OpenTunnelRequest.E2EKey). Take the
+// key from the issuer, never from the Router: the handshake succeeds only
+// with the instance that holds the matching private key.
+func WithE2EKey(publicKey string) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.e2eKey = publicKey })
+}
+
 // TunnelsClient is the issuer API for the Router's TunnelService.
 type TunnelsClient struct{ caller Caller }
 
@@ -143,6 +162,7 @@ type openTunnelWire struct {
 	Principal      string        `json:"principal"`
 	TTLSeconds     int           `json:"ttl_seconds"`
 	MaxConnections int           `json:"max_connections,omitempty"`
+	E2EKey         string        `json:"e2e_key,omitempty"`
 }
 
 // Open opens a tunnel to one instance and returns once the instance accepted
@@ -150,7 +170,8 @@ type openTunnelWire struct {
 // unknown instance CodeUnavailable with reason "instance_unknown".
 func (tc *TunnelsClient) Open(ctx context.Context, request OpenTunnelRequest, opts ...CallOption) (OpenedTunnel, error) {
 	// The Router checks the request (CodeInvalidArgument), so every runtime fails alike.
-	wire := openTunnelWire{InstanceID: request.Instance, Principal: request.Principal, TTLSeconds: request.TTLSeconds, MaxConnections: request.MaxConnections}
+	wire := openTunnelWire{InstanceID: request.Instance, Principal: request.Principal, TTLSeconds: request.TTLSeconds,
+		MaxConnections: request.MaxConnections, E2EKey: request.E2EKey}
 	if wire.TTLSeconds == 0 {
 		wire.TTLSeconds = 3600
 	}
@@ -193,6 +214,8 @@ type tunnelHost struct {
 	policies map[string]*TunnelPolicy
 	mu       sync.Mutex
 	tunnels  map[string]*Tunnel
+	key      *ecdh.PrivateKey // nil: no end-to-end tunnels
+	sessions e2eSessions
 }
 
 func newTunnelHost(policies map[string]*TunnelPolicy) *tunnelHost {
@@ -217,20 +240,23 @@ func (h *tunnelHost) lookup(metadata map[string]string) *Tunnel {
 	return t
 }
 
-func (h *tunnelHost) handle(ctx context.Context, method string, payload json.RawMessage) (any, error) {
+func (h *tunnelHost) handle(ctx context.Context, method string, payload json.RawMessage, metadata map[string]string) (any, error) {
 	switch method {
 	case "offer":
 		var offer TunnelOffer
 		if err := json.Unmarshal(payload, &offer); err != nil || offer.TunnelID == "" {
 			return nil, errors.New("invalid tunnel offer")
 		}
-		accept := h.decide(ctx, offer)
+		// An E2E tunnel pins a key: only the instance that holds it may accept.
+		accept := (offer.E2EKey == "" || h.ownKey(offer.E2EKey)) && h.decide(ctx, offer)
 		if accept {
 			h.mu.Lock()
-			h.tunnels[offer.TunnelID] = &Tunnel{ID: offer.TunnelID, Principal: offer.Principal, Scopes: offer.Scopes}
+			h.tunnels[offer.TunnelID] = &Tunnel{ID: offer.TunnelID, Principal: offer.Principal, Scopes: offer.Scopes, Sealed: offer.E2EKey != ""}
 			h.mu.Unlock()
 		}
 		return map[string]bool{"accept": accept}, nil
+	case "handshake":
+		return h.handshake(metadata, payload)
 	case "closed":
 		var closed struct {
 			TunnelID string `json:"tunnel_id"`
@@ -241,6 +267,7 @@ func (h *tunnelHost) handle(ctx context.Context, method string, payload json.Raw
 		t := h.tunnels[closed.TunnelID]
 		delete(h.tunnels, closed.TunnelID)
 		h.mu.Unlock()
+		h.sessions.drop(closed.TunnelID)
 		if t != nil {
 			notified := map[*TunnelPolicy]bool{} // services mounted together share a policy
 			for _, scope := range t.Scopes {
@@ -255,6 +282,42 @@ func (h *tunnelHost) handle(ctx context.Context, method string, payload json.Raw
 		return struct{}{}, nil
 	}
 	return nil, errors.New("unknown " + tunnelHostService + " method " + method)
+}
+
+func (h *tunnelHost) ownKey(publicKey string) bool {
+	if h.key == nil {
+		return false
+	}
+	pinned, err := parsePublicKey(publicKey)
+	return err == nil && pinned.Equal(h.key.PublicKey())
+}
+
+// handshake answers a client's Noise NK message 1 on an E2E tunnel this
+// instance accepted, and keeps the session under that tunnel.
+func (h *tunnelHost) handshake(metadata map[string]string, payload json.RawMessage) (any, error) {
+	failed := func(why string) error {
+		return detailed(CodeUnauthenticated, "End-to-end handshake failed: "+why, "server", "e2e_handshake_failed", false)
+	}
+	t := h.lookup(metadata)
+	if t == nil || !t.Sealed || h.key == nil {
+		return nil, failed("not an end-to-end tunnel of this instance")
+	}
+	var request struct {
+		Message string `json:"message"`
+	}
+	message, err := []byte(nil), json.Unmarshal(payload, &request)
+	if err == nil {
+		message, err = b64.DecodeString(request.Message)
+	}
+	if err != nil {
+		return nil, failed("malformed message")
+	}
+	reply, _, sess, err := nkRespond(h.key, nil, []byte(e2ePrologue), message, nil)
+	if err != nil {
+		return nil, failed("message 1 does not open with this instance's key")
+	}
+	h.sessions.add(t.ID, sess)
+	return map[string]string{"message": b64.EncodeToString(reply)}, nil
 }
 
 // decide: every scoped service must have opted in, and every hook agree.

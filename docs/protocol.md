@@ -399,12 +399,14 @@ client has no static key (Noise `NK`).
 client calls `meshcall.router.v1.TunnelHost/handshake` (unary)
 `{message}` → `{message}`: the two messages of
 `Noise_NK_25519_AESGCM_SHA256` with empty payloads, base64url without
-padding, prologue `"meshcall-e2e/1"`, a zero byte and the `tunnel_id`. The
+padding, prologue `"meshcall-e2e/1"`. The
 Router routes this method only from a connection of an E2E tunnel, to its
 target, with the tunnel metadata set (to anyone else it is
 `method_not_found`). The session id is the first 16 bytes of the handshake
-hash, hex. The two keys of the Noise `Split()` seal client → instance and
-instance → client. The instance keeps at most 16 sessions per tunnel (the
+hash, hex; the instance keeps it under the tunnel the handshake came
+through, so it is good on that tunnel only. The two keys of the Noise
+`Split()` seal client → instance and instance → client. The instance keeps
+at most 16 sessions per tunnel (the
 oldest is dropped) and drops them when the tunnel closes; a call naming a
 session it does not know is refused before any handler runs with
 `unauthenticated`, `reason: "e2e_session_unknown"` (an instance that

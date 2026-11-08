@@ -742,6 +742,7 @@ func revokeToken(ctx context.Context, c Caller, tokenID string, opts ...CallOpti
 type meshConfig struct {
 	token              string
 	tunnel             string
+	e2eKey             string
 	auth               string
 	headers            map[string]string
 	httpTimeout        time.Duration
@@ -901,6 +902,17 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 		checkTunnelCredential(cfg.tunnel)
 		authHeader = BearerToken(cfg.tunnel)
 	}
+	if cfg.e2eKey != "" {
+		if cfg.tunnel == "" {
+			panic("meshcall: WithE2EKey seals the calls of a tunnel: pass WithTunnel too")
+		}
+		if router.IsHTTP() {
+			panic("meshcall: an end-to-end tunnel needs a ws:// or wss:// Router; HTTP calls cannot be sealed")
+		}
+		if _, err := parsePublicKey(cfg.e2eKey); err != nil {
+			panic(err.Error())
+		}
+	}
 	m := &Mesh{
 		router:     router,
 		cfg:        cfg,
@@ -955,6 +967,7 @@ func (m *Mesh) ensureCaller() (Caller, error) {
 			Retry:            m.cfg.retry,
 			Interceptors:     m.cfg.clientInterceptors,
 			Logger:           m.cfg.logger,
+			E2EKey:           m.cfg.e2eKey,
 		}
 		if m.cfg.reconnect != nil {
 			clientOpts.Reconnect = *m.cfg.reconnect
@@ -1142,16 +1155,17 @@ func (m *Mesh) Close() error {
 // --- Server Mounting & Lifecycle on Mesh -----------------------------------
 
 type serveConfig struct {
-	instanceID   string
-	maxInflight  int
-	interceptors []ServerInterceptor
-	logger       *slog.Logger
-	accessLog    bool
-	idleTimeout  time.Duration
-	strict       bool
-	drainTimeout time.Duration
-	listenAddr   string
-	dependencies []DependencyProvider
+	instanceID    string
+	maxInflight   int
+	interceptors  []ServerInterceptor
+	logger        *slog.Logger
+	accessLog     bool
+	idleTimeout   time.Duration
+	strict        bool
+	drainTimeout  time.Duration
+	listenAddr    string
+	dependencies  []DependencyProvider
+	e2ePrivateKey string
 }
 
 // ServeOption configures service mounting and serving on a Mesh.
@@ -1166,6 +1180,16 @@ func (f serveOptFunc) applyServe(s *serveConfig) { f(s) }
 // WithInstanceID sets the server's instance ID.
 func WithInstanceID(id string) ServeOption {
 	return serveOptFunc(func(s *serveConfig) { s.instanceID = id })
+}
+
+// WithE2EPrivateKey gives the instance its key for end-to-end sealed
+// tunnels (GenerateE2EKey; base64url). Configure it as stable as the
+// instance id: the issuer pins its public key.
+func WithE2EPrivateKey(privateKey string) ServeOption {
+	if _, err := parsePrivateKey(privateKey); err != nil {
+		panic(err.Error())
+	}
+	return serveOptFunc(func(s *serveConfig) { s.e2ePrivateKey = privateKey })
 }
 
 // WithMaxInflight caps concurrent in-flight calls across all services on this server.
@@ -1347,6 +1371,7 @@ func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningS
 		Strict:        cfg.strict,
 
 		TunnelPolicies: tunnelPolicies,
+		E2EPrivateKey:  cfg.e2ePrivateKey,
 	}
 	if m.cfg.reconnect != nil {
 		serverOpts.Reconnect = *m.cfg.reconnect

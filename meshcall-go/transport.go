@@ -39,6 +39,8 @@ type conn struct {
 	maxFrame int
 	// closedBy is the error a Router close status stood for (closeError).
 	closedBy atomic.Pointer[Error]
+	// e2e is the connection's end-to-end session, set by the handshake.
+	e2e *e2eSession
 }
 
 // lost is the error calls on c fail with once it is gone: what the Router's
