@@ -92,6 +92,10 @@ export interface CallOpenFrame {
   idempotency_key?: string | null;
   /** Address one service instance; required for targeted services. */
   instance_id?: string | null;
+  /** End-to-end sealed call: the session its content is sealed under. */
+  e2e_session?: string | null;
+  /** End-to-end sealed content (docs/protocol.md → End-to-end encryption). */
+  sealed?: string | null;
 }
 
 export interface CallResultFrame {
@@ -99,6 +103,7 @@ export interface CallResultFrame {
   call_id: string;
   payload?: unknown;
   metadata?: Metadata | null;
+  sealed?: string | null;
 }
 
 export interface ErrorPayload {
@@ -113,6 +118,7 @@ export interface CallErrorFrame {
   call_id: string;
   error: ErrorPayload;
   metadata?: Metadata | null;
+  sealed?: string | null;
 }
 
 export interface CallCancelFrame {
@@ -127,6 +133,7 @@ export interface StreamItemFrame {
   direction: "client" | "server";
   sequence: number;
   payload: unknown;
+  sealed?: string | null;
 }
 
 export interface StreamEndFrame {
@@ -271,8 +278,9 @@ const validators = new Map([
     timeout_ms: positiveMs, idle_timeout_ms: positiveMs, metadata,
     idempotency_key: { type: ["string", "null"], minLength: 1, maxLength: 128 },
     instance_id: { type: ["string", "null"], minLength: 1 },
+    e2e_session: nullableString, sealed: nullableString,
   }, ["call_id", "service", "method", "payload"])],
-  ["call.result", frame("call.result", { call_id: string, payload: {}, metadata }, ["call_id"])],
+  ["call.result", frame("call.result", { call_id: string, payload: {}, metadata, sealed: nullableString }, ["call_id"])],
   ["call.error", frame("call.error", {
     call_id: string,
     error: {
@@ -283,11 +291,11 @@ const validators = new Map([
       },
       required: ["code", "message"],
     },
-    metadata,
+    metadata, sealed: nullableString,
   }, ["call_id", "error"])],
   ["call.cancel", frame("call.cancel", { call_id: string, reason: string }, ["call_id"])],
   ["stream.item", frame("stream.item", {
-    call_id: string, direction, sequence: integer, payload: {},
+    call_id: string, direction, sequence: integer, payload: {}, sealed: nullableString,
   }, ["call_id", "direction", "sequence", "payload"])],
   ["stream.end", frame("stream.end", { call_id: string, direction }, ["call_id", "direction"])],
   ["stream.window", frame("stream.window", {

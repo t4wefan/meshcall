@@ -104,12 +104,16 @@ class CallOpenFrame(_MetadataFrame):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
     # Address one service instance; required for targeted services.
     instance_id: str | None = Field(default=None, min_length=1)
+    # End-to-end sealed calls (docs/protocol.md → End-to-end encryption).
+    e2e_session: str | None = None
+    sealed: str | None = None
 
 
 class CallResultFrame(_MetadataFrame):
     kind: Literal["call.result"] = "call.result"
     call_id: str
     payload: Any = None
+    sealed: str | None = None
 
 
 class ErrorPayload(FrameModel):
@@ -123,6 +127,7 @@ class CallErrorFrame(_MetadataFrame):
     kind: Literal["call.error"] = "call.error"
     call_id: str
     error: ErrorPayload
+    sealed: str | None = None
 
 
 class CallCancelFrame(FrameModel):
@@ -137,6 +142,7 @@ class StreamItemFrame(FrameModel):
     direction: Direction
     sequence: int = Field(ge=0)
     payload: Any
+    sealed: str | None = None
 
 
 class StreamEndFrame(FrameModel):

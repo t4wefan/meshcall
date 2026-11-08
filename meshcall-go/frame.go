@@ -35,6 +35,10 @@ type frame struct {
 	Sequence     *int64            `json:"sequence,omitempty"`
 	Credit       *int64            `json:"credit,omitempty"`
 	Nonce        string            `json:"nonce,omitempty"`
+	// E2ESession and Sealed: an end-to-end sealed call's session and
+	// contents (docs/protocol.md → End-to-end encryption).
+	E2ESession string `json:"e2e_session,omitempty"`
+	Sealed     string `json:"sealed,omitempty"`
 }
 
 type errorPayload struct {

@@ -4,6 +4,7 @@
 // credentials travel in the `hello` frame's `authorization` field.
 
 import type { CallOptions, DuplexCallOptions } from "./client.js";
+import { checkE2EAgreement, clientHandshake, ROUTER_SERVICE_PREFIX, SealedCall, type E2ESession } from "./e2e.js";
 import {
   CallCancelledError, closeError, DeadlineExceededError, MeshCallError, ProtocolError, ResourceExhaustedError,
   UnauthenticatedError, UnavailableError,
@@ -11,7 +12,7 @@ import {
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import type { RpcLogger } from "./log.js";
 import { clientDeadlineGraceMs, retryUnary, validateMetadata, type RetryPolicy } from "./policy.js";
-import type { Metadata } from "./protocol.js";
+import type { Frame as WireFrame, Metadata } from "./protocol.js";
 import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 import { checkReceived } from "./validation.js";
 
@@ -32,6 +33,8 @@ export interface WebSocketTransportOptions {
   readonly logger?: RpcLogger;
   /** Defaults to the global `WebSocket`. */
   readonly WebSocket?: typeof WebSocket;
+  /** Seal every call end to end towards the instance holding this pinned public key. */
+  readonly e2eKey?: string;
 }
 
 type Frame = Record<string, unknown> & { kind: string; call_id?: string };
@@ -58,6 +61,12 @@ class Connection {
   private ping: ReturnType<typeof setInterval> | undefined;
   private pong: ReturnType<typeof setTimeout> | undefined;
   private nonce: string | undefined;
+  /** The end-to-end session, once the instance answered the handshake. */
+  public e2e: E2ESession | undefined;
+  // Sealing and opening are async: call frames go through these in order.
+  private outbound: Promise<void> = Promise.resolve();
+  private inbound: Promise<void> = Promise.resolve();
+  private handshake: { readonly id: string; finish?: (reply: WireFrame) => Promise<E2ESession> } | undefined;
 
   public constructor(
     url: string, private readonly options: WebSocketTransportOptions, private readonly onGone: (error: MeshCallError) => void,
@@ -85,15 +94,43 @@ class Connection {
           this.close();
           return;
         }
-        if (frame.kind === "hello.ack") {
+        const ready = () => {
           clearTimeout(timer);
-          if (frame.protocol !== PROTOCOL) {
-            reject(new ProtocolError("Unsupported protocol " + String(frame.protocol)));
-            this.close();
-            return;
-          }
           this.startPing();
           resolve();
+        };
+        const refuse = (error: unknown) => {
+          clearTimeout(timer);
+          reject(error);
+          this.close();
+        };
+        if (this.handshake !== undefined) {
+          if (frame.call_id !== this.handshake.id || this.handshake.finish === undefined) return;
+          const finish = this.handshake.finish;
+          this.handshake = undefined;
+          finish(frame as unknown as WireFrame).then((session) => {
+            this.e2e = session;
+            ready();
+          }, refuse);
+          return;
+        }
+        if (frame.kind === "hello.ack") {
+          if (frame.protocol !== PROTOCOL) {
+            refuse(new ProtocolError("Unsupported protocol " + String(frame.protocol)));
+            return;
+          }
+          if (options.e2eKey === undefined) {
+            ready();
+            return;
+          }
+          // The instance must answer the handshake towards the pinned key
+          // before any call is made.
+          const handshake: { id: string; finish?: (reply: WireFrame) => Promise<E2ESession> } = { id: randomId() };
+          this.handshake = handshake;
+          clientHandshake(options.e2eKey, handshake.id, (options.authorization ?? "").replace(/^Bearer /u, "")).then((started) => {
+            handshake.finish = started.finish;
+            this.send(started.frame as unknown as Frame);
+          }).catch(refuse);
           return;
         }
         this.receive(frame);
@@ -120,6 +157,13 @@ class Connection {
     this.socket.send(data);
   }
 
+  /** Seal and send `frame` after every frame queued before it. */
+  public sendSealed(frame: Frame, sealed: SealedCall): Promise<void> {
+    const run = this.outbound.then(async () => this.send(await sealed.seal(frame as unknown as WireFrame) as unknown as Frame));
+    this.outbound = run.catch(() => undefined);
+    return run;
+  }
+
   public get isOpen(): boolean { return !this.closed; }
 
   public close(): void {
@@ -139,7 +183,38 @@ class Connection {
       }
       return;
     }
-    if (typeof frame.call_id === "string") this.calls.get(frame.call_id)?.receive(frame);
+    if (typeof frame.call_id !== "string") return;
+    const callId = frame.call_id;
+    if (this.e2e === undefined) {
+      this.calls.get(callId)?.receive(frame);
+      return;
+    }
+    this.inbound = this.inbound.then(async () => {
+      const call = this.calls.get(callId);
+      if (call === undefined) return;
+      if (call.sealed === undefined) {
+        call.receive(frame);
+        return;
+      }
+      let opened: Frame;
+      try {
+        opened = await call.sealed.open(frame as unknown as WireFrame) as unknown as Frame;
+      } catch (error) {
+        // A frame the instance did not seal: not from the other end.
+        // The session stays; only this call ends.
+        call.cancel("e2e_frame_rejected", new UnauthenticatedError("Sealed frame rejected: " + (error as Error).message, {
+          details: { source: "client", reason: "e2e_frame_rejected" },
+        }));
+        return;
+      }
+      call.receive(opened);
+      const details = (opened.error as { details?: { reason?: unknown } } | undefined)?.details;
+      if (opened.kind === "call.error" && details?.reason === "e2e_session_unknown") {
+        // The instance lost the session: whatever the call shape, the next
+        // call handshakes again on a new connection.
+        this.close();
+      }
+    }).catch(() => undefined);
   }
 
   private startPing(): void {
@@ -174,6 +249,8 @@ class WsCall {
   public readonly id = randomId();
   public trailers: Readonly<Metadata> = {};
   public readonly result: Promise<unknown>;
+  /** Set when the call is opened on an end-to-end connection. */
+  public sealed: SealedCall | undefined;
   private settle!: { resolve: (payload: unknown) => void; reject: (error: unknown) => void };
   private readonly output = new AsyncQueue<unknown>();
   private readonly inputCredit = new CreditWindow();
@@ -203,6 +280,9 @@ class WsCall {
 
   public open(service: string, method: string, request: unknown): void {
     if (this.terminal) return; // cancelled before it was sent
+    const session = this.connection.e2e;
+    // The Router answers its own services itself: those calls stay clear.
+    if (session !== undefined && !service.startsWith(ROUTER_SERVICE_PREFIX)) this.sealed = new SealedCall(session, service, method);
     const o = this.options;
     this.send({
       kind: "call.open", call_id: this.id, service, method, payload: request ?? null,
@@ -255,18 +335,18 @@ class WsCall {
     if (!item.done && !this.terminal && ++this.consumed >= INITIAL_STREAM_CREDIT / 2) {
       const credit = this.consumed;
       this.consumed = 0;
-      try { this.send({ kind: "stream.window", call_id: this.id, direction: "server", credit }); } catch { /* reported by the call */ }
+      try { void this.send({ kind: "stream.window", call_id: this.id, direction: "server", credit }); } catch { /* reported by the call */ }
     }
     return item;
   }
 
   public async sendInput(item: unknown): Promise<void> {
     await this.inputCredit.acquire();
-    this.send({ kind: "stream.item", call_id: this.id, direction: "client", sequence: this.inputSequence++, payload: item ?? null });
+    await this.send({ kind: "stream.item", call_id: this.id, direction: "client", sequence: this.inputSequence++, payload: item ?? null });
   }
 
   public closeInput(): void {
-    if (!this.terminal) this.send({ kind: "stream.end", call_id: this.id, direction: "client" });
+    if (!this.terminal) void this.send({ kind: "stream.end", call_id: this.id, direction: "client" });
   }
 
   public fail(error: unknown): void {
@@ -279,17 +359,20 @@ class WsCall {
 
   public cancel(reason: string, error: MeshCallError): void {
     if (this.terminal) return;
-    try { this.send({ kind: "call.cancel", call_id: this.id, reason }); } catch { /* the connection is gone */ }
+    try { void this.send({ kind: "call.cancel", call_id: this.id, reason }); } catch { /* the connection is gone */ }
     this.fail(error);
   }
 
-  private send(frame: Frame): void {
+  /** Throws at once on a plain connection; a sealed call's failure ends the call instead. */
+  private send(frame: Frame): Promise<void> {
+    if (this.sealed !== undefined) return this.connection.sendSealed(frame, this.sealed).catch((error: unknown) => this.fail(error));
     try {
       this.connection.send(frame);
     } catch (error) {
       this.fail(error);
       throw error;
     }
+    return Promise.resolve();
   }
 
   private armIdle(): void {
@@ -367,6 +450,7 @@ export class WebSocketTransport implements MeshCallRpc {
 
   public constructor(private readonly urls: ReadonlyArray<string>, private readonly options: WebSocketTransportOptions = {}) {
     if (urls.length === 0) throw new RangeError("WebSocketTransport needs at least one URL");
+    checkE2EAgreement(options.authorization?.replace(/^Bearer /u, ""), options.e2eKey);
   }
 
   public withOptions(options: CallOptions): this {
@@ -395,11 +479,30 @@ export class WebSocketTransport implements MeshCallRpc {
   public unary<Request, Response>(service: string, method: string, request: Request, options: CallOptions = {}): Promise<Response> {
     const merged = mergeCallOptions(this.defaultCallOptions, options);
     return retryUnary(this.options.retry, merged, async (timeoutMs) => {
-      const call = await this.start("unary", service, method, request, timeoutMs === undefined ? merged : { ...merged, timeoutMs });
-      const payload = await call.result;
+      const attempt = async () => {
+        const call = await this.start("unary", service, method, request, timeoutMs === undefined ? merged : { ...merged, timeoutMs });
+        return call.result;
+      };
+      let payload: unknown;
+      try {
+        payload = await attempt();
+      } catch (error) {
+        if (!(error instanceof UnauthenticatedError) || error.reason !== "e2e_session_unknown") throw error;
+        // The instance lost the session (it reconnected): the call never ran.
+        // Handshake again on a new connection and retry once.
+        this.root.reset();
+        payload = await attempt();
+      }
       checkReceived(merged.responseSchema, payload, "response");
       return payload as Response;
     });
+  }
+
+  /** Drop the connection (its end-to-end session is stale); the next call reconnects. */
+  private reset(): void {
+    const connection = this.connection;
+    this.connection = undefined;
+    connection?.close();
   }
 
   public serverStream<Request, Item>(service: string, method: string, request: Request, options: CallOptions = {}): RpcStream<Item> {

@@ -46,6 +46,9 @@ type ServerOptions struct {
 	// TunnelPolicies opts services in to tunnels, by service name (Router
 	// mode). Services that share a policy pointer were mounted together.
 	TunnelPolicies map[string]*TunnelPolicy
+	// E2EPrivateKey (base64url X25519) lets the instance accept end-to-end
+	// sealed tunnels whose issuer pinned its public key.
+	E2EPrivateKey string
 }
 
 // Server runs services in Router mode (ConnectRouter) or direct mode (Listen).
@@ -93,8 +96,21 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if opts.MaxFrameSize == 0 {
 		opts.MaxFrameSize = DefaultMaxFrameSize
 	}
+	for _, policy := range opts.TunnelPolicies {
+		if policy != nil && policy.RequireE2E && opts.E2EPrivateKey == "" {
+			return nil, errors.New("meshcall: WithRequireE2E needs WithE2EPrivateKey")
+		}
+	}
+	tunnels := newTunnelHost(opts.TunnelPolicies)
+	if opts.E2EPrivateKey != "" {
+		key, err := parsePrivateKey(opts.E2EPrivateKey)
+		if err != nil {
+			return nil, err
+		}
+		tunnels.key = key
+	}
 	s := &Server{opts: opts, services: map[string]*Service{}, targeted: map[string]bool{}, logger: opts.Logger, sessions: map[*session]struct{}{},
-		tunnels: newTunnelHost(opts.TunnelPolicies)}
+		tunnels: tunnels}
 	s.ctx, s.stop = context.WithCancel(context.Background())
 	var findings []ContractWarning
 	for _, svc := range opts.Services {
@@ -543,10 +559,14 @@ func (sess *session) handle(f frame) {
 }
 
 func (sess *session) tunnelCall(f frame) {
-	result, err := sess.server.tunnels.handle(sess.server.ctx, f.Method, f.Payload)
+	result, err := sess.server.tunnels.handle(sess.server.ctx, f.Method, f.Payload, f.Metadata)
 	if err != nil {
 		sess.server.logger.Warn("tunnel request failed", "method", f.Method, "error", err)
-		_ = sess.conn.send(frame{Kind: "call.error", CallID: f.CallID, Error: (&Error{Code: CodeInternal, Message: "Tunnel request failed"}).payload()})
+		e, ok := AsError(err)
+		if !ok {
+			e = &Error{Code: CodeInternal, Message: "Tunnel request failed"}
+		}
+		_ = sess.conn.send(frame{Kind: "call.error", CallID: f.CallID, Error: e.payload()})
 		return
 	}
 	payload, _ := json.Marshal(result)
@@ -565,6 +585,11 @@ func (sess *session) open(f frame) {
 	sess.mu.Unlock()
 	if duplicate {
 		sess.reject(f, &Error{Code: CodeProtocolError, Message: "Duplicate call_id"})
+		return
+	}
+	sealed, f, refusal := sess.unseal(f)
+	if refusal != nil {
+		sess.reject(f, refusal)
 		return
 	}
 	if s.opts.MaxInflight > 0 && s.inflight.Load() >= int64(s.opts.MaxInflight) {
@@ -595,11 +620,41 @@ func (sess *session) open(f frame) {
 		return
 	}
 	call := newServerCall(sess, f, m)
+	call.e2e = sealed
 	sess.mu.Lock()
 	sess.calls[f.CallID] = call
 	sess.mu.Unlock()
 	s.inflight.Add(1)
 	go call.run()
+}
+
+// unseal opens an end-to-end sealed call.open. On a sealed tunnel a plain
+// call is refused here too, whatever the Router let through.
+func (sess *session) unseal(f frame) (*e2eCall, frame, *Error) {
+	if !sess.fromRouter {
+		return nil, f, nil
+	}
+	t := sess.server.tunnels.lookup(f.Metadata)
+	if f.E2ESession == "" {
+		if t != nil && t.Sealed {
+			return nil, f, detailed(CodePermissionDenied, "This tunnel carries end-to-end sealed calls only", "server", "tunnel_e2e_required", false)
+		}
+		return nil, f, nil
+	}
+	var session *e2eSession
+	if t != nil {
+		session = sess.server.tunnels.sessions.find(t.ID, f.E2ESession)
+	}
+	if session == nil {
+		return nil, f, detailed(CodeUnauthenticated, "Unknown end-to-end session; handshake again", "server", "e2e_session_unknown", false)
+	}
+	call := &e2eCall{session: session, service: f.Service, method: f.Method}
+	opened, err := call.openFrame(f)
+	if err != nil {
+		// The session is good; this frame was changed on the way.
+		return nil, f, detailed(CodeUnauthenticated, "Sealed frame rejected: "+err.Error(), "server", "e2e_frame_rejected", false)
+	}
+	return call, opened, nil
 }
 
 func (s *Server) access(f frame, status string, started time.Time) {
@@ -639,6 +694,8 @@ type serverCall struct {
 	outputSequence int64
 	outputClosed   bool
 	terminal       atomic.Bool
+
+	e2e *e2eCall // non-nil: the call is sealed end to end
 }
 
 func newServerCall(sess *session, f frame, m *method) *serverCall {
@@ -677,6 +734,9 @@ func (call *serverCall) intercept(ctx *Context, request any, handler ServerCallN
 
 func (call *serverCall) send(f frame) error {
 	f.CallID = call.open.CallID
+	if call.e2e != nil {
+		f = call.e2e.sealFrame(f)
+	}
 	err := call.sess.conn.send(f)
 	if e := frameTooLarge("server", err); e != nil {
 		return e
@@ -792,6 +852,16 @@ func (call *serverCall) cleanup() {
 }
 
 func (call *serverCall) receive(f frame) {
+	if call.e2e != nil && f.Kind == "stream.item" {
+		opened, err := call.e2e.openFrame(f)
+		if err != nil {
+			e := detailed(CodeUnauthenticated, "Sealed frame rejected: "+err.Error(), "server", "e2e_frame_rejected", false)
+			call.abort(e)
+			call.finish(frame{Kind: "call.error", Error: e.payload()}, CodeUnauthenticated)
+			return
+		}
+		f = opened
+	}
 	switch f.Kind {
 	case "call.cancel":
 		e := &Error{Code: CodeCancelled, Message: "Call was cancelled"}

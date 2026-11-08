@@ -2,6 +2,8 @@ package router
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -498,5 +500,94 @@ func TestBrowserWebSocketsFollowTheCORSAllowlist(t *testing.T) {
 		if resp != nil && resp.Body != nil {
 			resp.Body.Close()
 		}
+	}
+}
+
+func TestEndToEndTunnelRelaysSealedCallsOnly(t *testing.T) {
+	r := runningRouter(t, nil)
+	host, frames := tunnelHost(t, r, "box-a", "", true)
+	issuer := clientConn(t, r, "")
+	const key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" // 32 bytes
+	if got := call(t, issuer, "bad-key", TunnelService, "open", `{"instance_id":"box-a","principal":"p","ttl_seconds":60,
+		"scopes":[{"service":"test.v1.Echo","methods":["echo"]}],"e2e_key":"short"}`, nil); got.Error == nil || got.Error.Code != "invalid_argument" {
+		t.Fatalf("a malformed e2e_key: %+v", got)
+	}
+	offer, result := openTunnelVia(t, issuer, host, frames, `{"instance_id":"box-a","principal":"user:alice","ttl_seconds":60,
+		"scopes":[{"service":"test.v1.Echo","methods":["echo"]}],"e2e_key":"`+key+`"}`, true)
+	var offered, opened map[string]any
+	_ = json.Unmarshal(offer.Payload, &offered)
+	_ = json.Unmarshal(result.Payload, &opened)
+	if offered["e2e_key"] != key || opened["e2e_key"] != key {
+		t.Fatalf("the pinned key travels in the offer and the result: %s / %s", offer.Payload, result.Payload)
+	}
+	// The credential says it is end to end; the offer binds its digest, never the credential.
+	credential := opened["credential"].(string)
+	digest := sha256.Sum256([]byte(credential))
+	if !strings.HasPrefix(credential, "mtun_e2e.") || offered["credential_digest"] != hex.EncodeToString(digest[:]) || strings.Contains(string(offer.Payload), credential) {
+		t.Fatalf("an end-to-end credential and its offer: %s / %s", credential, offer.Payload)
+	}
+	plainOffer, plainResult := openTunnelVia(t, issuer, host, frames, `{"instance_id":"box-a","principal":"user:p","ttl_seconds":60,
+		"scopes":[{"service":"test.v1.Echo","methods":["echo"]}]}`, true)
+	if strings.Contains(string(plainResult.Payload), "mtun_e2e.") || strings.Contains(string(plainResult.Payload), "e2e.") || strings.Contains(string(plainOffer.Payload), "credential_digest") {
+		t.Fatalf("a plain tunnel: %s / %s", plainResult.Payload, plainOffer.Payload)
+	}
+	// The instance's end-to-end reason reaches the issuer.
+	data, _ := json.Marshal(map[string]any{"kind": "call.open", "call_id": "open-mismatch", "service": TunnelService, "method": "open",
+		"payload": json.RawMessage(`{"instance_id":"box-a","principal":"user:x","ttl_seconds":60,"scopes":[{"service":"test.v1.Echo","methods":["echo"]}],"e2e_key":"` + key + `"}`)})
+	if err := issuer.Write(context.Background(), websocket.MessageText, data); err != nil {
+		t.Fatal(err)
+	}
+	refusedOffer := next(t, frames)
+	send(t, host, frame{Kind: "call.result", CallID: refusedOffer.CallID, Payload: json.RawMessage(`{"accept":false,"reason":"e2e_key_mismatch"}`)})
+	if refused := receive(t, issuer); refused.Error == nil || refused.Error.Code != "permission_denied" || !strings.Contains(refused.Error.Message, "e2e_key") {
+		t.Fatalf("a refusal for a key mismatch: %+v", refused.Error)
+	}
+	client := clientConn(t, r, "Bearer "+credential)
+
+	// The handshake is routed to the target with the tunnel's identity.
+	openCall(t, client, "hs", TunnelHostService, "handshake", `{"message":"m1"}`, nil)
+	routed := next(t, frames)
+	var metadata map[string]string
+	_ = json.Unmarshal(routed.Metadata, &metadata)
+	if routed.Service != TunnelHostService || routed.Method != "handshake" || metadata[tunnelIDKey] != opened["tunnel_id"] {
+		t.Fatalf("handshake routing: %s", routed.raw)
+	}
+	send(t, host, frame{Kind: "call.result", CallID: "hs", Payload: json.RawMessage(`{"message":"m2"}`)})
+	if got := receive(t, client); got.Kind != "call.result" {
+		t.Fatalf("handshake answer: %+v", got)
+	}
+
+	// Plain calls are refused; sealed ones pass through untouched, and are
+	// never deduplicated.
+	if got := call(t, client, "plain", testService, "echo", `{"x":1}`, nil); errorReason(got) != "tunnel_e2e_required" {
+		t.Fatalf("a plain call on an E2E tunnel: %+v", got)
+	}
+	for _, id := range []string{"s1", "s2"} {
+		openCall(t, client, id, testService, "echo", `null`, map[string]any{"e2e_session": "abcd", "sealed": "c2VhbGVk", "idempotency_key": "k"})
+		routed = next(t, frames)
+		var fields map[string]any
+		_ = json.Unmarshal(routed.raw, &fields)
+		if routed.CallID != id || fields["sealed"] != "c2VhbGVk" || fields["e2e_session"] != "abcd" {
+			t.Fatalf("sealed call: %s", routed.raw)
+		}
+		send(t, host, frame{Kind: "call.result", CallID: id, Payload: json.RawMessage(`null`), Sealed: "cmVzdWx0"})
+		if got := receive(t, client); got.Kind != "call.result" || got.Sealed != "cmVzdWx0" {
+			t.Fatalf("sealed result: %s", got.raw)
+		}
+	}
+	// Other TunnelHost methods stay out of reach.
+	if got := call(t, client, "offer", TunnelHostService, "offer", `{}`, nil); got.Error == nil {
+		t.Fatalf("TunnelHost/offer from a tunnel: %+v", got)
+	}
+	request, _ := http.NewRequest(http.MethodPost, httpURL(r, "/v1/call/"+testService+"/echo"), strings.NewReader(`{}`))
+	request.Header.Set("Authorization", "Bearer "+opened["credential"].(string))
+	resp, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "tunnel_e2e_required") {
+		t.Fatalf("HTTP on an E2E tunnel: %d %s", resp.StatusCode, body)
 	}
 }

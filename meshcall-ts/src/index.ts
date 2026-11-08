@@ -119,6 +119,7 @@ export {
   type RouterIdentity,
   type RouterScope,
 } from "./router-auth.js";
+export { e2ePublicKey, generateE2EKey, type E2EKeyPair } from "./e2e.js";
 export { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 export {
   TunnelsClient,

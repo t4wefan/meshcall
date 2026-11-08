@@ -25,7 +25,7 @@ const Chat = z.object({ prefix: z.string().default("") }).meta({ id: "Chat" });
 const Text = z.object({ text: z.string() }).meta({ id: "Text" });
 const Size = z.object({ bytes: z.int() }).meta({ id: "Size" });
 const Drain = z.object({ delay_ms: z.int().default(0) }).meta({ id: "Drain" });
-const TunnelSeen = z.object({ tunnel_id: z.string().nullable(), principal: z.string().nullable() }).meta({ id: "TunnelSeen" });
+const TunnelSeen = z.object({ tunnel_id: z.string().nullable(), principal: z.string().nullable(), sealed: z.boolean() }).meta({ id: "TunnelSeen" });
 const ClosedTunnels = z.object({ closed: z.array(z.object({ tunnel_id: z.string(), reason: z.string() })) }).meta({ id: "ClosedTunnels" });
 
 const closedTunnels: Array<{ tunnel_id: string; reason: string }> = [];
@@ -111,7 +111,7 @@ class Fixture {
 
   @method({ description: "The tunnel this call arrived through (ctx.tunnel), or nulls.", readOnly: true, request: Empty, response: TunnelSeen })
   async tunnel_info(_: unknown, ctx: RpcContext) {
-    return { tunnel_id: ctx.tunnel?.id ?? null, principal: ctx.tunnel?.principal ?? null };
+    return { tunnel_id: ctx.tunnel?.id ?? null, principal: ctx.tunnel?.principal ?? null, sealed: ctx.tunnel?.sealed === true };
   }
 
   @method({ description: "Tunnels this instance was told have closed, in order.", readOnly: true, request: Empty, response: ClosedTunnels })
@@ -162,6 +162,16 @@ class Fixture {
   }
 }
 
+const Peek = z.object({ sealed: z.boolean() }).meta({ id: "Peek" });
+
+@service("conformance.v1.Vault", { description: "Served through end-to-end tunnels only (requireE2E)." })
+class Vault {
+  @method({ description: "Whether the call came through a sealed tunnel.", readOnly: true, request: Empty, response: Peek })
+  async peek(_: unknown, ctx: RpcContext) {
+    return { sealed: ctx.tunnel?.sealed === true };
+  }
+}
+
 @service("conformance.v1.Targeted", { description: "A targeted service: every call must name the instance it is for.", targeted: true })
 class Targeted {
   @method({ description: "Return the id of the instance that served the call.", readOnly: true, request: Empty, response: Instance })
@@ -172,12 +182,16 @@ class Targeted {
 
 const ping = Number(process.env.MESHCALL_PING_INTERVAL_MS ?? "15000");
 server = new MeshCallServer({
-  services: [new Fixture(), new Targeted()],
+  services: [new Fixture(), new Targeted(), new Vault()],
   router: { endpoint: routerEndpoint(process.env.MESHCALL_ROUTER_URL as string), instanceId: process.env.MESHCALL_CONFORMANCE_INSTANCE ?? "fixture-1" },
   pingIntervalMs: ping, pingTimeoutMs: Math.max(1000, ping * 2),
   ...(process.env.MESHCALL_MAX_FRAME_SIZE === undefined ? {} : { maxFrameSize: Number(process.env.MESHCALL_MAX_FRAME_SIZE) }),
   accessLog: false,
-  tunnelPolicies: new Map([["conformance.v1.Fixture", tunnelPolicy], ["conformance.v1.Targeted", tunnelPolicy]]),
+  tunnelPolicies: new Map([
+    ["conformance.v1.Fixture", tunnelPolicy], ["conformance.v1.Targeted", tunnelPolicy],
+    ["conformance.v1.Vault", { ...tunnelPolicy, requireE2E: true }],
+  ]),
+  e2ePrivateKey: process.env.MESHCALL_E2E_PRIVATE_KEY as string,
 });
 await server.start();
 process.stderr.write("fixture registered\n");

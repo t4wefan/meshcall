@@ -27,6 +27,7 @@ import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } fr
 // crypto/fs/path) into browser bundles.
 import type { IssuedToken, RegistryService, RouterIdentity, RouterScope } from "./router-auth.js";
 import { checkTunnelCredential, normalizeScopeService, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient } from "./tunnel.js";
+import { checkE2EAgreement, checkE2EKey } from "./e2e.js";
 import { WebSocketTransport } from "./web-socket.js";
 import { checkReceived } from "./validation.js";
 
@@ -36,6 +37,7 @@ export {
   MethodNotFoundError, PermissionDeniedError, ProtocolError, ResourceExhaustedError, UnauthenticatedError,
   UnavailableError, type Violation,
 } from "./errors.js";
+export { e2ePublicKey, generateE2EKey, type E2EKeyPair } from "./e2e.js";
 export type { MeshCallRpc, RpcDuplex, RpcStream } from "./rpc.js";
 export {
   TunnelsClient, type OpenedTunnel, type OpenTunnelRequest, type TunnelInfo, type TunnelScope,
@@ -203,6 +205,13 @@ export interface MeshWebOptions {
    * instance. Over `ws(s)://` it is sent in `hello`, never in the URL.
    */
   readonly tunnel?: string;
+  /**
+   * The instance public key the issuer pinned for this tunnel: every call is
+   * then sealed end to end, and the connection fails unless the instance
+   * proves it holds the matching private key. Take it from the issuer, never
+   * from the Router. Needs `tunnel` and a `ws://` or `wss://` Router.
+   */
+  readonly e2eKey?: string;
   /** WebSocket keepalive ping cadence; `null` disables. Default 15 s. */
   readonly pingIntervalMs?: number | null;
   /** Extra headers on every request. */
@@ -570,6 +579,19 @@ export class Mesh implements MeshCallRpc {
       throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
     }
     const bearer = options.tunnel !== undefined ? checkTunnelCredential(options.tunnel) : options.token;
+    if (options.e2eKey !== undefined || options.tunnel !== undefined) {
+      if (options.e2eKey !== undefined && options.tunnel === undefined) {
+        throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
+      }
+      // Refused here, before any payload goes towards the Router unsealed.
+      checkE2EAgreement(options.tunnel, options.e2eKey);
+    }
+    if (options.e2eKey !== undefined) {
+      if (router.isHttp) {
+        throw new TypeError("An end-to-end tunnel needs a ws:// or wss:// Router; HTTP calls cannot be sealed");
+      }
+      checkE2EKey(options.e2eKey);
+    }
     this.router = router;
     if (router.isHttp) {
       this.transport = new HttpTransport(router.url, { ...options, ...(bearer === undefined ? {} : { token: bearer }) });
@@ -584,6 +606,7 @@ export class Mesh implements MeshCallRpc {
         ...(options.deadlineGraceMs === undefined ? {} : { deadlineGraceMs: options.deadlineGraceMs }),
         ...(options.pingIntervalMs === undefined ? {} : { pingIntervalMs: options.pingIntervalMs }),
         ...(options.logger === undefined ? {} : { logger: options.logger }),
+        ...(options.e2eKey === undefined ? {} : { e2eKey: options.e2eKey }),
       });
     }
     this.registry = new RegistryClient(this);

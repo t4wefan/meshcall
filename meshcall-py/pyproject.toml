@@ -39,9 +39,13 @@ meshcall = "meshcall.launcher:main"
 otel = [
     "opentelemetry-api>=1.27",
 ]
+e2e = [
+    "cryptography>=44",
+]
 
 [dependency-groups]
 dev = [
+    "cryptography>=44",
     "opentelemetry-sdk>=1.27",
     "pyright>=1.1.411",
     "pytest>=8.3",

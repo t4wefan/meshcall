@@ -33,6 +33,7 @@ from meshcall.drivers.websocket import (
     WebSocketClientDriver,
     WebSocketRouterServerDriver,
 )
+from meshcall.e2e import check_private_key, check_public_key, is_e2e_credential
 from meshcall.errors import ContractError, DriverStateError
 from meshcall.logging import RpcLogger
 from meshcall.protocol import PROTOCOL_VERSION
@@ -501,6 +502,7 @@ class RunningServer:
         logger: RpcLogger | None = None,
         interceptors: Sequence[ServerInterceptor] = (),
         tunnel_policies: Mapping[str, TunnelPolicy] | None = None,
+        e2e_private_key: str | None = None,
     ) -> None:
         self.mesh = mesh
         self.router = mesh.router
@@ -527,6 +529,7 @@ class RunningServer:
             interceptors=interceptors,
             max_inflight=max_inflight,
             tunnel_policies=tunnel_policies,
+            e2e_private_key=e2e_private_key,
         )
         self._stopped = False
 
@@ -601,6 +604,7 @@ class _ServeHandle:
             logger=self._logger if self._logger is not None else self._mesh.logger,
             interceptors=self._mesh._server_interceptors,
             tunnel_policies=self._mesh._tunnel_policies,
+            e2e_private_key=self._mesh._e2e_private_key,
         )
         self._mesh._running_server = srv
         self._server = srv
@@ -673,6 +677,7 @@ class Mesh:
         token: str | None = None,
         credentials: RouterCredentials | None = None,
         tunnel: str | None = None,
+        e2e_key: str | None = None,
         headers: Mapping[str, str] | None = None,
         peer_id: str | None = None,
         ping_interval: float | None = DEFAULT_PING_INTERVAL,
@@ -709,6 +714,29 @@ class Mesh:
             if tunnel is not None
             else None
         )
+        if tunnel is not None and is_e2e_credential(tunnel) and e2e_key is None:
+            # Refused here, before any payload goes towards the Router unsealed.
+            raise ValueError(
+                "This is an end-to-end tunnel credential: pass the instance's "
+                "e2e_key the issuer gave you, Mesh(router, tunnel=..., e2e_key=...)"
+            )
+        if e2e_key is not None:
+            if tunnel is not None and not is_e2e_credential(tunnel):
+                raise ValueError(
+                    "e2e_key needs the credential of an end-to-end tunnel (mtun_e2e.…)"
+                )
+            if tunnel is None:
+                raise ValueError(
+                    "e2e_key seals the calls of a tunnel: pass tunnel= too"
+                )
+            if router._is_http:
+                raise ValueError(
+                    "An end-to-end tunnel needs a ws:// or wss:// Router; "
+                    "HTTP calls cannot be sealed"
+                )
+        #: The instance public key the issuer pinned: every call on the tunnel
+        #: is sealed end to end. Take it from the issuer, never the Router.
+        self.e2e_key = check_public_key(e2e_key) if e2e_key is not None else None
         self.headers = dict(headers or {})
         self.peer_id = peer_id
         self.ping_interval = ping_interval
@@ -727,6 +755,7 @@ class Mesh:
         self._instance_id: str | None = None
         self._max_inflight: int | None = None
         self._tunnel_policies: dict[str, TunnelPolicy] = {}
+        self._e2e_private_key: str | None = None
         self._server_interceptors: list[ServerInterceptor] = []
         self._running_server: RunningServer | None = None
         self._owns_local_router = False
@@ -786,6 +815,7 @@ class Mesh:
                     auth=self.credentials,
                     ping_interval=self.ping_interval,
                     ping_timeout=self.ping_timeout,
+                    e2e_key=self.e2e_key,
                 )
                 client = ClientBase(
                     driver,
@@ -872,8 +902,17 @@ class Mesh:
         strict: bool = False,
         accept_tunnels: bool | TunnelOfferHook = False,
         on_tunnel_closed: TunnelClosedHook | None = None,
+        e2e_private_key: str | None = None,
+        require_e2e: bool = False,
     ) -> Self:
         """Register one or more ``@service`` objects to be served by this Mesh.
+
+        ``e2e_private_key`` (``generate_e2e_key().private_key``) lets the
+        instance accept end-to-end sealed tunnels whose issuer pinned its
+        public key; configure it as stably as ``instance_id``.
+        ``require_e2e=True`` refuses plain tunnels for these services, so the
+        instance never serves them in clear through a tunnel (it needs
+        ``accept_tunnels`` and ``e2e_private_key``).
 
         ``accept_tunnels`` opts these services in to tunnels: ``True`` accepts
         every offer naming them, a callable ``(TunnelOffer) -> bool`` (sync or
@@ -890,6 +929,8 @@ class Mesh:
             )
         if on_tunnel_closed is not None and accept_tunnels is False:
             raise ValueError("on_tunnel_closed needs accept_tunnels")
+        if require_e2e and accept_tunnels is False:
+            raise ValueError("require_e2e needs accept_tunnels")
         if self.router._is_http:
             raise ContractError(
                 "Cannot mount or serve services over an HTTP(S) Router URL; "
@@ -906,12 +947,14 @@ class Mesh:
             _check_strict_services(services)
         self._mounted_services.extend(services)
         if accept_tunnels is not False:
-            policy = TunnelPolicy(accept_tunnels, on_tunnel_closed)
+            policy = TunnelPolicy(accept_tunnels, on_tunnel_closed, require_e2e)
             for svc in services:
                 svc_type = svc if inspect.isclass(svc) else type(svc)
                 self._tunnel_policies[get_service_contract(svc_type).name] = policy
         if instance_id is not None:
             self._instance_id = instance_id
+        if e2e_private_key is not None:
+            self._e2e_private_key = check_private_key(e2e_private_key)
         if max_inflight is not None:
             self._max_inflight = max_inflight
         if interceptors:

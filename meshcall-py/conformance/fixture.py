@@ -60,6 +60,7 @@ class Text(BaseModel):
 class TunnelSeen(BaseModel):
     tunnel_id: str | None
     principal: str | None
+    sealed: bool
 
 
 class ClosedTunnel(BaseModel):
@@ -69,6 +70,20 @@ class ClosedTunnel(BaseModel):
 
 class ClosedTunnels(BaseModel):
     closed: list[ClosedTunnel]
+
+
+class Peek(BaseModel):
+    sealed: bool
+
+
+@service("conformance.v1.Vault")
+class Vault:
+    """Served through end-to-end tunnels only (require_e2e)."""
+
+    @method(read_only=True)
+    async def peek(self, ctx: RpcContext) -> Peek:
+        """Whether the call came through a sealed tunnel."""
+        return Peek(sealed=ctx.tunnel is not None and ctx.tunnel.sealed)
 
 
 @service("conformance.v1.Targeted", targeted=True)
@@ -104,6 +119,7 @@ class Fixture:
         return TunnelSeen(
             tunnel_id=tunnel.id if tunnel else None,
             principal=tunnel.principal if tunnel else None,
+            sealed=tunnel.sealed if tunnel else False,
         )
 
     @method(read_only=True)
@@ -238,10 +254,17 @@ async def main() -> None:
         driver = WebSocketRouterServerDriver(url, **options)
     policy = TunnelPolicy(fixture.accept_tunnel, fixture.tunnel_closed)
     server = RpcServer(
-        services=[fixture, Targeted],
+        services=[fixture, Targeted, Vault],
         driver=driver,
         access_log=False,
-        tunnel_policies={"conformance.v1.Fixture": policy, "conformance.v1.Targeted": policy},
+        tunnel_policies={
+            "conformance.v1.Fixture": policy,
+            "conformance.v1.Targeted": policy,
+            "conformance.v1.Vault": TunnelPolicy(
+                fixture.accept_tunnel, fixture.tunnel_closed, require_e2e=True
+            ),
+        },
+        e2e_private_key=os.environ["MESHCALL_E2E_PRIVATE_KEY"],
     )
     fixture.server = server
     await server.start()

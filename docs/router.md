@@ -540,6 +540,28 @@ on every call. The credential's TTL (1–86400 s) bounds new connections only;
 tokens: a Router restart loses them, and the instance is offered its tunnels
 again when it reconnects. In development mode anyone may open tunnels.
 
+`open` with `e2e_key` (the instance's X25519 public key, which the issuer
+knows from provisioning it) makes an end-to-end tunnel: the instance must
+hold the matching private key (Python `mount(..., e2e_private_key=…)`,
+TypeScript `{ e2ePrivateKey }`, Go `meshcall.WithE2EPrivateKey(priv)`) or it
+refuses the offer, and the client pins the same key (`e2e_key=` /
+`{ e2eKey }` / `meshcall.WithE2EKey(pub)`). The Router then relays sealed
+payloads, metadata and error messages it cannot read; it still routes,
+enforces scopes, deadlines and flow control, and sees methods, sizes, timing
+and error codes. Its credential starts with `mtun_e2e.`, so clients
+without the key refuse before sending anything, and its offer carries
+`credential_digest` (the SHA-256 of the credential, never the credential),
+which binds every handshake to that tunnel. The Router refuses unsealed calls
+on such a tunnel, HTTP ones included (`permission_denied` /
+`tunnel_e2e_required`), answers its own services (`AuthService`, `Registry`)
+in clear, routes the `meshcall.router.v1.TunnelHost/handshake` call to the
+target, and never deduplicates sealed calls. When the instance refuses for an
+end-to-end reason (`e2e_key_mismatch`, or `e2e_required` from an instance
+mounted with `require_e2e`), the issuer's `tunnel_rejected` message says so,
+and a refused re-offer after a key change closes the tunnel as `key_changed`.
+`list` and `whoami` show the pinned `e2e_key`.
+See [the protocol](protocol.md#end-to-end-encryption).
+
 ## Connecting services
 
 Python:

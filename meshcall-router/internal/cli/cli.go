@@ -617,7 +617,9 @@ func emitTerminal(f wire.Frame, c CallOptions, w io.Writer, hints callHints) err
 			}
 		case "permission_denied":
 			hint = "the account lacks a call permission for this method"
-			if _, _, _, details := wire.Error(f); details["reason"] == "tunnel_scope" {
+			if _, _, _, details := wire.Error(f); details["reason"] == "tunnel_e2e_required" {
+				hint = "this tunnel is end to end: only calls sealed with its e2e_key pass, which the meshcall CLI cannot send"
+			} else if details["reason"] == "tunnel_scope" {
 				hint = fmt.Sprintf("this tunnel reaches only instance %v and the methods it was opened for; omit --instance or pass --instance %v, and `meshcall router inspect` lists what it allows", details["instance_id"], details["instance_id"])
 			}
 		case "internal":

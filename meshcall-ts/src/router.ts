@@ -32,6 +32,7 @@ import {
   checkTunnelCredential, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient,
   type TunnelClosedHook, type TunnelOfferHook, type TunnelPolicy,
 } from "./tunnel.js";
+import { checkE2EAgreement, checkE2EKey, checkE2EPrivateKey } from "./e2e.js";
 import {
   AuthClient,
   DEFAULT_ROUTER_URL,
@@ -448,6 +449,13 @@ export interface MeshOptions {
    * reaches only the tunnel's instance and cannot mount services.
    */
   readonly tunnel?: string;
+  /**
+   * The instance public key the issuer pinned for this tunnel (`e2eKey` of
+   * `tunnels.open`): every call is then sealed end to end, and the connection
+   * fails unless the instance proves it holds the matching private key. Take
+   * it from the issuer, never from the Router. Needs `tunnel` and a WebSocket Router.
+   */
+  readonly e2eKey?: string;
   /** Extra HTTP headers when connecting to an HTTP(S) Router. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Custom `fetch` implementation when connecting to an HTTP(S) Router. */
@@ -476,6 +484,12 @@ export interface ServeOptions {
   readonly interceptors?: ReadonlyArray<ServerInterceptor>;
   readonly handshakeTimeoutMs?: number;
   readonly idleTimeoutMs?: number | null;
+  /**
+   * This instance's E2E private key (`generateE2EKey().privateKey`): it can
+   * then accept end-to-end sealed tunnels whose issuer pinned its public key.
+   * Configure it as stably as `instanceId`.
+   */
+  readonly e2ePrivateKey?: string;
 }
 
 export interface MountOptions extends ServeOptions {
@@ -487,6 +501,11 @@ export interface MountOptions extends ServeOptions {
   readonly acceptTunnels?: boolean | TunnelOfferHook;
   /** Told when a tunnel these services accepted ends. */
   readonly onTunnelClosed?: TunnelClosedHook;
+  /**
+   * Refuse plain tunnels for these services, so the instance never serves
+   * them in clear through a tunnel; needs `acceptTunnels` and `e2ePrivateKey`.
+   */
+  readonly requireE2E?: boolean;
 }
 
 export class RunningServer {
@@ -582,6 +601,19 @@ export class Mesh implements MeshCallRpc {
     if (bearer?.startsWith(TUNNEL_CREDENTIAL_PREFIX) === true) {
       throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
     }
+    if (options.e2eKey !== undefined || options.tunnel !== undefined) {
+      if (options.e2eKey !== undefined && options.tunnel === undefined) {
+        throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
+      }
+      // Refused here, before any payload goes towards the Router unsealed.
+      checkE2EAgreement(options.tunnel, options.e2eKey);
+    }
+    if (options.e2eKey !== undefined) {
+      if (router.isHttp) {
+        throw new TypeError("An end-to-end tunnel needs a ws:// or wss:// Router; HTTP calls cannot be sealed");
+      }
+      checkE2EKey(options.e2eKey);
+    }
     this.router = router;
     this.options = options;
     this.credentials = options.credentials ?? (options.token !== undefined
@@ -655,6 +687,7 @@ export class Mesh implements MeshCallRpc {
           ...(this.options.interceptors === undefined ? {} : { interceptors: this.options.interceptors }),
           ...(this.options.retry === undefined ? {} : { retry: this.options.retry }),
           ...(this.options.logger === undefined ? {} : { logger: this.options.logger }),
+          ...(this.options.e2eKey === undefined ? {} : { e2eKey: this.options.e2eKey }),
         };
         this.transport = new MeshCallClient(this.router.endpoints, this.options.peerId, clientOptions);
       }
@@ -708,7 +741,7 @@ export class Mesh implements MeshCallRpc {
       throw new Error("Cannot mount services while Mesh is already serving");
     }
     const { services, options: mountOptions } = splitServicesAndOptions(args);
-    const { acceptTunnels, onTunnelClosed, ...options } = mountOptions as MountOptions;
+    const { acceptTunnels, onTunnelClosed, requireE2E, ...options } = mountOptions as MountOptions;
     for (const svc of services) {
       if (!isService(svc)) {
         throw new TypeError("mount() requires @service instances");
@@ -717,10 +750,17 @@ export class Mesh implements MeshCallRpc {
     if (onTunnelClosed !== undefined && (acceptTunnels === undefined || acceptTunnels === false)) {
       throw new TypeError("onTunnelClosed needs acceptTunnels");
     }
+    if (requireE2E === true && (acceptTunnels === undefined || acceptTunnels === false)) {
+      throw new TypeError("requireE2E needs acceptTunnels");
+    }
     this.mountedServices.push(...services);
     this.mountOptions = { ...this.mountOptions, ...options };
     if (acceptTunnels !== undefined && acceptTunnels !== false) {
-      const policy: TunnelPolicy = { accept: acceptTunnels, ...(onTunnelClosed === undefined ? {} : { onClosed: onTunnelClosed }) };
+      const policy: TunnelPolicy = {
+        accept: acceptTunnels,
+        ...(onTunnelClosed === undefined ? {} : { onClosed: onTunnelClosed }),
+        ...(requireE2E === true ? { requireE2E: true } : {}),
+      };
       for (const svc of services) this.tunnelPolicies.set(bindService(svc).definition.name, policy);
     }
     return this;
@@ -779,6 +819,7 @@ export class Mesh implements MeshCallRpc {
           : {}),
       ...(merged.interceptors === undefined ? {} : { interceptors: merged.interceptors }),
       tunnelPolicies: this.tunnelPolicies,
+      ...(merged.e2ePrivateKey === undefined ? {} : { e2ePrivateKey: checkE2EPrivateKey(merged.e2ePrivateKey) }),
     };
 
     const server = new MeshCallServer(serverOptions);

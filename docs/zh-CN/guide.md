@@ -1015,6 +1015,26 @@ await box.whoami({ instance: instanceId });   // 定向客户端仍然要写出�
 
 `targeted` 服务的生成客户端在隧道上同样要求 `instance`：传入隧道的 `instance_id`。Router 会校验它（不符时返回 `permission_denied` / `tunnel_scope`，并给出正确的 id），而普通 `Mesh` 保留编译期检查。TypeScript 使用 `{ tunnel }` / `acceptTunnels` / `onTunnelClosed`，Go 使用 `meshcall.WithTunnel(cred)` / `meshcall.WithAcceptTunnels(decide)` / `meshcall.WithTunnelClosed(fn)` 与 `ctx.Tunnel`。CLI：`meshcall --tunnel mtun_… call dev.v1.Workspace.whoami '{}'`；`meshcall router inspect` 列出你开启的隧道，但从不显示凭据。
 
+#### 端到端密封隧道
+
+当 Router 不应读取隧道里的内容（由他人运营的中继、某个人的终端会话）时，用 `e2e_key` 开启隧道：此后每个 payload、元数据项与错误消息都在客户端与实例之间密封（`Noise_NK_25519_AESGCM_SHA256`）。Router 仍负责路由、校验 scope 与超时，能看到服务、方法、大小、时间与错误码。签发方固定实例的公钥——它部署了实例，所以知道这个公钥——并与凭据一起交给客户端；客户端从不从 Router 获取公钥，因此中间人无法完成握手，也不存在回退到明文的情况。
+
+```python
+keys = generate_e2e_key()            # 部署时生成一次：private_key 留在实例上
+mesh.mount(Workspace(), instance_id="box-a", accept_tunnels=allow,
+           e2e_private_key=keys.private_key, require_e2e=True)   # 绝不通过隧道以明文提供
+
+opened = await control.tunnels.open(instance="box-a", scopes=["dev.v1.Workspace"],
+                                    principal="user:alice", e2e_key=keys.public_key)
+# 把 opened.credential 与 keys.public_key 交给客户端。
+```
+
+```typescript
+const mesh = new Mesh(new Router("wss://relay.example"), { tunnel: credential, e2eKey: publicKey });
+```
+
+通过它的调用与普通调用写法相同；服务可从 `ctx.tunnel.sealed`（Go `ctx.Tunnel.Sealed`）得知。端到端隧道的凭据以 `mtun_e2e.` 开头：给 `Mesh` 这样的凭据却不给 `e2e_key`（或给了公钥却配普通凭据），它会在连接之前就拒绝，因此不会因配置疏忽把明文发出去。每个会话都绑定到客户端所持凭据对应的隧道，持有另一个凭据的中继无法让这些调用以别的 principal 执行。对 Router 自身服务的调用（`mesh.auth`、`mesh.registry`）保持明文。在端到端隧道上，Router 拒绝明文调用和所有 HTTP 调用（`permission_denied` / `tunnel_e2e_required`）；实例拒绝固定了它不持有的公钥的 offer，开启 `require_e2e` 时还拒绝所有明文 offer（`tunnel_rejected`，消息中说明原因）；固定了错误公钥的客户端无法连接（`unauthenticated` / `e2e_handshake_failed`）。实例重连后会丢失会话：无论调用形状，客户端只会收到一次 `e2e_session_unknown`，在下一次调用前重新握手，一元调用会自动重试一次。途中被篡改的帧只结束它所属的调用（`e2e_frame_rejected`）。Python 需要 `meshcall[e2e]` 扩展（`cryptography`）；TypeScript 在 Node 与浏览器（安全上下文）中使用 WebCrypto；Go 只用标准库：`meshcall.GenerateE2EKey()`，服务端用 `meshcall.WithE2EPrivateKey(priv)`，客户端在 `WithTunnel` 旁加 `meshcall.WithE2EKey(pub)`，挂载时用 `meshcall.WithRequireE2E()`，签发用 `OpenTunnelRequest.E2EKey`。TypeScript 挂载时用 `{ e2ePrivateKey, requireE2E: true }`。`meshcall` CLI 不会密封调用，因此不能通过端到端隧道调用。
+
 ---
 
 ## 9. 拦截器（Interceptors）、元数据（Metadata）与结构化错误处理

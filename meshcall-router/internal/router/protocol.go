@@ -65,6 +65,10 @@ type frame struct {
 	Sequence     *int64          `json:"sequence,omitempty"`
 	Credit       *int64          `json:"credit,omitempty"`
 	Nonce        string          `json:"nonce,omitempty"`
+	// E2ESession and Sealed carry an end-to-end sealed call's session and
+	// contents; the Router only checks they are present on an E2E tunnel.
+	E2ESession string `json:"e2e_session,omitempty"`
+	Sealed     string `json:"sealed,omitempty"`
 	// Authorization on hello carries credentials for peers that cannot set
 	// the upgrade's Authorization header (browsers); same value format.
 	Authorization string `json:"authorization,omitempty"`

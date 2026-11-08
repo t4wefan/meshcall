@@ -27,9 +27,27 @@ from meshcall.drivers.local import (
     pipe_connect,
     pipe_serve,
 )
-from meshcall.errors import DriverStateError, MeshCallError, ProtocolError
+from meshcall.e2e import (
+    NKInitiator,
+    Session,
+    b64decode,
+    b64encode,
+    handshake_failed,
+    is_e2e_credential,
+    load_public_key,
+    tunnel_prologue,
+)
+from meshcall.errors import (
+    DriverStateError,
+    MeshCallError,
+    ProtocolError,
+    UnauthenticatedError,
+)
 from meshcall.protocol import (
     PROTOCOL_VERSION,
+    CallErrorFrame,
+    CallOpenFrame,
+    CallResultFrame,
     HelloAckFrame,
     HelloFrame,
     ServerDrainFrame,
@@ -43,7 +61,7 @@ from meshcall.transport import (
     PeerClosedError,
     handshake_error,
 )
-from meshcall.tunnel import TUNNEL_CAPABILITY
+from meshcall.tunnel import TUNNEL_CAPABILITY, TUNNEL_HOST_SERVICE
 
 if TYPE_CHECKING:
     from meshcall.server import ServerRuntime
@@ -84,7 +102,20 @@ class WebSocketClientDriver(ClientDriver):
         auth: RouterCredentials | None = None,
         ping_interval: float | None = DEFAULT_PING_INTERVAL,
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
+        e2e_key: str | None = None,
     ) -> None:
+        #: Pinned instance public key: handshake on every connection and seal.
+        self.e2e_key = e2e_key
+        bearer = auth.token if auth is not None else None
+        if bearer is not None and is_e2e_credential(bearer) and e2e_key is None:
+            raise ValueError(
+                "This is an end-to-end tunnel credential: pass the instance's "
+                "e2e_key the issuer gave you"
+            )
+        if e2e_key is not None and (bearer is None or not is_e2e_credential(bearer)):
+            raise ValueError(
+                "e2e_key needs the credential of an end-to-end tunnel (mtun_e2e.…)"
+            )
         self.unix_path, self.pipe = _local_endpoint(uri, unix_path, pipe)
         self.uris: tuple[str, ...] = (
             () if uri is None else ((uri,) if isinstance(uri, str) else tuple(uri))
@@ -148,6 +179,11 @@ class WebSocketClientDriver(ClientDriver):
                 raise ProtocolError("Expected hello.ack from WebSocket endpoint")
             if response.protocol != PROTOCOL_VERSION:
                 raise ProtocolError(f"Unsupported protocol: {response.protocol}")
+            if self.e2e_key is not None:
+                assert self.auth is not None and self.auth.token is not None
+                connection.e2e = await _e2e_handshake(
+                    connection, self.e2e_key, tunnel_prologue(self.auth.token)
+                )
         except PeerClosedError as exc:
             await connection.close()
             raise exc.error from exc
@@ -522,6 +558,47 @@ class _RouterLink:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+
+async def _e2e_handshake(
+    connection: FrameConnection, pinned: str, prologue: bytes
+) -> Session:
+    """Noise NK with the pinned instance key, bound to this tunnel's
+    credential, before any call; never falls back to plain calls
+    (docs/protocol.md → End-to-end encryption)."""
+    initiator = NKInitiator(load_public_key(pinned), prologue=prologue)
+    call_id = uuid.uuid4().hex
+    await connection.send(
+        CallOpenFrame(
+            call_id=call_id,
+            service=TUNNEL_HOST_SERVICE,
+            method="handshake",
+            payload={"message": b64encode(initiator.write_message_1())},
+            timeout_ms=10_000,
+        )
+    )
+    while True:
+        frame = await connection.receive()
+        if getattr(frame, "call_id", None) != call_id:
+            continue
+        if isinstance(frame, CallErrorFrame):
+            details = frame.error.details or {}
+            if details.get("reason") == "e2e_handshake_failed":
+                # The instance's own answer: it could not open message 1.
+                raise UnauthenticatedError(frame.error.message, details=details)
+            raise handshake_failed(
+                f"{frame.error.code}: {frame.error.message}", "client"
+            )
+        if not isinstance(frame, CallResultFrame):
+            continue
+        try:
+            message = b64decode(str((frame.payload or {}).get("message", "")))
+            _, session = initiator.read_message_2(message)
+        except Exception as exc:
+            raise handshake_failed(
+                "message 2 is not from the pinned instance key", "client"
+            ) from exc
+        return session
 
 
 async def _connect_endpoint(**options: Any) -> ClientConnection:

@@ -30,6 +30,34 @@ matching `meshcall-go/vX.Y.Z` tag.
   bounds new connections only, `revoke` closes connections at once, and a
   reconnecting instance is offered its tunnels again. New error reasons:
   `tunnel_rejected`, `tunnel_scope`, `instance_offline`.
+- **End-to-end sealed tunnels** (#63). `tunnels.open(..., e2e_key=…)` pins
+  the instance's X25519 public key, which the issuer knows from provisioning
+  it; the instance holds the private key (`mount(..., e2e_private_key=…)`,
+  TypeScript `{ e2ePrivateKey }`, Go `WithE2EPrivateKey`; keys from
+  `generate_e2e_key()` / `generateE2EKey()` / `GenerateE2EKey()`) and refuses
+  offers pinning another key. A client given the same key
+  (`Mesh(router, tunnel=…, e2e_key=…)`, `{ tunnel, e2eKey }` in Node and
+  `meshcall/web`, Go `WithE2EKey`) runs a `Noise_NK_25519_AESGCM_SHA256`
+  handshake with the instance through `meshcall.router.v1.TunnelHost/handshake`
+  and then seals every payload, metadata entry and error message in a new
+  `sealed` frame field; the Router routes on the clear header, cannot read
+  the content and refuses plain and HTTP calls on such a tunnel. A key the
+  client never got from the Router means no man in the middle and no
+  plaintext fallback. Each handshake is bound to the tunnel whose credential
+  the client holds (the prologue carries the credential's SHA-256, which the
+  Router passes to the instance as `credential_digest`), so a relay holding
+  another credential cannot move a client's session to another tunnel. E2E
+  credentials start with `mtun_e2e.`: a Mesh given one without the key, or a
+  key with a plain credential, refuses before connecting. `require_e2e=True`
+  at mount (`requireE2E`, `WithRequireE2E()`) refuses plain tunnels for those
+  services; the issuer's `tunnel_rejected` says why. Calls to the Router's own
+  services stay clear on E2E connections. Services see `ctx.tunnel.sealed`.
+  New error reasons: `tunnel_e2e_required`, `e2e_handshake_failed`,
+  `e2e_session_unknown` (the client handshakes again for any call shape),
+  `e2e_frame_rejected` (a frame altered on the way; the session stays).
+  Python needs the new `meshcall[e2e]` extra (`cryptography`); TypeScript
+  uses WebCrypto; Go the standard library. The conformance suite checks it
+  against every runtime with its own Noise implementation.
 - **Instance-bound registration credentials**: `instance_ids` on accounts, API
   keys and token scopes (`RouterScope(instance_ids=[…])`) restricts the ids a
   credential may register under.
