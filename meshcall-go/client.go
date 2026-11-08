@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -201,6 +202,15 @@ func NewClient(opts ClientOptions, endpoints ...string) (*Client, error) {
 	}
 	if c.opts.PingTimeout == 0 {
 		c.opts.PingTimeout = DefaultPingTimeout
+	}
+	// A credential and the key must agree before anything is sent: an
+	// end-to-end tunnel never sees an unsealed payload by mistake.
+	credential := strings.TrimPrefix(c.opts.Authorization, "Bearer ")
+	switch {
+	case isE2ECredential(credential) && c.opts.E2EKey == "":
+		return nil, errors.New("meshcall: this is an end-to-end tunnel credential: pass the instance's e2e key the issuer gave you (WithE2EKey)")
+	case c.opts.E2EKey != "" && !isE2ECredential(credential):
+		return nil, errors.New("meshcall: an e2e key needs the credential of an end-to-end tunnel (mtun_e2e.…)")
 	}
 	if c.opts.HandshakeTimeout == 0 {
 		c.opts.HandshakeTimeout = 10 * time.Second
@@ -406,7 +416,9 @@ func (c *Client) e2eHandshake(conn *conn) (*e2eSession, error) {
 	if err != nil {
 		return nil, failed(err.Error())
 	}
-	initiator, msg1, err := nkInitiate(pinned, nil, []byte(e2ePrologue), nil)
+	// The prologue binds the session to this credential's tunnel.
+	prologue := e2eTunnelPrologue(e2eCredentialDigest(strings.TrimPrefix(c.opts.Authorization, "Bearer ")))
+	initiator, msg1, err := nkInitiate(pinned, nil, prologue, nil)
 	if err != nil {
 		return nil, failed(err.Error())
 	}
@@ -561,7 +573,8 @@ func (c *Client) open(ctx context.Context, info *CallInfo, payload json.RawMessa
 	if len(o.Metadata) > 0 {
 		open.Metadata = o.Metadata
 	}
-	if conn.e2e != nil {
+	// The Router answers its own services itself: those calls stay clear.
+	if conn.e2e != nil && !strings.HasPrefix(info.Service, routerServicePrefix) {
 		call.e2e = &e2eCall{session: conn.e2e, service: info.Service, method: info.Method}
 	}
 	if timeout > 0 {
@@ -603,6 +616,17 @@ func (c *Client) open(ctx context.Context, info *CallInfo, payload json.RawMessa
 	return call, nil
 }
 
+// dropConn retires a connection whose end-to-end session is stale; the next
+// call connects and handshakes again.
+func (c *Client) dropConn(conn *conn) {
+	c.mu.Lock()
+	if c.conn == conn {
+		c.conn = nil
+	}
+	c.mu.Unlock()
+	conn.close()
+}
+
 func (c *Client) grace(timeout time.Duration) time.Duration {
 	if c.opts.DeadlineGrace > 0 {
 		return c.opts.DeadlineGrace
@@ -614,11 +638,17 @@ func (call *clientCall) deliver(f frame) {
 	if call.e2e != nil {
 		opened, err := call.e2e.openFrame(f)
 		if err != nil {
-			// A frame the instance did not seal: not from the other end.
-			call.fail(detailed(CodeProtocolError, "Sealed call: "+err.Error(), "client", "e2e_open_failed", false))
+			// A frame the instance did not seal: not from the other end. The
+			// session stays; only this call ends.
+			call.abort(detailed(CodeUnauthenticated, "Sealed frame rejected: "+err.Error(), "client", "e2e_frame_rejected", false), "e2e_frame_rejected")
 			return
 		}
 		f = opened
+		if f.Kind == "call.error" && f.Error != nil && f.Error.Details["reason"] == "e2e_session_unknown" {
+			// The instance lost the session: whatever the call shape, the
+			// next call handshakes again on a new connection.
+			go call.client.dropConn(call.conn)
+		}
 	}
 	switch f.Kind {
 	case "stream.window":
@@ -945,12 +975,7 @@ func (c *Client) unaryRaw(ctx context.Context, service, method string, payload j
 			if e, ok := AsError(err); ok && e.Reason() == "e2e_session_unknown" && attempt == 0 {
 				// The instance lost the session (it reconnected): the call
 				// never ran. Handshake again on a new connection and retry.
-				c.mu.Lock()
-				if c.conn == call.conn {
-					c.conn = nil
-				}
-				c.mu.Unlock()
-				call.conn.close()
+				c.dropConn(call.conn)
 				continue
 			}
 			info.Trailers = terminal

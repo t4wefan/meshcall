@@ -902,7 +902,13 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 		checkTunnelCredential(cfg.tunnel)
 		authHeader = BearerToken(cfg.tunnel)
 	}
+	if cfg.tunnel != "" && isE2ECredential(cfg.tunnel) && cfg.e2eKey == "" {
+		panic("meshcall: this is an end-to-end tunnel credential: pass the instance's e2e key the issuer gave you with WithE2EKey")
+	}
 	if cfg.e2eKey != "" {
+		if cfg.tunnel != "" && !isE2ECredential(cfg.tunnel) {
+			panic("meshcall: WithE2EKey needs the credential of an end-to-end tunnel (mtun_e2e.…)")
+		}
 		if cfg.tunnel == "" {
 			panic("meshcall: WithE2EKey seals the calls of a tunnel: pass WithTunnel too")
 		}
@@ -1279,7 +1285,7 @@ func (m *Mesh) Mount(args ...any) *Mesh {
 		}
 	}
 	if mount.tunnels != nil && mount.tunnels.Accept == nil {
-		panic("meshcall: WithTunnelClosed needs WithAcceptTunnels in the same Mount call")
+		panic("meshcall: WithTunnelClosed and WithRequireE2E need WithAcceptTunnels in the same Mount call")
 	}
 	for _, arg := range args {
 		switch v := arg.(type) {

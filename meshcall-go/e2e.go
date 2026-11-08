@@ -268,6 +268,26 @@ func newE2ESession(h [32]byte, send, recv [32]byte) *e2eSession {
 }
 
 // e2eAD is the associated data binding a sealed part to its frame.
+// e2eTunnelPrologue binds a handshake to one tunnel: the hex SHA-256 of its
+// credential, which the client hashes itself and the instance learns from
+// the offer.
+func e2eTunnelPrologue(credentialDigest string) []byte {
+	return []byte(e2ePrologue + "|" + credentialDigest)
+}
+
+func e2eCredentialDigest(credential string) string {
+	sum := sha256.Sum256([]byte(credential))
+	return hex.EncodeToString(sum[:])
+}
+
+// routerServicePrefix: the Router answers these services itself, so calls
+// to them are never sealed.
+const routerServicePrefix = "meshcall.router."
+
+// isE2ECredential: end-to-end tunnel credentials say so ("." never occurs
+// in a plain one).
+func isE2ECredential(credential string) bool { return strings.HasPrefix(credential, "mtun_e2e.") }
+
 func e2eAD(kind, callID, service, method, direction string, sequence *int64, session string) []byte {
 	seq := ""
 	if sequence != nil {

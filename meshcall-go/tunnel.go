@@ -101,6 +101,9 @@ type TunnelClosed struct {
 type TunnelPolicy struct {
 	Accept   func(context.Context, TunnelOffer) bool
 	OnClosed func(context.Context, TunnelClosed)
+	// RequireE2E refuses offers without an e2e_key that scope these
+	// services, so they are never served in clear through a tunnel.
+	RequireE2E bool
 }
 
 // MountOption configures the services of one Mesh.Mount call only.
@@ -135,6 +138,18 @@ func WithTunnelClosed(fn func(context.Context, TunnelClosed)) MountOption {
 			c.tunnels = &TunnelPolicy{}
 		}
 		c.tunnels.OnClosed = fn
+	})
+}
+
+// WithRequireE2E makes the services of this Mount call accept end-to-end
+// tunnels only (offers without e2e_key are refused); it needs
+// WithAcceptTunnels and WithE2EPrivateKey.
+func WithRequireE2E() MountOption {
+	return mountOptFunc(func(c *mountConfig) {
+		if c.tunnels == nil {
+			c.tunnels = &TunnelPolicy{}
+		}
+		c.tunnels.RequireE2E = true
 	})
 }
 
@@ -214,12 +229,13 @@ type tunnelHost struct {
 	policies map[string]*TunnelPolicy
 	mu       sync.Mutex
 	tunnels  map[string]*Tunnel
-	key      *ecdh.PrivateKey // nil: no end-to-end tunnels
+	digests  map[string]string // tunnel id → credential digest, for E2E tunnels
+	key      *ecdh.PrivateKey  // nil: no end-to-end tunnels
 	sessions e2eSessions
 }
 
 func newTunnelHost(policies map[string]*TunnelPolicy) *tunnelHost {
-	return &tunnelHost{policies: policies, tunnels: map[string]*Tunnel{}}
+	return &tunnelHost{policies: policies, tunnels: map[string]*Tunnel{}, digests: map[string]string{}}
 }
 
 func (h *tunnelHost) enabled() bool { return len(h.policies) > 0 }
@@ -244,14 +260,27 @@ func (h *tunnelHost) handle(ctx context.Context, method string, payload json.Raw
 	switch method {
 	case "offer":
 		var offer TunnelOffer
+		var binding struct {
+			CredentialDigest string `json:"credential_digest"`
+		}
 		if err := json.Unmarshal(payload, &offer); err != nil || offer.TunnelID == "" {
 			return nil, errors.New("invalid tunnel offer")
 		}
+		_ = json.Unmarshal(payload, &binding)
 		// An E2E tunnel pins a key: only the instance that holds it may accept.
-		accept := (offer.E2EKey == "" || h.ownKey(offer.E2EKey)) && h.decide(ctx, offer)
+		if offer.E2EKey != "" && (!h.ownKey(offer.E2EKey) || binding.CredentialDigest == "") {
+			return map[string]any{"accept": false, "reason": "e2e_key_mismatch"}, nil
+		}
+		if offer.E2EKey == "" && h.requiresE2E(offer) {
+			return map[string]any{"accept": false, "reason": "e2e_required"}, nil
+		}
+		accept := h.decide(ctx, offer)
 		if accept {
 			h.mu.Lock()
 			h.tunnels[offer.TunnelID] = &Tunnel{ID: offer.TunnelID, Principal: offer.Principal, Scopes: offer.Scopes, Sealed: offer.E2EKey != ""}
+			if offer.E2EKey != "" {
+				h.digests[offer.TunnelID] = binding.CredentialDigest
+			}
 			h.mu.Unlock()
 		}
 		return map[string]bool{"accept": accept}, nil
@@ -266,6 +295,7 @@ func (h *tunnelHost) handle(ctx context.Context, method string, payload json.Raw
 		h.mu.Lock()
 		t := h.tunnels[closed.TunnelID]
 		delete(h.tunnels, closed.TunnelID)
+		delete(h.digests, closed.TunnelID)
 		h.mu.Unlock()
 		h.sessions.drop(closed.TunnelID)
 		if t != nil {
@@ -299,7 +329,13 @@ func (h *tunnelHost) handshake(metadata map[string]string, payload json.RawMessa
 		return detailed(CodeUnauthenticated, "End-to-end handshake failed: "+why, "server", "e2e_handshake_failed", false)
 	}
 	t := h.lookup(metadata)
-	if t == nil || !t.Sealed || h.key == nil {
+	h.mu.Lock()
+	digest := ""
+	if t != nil {
+		digest = h.digests[t.ID]
+	}
+	h.mu.Unlock()
+	if t == nil || !t.Sealed || h.key == nil || digest == "" {
 		return nil, failed("not an end-to-end tunnel of this instance")
 	}
 	var request struct {
@@ -312,12 +348,24 @@ func (h *tunnelHost) handshake(metadata map[string]string, payload json.RawMessa
 	if err != nil {
 		return nil, failed("malformed message")
 	}
-	reply, _, sess, err := nkRespond(h.key, nil, []byte(e2ePrologue), message, nil)
+	// The prologue binds the tunnel the handshake came through: a handshake
+	// made for another tunnel's credential does not open here.
+	reply, _, sess, err := nkRespond(h.key, nil, e2eTunnelPrologue(digest), message, nil)
 	if err != nil {
-		return nil, failed("message 1 does not open with this instance's key")
+		return nil, failed("message 1 does not open with this instance's key on this tunnel")
 	}
 	h.sessions.add(t.ID, sess)
 	return map[string]string{"message": b64.EncodeToString(reply)}, nil
+}
+
+// requiresE2E: a scoped service was mounted with WithRequireE2E.
+func (h *tunnelHost) requiresE2E(offer TunnelOffer) bool {
+	for _, scope := range offer.Scopes {
+		if policy := h.policies[scope.Service]; policy != nil && policy.RequireE2E {
+			return true
+		}
+	}
+	return false
 }
 
 // decide: every scoped service must have opted in, and every hook agree.

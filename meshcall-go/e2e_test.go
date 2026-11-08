@@ -3,6 +3,7 @@ package meshcall_test
 import (
 	"context"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func TestEndToEndSealedTunnel(t *testing.T) {
 		t.Fatalf("E2EPublicKey: %s != %s", derived, public)
 	}
 	serve := func() *meshcall.RunningServer {
-		box := meshcall.NewMesh(router).Mount(fixture(new(atomic.Int32)), meshcall.WithAcceptTunnels(nil))
+		box := meshcall.NewMesh(router).Mount(fixture(new(atomic.Int32)), meshcall.WithAcceptTunnels(nil), meshcall.WithRequireE2E())
 		running, err := box.StartServing(ctx, meshcall.WithInstanceID("box-a"), meshcall.WithE2EPrivateKey(private))
 		if err != nil {
 			t.Fatal(err)
@@ -41,8 +42,27 @@ func TestEndToEndSealedTunnel(t *testing.T) {
 	defer func() { _ = issuer.Close() }()
 	scopes := []meshcall.TunnelScope{{Service: "test.v1.Go"}}
 	opened, err := issuer.Tunnels().Open(ctx, meshcall.OpenTunnelRequest{Instance: "box-a", Scopes: scopes, Principal: "user:alice", E2EKey: public})
-	if err != nil || opened.E2EKey != public {
+	if err != nil || opened.E2EKey != public || !strings.HasPrefix(opened.Credential, "mtun_e2e.") {
 		t.Fatalf("open: %v %+v", err, opened)
+	}
+	// The instance requires end-to-end tunnels for this mount: a plain offer is refused.
+	_, err = issuer.Tunnels().Open(ctx, meshcall.OpenTunnelRequest{Instance: "box-a", Scopes: scopes, Principal: "user:plain"})
+	if e, _ := meshcall.AsError(err); e == nil || e.Reason() != "tunnel_rejected" || !strings.Contains(e.Message, "end-to-end") {
+		t.Fatalf("a plain offer to an instance requiring E2E: %v", err)
+	}
+	// A credential and a key must agree, before anything is sent.
+	for name, opts := range map[string][]meshcall.MeshOption{
+		"an E2E credential without a key": {meshcall.WithTunnel(opened.Credential)},
+		"a key with a plain credential":   {meshcall.WithTunnel("mtun_plain"), meshcall.WithE2EKey(public)},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s was accepted", name)
+				}
+			}()
+			meshcall.NewMesh(meshcall.NewRouter(router.URL()), opts...)
+		}()
 	}
 	// An offer pinning a key the instance does not hold is refused.
 	_, otherKey, _ := meshcall.GenerateE2EKey()
@@ -95,12 +115,12 @@ func TestEndToEndSealedTunnel(t *testing.T) {
 		t.Fatalf("sealed error: %v", err)
 	}
 
-	// The same tunnel without sealing is refused by the Router.
-	plain := meshcall.NewMesh(meshcall.NewRouter(router.URL()), meshcall.WithTunnel(opened.Credential))
-	defer func() { _ = plain.Close() }()
-	_, err = meshcall.Unary[Num, Num](ctx, plain, "test.v1.Go", "double", Num{Value: 1})
-	if e, _ := meshcall.AsError(err); e == nil || e.Reason() != "tunnel_e2e_required" {
-		t.Fatalf("a plain call on an E2E tunnel: %v", err)
+	// The Router's own services answer on an end-to-end connection: never sealed.
+	if who, err := client.Auth().Whoami(ctx); err != nil || who.Tunnel == nil || who.Tunnel.E2EKey != public {
+		t.Fatalf("whoami on an E2E connection: %v %+v", err, who)
+	}
+	if services, err := client.Registry().List(ctx); err != nil || len(services) != 1 {
+		t.Fatalf("Registry on an E2E connection: %v %+v", err, services)
 	}
 	// A client pinning the wrong key cannot complete the handshake.
 	wrong := meshcall.NewMesh(meshcall.NewRouter(router.URL()), meshcall.WithTunnel(opened.Credential), meshcall.WithE2EKey(otherKey))
@@ -111,11 +131,38 @@ func TestEndToEndSealedTunnel(t *testing.T) {
 	}
 
 	// The instance restarts with the same key: it loses its sessions, the
-	// Router re-offers the tunnel, and the client handshakes again.
+	// Router re-offers the tunnel. A stream-only client is told once, then
+	// handshakes again on its next call.
 	_ = running.Close()
 	running = serve()
 	defer func() { _ = running.Close() }()
 	deadline := time.Now().Add(10 * time.Second)
+	sawUnknown := false
+	for streamed := false; !streamed; {
+		s, err := meshcall.ServerStream[Num, Num](ctx, client, "test.v1.Go", "count", Num{Value: 2})
+		if err == nil {
+			n, err = 0, nil
+			for _, err = range s.All() {
+				if err != nil {
+					break
+				}
+				n++
+			}
+			streamed = err == nil && n == 2
+		}
+		if e, _ := meshcall.AsError(err); e != nil && e.Reason() == "e2e_session_unknown" {
+			if sawUnknown {
+				t.Fatalf("a stream after e2e_session_unknown still uses the stale session: %v", err)
+			}
+			sawUnknown = true
+		}
+		if !streamed && time.Now().After(deadline) {
+			t.Fatalf("streams after the instance restarted: %v", err)
+		}
+		if !streamed {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 	for {
 		doubled, err = meshcall.Unary[Num, Num](ctx, client, "test.v1.Go", "double", Num{Value: 2})
 		if err == nil {

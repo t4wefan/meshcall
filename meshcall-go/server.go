@@ -96,6 +96,11 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if opts.MaxFrameSize == 0 {
 		opts.MaxFrameSize = DefaultMaxFrameSize
 	}
+	for _, policy := range opts.TunnelPolicies {
+		if policy != nil && policy.RequireE2E && opts.E2EPrivateKey == "" {
+			return nil, errors.New("meshcall: WithRequireE2E needs WithE2EPrivateKey")
+		}
+	}
 	tunnels := newTunnelHost(opts.TunnelPolicies)
 	if opts.E2EPrivateKey != "" {
 		key, err := parsePrivateKey(opts.E2EPrivateKey)
@@ -646,7 +651,8 @@ func (sess *session) unseal(f frame) (*e2eCall, frame, *Error) {
 	call := &e2eCall{session: session, service: f.Service, method: f.Method}
 	opened, err := call.openFrame(f)
 	if err != nil {
-		return nil, f, detailed(CodeUnauthenticated, "Sealed call does not open: "+err.Error(), "server", "e2e_session_unknown", false)
+		// The session is good; this frame was changed on the way.
+		return nil, f, detailed(CodeUnauthenticated, "Sealed frame rejected: "+err.Error(), "server", "e2e_frame_rejected", false)
 	}
 	return call, opened, nil
 }
@@ -849,7 +855,9 @@ func (call *serverCall) receive(f frame) {
 	if call.e2e != nil && f.Kind == "stream.item" {
 		opened, err := call.e2e.openFrame(f)
 		if err != nil {
-			call.protocolError("Sealed input item does not open: " + err.Error())
+			e := detailed(CodeUnauthenticated, "Sealed frame rejected: "+err.Error(), "server", "e2e_frame_rejected", false)
+			call.abort(e)
+			call.finish(frame{Kind: "call.error", Error: e.payload()}, CodeUnauthenticated)
 			return
 		}
 		f = opened
