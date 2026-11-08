@@ -475,6 +475,23 @@ func (r *Router) abandonOffer(o *offer) {
 	o.client = nil
 }
 
+// refuse ends a connection whose credential is no longer valid, with 4401 and
+// the reason, so its client can tell that from a network loss and does not
+// reconnect. An HTTP request has no socket to close; its handler answers with
+// the same reason. Close waits for the handshake, hence the goroutine: callers
+// hold r.mu.
+func (p *peer) refuse(reason string) {
+	p.refusal.Store(&reason)
+	if p.conn == nil {
+		p.cancel()
+		return
+	}
+	go func() {
+		_ = p.conn.Close(StatusUnauthenticated, reason)
+		p.cancel()
+	}()
+}
+
 // closeTunnel ends a tunnel: its connections close, any offer in flight is
 // cancelled and the instance is told. Called under r.mu.
 func (r *Router) closeTunnel(t *tunnel, reason string) {
@@ -493,19 +510,17 @@ func (r *Router) closeTunnel(t *tunnel, reason string) {
 			o.instance.send(frame{Kind: "call.cancel", CallID: o.callID, Reason: "tunnel_closed"})
 		}
 	}
-	// Close with 4401 and an error reason, so clients can tell a revoked
-	// tunnel from a network loss and do not reconnect (docs/protocol.md →
-	// Tunnels). Close waits for the handshake, hence outside r.mu.
+	// docs/protocol.md → Tunnels names these close reasons.
 	closing := "tunnel_closed"
-	if reason == "revoked" {
+	switch reason {
+	case "revoked":
 		closing = "tunnel_revoked"
+	case "key_changed":
+		closing = "key_changed"
 	}
 	for candidate := range r.peers {
 		if candidate.user != nil && candidate.user.tunnel == t {
-			go func(p *peer) {
-				_ = p.conn.Close(StatusUnauthenticated, closing)
-				p.cancel()
-			}(candidate)
+			candidate.refuse(closing)
 		}
 	}
 	if t.host != nil {

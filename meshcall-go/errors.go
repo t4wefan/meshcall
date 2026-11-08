@@ -114,13 +114,14 @@ const closeUnauthenticated = 4401
 
 // closeError is the error a Router close status stands for, or nil for a
 // plain loss: 4401 the credentials are not (or no longer) valid, a revoked
-// tunnel saying "tunnel_revoked"; 1008 the Router refused the connection's
+// tunnel saying "tunnel_revoked", a revoked token "token_revoked"; 1008 the Router refused the connection's
 // request (a registration, a role) and says why.
 func closeError(code int, reason string) *Error {
 	switch code {
 	case closeUnauthenticated:
 		e := detailed(CodeUnauthenticated, "The Router closed the connection: "+orDefault(reason, "unauthenticated"), "router", "", false)
-		if reason == "tunnel_revoked" || reason == "tunnel_closed" {
+		switch reason {
+		case "tunnel_revoked", "tunnel_closed", "key_changed", "token_revoked":
 			e.Details["reason"] = reason
 		}
 		return e

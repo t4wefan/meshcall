@@ -229,6 +229,23 @@ export interface MeshWebOptions {
   readonly logger?: RpcLogger;
 }
 
+/** A plain-JS typo must not leave the Mesh quietly anonymous; keeping this
+ * table a `Record` makes the compiler insist on every option. */
+const WEB_OPTIONS: Readonly<Record<keyof MeshWebOptions, true>> = {
+  token: true, tunnel: true, e2eKey: true, pingIntervalMs: true, headers: true, fetch: true,
+  retry: true, reconnect: true, deadlineGraceMs: true, logger: true,
+};
+
+function checkWebOptions(options: MeshWebOptions): void {
+  for (const [key, value] of Object.entries(options)) {
+    if (value === undefined || Object.hasOwn(WEB_OPTIONS, key)) continue;
+    if (key === "credentials") {
+      throw new TypeError("meshcall/web has no credentials option (accounts stay server-side): pass { token } or { tunnel }");
+    }
+    throw new TypeError("Unknown Mesh option " + JSON.stringify(key) + "; meshcall/web takes " + Object.keys(WEB_OPTIONS).join(", "));
+  }
+}
+
 const REGISTRY_SERVICE = "meshcall.router.v1.Registry";
 const ROUTER_AUTH_SERVICE = "meshcall.router.v1.AuthService";
 
@@ -599,6 +616,7 @@ export class Mesh implements MeshCallRpc {
         "Mesh requires a Router instance; pass new Router(url) instead of a raw URL or options object",
       );
     }
+    checkWebOptions(options);
     if (options.token !== undefined && options.tunnel !== undefined) {
       throw new TypeError("Specify either token or tunnel on Mesh, not both");
     }

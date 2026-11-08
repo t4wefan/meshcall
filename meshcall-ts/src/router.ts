@@ -850,20 +850,24 @@ export class Mesh implements MeshCallRpc {
 
   /**
    * Serve mounted `@service` instances until `SIGINT` or `SIGTERM`, then drain in-flight calls and close.
+   * Rejects with `UnauthenticatedError` if every Router refuses the credentials.
    */
   public async serve(options: ServeOptions = {}): Promise<void> {
     const running = await this.startServing(options);
+    let onSignal = (): void => undefined;
     try {
-      await new Promise<void>((resolve) => {
-        const onSignal = () => {
-          process.off("SIGINT", onSignal);
-          process.off("SIGTERM", onSignal);
-          resolve();
-        };
-        process.once("SIGINT", onSignal);
-        process.once("SIGTERM", onSignal);
-      });
+      const refused = await Promise.race([
+        new Promise<void>((resolve) => {
+          onSignal = resolve;
+          process.once("SIGINT", onSignal);
+          process.once("SIGTERM", onSignal);
+        }),
+        running.server.refused,
+      ]);
+      if (refused !== undefined) throw refused;
     } finally {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
       await running.close({ drain: true });
       await this.close();
     }

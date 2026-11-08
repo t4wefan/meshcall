@@ -5,6 +5,7 @@ import {
   DeadlineExceededError, ErrorCode, InternalError, InvalidArgumentError, MeshCallClient, MeshCallError,
   MeshCallServer, method, ProtocolError, service, z, type LogLevel, type RpcLogger,
 } from "../src/index.js";
+import { closeError } from "../src/errors.js";
 
 const SECRET = "not-an-int-s3cr3t";
 
@@ -113,4 +114,11 @@ test("fromCode dispatches to subclasses and keeps custom codes plain", () => {
   const custom = MeshCallError.fromCode("app.v1.quota", "no", { retryable: true });
   assert.equal(custom.constructor, MeshCallError);
   assert.ok(custom.retryable);
+});
+
+test("a 4401 close names the reason the Router gave", () => {
+  for (const reason of ["tunnel_revoked", "tunnel_closed", "key_changed", "token_revoked"]) {
+    assert.equal(closeError(4401, reason)?.details?.["reason"], reason);
+  }
+  assert.equal(closeError(4401, "authentication failed")?.details?.["reason"], undefined);
 });

@@ -360,8 +360,9 @@ connection lives until the tunnel is revoked or closed, and an expired
 tunnel closes when its last connection ends. Revoking closes every
 connection at once with WebSocket status 4401 and the close reason
 `tunnel_revoked`; a tunnel that closes for another reason while it has
-connections (the instance changed or refused a re-offer) closes them with
-4401 `tunnel_closed`. Calls in flight then fail with non-retryable
+connections closes them with 4401 `key_changed` when the instance's end-to-end
+key changed, or `tunnel_closed` otherwise (the instance changed or refused a
+re-offer). Calls in flight then fail with non-retryable
 `unauthenticated`, `source: "router"`, and that close reason as
 `details.reason`, so a client tells revocation apart from a network loss.
 A client keeps that answer: later calls on the same client fail at once with
@@ -414,7 +415,7 @@ says so: `{"accept": false, "reason": "e2e_key_mismatch"}` (the pinned key is
 not its own) or `"e2e_required"` (a plain offer for services that require
 it). The Router names the reason in the issuer's `tunnel_rejected` message,
 and closes a tunnel whose re-offer is refused with `e2e_key_mismatch` with the
-reason `key_changed` (its connections close as `tunnel_closed`).
+reason `key_changed` (its connections close with that reason too).
 
 **Handshake.** Once per client connection, before its first sealed call, the
 client calls `meshcall.router.v1.TunnelHost/handshake` (unary)
@@ -432,8 +433,8 @@ principal, and since a tunnel has one target, the session is bound to that
 instance too. The Router routes this method only from a connection of an E2E
 tunnel, to its target, with the tunnel metadata set; to any other connection
 it is refused like any reserved method it may not call (`permission_denied`
-with `reason: "tunnel_scope"` on a plain tunnel, `method_not_found`
-elsewhere). The
+with `reason: "tunnel_scope"` on a plain tunnel; elsewhere `method_not_found`,
+or `permission_denied` first for a connection without call permission). The
 session id is the first 16 bytes of the handshake hash, hex; the instance
 keeps the session under that tunnel. The two keys of the Noise `Split()` seal
 client → instance and instance → client. The instance keeps at most 16
@@ -490,7 +491,7 @@ session. `TunnelService/list` and `AuthService/whoami` show the tunnel's
 **Rotation.** An instance configured with a new key refuses the re-offers of
 tunnels that pinned its old one (`e2e_key_mismatch`), which closes them with
 the reason `key_changed`; their clients' calls fail with `unauthenticated` /
-`tunnel_closed` and they ask the issuer again. The first version has no
+`key_changed` and they ask the issuer again. The first version has no
 overlap window.
 
 ### Instance-bound registration
@@ -518,7 +519,7 @@ reconnect is refused).
 | `revoke_token` | `token_id` | `revoked` |
 | `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
 
-Only an account or API key may call these (with the method in its `call`
+Only an account may call these (with the method in its `call`
 ACL), and `renew_token`, `revoke_token` and `list_tokens` see only the
 caller's own tokens. `ttl_seconds` is 1 up to the Router's maximum
 (`--token-max-ttl`, 30 days by default); above it the answer is
@@ -533,8 +534,10 @@ as for tunnel credentials: an expired token is refused at connect (HTTP 401,
 or 4401 when sent in `hello`), but a connection authenticated before expiry
 stays up — its calls and its instance's registration keep working — until it
 closes or the token is revoked. `revoke_token` closes every connection on the
-token at once (calls fail as for any lost connection), past expiry too, and is
-the only way to cut a live one. An expired token that still holds connections
+token at once with 4401 `token_revoked`, past expiry too, and is the only way to
+cut a live one: calls in flight fail with non-retryable `unauthenticated` and
+that `details.reason` (an HTTP call in flight answers 401 with the same error),
+and the client keeps the answer as for a revoked tunnel. An expired token that still holds connections
 stays listed (`expired: true`) so its issuer can revoke it; one without
 connections is forgotten.
 
@@ -747,9 +750,10 @@ from `TunnelService/open`: the instance refused or does not accept tunnels),
 outside the tunnel's view), `tunnel_e2e_required` (a `permission_denied`: a
 plain call on an end-to-end tunnel), `e2e_handshake_failed` /
 `e2e_session_unknown` / `e2e_frame_rejected` (an `unauthenticated` from the client or the instance,
-see [End-to-end encryption](#end-to-end-encryption)), `tunnel_revoked` / `tunnel_closed` (an
-`unauthenticated` for calls on a tunnel connection the Router closed with
-4401, see [Tunnel connections](#tunnel-connections)),
+see [End-to-end encryption](#end-to-end-encryption)), `tunnel_revoked` / `tunnel_closed` /
+`key_changed` (an `unauthenticated` for calls on a tunnel connection the Router
+closed with 4401, see [Tunnel connections](#tunnel-connections)), `token_revoked`
+(the same for a revoked temporary token, see [Temporary tokens](#temporary-tokens)),
 `idempotency_key_on_duplex` (an
 `invalid_argument` for a duplex call carrying an idempotency key) and
 `flow_control_violation` (a `protocol_error`: a stream item beyond the
@@ -776,7 +780,13 @@ reasons above); a close with 1008 is `permission_denied` with
 (for a refused registration, why: an unauthorised service, an `instance_id`
 outside `instance_ids`, a conflicting method). Any other loss is retryable
 `unavailable`. A client does not reconnect after `unauthenticated` or
-`permission_denied`: the same credentials fail the same way again.
+`permission_denied`: the same credentials fail the same way again. A service
+instance likewise stops at once when a Router closes it with 4401 or refuses
+its credentials at connect (`unauthenticated`, the close reason kept), does not
+re-register there, and logs why; a
+refused registration (1008) is still retried, since the conflict may clear.
+When every Router has refused it, `run` / `serve` ends with that error, so a
+supervisor can restart it with new credentials.
 
 ### Validation failures
 

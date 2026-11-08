@@ -312,6 +312,8 @@ export class MeshCallClient implements MeshCallRpc {
   }
 
   private async openWithRetry(): Promise<void> {
+    // A socket that is closing may be about to say the credentials are gone.
+    if (this.socket?.readyState === WebSocket.CLOSING) await this.writer?.gone;
     if (this.refused !== undefined) throw this.refused;
     const policy = this.options.reconnect ?? {};
     const retry = (policy.enabled ?? true) && this.everConnected;
@@ -410,7 +412,7 @@ export class MeshCallClient implements MeshCallRpc {
   private detach(socket: WebSocket, error: unknown): void {
     if (this.socket !== socket) return;
     this.socket = undefined;
-    this.writer?.close();
+    this.writer?.close(error instanceof Error ? error : undefined);
     this.writer = undefined;
     this.liveness?.stop();
     this.liveness = undefined;

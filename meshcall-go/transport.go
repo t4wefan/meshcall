@@ -52,6 +52,16 @@ func (c *conn) lost() *Error {
 	return &Error{Code: CodeUnavailable, Message: "Connection was lost", Retryable: true}
 }
 
+// lostAfterSend is lost for a send that failed: the read loop is about to learn
+// why the connection went (a 4401 reason), so give it a moment to say.
+func (c *conn) lostAfterSend() *Error {
+	select {
+	case <-c.closed:
+	case <-time.After(time.Second):
+	}
+	return c.lost()
+}
+
 // errFrameTooLarge marks a frame send refused: the peer would close the
 // connection on receiving it. Callers fail only the frame's call
 // (frameTooLarge), with their own source.

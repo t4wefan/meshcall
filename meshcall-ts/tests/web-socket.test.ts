@@ -6,7 +6,7 @@ import {
   ResourceExhaustedError, UnauthenticatedError, z,
   type DuplexChannel, type RpcContext,
 } from "../src/index.js";
-import { Mesh, Router } from "../src/web.js";
+import { Mesh, Router, type MeshWebOptions } from "../src/web.js";
 
 const routerMissing = (() => {
   try {
@@ -127,4 +127,14 @@ test("meshcall/web keeps one way in for tunnel credentials", () => {
   assert.throws(() => new Mesh(router, { token: "mtun_abc" }), /tunnel/u);
   assert.throws(() => new Mesh(router, { tunnel: "mk_abc" }), /mtun_/u);
   assert.throws(() => new Mesh(new Router({ unixPath: "/tmp/x.sock" })), /ws:\/\//u);
+});
+
+test("meshcall/web refuses options it does not take rather than connecting anonymously", () => {
+  const router = new Router("wss://relay.example");
+  const given = (options: object) => () => new Mesh(router, options as MeshWebOptions);
+  assert.throws(given({ credentials: { username: "a", password: "b" } }), (error: unknown) =>
+    error instanceof TypeError && /\{ token \}/u.test(error.message));
+  assert.throws(given({ tokn: "mk_abc" }), (error: unknown) =>
+    error instanceof TypeError && /"tokn"/u.test(error.message));
+  assert.doesNotThrow(given({ token: "mk_abc", credentials: undefined }));
 });

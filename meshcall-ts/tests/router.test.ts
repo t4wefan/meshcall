@@ -115,8 +115,22 @@ test("typed AuthService issues scopes, routes all call shapes and revokes an act
   const stream = client.serverStream(NAME, "download", { value: 100000 });
   await stream.next();
   assert.equal(await management.revokeToken(issued.token_id), true);
-  await assert.rejects(async () => { for await (const _ of stream) { /* drain buffered items */ } }, isError("unavailable"));
+  await assert.rejects(async () => { for await (const _ of stream) { /* drain buffered items */ } }, (error: unknown) =>
+    isError("unauthenticated")(error) && (error as MeshCallError).details?.["reason"] === "token_revoked");
   assert.equal(await management.revokeToken(issued.token_id), false);
+  // Consuming sends credit while the socket closes; the reason must survive that.
+  for (let round = 0; round < 15; round += 1) {
+    const token = await management.issueToken({ scopes: [{ service: NAME, methods: ["download"] }] });
+    const consumer = new MeshCallClient(endpoint, undefined, { auth: { token: token.token } });
+    t.after(() => consumer.close());
+    const inFlight = consumer.serverStream(NAME, "download", { value: 100000 });
+    await inFlight.next();
+    await management.revokeToken(token.token_id);
+    await assert.rejects(async () => { for await (const _ of inFlight) { /* until it fails */ } }, (error: unknown) =>
+      isError("unauthenticated")(error) && (error as MeshCallError).details?.["reason"] === "token_revoked");
+    await assert.rejects(consumer.unary(NAME, "download", {}), (error: unknown) =>
+      isError("unauthenticated")(error) && (error as MeshCallError).details?.["reason"] === "token_revoked");
+  }
   const revoked = new MeshCallClient(endpoint, undefined, { auth: { token: issued.token } });
   t.after(() => revoked.close());
   await assert.rejects(revoked.connect(), /401/u);

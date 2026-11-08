@@ -90,6 +90,25 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ### Changed
 
+- **`token_id` is now a random `tok_…` id**, independent of the secret; it used
+  to be the secret's SHA-256 digest. Treat ids as opaque: tokens do not survive
+  a Router restart, so no stored id changes shape under a running token.
+- A service instance stops re-registering with a Router that refuses its
+  credentials (`unauthenticated`), and logs why, instead of retrying with
+  backoff. When every Router has refused it, `mesh.run()` / `serve()` /
+  `Serve()` ends with that error so a supervisor can restart it with new
+  credentials (`RpcServer.wait_refused()`, `MeshCallServer.refused`,
+  `Server.Refused()`).
+- `revoke_token` closes connections with 4401 `token_revoked`, so calls fail
+  with `unauthenticated` / `token_revoked` rather than a retryable lost
+  connection, and clients do not reconnect. A tunnel closed because the
+  instance's key changed closes its connections with 4401 `key_changed`
+  (was `tunnel_closed`).
+- `meshcall/web`'s `Mesh` refuses unknown options with a `TypeError`, including
+  `credentials`, which used to leave the Mesh quietly anonymous. A malformed
+  end-to-end key is a `TypeError` in TypeScript (was `RangeError`), like the
+  other configuration errors.
+- `whoami` reports `instance_ids` for a token bound through its scopes.
 - Temporary-token expiry bounds new connections only, as for tunnel
   credentials: a connection authenticated before expiry keeps its calls and
   registrations until it closes or the token is revoked (it was closed at
@@ -130,6 +149,12 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ### Fixed
 
+- Revoking a tunnel while an HTTP call was in flight on it crashed the Router
+  (a nil connection); the call now answers 401 with the reason.
+- Python: a stream consumer could hang forever when its connection closed while
+  a credit frame was being sent.
+- `scripts/check.sh py` installs the TypeScript dependencies its interop tests
+  need, so it works on a fresh clone.
 - A tunnel call with `"metadata": null` no longer drops the connection.
 - The Router strips `meshcall-tunnel-*` metadata in any letter case, so a
   mixed-case key cannot reach a handler that reads metadata case-insensitively.

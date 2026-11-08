@@ -153,6 +153,8 @@ class Connection {
         retryable: false, details: { source: "client", reason: "frame_too_large" },
       });
     }
+    // Closing: its close event is about to fail every call here, saying why.
+    if (!this.closed && this.socket.readyState === 2) return;
     if (this.closed || this.socket.readyState !== 1) throw new UnavailableError("Connection was lost", { retryable: true });
     this.socket.send(data);
   }

@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   findRouterBinary,
   InvalidArgumentError,
+  UnauthenticatedError,
   LocalRouter,
   Mesh,
   method,
@@ -229,5 +230,20 @@ test(
     assert.equal(revoked, true);
     await assert.rejects(adminMesh.auth.renewToken(issued.token_id, 60), (error: unknown) =>
       error instanceof InvalidArgumentError && error.details?.["reason"] === "token_expired");
+    await assert.rejects(echo.repeat("revoked"), UnauthenticatedError);
+
+    // An instance whose token is revoked does not retry: serving ends, saying why.
+    const serving = await adminMesh.auth.issueToken([{ service: "math", register: true }], 300);
+    const instance = new Mesh(new Router(router.url), { token: serving.token, reconnect: { initialDelayMs: 10, maxDelayMs: 50 } });
+    instance.mount(new MathService(), { accessLog: false });
+    const served = instance.serve();
+    for (;;) {
+      const tokens = await adminMesh.auth.listTokens();
+      if (tokens.some((entry) => entry.token_id === serving.token_id && entry.connections === 1)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(await adminMesh.auth.revokeToken(serving.token_id), true);
+    await assert.rejects(served, (error: unknown) =>
+      error instanceof UnauthenticatedError && error.details?.["reason"] === "token_revoked");
   },
 );

@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 
-import { CallCancelledError, ResourceExhaustedError, UnavailableError } from "./errors.js";
+import { CallCancelledError, closeError, type MeshCallError, ResourceExhaustedError, UnavailableError } from "./errors.js";
 import { encodeFrame, type Frame } from "./protocol.js";
 
 /** Largest encoded frame, sent or received, unless configured smaller; also the Router's ceiling. */
@@ -26,18 +26,26 @@ export class FrameWriter {
   private active: PendingFrame | undefined;
   private draining = false;
   private closed: Error | undefined;
+  /** What the peer's close status said, once the socket has closed. */
+  private closeFailure: MeshCallError | undefined;
+  private settleGone!: () => void;
+  /** Settles when the socket has closed or this writer was closed. */
+  public readonly gone = new Promise<void>((resolve) => { this.settleGone = resolve; });
 
   public constructor(
     private readonly socket: WebSocket,
     private readonly maxFrameSize: number,
     private readonly source: "client" | "server",
-  ) {}
+  ) {
+    socket.once("close", (code: number, reason: Buffer) => {
+      this.closeFailure = closeError(code, reason.toString());
+      this.settleGone();
+    });
+  }
 
   public async send(frame: Frame): Promise<void> {
     if (this.closed !== undefined) throw this.closed;
-    if (this.socket.readyState !== WebSocket.OPEN) {
-      throw new UnavailableError("Connection is closed");
-    }
+    if (this.socket.readyState !== WebSocket.OPEN) throw await this.closing();
     if (frame.kind === "call.cancel" && this.cancelQueuedCall(frame.call_id)) {
       return;
     }
@@ -85,7 +93,18 @@ export class FrameWriter {
     return unopened;
   }
 
-  public close(error = new UnavailableError("Connection is closed")): void {
+  /**
+   * The error a frame fails with on a socket that is no longer open. A closing
+   * socket's close status is about to say why (a 4401 reason), so wait for it
+   * rather than report a retryable loss.
+   */
+  private async closing(): Promise<Error> {
+    if (this.socket.readyState === WebSocket.CLOSING) await this.gone;
+    return this.closeFailure ?? this.closed ?? new UnavailableError("Connection is closed");
+  }
+
+  public close(error: Error = this.closeFailure ?? new UnavailableError("Connection is closed")): void {
+    this.settleGone();
     if (this.closed !== undefined) return;
     this.closed = error;
     this.active?.reject(error);
@@ -124,7 +143,7 @@ export class FrameWriter {
         this.active = undefined;
       }
     } catch {
-      this.close();
+      this.close(await this.closing());
       this.socket.close();
     } finally {
       this.active = undefined;

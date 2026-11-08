@@ -169,8 +169,9 @@ type peer struct {
 	drops       *atomic.Uint64 // the Router's outbox-overflow counter
 	// capabilities from hello; "tunnels" means the instance answers offers.
 	capabilities []string
-	admitted     bool // counted against a tunnel's connections
-	tokenCounted bool // counted against its token's connections
+	admitted     bool                   // counted against a tunnel's connections
+	tokenCounted bool                   // counted against its token's connections
+	refusal      atomic.Pointer[string] // why the Router is ending it, once refused
 }
 
 func (p *peer) send(f frame) {
@@ -208,7 +209,11 @@ func (p *peer) writeLoop(maxFrameSize int, goingAway func() bool) {
 		err := p.conn.Write(ctx, websocket.MessageText, f.raw)
 		cancel()
 		if err != nil {
-			p.cancel()
+			// Refused: writes fail once the close frame is out, and cutting the
+			// socket now would reset it before the client reads that frame.
+			if p.refusal.Load() == nil {
+				p.cancel()
+			}
 			return
 		}
 	}
@@ -956,7 +961,11 @@ func (r *Router) forward(p *peer, f frame) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if p.ctx.Err() != nil || !r.config.Auth.live(p.user) || (p.user != nil && p.user.tunnel != nil && p.user.tunnel.closed) {
-		p.cancel()
+		// A refused peer is being closed with a reason: cancelling now would
+		// cut the socket before its client reads that reason.
+		if p.refusal.Load() == nil {
+			p.cancel()
+		}
 		return
 	}
 	if p.role == "server" {

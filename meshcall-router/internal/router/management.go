@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/t4wefan/meshcall/meshcall-router/internal/contract"
@@ -152,8 +151,9 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 	}
 	// The prefix keeps temporary tokens and API keys (mk_) apart by format.
 	token := "mt_" + base64.RawURLEncoding.EncodeToString(secret)
-	digest := sha256.Sum256([]byte(token))
-	user.tokenID = hex.EncodeToString(digest[:])
+	// The id is shown and logged; it must not be derived from the secret.
+	user.tokenID = "tok_" + randomHex(12)
+	user.tokenDigest = sha256.Sum256([]byte(token))
 	user.kind = identityToken
 	user.expires = time.Now().Add(time.Duration(request.TTLSeconds) * time.Second)
 	a.mu.Lock()
@@ -163,6 +163,7 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 		return result, capacityError{}
 	}
 	a.tokens[user.tokenID] = user
+	a.tokenDigests[user.tokenDigest] = user.tokenID
 	return IssueTokenResult{Token: token, TokenID: user.tokenID, ExpiresUnixMS: user.expires.UnixMilli(), Scopes: effective}, nil
 }
 
@@ -171,9 +172,14 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 func (a *Auth) pruneLocked() {
 	for id, candidate := range a.tokens {
 		if !time.Now().Before(candidate.expires) && candidate.connections == 0 {
-			delete(a.tokens, id)
+			a.forgetLocked(id, candidate)
 		}
 	}
+}
+
+func (a *Auth) forgetLocked(id string, user *User) {
+	delete(a.tokens, id)
+	delete(a.tokenDigests, user.tokenDigest)
 }
 
 // TokenInfo describes an outstanding temporary token, never its secret.
@@ -186,8 +192,10 @@ type TokenInfo struct {
 	Connections   int      `json:"connections"`
 }
 
-func (u *User) tokenInfo(now time.Time) TokenInfo {
-	var ids []string
+// boundInstances: the instance ids registration is restricted to, whether by
+// the account or by a token's scopes.
+func (u *User) boundInstances() []string {
+	ids := slices.Clone(u.InstanceIDs)
 	for _, list := range u.registerInstances {
 		for _, id := range list {
 			if !slices.Contains(ids, id) {
@@ -196,7 +204,11 @@ func (u *User) tokenInfo(now time.Time) TokenInfo {
 		}
 	}
 	slices.Sort(ids)
-	return TokenInfo{TokenID: u.tokenID, Issuer: u.Username, InstanceIDs: ids, ExpiresUnixMS: u.expires.UnixMilli(),
+	return ids
+}
+
+func (u *User) tokenInfo(now time.Time) TokenInfo {
+	return TokenInfo{TokenID: u.tokenID, Issuer: u.Username, InstanceIDs: u.boundInstances(), ExpiresUnixMS: u.expires.UnixMilli(),
 		Expired: !now.Before(u.expires), Connections: u.connections}
 }
 
@@ -287,10 +299,10 @@ func (r *Router) management(p *peer, f frame) {
 			InstanceIDs []string    `json:"instance_ids,omitempty"`
 			Expires     *int64      `json:"expires_at_unix_ms"`
 			Tunnel      *TunnelInfo `json:"tunnel,omitempty"`
-		}{p.user.Username, p.user.Roles, nonNil(p.user.Register), nonNil(p.user.Call), p.user.InstanceIDs, expires, tunnel}
+		}{p.user.Username, p.user.Roles, nonNil(p.user.Register), nonNil(p.user.Call), p.user.boundInstances(), expires, tunnel}
 	case "issue_token":
 		if !p.user.mayIssueTokens() {
-			fail("permission_denied", "Temporary tokens cannot issue tokens")
+			fail("permission_denied", "Only accounts may issue temporary tokens")
 			return
 		}
 		var request IssueTokenRequest
@@ -306,7 +318,7 @@ func (r *Router) management(p *peer, f frame) {
 		result = issued
 	case "renew_token":
 		if !p.user.mayIssueTokens() {
-			fail("permission_denied", "Temporary tokens cannot renew tokens")
+			fail("permission_denied", "Only accounts may renew temporary tokens")
 			return
 		}
 		var request struct {
@@ -329,7 +341,7 @@ func (r *Router) management(p *peer, f frame) {
 		}{renewed.TokenID, renewed.ExpiresUnixMS}
 	case "list_tokens":
 		if !p.user.mayIssueTokens() {
-			fail("permission_denied", "Temporary tokens cannot list tokens")
+			fail("permission_denied", "Only accounts may list temporary tokens")
 			return
 		}
 		var request struct{}
@@ -354,7 +366,7 @@ func (r *Router) management(p *peer, f frame) {
 		}{tokens}
 	case "revoke_token":
 		if !p.user.mayIssueTokens() {
-			fail("permission_denied", "Temporary tokens cannot revoke tokens")
+			fail("permission_denied", "Only accounts may revoke temporary tokens")
 			return
 		}
 		var request struct {
@@ -368,13 +380,13 @@ func (r *Router) management(p *peer, f frame) {
 		user := r.config.Auth.tokens[request.TokenID]
 		revoked := user != nil && user.Username == p.user.Username
 		if revoked {
-			delete(r.config.Auth.tokens, request.TokenID)
+			r.config.Auth.forgetLocked(request.TokenID, user)
 		}
 		r.config.Auth.mu.Unlock()
 		if revoked {
 			for candidate := range r.peers {
 				if candidate.user != nil && candidate.user.tokenID == request.TokenID {
-					candidate.cancel()
+					candidate.refuse("token_revoked")
 				}
 			}
 		}

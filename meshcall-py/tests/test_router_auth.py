@@ -9,6 +9,8 @@ from test_direct import NumberRequest, NumberResult, NumberService, NumberServic
 from test_router import RouteServiceA
 
 from meshcall import (
+    Mesh,
+    Router,
     RouterAuthClient,
     RouterCredentials,
     RouterScope,
@@ -24,6 +26,58 @@ from meshcall.errors import (
     PermissionDeniedError,
     UnauthenticatedError,
 )
+from meshcall.transport import CLOSE_UNAUTHENTICATED, close_error
+
+
+async def test_an_instance_stops_when_every_router_refuses_its_credentials(
+    tmp_path: Path,
+) -> None:
+    name = get_service_contract(NumberService).name
+    auth_file = write_auth_file(tmp_path / "auth.json", name)
+    async with WebSocketRouter(auth_file=auth_file) as router:
+        uri = f"ws://127.0.0.1:{router.bound_port}"
+        credentials = RouterCredentials(username="issuer", password=PASSWORD)
+        async with RouterAuthClient(
+            WebSocketClientDriver(uri, auth=credentials)
+        ) as auth:
+            for run in ("server", "mesh"):
+                issued = await auth.issue_token(
+                    scopes=[RouterScope(service=name, register_service=True)]
+                )
+                token = RouterCredentials(token=issued.token)
+                if run == "server":
+                    driver = WebSocketRouterServerDriver(
+                        uri,
+                        auth=token,
+                        reconnect=ReconnectPolicy(initial_delay=0.01, max_delay=0.05),
+                    )
+                    task = asyncio.create_task(
+                        RpcServer(
+                            services=[NumberService], driver=driver, access_log=False
+                        ).run()
+                    )
+                else:
+                    mesh = Mesh(
+                        Router(uri),
+                        token=issued.token,
+                        reconnect=ReconnectPolicy(initial_delay=0.01, max_delay=0.05),
+                    )
+                    mesh.mount(NumberService())
+                    task = asyncio.ensure_future(mesh.serve(access_log=False))
+                async with asyncio.timeout(5):
+                    while True:
+                        tokens = await auth.list_tokens()
+                        if any(
+                            t.token_id == issued.token_id and t.connections == 1
+                            for t in tokens
+                        ):
+                            break
+                        await asyncio.sleep(0.02)
+                assert await auth.revoke_token(issued.token_id)
+                # It does not retry: serving ends, saying why.
+                with pytest.raises(UnauthenticatedError) as refused:
+                    await asyncio.wait_for(task, 5)
+                assert refused.value.reason == "token_revoked"
 
 
 async def test_accounts_issue_scoped_tokens_and_revoke_active_calls(
@@ -197,8 +251,9 @@ async def test_expiry_bounds_new_connections_and_method_scope_is_enforced(
                 assert receive is not None
                 assert await auth.revoke_token(token.token_id)
                 await asyncio.wait_for(receive, 3)
-                with pytest.raises(UnauthenticatedError):
+                with pytest.raises(UnauthenticatedError) as revoked:
                     await scoped.whoami()
+                assert revoked.value.reason == "token_revoked"
             # Renewal moves expiry; the same secret connects past the old one.
             renewable = await auth.issue_token(
                 ttl_seconds=1, scopes=[RouterScope(service=name, methods=["unary"])]
@@ -287,3 +342,12 @@ async def test_anonymous_callers_connect_and_are_authorised_per_call(
                     )
         finally:
             await server.stop()
+
+
+@pytest.mark.parametrize(
+    "reason", ["tunnel_revoked", "tunnel_closed", "key_changed", "token_revoked"]
+)
+def test_a_4401_close_names_the_reason_the_router_gave(reason: str) -> None:
+    error = close_error(CLOSE_UNAUTHENTICATED, reason)
+    assert isinstance(error, UnauthenticatedError)
+    assert error.reason == reason

@@ -34,7 +34,7 @@ from meshcall.drivers.websocket import (
     WebSocketRouterServerDriver,
 )
 from meshcall.e2e import check_private_key, check_public_key, is_e2e_credential
-from meshcall.errors import ContractError, DriverStateError
+from meshcall.errors import ContractError, DriverStateError, MeshCallError
 from meshcall.logging import RpcLogger
 from meshcall.protocol import PROTOCOL_VERSION
 from meshcall.router_auth import (
@@ -591,6 +591,10 @@ class RunningServer:
     async def wait_closed(self) -> None:
         await self.server.wait_closed()
 
+    async def wait_refused(self) -> MeshCallError:
+        """Resolves once every Router refused the credentials."""
+        return await self.server.wait_refused()
+
 
 class _ServeHandle:
     """Dual-mode object returned by :meth:`Mesh.serve`.
@@ -680,14 +684,17 @@ class _ServeHandle:
         try:
             closed_task = asyncio.create_task(srv.wait_closed())
             signal_task = asyncio.create_task(stop_event.wait())
-            _done, pending = await asyncio.wait(
-                {closed_task, signal_task},
+            refused_task = asyncio.create_task(srv.wait_refused())
+            done, pending = await asyncio.wait(
+                {closed_task, signal_task, refused_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            if refused_task in done:
+                raise refused_task.result()
         finally:
             await srv.stop(drain=True, drain_timeout=self._drain_timeout)
             if self._mesh._owns_local_router:

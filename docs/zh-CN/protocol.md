@@ -183,7 +183,7 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 - Router 在其路由的每个 `call.open` 上设置 `meshcall-tunnel-id`、`meshcall-tunnel-principal`，并把 `instance_id` 设为目标，覆盖客户端发送的任何值。运行时将它们暴露为 `ctx.tunnel`；
 - 幂等去重按隧道隔离：一个隧道的调用不会合并到另一个 principal 的调用上。
 
-**生命周期。** `expires_at` 只限制*新*连接：已建立的连接一直存活到隧道被撤销或关闭，过期的隧道在最后一个连接结束时关闭。撤销会立即以 WebSocket 状态码 4401、关闭原因 `tunnel_revoked` 关闭所有连接；隧道因其他原因（实例变更或拒绝重新 offer）在仍有连接时关闭，则以 4401 `tunnel_closed` 关闭。进行中的调用随之以不可重试的 `unauthenticated` 失败（`source: "router"`，`details.reason` 为该关闭原因），客户端因此能把撤销与网络断开区分开。客户端会记住这一结果：同一客户端上之后的调用立即以同样的错误（含 reason）失败，不再重连（用该凭据新建连接反正也会得到 HTTP 401）。实例断开期间，调用以可重试的 `unavailable` / `instance_offline` 失败。当实例以相同身份、带 `tunnels` 能力重新注册到目标 id 时，Router 以 `resumed: true` 重新 offer 它的每个隧道；接受则隧道恢复，拒绝或未应答则关闭；以其他身份或不带该能力注册则关闭隧道（`instance_changed`）。
+**生命周期。** `expires_at` 只限制*新*连接：已建立的连接一直存活到隧道被撤销或关闭，过期的隧道在最后一个连接结束时关闭。撤销会立即以 WebSocket 状态码 4401、关闭原因 `tunnel_revoked` 关闭所有连接；隧道在仍有连接时因实例的端到端密钥变更而关闭，则以 4401 `key_changed` 关闭，因其他原因（实例变更或拒绝重新 offer）则以 4401 `tunnel_closed` 关闭。进行中的调用随之以不可重试的 `unauthenticated` 失败（`source: "router"`，`details.reason` 为该关闭原因），客户端因此能把撤销与网络断开区分开。客户端会记住这一结果：同一客户端上之后的调用立即以同样的错误（含 reason）失败，不再重连（用该凭据新建连接反正也会得到 HTTP 401）。实例断开期间，调用以可重试的 `unavailable` / `instance_offline` 失败。当实例以相同身份、带 `tunnels` 能力重新注册到目标 id 时，Router 以 `resumed: true` 重新 offer 它的每个隧道；接受则隧道恢复，拒绝或未应答则关闭；以其他身份或不带该能力注册则关闭隧道（`instance_changed`）。
 
 ### 端到端加密
 
@@ -195,9 +195,9 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 **强制要求。** 实例可以为某次挂载的服务强制要求端到端隧道（`require_e2e`）；此后凡是 scope 涉及这些服务却没有 `e2e_key` 的 offer 一律拒绝，持有密钥的实例因此绝不会通过隧道以明文提供这些服务。没有私钥却要求端到端是配置错误。
 
-**offer 应答。** 实例因端到端原因拒绝 offer 时会说明：`{"accept": false, "reason": "e2e_key_mismatch"}`（固定的公钥不是自己的）或 `"e2e_required"`（对要求端到端的服务发来了明文 offer）。Router 在签发方收到的 `tunnel_rejected` 消息中写明原因；若重新 offer 因 `e2e_key_mismatch` 被拒绝，Router 以 `key_changed` 原因关闭隧道（其连接以 `tunnel_closed` 关闭）。
+**offer 应答。** 实例因端到端原因拒绝 offer 时会说明：`{"accept": false, "reason": "e2e_key_mismatch"}`（固定的公钥不是自己的）或 `"e2e_required"`（对要求端到端的服务发来了明文 offer）。Router 在签发方收到的 `tunnel_rejected` 消息中写明原因；若重新 offer 因 `e2e_key_mismatch` 被拒绝，Router 以 `key_changed` 原因关闭隧道（其连接也以该原因关闭）。
 
-**握手。** 每个客户端连接在第一个密封调用之前握手一次：客户端调用 `meshcall.router.v1.TunnelHost/handshake`（一元）`{message}` → `{message}`，即 `Noise_NK_25519_AESGCM_SHA256` 的两条消息，payload 为空，无填充 base64url。prologue 为 `meshcall-e2e/1|<credential_digest>`，其中 `credential_digest` 是隧道凭据（UTF-8 字节）的小写十六进制 SHA-256。客户端对自己的凭据求哈希；Router 在端到端隧道的 offer 中放入该摘要（绝不是凭据本身），字段为 `credential_digest`，实例使用握手所经过隧道的摘要。因此为一个隧道做的握手无法经由另一个隧道完成（`e2e_handshake_failed`）：持有第二个凭据的中继无法让某个客户端的密封调用以另一个隧道的 principal 执行；而一个隧道只有一个目标，会话也就绑定到了该实例。Router 只在端到端隧道的连接上路由这个方法，并带着隧道元数据送到目标实例；对其他连接，它与任何不可调用的保留方法一样被拒绝（普通隧道上为 `permission_denied`，`reason: "tunnel_scope"`，其他连接为 `method_not_found`）。会话 id 是握手哈希的前 16 字节（十六进制）；实例把会话记在该隧道下。Noise `Split()` 得到的两把密钥分别密封客户端 → 实例与实例 → 客户端。实例每个隧道最多保留 16 个会话（丢弃最旧的），隧道关闭时全部丢弃。
+**握手。** 每个客户端连接在第一个密封调用之前握手一次：客户端调用 `meshcall.router.v1.TunnelHost/handshake`（一元）`{message}` → `{message}`，即 `Noise_NK_25519_AESGCM_SHA256` 的两条消息，payload 为空，无填充 base64url。prologue 为 `meshcall-e2e/1|<credential_digest>`，其中 `credential_digest` 是隧道凭据（UTF-8 字节）的小写十六进制 SHA-256。客户端对自己的凭据求哈希；Router 在端到端隧道的 offer 中放入该摘要（绝不是凭据本身），字段为 `credential_digest`，实例使用握手所经过隧道的摘要。因此为一个隧道做的握手无法经由另一个隧道完成（`e2e_handshake_failed`）：持有第二个凭据的中继无法让某个客户端的密封调用以另一个隧道的 principal 执行；而一个隧道只有一个目标，会话也就绑定到了该实例。Router 只在端到端隧道的连接上路由这个方法，并带着隧道元数据送到目标实例；对其他连接，它与任何不可调用的保留方法一样被拒绝（普通隧道上为 `permission_denied`，`reason: "tunnel_scope"`；其他连接为 `method_not_found`，没有调用权限的连接则先得到 `permission_denied`）。会话 id 是握手哈希的前 16 字节（十六进制）；实例把会话记在该隧道下。Noise `Split()` 得到的两把密钥分别密封客户端 → 实例与实例 → 客户端。实例每个隧道最多保留 16 个会话（丢弃最旧的），隧道关闭时全部丢弃。
 
 **未知会话与被拒绝的帧。** 指名实例不认识的会话的调用，在任何处理器运行前即被拒绝，返回 `unauthenticated`，`reason: "e2e_session_unknown"`（重连过的实例已丢失会话）。收到这个应答时，无论调用形状，客户端都丢弃会话及其连接，在下一次调用前重新握手；一元调用重试一次，流式调用报告该错误。已知会话的帧若无法打开——被篡改、重放、过旧、被挪到别的调用或方法——则被拒绝（`call.open`）或结束其调用（后续帧），返回 `unauthenticated`，`reason: "e2e_frame_rejected"`；会话保留，因为只有 Router 或路径上的其他方才可能改动帧。客户端收到无法打开的帧时，以同样方式结束该调用（`source: "client"`）。
 
@@ -216,7 +216,7 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 对 Router 自身服务（`meshcall.router.*`：`AuthService`、`Registry`、`TunnelService`）的调用由 Router 应答，即使在端到端连接上也从不密封。在端到端隧道上，Router 拒绝其余所有缺少 `e2e_session` 与 `sealed` 的 `call.open`，以及所有 HTTP `/v1/call`（HTTP 无法承载会话），返回 `permission_denied`，`reason: "tunnel_e2e_required"`。它不按幂等键对密封调用去重：重放的终止帧在另一个会话里无法打开。`TunnelService/list` 与 `AuthService/whoami` 会显示隧道的 `e2e_key`。
 
-**密钥轮换。** 换了新密钥的实例会拒绝固定旧公钥的隧道的重新 offer（`e2e_key_mismatch`），这些隧道因此以 `key_changed` 原因关闭；其客户端的调用以 `unauthenticated` / `tunnel_closed` 失败，需要重新向签发方申请。第一个版本没有新旧密钥并存的过渡期。
+**密钥轮换。** 换了新密钥的实例会拒绝固定旧公钥的隧道的重新 offer（`e2e_key_mismatch`），这些隧道因此以 `key_changed` 原因关闭；其客户端的调用以 `unauthenticated` / `key_changed` 失败，需要重新向签发方申请。第一个版本没有新旧密钥并存的过渡期。
 
 ### 绑定实例的注册凭据
 
@@ -237,9 +237,9 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 | `revoke_token` | `token_id` | `revoked` |
 | `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
 
-只有账号或 API Key 可以调用这些方法（且 `call` ACL 中包含该方法）；`renew_token`、`revoke_token` 与 `list_tokens` 只能看到调用方自己签发的令牌。`ttl_seconds` 取 1 到 Router 的上限（`--token-max-ttl`，默认 30 天）；超过上限返回 `invalid_argument`，`details.reason: "ttl_too_long"`，并带 `details.max_ttl_seconds`；小于 1 返回 `invalid_argument`，`details.reason: "ttl_invalid"`。运行时默认 900 秒。Router 同时最多持有 `--max-tokens` 个未失效令牌（默认 4096；超出返回 `resource_exhausted`）。
+只有账号可以调用这些方法（且 `call` ACL 中包含该方法）；`renew_token`、`revoke_token` 与 `list_tokens` 只能看到调用方自己签发的令牌。`ttl_seconds` 取 1 到 Router 的上限（`--token-max-ttl`，默认 30 天）；超过上限返回 `invalid_argument`，`details.reason: "ttl_too_long"`，并带 `details.max_ttl_seconds`；小于 1 返回 `invalid_argument`，`details.reason: "ttl_invalid"`。运行时默认 900 秒。Router 同时最多持有 `--max-tokens` 个未失效令牌（默认 4096；超出返回 `resource_exhausted`）。
 
-**生命周期。** 与隧道凭据一样，`expires_at` 只约束*新*连接与 HTTP 请求：过期令牌在连接时被拒绝（HTTP 401，或在 `hello` 中发送时为 4401），但过期前已认证的连接保持在线——其调用与实例注册照常工作——直到连接关闭或令牌被吊销。`revoke_token` 立即关闭该令牌上的所有连接（调用按连接丢失处理失败），过期后同样有效，也是切断活跃连接的唯一方式。仍持有连接的过期令牌会继续列出（`expired: true`），以便签发方吊销；没有连接的过期令牌会被遗忘。
+**生命周期。** 与隧道凭据一样，`expires_at` 只约束*新*连接与 HTTP 请求：过期令牌在连接时被拒绝（HTTP 401，或在 `hello` 中发送时为 4401），但过期前已认证的连接保持在线——其调用与实例注册照常工作——直到连接关闭或令牌被吊销。`revoke_token` 立即以 4401 `token_revoked` 关闭该令牌上的所有连接，过期后同样有效，也是切断活跃连接的唯一方式：进行中的调用以不可重试的 `unauthenticated` 和该 `details.reason` 失败（进行中的 HTTP 调用以同样的错误应答 401），客户端会像隧道被撤销时一样记住这个应答。仍持有连接的过期令牌会继续列出（`expired: true`），以便签发方吊销；没有连接的过期令牌会被遗忘。
 
 **续期。** `renew_token` 把 `expires_at` 设为当前时间加 `ttl_seconds`（受同一上限约束）。密钥、scope 与 `instance_ids` 都不变，因此无需重新分发，也无需重连。无法续期的令牌——已过期、已吊销、未知或属于其他签发方：应答相同，签发方因此无从得知其他签发方的令牌——返回 `invalid_argument`，`details.reason: "token_expired"`；签发方应改为签发新令牌。
 
@@ -351,14 +351,15 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 | `instance_offline` | `unavailable`（可重试） | 隧道的目标实例当前未连接 |
 | `tunnel_rejected` | `permission_denied` | `TunnelService/open`：实例拒绝或不接受隧道 |
 | `tunnel_scope` | `permission_denied` | 隧道连接上的调用超出隧道视图；`details.instance_id` 为隧道目标 |
-| `tunnel_revoked` / `tunnel_closed` | `unauthenticated` | Router 以 4401 关闭了隧道连接（见[隧道连接](#隧道连接)） |
+| `tunnel_revoked` / `tunnel_closed` / `key_changed` | `unauthenticated` | Router 以 4401 关闭了隧道连接（见[隧道连接](#隧道连接)） |
+| `token_revoked` | `unauthenticated` | Router 以 4401 关闭了被吊销的临时令牌的连接（见[临时令牌](#临时令牌temporary-tokens)） |
 | `idempotency_key_on_duplex` | `invalid_argument` | duplex 调用携带了幂等键 |
 | `flow_control_violation` | `protocol_error` | 流条目超出消费方授予的信用（见[流量控制](#流方向与流量控制flow-control)） |
 | `router_draining` / `router_shutdown` | `unavailable` | Router 正在停止（见 [Router 停机](#router-停机router-shutdown)） |
 
 直连服务端使用同样的 reason，但 `source: "server"`；服务端执行自身 `max_inflight` 时返回 `resource_exhausted`（`source: "server"`，`reason: "overloaded"`）。超过帧大小上限而未发出的帧，由客户端或服务端以不可重试的 `resource_exhausted`（`reason: "frame_too_large"`）报告，`source` 为拒绝发送的一方（见[帧大小](#帧大小frame-size)）。客户端重试策略在进行了多次尝试时向最终错误加入 `attempts`。
 
-各运行时以同样方式报告 Router 如何结束连接：升级请求被 HTTP 401、403、429、503 拒绝，或 `hello` 被关闭码 4401、4403、4429、4503 拒绝（见[连接握手](#连接握手与服务注册)），分别报告为 `unauthenticated`、`permission_denied`、可重试的 `resource_exhausted`、可重试的 `unavailable`（`source: "router"`）；以 4401 关闭为不可重试的 `unauthenticated`（关闭原因是上表中的 reason 时放入 `details.reason`）；以 1008 关闭为 `permission_denied`，`reason: "policy_violation"`，消息中带有 Router 的关闭原因（注册被拒时说明原因：无权注册的服务、`instance_ids` 之外的 `instance_id`、冲突的方法）；其他断开为可重试的 `unavailable`。收到 `unauthenticated` 或 `permission_denied` 后客户端不再重连：同样的凭据会以同样的方式失败。
+各运行时以同样方式报告 Router 如何结束连接：升级请求被 HTTP 401、403、429、503 拒绝，或 `hello` 被关闭码 4401、4403、4429、4503 拒绝（见[连接握手](#连接握手与服务注册)），分别报告为 `unauthenticated`、`permission_denied`、可重试的 `resource_exhausted`、可重试的 `unavailable`（`source: "router"`）；以 4401 关闭为不可重试的 `unauthenticated`（关闭原因是上表中的 reason 时放入 `details.reason`）；以 1008 关闭为 `permission_denied`，`reason: "policy_violation"`，消息中带有 Router 的关闭原因（注册被拒时说明原因：无权注册的服务、`instance_ids` 之外的 `instance_id`、冲突的方法）；其他断开为可重试的 `unavailable`。收到 `unauthenticated` 或 `permission_denied` 后客户端不再重连：同样的凭据会以同样的方式失败。 服务实例同样在 Router 以 4401 关闭它或在连接时拒绝其凭据时立即停止（`unauthenticated`，保留关闭原因），不再向该 Router 重新注册，并记录原因；被拒绝的注册（1008）仍会重试，因为冲突可能消除。所有 Router 都拒绝后，`run` / `serve` 以该错误结束，以便进程管理器用新凭据重启它。
 
 ### 结构化校验错误（`details.violations`）
 

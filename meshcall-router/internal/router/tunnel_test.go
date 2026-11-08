@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -264,6 +265,75 @@ func TestTunnelRevokeClosesAndExpiryDoesNot(t *testing.T) {
 	}
 }
 
+// An HTTP call has a peer but no socket: revoking its tunnel must end it, not
+// crash the Router closing a connection that does not exist.
+func TestTunnelRevokeEndsAnHTTPCallInFlight(t *testing.T) {
+	r := runningRouter(t, nil)
+	host, frames := tunnelHost(t, r, "box-a", "", true)
+	issuer := clientConn(t, r, "")
+	opened := mustOpen(t, issuer, host, frames, `{"instance_id":"box-a","principal":"p","ttl_seconds":60,"scopes":[{"service":"test.v1.Echo","methods":["*"]}]}`)
+	req, _ := http.NewRequest(http.MethodPost, httpURL(r, "/v1/call/"+testService+"/echo"), strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+opened.Credential)
+	done := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- nil
+			return
+		}
+		done <- resp
+	}()
+	if routed := next(t, frames); routed.Kind != "call.open" {
+		t.Fatalf("the HTTP call did not reach the instance: %+v", routed)
+	}
+	call(t, issuer, "rv", TunnelService, "revoke", `{"tunnel_id":"`+opened.TunnelID+`"}`, nil)
+	select {
+	case resp := <-done:
+		if resp != nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), "tunnel_revoked") {
+				t.Fatalf("revoked mid-call: %d %s", resp.StatusCode, body)
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the HTTP call outlived its revoked tunnel")
+	}
+}
+
+// A re-offer refused because the instance's key changed tells live clients why.
+func TestKeyChangeClosesTheTunnelsClientsWithItsReason(t *testing.T) {
+	r := runningRouter(t, nil)
+	key := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	host, frames := tunnelHost(t, r, "box-a", "", true)
+	issuer := clientConn(t, r, "")
+	opened := mustOpen(t, issuer, host, frames, `{"instance_id":"box-a","principal":"p","ttl_seconds":60,"e2e_key":"`+key+`","scopes":[{"service":"test.v1.Echo","methods":["*"]}]}`)
+	live := clientConn(t, r, "Bearer "+opened.Credential)
+	_ = host.CloseNow()
+	eventually(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.instances["box-a"] == nil
+	})
+	newHost, offers := tunnelHost(t, r, "box-a", "", true)
+	offer := next(t, offers)
+	if offer.Method != "offer" {
+		t.Fatalf("expected a re-offer: %+v", offer)
+	}
+	send(t, newHost, frame{Kind: "call.result", CallID: offer.CallID, Payload: json.RawMessage(`{"accept":false,"reason":"e2e_key_mismatch"}`)})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for {
+		if _, _, err := live.Read(ctx); err != nil {
+			var closeErr websocket.CloseError
+			if !errors.As(err, &closeErr) || closeErr.Code != StatusUnauthenticated || closeErr.Reason != "key_changed" {
+				t.Fatalf("closed with %v, want 4401 key_changed", err)
+			}
+			return
+		}
+	}
+}
+
 func TestExpiredTunnelClosesWithItsLastConnection(t *testing.T) {
 	r := runningRouter(t, nil)
 	host, frames := tunnelHost(t, r, "box-a", "", true)
@@ -373,6 +443,13 @@ func TestIssuerPermissionsAndInstanceBoundRegistration(t *testing.T) {
 	issued := call(t, issuerOfTokens, "t-ok", AuthService, "issue_token", `{"ttl_seconds":60,"scopes":[{"service":"test.v1.Echo","register":true,"instance_ids":["box-b"]}]}`, nil)
 	var token IssueTokenResult
 	_ = json.Unmarshal(issued.Payload, &token)
+	both := call(t, issuerOfTokens, "t-both", AuthService, "issue_token", `{"ttl_seconds":60,"scopes":[{"service":"test.v1.Echo","methods":["echo"],"register":true,"instance_ids":["box-b"]}]}`, nil)
+	var bound IssueTokenResult
+	_ = json.Unmarshal(both.Payload, &bound)
+	who := clientConn(t, r, "Bearer "+bound.Token)
+	if got := call(t, who, "who", AuthService, "whoami", `{}`, nil); !strings.Contains(string(got.Payload), `"instance_ids":["box-b"]`) {
+		t.Fatalf("whoami on a token bound by its scope: %s", got.Payload)
+	}
 	tokenConn := dial(t, r, "Bearer "+token.Token)
 	send(t, tokenConn, frame{Kind: "hello", Protocol: Protocol, Role: "server", PeerID: "x", InstanceID: "box-a"})
 	_ = receive(t, tokenConn)
