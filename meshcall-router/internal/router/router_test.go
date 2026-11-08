@@ -278,14 +278,81 @@ func TestAccountAndTokenScopesExpiryRevocation(t *testing.T) {
 	if got := receive(t, worker); got.Kind != "call.cancel" || got.CallID != "active" {
 		t.Fatal("revoked call leaked")
 	}
+	// Expiry bounds new connections only: a live one keeps calling after it.
 	short := issue(1, scope)
 	shortConn := dial(t, r, "Bearer "+short.Token)
 	hello(t, shortConn, "client", "short")
-	if _, _, err := shortConn.Read(ctx); err == nil {
-		t.Fatal("expired connection survived")
+	time.Sleep(1200 * time.Millisecond)
+	send(t, shortConn, frame{Kind: "call.open", CallID: "after-expiry", Service: testService, Method: "echo", Payload: json.RawMessage("{}")})
+	if got := receive(t, worker); got.CallID != "after-expiry" {
+		t.Fatalf("a call after expiry on a live connection: %+v", got)
 	}
-	if auth.valid(auth.tokens[short.TokenID]) {
-		t.Fatal("expired token still valid")
+	send(t, worker, frame{Kind: "call.result", CallID: "after-expiry", Payload: json.RawMessage("{}")})
+	if got := receive(t, shortConn); got.Kind != "call.result" {
+		t.Fatalf("result after expiry: %+v", got)
+	}
+	if auth.admits(auth.tokens[short.TokenID]) || !auth.live(auth.tokens[short.TokenID]) {
+		t.Fatal("an expired token admits new connections, or no longer keeps its live one")
+	}
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	refused, response, err := websocket.Dial(dialCtx, fmt.Sprintf("ws://127.0.0.1:%d", r.Ready().Port),
+		&websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + short.Token}}})
+	dialCancel()
+	if refused != nil {
+		_ = refused.CloseNow()
+	}
+	if err == nil || response == nil || response.StatusCode != 401 {
+		t.Fatal("a new connection with an expired token was accepted")
+	}
+	// The issuer sees the expired token holding its connection, and renewing
+	// an expired token is refused.
+	listed := rpc(issuer, "list_tokens", map[string]any{})
+	if !strings.Contains(string(listed.Payload), `"token_id":"`+short.TokenID+`"`) || !strings.Contains(string(listed.Payload), `"expired":true,"connections":1`) ||
+		strings.Contains(string(listed.Payload), short.Token) {
+		t.Fatalf("list_tokens: %s", listed.Payload)
+	}
+	if got := rpc(issuer, "renew_token", map[string]any{"token_id": short.TokenID, "ttl_seconds": 60}); got.Error == nil || !strings.Contains(string(got.Error.Details), "token_expired") {
+		t.Fatalf("renewing an expired token: %+v", got.Error)
+	}
+	// Revocation ends it at once, past expiry too.
+	if got := rpc(issuer, "revoke_token", map[string]any{"token_id": short.TokenID}); string(got.Payload) != `{"revoked":true}` {
+		t.Fatalf("revoking an expired token with a live connection: %s", got.Payload)
+	}
+	if _, _, err := shortConn.Read(ctx); err == nil {
+		t.Fatal("a revoked connection past expiry survived")
+	}
+
+	// Renewal moves expiry; only the issuer renews; the TTL is bounded.
+	renewable := issue(1, scope)
+	if got := rpc(reader, "renew_token", map[string]any{"token_id": renewable.TokenID, "ttl_seconds": 60}); got.Error == nil {
+		t.Fatal("another account renewed a token")
+	}
+	got := rpc(issuer, "renew_token", map[string]any{"token_id": renewable.TokenID, "ttl_seconds": 60})
+	var renewed struct {
+		ExpiresUnixMS int64 `json:"expires_at_unix_ms"`
+	}
+	if got.Error != nil || json.Unmarshal(got.Payload, &renewed) != nil || renewed.ExpiresUnixMS < time.Now().Add(59*time.Second).UnixMilli() {
+		t.Fatalf("renew_token: %+v %s", got.Error, got.Payload)
+	}
+	time.Sleep(1200 * time.Millisecond)
+	later := dial(t, r, "Bearer "+renewable.Token) // past the old expiry, same secret
+	hello(t, later, "client", "renewed")
+	if got := rpc(issuer, "issue_token", IssueTokenRequest{TTLSeconds: 31 * 24 * 3600, Scopes: scope}); got.Error == nil ||
+		got.Error.Code != "invalid_argument" || !strings.Contains(string(got.Error.Details), `"max_ttl_seconds":2592000`) {
+		t.Fatalf("a TTL above the maximum: %+v", got.Error)
+	}
+	for method, payload := range map[string]any{
+		"issue_token": map[string]any{"ttl_seconds": 0, "scopes": scope},
+		"renew_token": map[string]any{"token_id": renewable.TokenID, "ttl_seconds": 0},
+	} {
+		got := rpc(issuer, method, payload)
+		if got.Error == nil || got.Error.Code != "invalid_argument" || !strings.Contains(string(got.Error.Details), `"reason":"ttl_invalid"`) ||
+			strings.Contains(string(got.Error.Details), "max_ttl_seconds") {
+			t.Fatalf("%s with ttl_seconds 0: %+v", method, got.Error)
+		}
+	}
+	if long := issue(7*24*3600, scope); long.ExpiresUnixMS < time.Now().Add(6*24*time.Hour).UnixMilli() {
+		t.Fatalf("a week-long token: %+v", long)
 	}
 }
 

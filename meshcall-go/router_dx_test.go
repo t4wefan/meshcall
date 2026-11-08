@@ -235,8 +235,26 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 		t.Fatalf("Auth().Whoami scoped failed: %+v, err=%v", scopedMe, err)
 	}
 
+	// Renewal moves expiry; the list shows the live connection, never the secret.
+	renewed, err := adminMesh.Auth().RenewToken(ctx, issued.TokenID, 30*24*3600)
+	if err != nil || renewed.ExpiresAtUnixMS <= issued.ExpiresAtUnixMS {
+		t.Fatalf("Auth().RenewToken failed: %+v, err=%v", renewed, err)
+	}
+	tokens, err := adminMesh.Auth().ListTokens(ctx)
+	if err != nil || len(tokens) != 1 || tokens[0].TokenID != issued.TokenID || tokens[0].Connections != 1 || tokens[0].Expired {
+		t.Fatalf("Auth().ListTokens failed: %+v, err=%v", tokens, err)
+	}
+	_, err = adminMesh.Auth().RenewToken(ctx, issued.TokenID, 31*24*3600)
+	if e, _ := meshcall.AsError(err); e == nil || e.Code != meshcall.CodeInvalidArgument || e.Reason() != "ttl_too_long" {
+		t.Fatalf("a TTL above the maximum: %v", err)
+	}
+
 	revoked, err := adminMesh.Auth().RevokeToken(ctx, issued.TokenID)
 	if err != nil || !revoked.Revoked {
 		t.Fatalf("Auth().RevokeToken failed: %+v, err=%v", revoked, err)
+	}
+	_, err = adminMesh.Auth().RenewToken(ctx, issued.TokenID, 600)
+	if e, _ := meshcall.AsError(err); e == nil || e.Reason() != "token_expired" {
+		t.Fatalf("renewing a revoked token: %v", err)
 	}
 }

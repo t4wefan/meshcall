@@ -34,6 +34,9 @@ type User struct {
 	key         []byte
 	expires     time.Time
 	tokenID     string
+	// connections counts the live connections (and HTTP requests) on a
+	// token, so an expired token holding some is kept for revoke_token.
+	connections int
 	kind        identityKind
 	// registerInstances restricts a token's registration per service.
 	registerInstances map[string][]string
@@ -83,6 +86,15 @@ type Auth struct {
 	mu        sync.Mutex
 	tokens    map[string]*User
 	verified  map[[32]byte]verifiedBasic // successful Basic checks, a cache
+	// Token limits, set by the Router (Config.TokenMaxTTL, MaxTokens).
+	tokenMaxTTL time.Duration
+	maxTokens   int
+}
+
+func (a *Auth) setTokenLimits(maxTTL time.Duration, maxTokens int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.tokenMaxTTL, a.maxTokens = maxTTL, maxTokens
 }
 
 type apiKeyEntry struct {
@@ -374,13 +386,36 @@ func authenticate(w http.ResponseWriter, user *User, failure *authFailure) (*Use
 	return nil, false
 }
 
-func (a *Auth) valid(user *User) bool {
+// admits: a new connection or HTTP request may use this identity. An
+// expired token admits nothing new.
+func (a *Auth) admits(user *User) bool {
 	if user == nil || user.tokenID == "" {
 		return true
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.tokens[user.tokenID] == user && time.Now().Before(user.expires)
+}
+
+// live: a connection already admitted may go on. Only revocation ends it;
+// expiry does not (docs/protocol.md → Temporary tokens).
+func (a *Auth) live(user *User) bool {
+	if user == nil || user.tokenID == "" {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.tokens[user.tokenID] == user
+}
+
+// countConnection adjusts a token's live connections by delta.
+func (a *Auth) countConnection(user *User, delta int) {
+	if user == nil || user.tokenID == "" {
+		return
+	}
+	a.mu.Lock()
+	user.connections += delta
+	a.mu.Unlock()
 }
 
 func (u *User) allowsRole(role string) bool {

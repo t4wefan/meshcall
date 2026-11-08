@@ -371,3 +371,11 @@ func TestTunnelCallAndInspect(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatSeconds(t *testing.T) {
+	for in, want := range map[float64]string{2592000: "720h", 90: "1m30s", 3600: "1h", 59: "59s", 0: "0s"} {
+		if got := formatSeconds(in); got != want {
+			t.Errorf("formatSeconds(%v) = %q, want %q", in, got, want)
+		}
+	}
+}

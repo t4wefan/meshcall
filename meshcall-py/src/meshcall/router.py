@@ -42,14 +42,18 @@ from meshcall.router_auth import (
     REGISTRY_SERVICE,
     IssuedToken,
     RegistryService,
+    RenewedToken,
     RouterCredentials,
     RouterIdentity,
     RouterScope,
+    TokenInfo,
     _DescribeServiceRequest,
     _Empty,
     _IssueRequest,
     _ListServicesResult,
+    _ListTokensResult,
     _normalize_scope_service,
+    _RenewRequest,
     _RevokeRequest,
     _RevokeResult,
 )
@@ -447,7 +451,11 @@ class AuthClient:
     async def issue_token(
         self, scopes: Sequence[RouterScope], ttl_seconds: int = 900
     ) -> IssuedToken:
-        """Issue a scoped, short-lived Bearer token."""
+        """Issue a scoped Bearer token.
+
+        ``ttl_seconds`` may reach the Router's maximum (``--token-max-ttl``,
+        30 days by default). Expiry bounds new connections only: one made
+        before it stays up until it closes or the token is revoked."""
         normalized = [
             scope.model_copy(
                 update={"service": _normalize_scope_service(scope.service)}
@@ -462,7 +470,8 @@ class AuthClient:
         )
 
     async def revoke_token(self, token_id: str) -> bool:
-        """Revoke a previously issued Bearer token by its ``token_id``."""
+        """Revoke a token you issued: every connection on it closes at once,
+        past its expiry too."""
         result = await self._mesh.call_unary(
             AUTH_SERVICE,
             "revoke_token",
@@ -470,6 +479,27 @@ class AuthClient:
             _RevokeResult,
         )
         return result.revoked
+
+    async def renew_token(self, token_id: str, *, ttl_seconds: int) -> RenewedToken:
+        """Move a token you issued to expire ``ttl_seconds`` from now.
+
+        The secret, scopes and instance ids stay, so its holder reconnects
+        nothing. An expired, revoked or unknown token raises
+        ``InvalidArgumentError`` (``reason: token_expired``): issue a new one."""
+        return await self._mesh.call_unary(
+            AUTH_SERVICE,
+            "renew_token",
+            _RenewRequest(token_id=token_id, ttl_seconds=ttl_seconds),
+            RenewedToken,
+        )
+
+    async def list_tokens(self) -> list[TokenInfo]:
+        """Your outstanding tokens (never their secrets), expired ones still
+        holding connections included."""
+        result = await self._mesh.call_unary(
+            AUTH_SERVICE, "list_tokens", _Empty(), _ListTokensResult
+        )
+        return result.tokens
 
 
 def _check_strict_services(services: Sequence[object]) -> None:

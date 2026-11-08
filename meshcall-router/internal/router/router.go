@@ -73,6 +73,11 @@ type Config struct {
 	// are refused with 503. HTTP calls are not counted: their admission is a
 	// separate design (#8). Zero means the default.
 	MaxConnections int
+	// TokenMaxTTL bounds issue_token and renew_token ttl_seconds (0: the
+	// default, 30 days). MaxTokens bounds outstanding temporary tokens,
+	// expired ones still holding connections included (0: the default).
+	TokenMaxTTL time.Duration
+	MaxTokens   int
 	// MetricsListen, when set, serves Prometheus metrics on this TCP address
 	// (never on the public listener: labels name services and methods).
 	MetricsListen string
@@ -88,6 +93,9 @@ const (
 	// DefaultMaxFrameSize is also the largest frame size accepted.
 	DefaultMaxFrameSize = 64 << 20
 	DefaultOutboxSize   = 256 << 20
+
+	DefaultTokenMaxTTL = 30 * 24 * time.Hour
+	DefaultMaxTokens   = 4096
 
 	DefaultMaxCallsPerConnection = 1000
 	DefaultShutdownTimeout       = 10 * time.Second
@@ -162,6 +170,7 @@ type peer struct {
 	// capabilities from hello; "tunnels" means the instance answers offers.
 	capabilities []string
 	admitted     bool // counted against a tunnel's connections
+	tokenCounted bool // counted against its token's connections
 }
 
 func (p *peer) send(f frame) {
@@ -295,6 +304,18 @@ func Start(config Config) (*Router, error) {
 	}
 	if config.MaxCallsPerConnection == 0 {
 		config.MaxCallsPerConnection = DefaultMaxCallsPerConnection
+	}
+	if config.TokenMaxTTL == 0 {
+		config.TokenMaxTTL = DefaultTokenMaxTTL
+	}
+	if config.MaxTokens == 0 {
+		config.MaxTokens = DefaultMaxTokens
+	}
+	if config.TokenMaxTTL < time.Second || config.MaxTokens < 1 {
+		return nil, errors.New("token-max-ttl must be at least 1s and max-tokens at least 1")
+	}
+	if config.Auth != nil {
+		config.Auth.setTokenLimits(config.TokenMaxTTL, config.MaxTokens)
 	}
 	if config.ShutdownTimeout == 0 {
 		config.ShutdownTimeout = DefaultShutdownTimeout
@@ -674,13 +695,9 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	conn.SetReadLimit(int64(r.config.MaxFrameSize))
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if user != nil && !user.expires.IsZero() {
-		ctx, cancel = context.WithDeadline(r.ctx, user.expires)
-	} else {
-		ctx, cancel = context.WithCancel(r.ctx)
-	}
+	// A token's expiry bounds new connections only: this one lives until it
+	// closes or the token is revoked.
+	ctx, cancel := context.WithCancel(r.ctx)
 	p := &peer{conn: conn, ctx: ctx, cancel: cancel, user: user, out: newOutbox(r.config.OutboxSize), drops: &r.metrics.outboxDrops}
 	r.mu.Lock()
 	if r.draining || !r.admit(p) {
@@ -747,10 +764,6 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		if anonymous {
 			anonymous = false
 			r.anonymous.Add(-1)
-		}
-		if helloUser != nil && !helloUser.expires.IsZero() {
-			expiry := time.AfterFunc(time.Until(helloUser.expires), cancel)
-			defer expiry.Stop()
 		}
 	}
 	user = p.user
@@ -942,7 +955,7 @@ func (r *Router) register(p *peer, f frame) error {
 func (r *Router) forward(p *peer, f frame) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if p.ctx.Err() != nil || !r.config.Auth.valid(p.user) || (p.user != nil && p.user.tunnel != nil && p.user.tunnel.closed) {
+	if p.ctx.Err() != nil || !r.config.Auth.live(p.user) || (p.user != nil && p.user.tunnel != nil && p.user.tunnel.closed) {
 		p.cancel()
 		return
 	}

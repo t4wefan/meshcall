@@ -502,6 +502,50 @@ registration under any other id with 1008 and a close reason saying so. Without 
 to register a service could register as a tunnel's target while that
 instance is offline.
 
+## Temporary tokens
+
+`meshcall.router.v1.AuthService` issues temporary tokens (`mt_…`): a Router
+account delegates part of its permissions, optionally bound to instance ids,
+to a secret it hands to a caller or a service instance. The Router keeps only
+the token's SHA-256 digest, in memory; tokens are per Router process and are
+invalid after a restart (an issuer hands out a new one when a holder's
+reconnect is refused).
+
+| Method | Request | Result |
+| --- | --- | --- |
+| `issue_token` | `ttl_seconds`, `scopes[{service, methods?, register?, instance_ids?}]` | `token` (returned once), `token_id`, `expires_at_unix_ms`, `scopes` |
+| `renew_token` | `token_id`, `ttl_seconds` | `token_id`, `expires_at_unix_ms` |
+| `revoke_token` | `token_id` | `revoked` |
+| `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
+
+Only an account or API key may call these (with the method in its `call`
+ACL), and `renew_token`, `revoke_token` and `list_tokens` see only the
+caller's own tokens. `ttl_seconds` is 1 up to the Router's maximum
+(`--token-max-ttl`, 30 days by default); above it the answer is
+`invalid_argument` with `details.reason: "ttl_too_long"` and
+`details.max_ttl_seconds`; below 1 it is `invalid_argument` with
+`details.reason: "ttl_invalid"`. Runtimes default to 900 s. The Router holds at most
+`--max-tokens` outstanding tokens (4096 by default; `resource_exhausted`
+beyond).
+
+**Lifetime.** `expires_at` bounds *new* connections and HTTP requests only,
+as for tunnel credentials: an expired token is refused at connect (HTTP 401,
+or 4401 when sent in `hello`), but a connection authenticated before expiry
+stays up — its calls and its instance's registration keep working — until it
+closes or the token is revoked. `revoke_token` closes every connection on the
+token at once (calls fail as for any lost connection), past expiry too, and is
+the only way to cut a live one. An expired token that still holds connections
+stays listed (`expired: true`) so its issuer can revoke it; one without
+connections is forgotten.
+
+**Renewal.** `renew_token` sets `expires_at` to now plus `ttl_seconds`
+(bounded by the same maximum). The secret, scopes and `instance_ids` do not
+change, so nothing is redelivered and nothing reconnects. A token that cannot
+be renewed — expired, revoked, unknown or another issuer's: the answer is the
+same, so an issuer learns nothing about other issuers' tokens — gets
+`invalid_argument` with `details.reason: "token_expired"`; the issuer issues a
+new token instead.
+
 ## Timeouts
 
 `timeout_ms` is the total budget for the call, measured by each peer from the

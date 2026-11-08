@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   findRouterBinary,
+  InvalidArgumentError,
   LocalRouter,
   Mesh,
   method,
@@ -155,7 +156,7 @@ test(
 );
 
 test(
-  "Mesh built-in AuthClient methods (whoami, issueToken, revokeToken) work with RouterCredentials and token",
+  "Mesh built-in AuthClient methods (whoami, issueToken, listTokens, renewToken, revokeToken) work with RouterCredentials and token",
   { timeout: 10000, skip: routerMissing },
   async (t) => {
     const dir = await mkdtemp(join(tmpdir(), "meshcall-ts-router-dx-"));
@@ -209,7 +210,24 @@ test(
     const echo = new EchoTestClient(scopedMesh);
     assert.deepEqual(await echo.repeat("hello"), { text: "hello" });
 
+    const [listed] = (await adminMesh.auth.listTokens()).filter((t) => t.token_id === issued.token_id);
+    assert.equal(listed?.issuer, "admin");
+    assert.equal(listed?.connections, 1);
+    assert.equal(listed?.expired, false);
+    assert.equal(JSON.stringify(listed).includes(issued.token), false);
+
+    const renewed = await adminMesh.auth.renewToken(issued.token_id, 7 * 24 * 3600);
+    assert.equal(renewed.token_id, issued.token_id);
+    assert.ok(renewed.expires_at_unix_ms > issued.expires_at_unix_ms);
+    assert.deepEqual(await echo.repeat("renewed"), { text: "renewed" });
+
+    await assert.rejects(adminMesh.auth.renewToken(issued.token_id, 31 * 24 * 3600), (error: unknown) =>
+      error instanceof InvalidArgumentError && error.details?.["reason"] === "ttl_too_long"
+      && error.details?.["max_ttl_seconds"] === 30 * 24 * 3600);
+
     const revoked = await adminMesh.auth.revokeToken(issued.token_id);
     assert.equal(revoked, true);
+    await assert.rejects(adminMesh.auth.renewToken(issued.token_id, 60), (error: unknown) =>
+      error instanceof InvalidArgumentError && error.details?.["reason"] === "token_expired");
   },
 );

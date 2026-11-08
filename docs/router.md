@@ -435,7 +435,9 @@ same `code` / `message` / `details` / `hint` fields).
 | --- | --- | --- |
 | `whoami` | `{}` | Any authenticated client identity, including a temporary token |
 | `issue_token` | `ttl_seconds`, `scopes` | Account with the method in its `call` ACL |
+| `renew_token` | `token_id`, `ttl_seconds` | Account with the method in its `call` ACL; only its own tokens |
 | `revoke_token` | `token_id` | Account with the method in its `call` ACL; only its own tokens |
+| `list_tokens` | `{}` | Account with the method in its `call` ACL; lists its own tokens, never their secrets |
 
 `whoami` also reports `instance_ids` when the identity is bound to instance
 ids, and `tunnel` on a tunnel connection.
@@ -469,15 +471,28 @@ requested scopes exceeding the account return `permission_denied`.
 The response contains `token` (a random 256-bit opaque secret), `token_id`,
 `expires_at_unix_ms`, and the accepted `scopes`. Only a SHA-256 token digest and
 its permissions are stored in memory; the secret is returned once. The SDK
-default lifetime is 900 seconds; accepted lifetimes are 1–3600 seconds. There can
-be at most 4096 outstanding tokens and 128 service scopes per token. Expired
-entries are removed when issuing further tokens.
+default lifetime is 900 seconds; accepted lifetimes are 1 second up to
+`--token-max-ttl` (30 days by default; longer requests get `invalid_argument`
+with `details.max_ttl_seconds`). There can be at most `--max-tokens`
+outstanding tokens (4096 by default) and 128 service scopes per token.
 
-Expiry or revocation prevents new connections and closes existing token
-connections. Client calls are cancelled; calls assigned to an expired/revoked
-service instance fail with retryable `unavailable`. Token credentials are
-specific to one Router process and become invalid after its restart. There is
-no shared token database or replicated Router state.
+Expiry prevents *new* connections only: a connection made before it stays up,
+with its calls and registrations, until it closes or the token is revoked, so
+a long-running instance never drops off the mesh on a timer. `renew_token`
+moves the expiry forward without a new secret or a reconnect (an expired,
+revoked or unknown token gets `invalid_argument` / `token_expired`).
+Revocation closes every connection on the token at once, past expiry too:
+client calls are cancelled and calls assigned to a revoked service instance
+fail with retryable `unavailable`. `meshcall router inspect` lists your tokens
+with their expiry and live connection count, expired ones still holding
+connections included; `meshcall token renew TOKEN_ID --ttl 720h` renews one.
+Token credentials are specific to one Router process and become invalid after
+its restart. There is no shared token database or replicated Router state.
+
+A device or container daemon is the typical long-lived holder: the control
+plane issues it a token bound to its instance id (`register: true`,
+`instance_ids: ["box-a"]`, `ttl_seconds` of days), renews it while the
+container exists, and revokes it when the container is deleted.
 
 Python, connecting to a Router configured with the `app` account above:
 

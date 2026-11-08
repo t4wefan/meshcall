@@ -131,6 +131,25 @@ type RevokeTokenResponse struct {
 	Revoked bool `json:"revoked"`
 }
 
+// RenewedToken is returned by Mesh.Auth().RenewToken(): the same token with
+// its new expiry.
+type RenewedToken struct {
+	TokenID         string `json:"token_id"`
+	ExpiresAtUnixMS int64  `json:"expires_at_unix_ms"`
+}
+
+// TokenInfo is an outstanding temporary token as its issuer sees it (never
+// the secret), from Mesh.Auth().ListTokens().
+type TokenInfo struct {
+	TokenID         string   `json:"token_id"`
+	Issuer          string   `json:"issuer"`
+	InstanceIDs     []string `json:"instance_ids,omitempty"`
+	ExpiresAtUnixMS int64    `json:"expires_at_unix_ms"`
+	// Expired: it admits no new connection, but these stay up until revoked.
+	Expired     bool `json:"expired"`
+	Connections int  `json:"connections"`
+}
+
 // --- Layer 2: Router & LocalRouter -----------------------------------------
 
 // RouterEndpoint is implemented by *Router (remote endpoint descriptor) and
@@ -682,14 +701,38 @@ func (ac *AuthClient) Whoami(ctx context.Context, opts ...CallOption) (WhoamiRes
 	return whoami(ctx, ac.caller, opts...)
 }
 
-// IssueToken calls meshcall.router.v1.AuthService/issue_token to mint a scoped bearer token.
+// IssueToken calls meshcall.router.v1.AuthService/issue_token to mint a scoped
+// bearer token. ttlSeconds may reach the Router's --token-max-ttl (30 days by
+// default); expiry bounds new connections only.
 func (ac *AuthClient) IssueToken(ctx context.Context, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
 	return issueToken(ctx, ac.caller, scopes, ttlSeconds, opts...)
 }
 
-// RevokeToken calls meshcall.router.v1.AuthService/revoke_token to revoke a token by its ID.
+// RevokeToken calls meshcall.router.v1.AuthService/revoke_token: every
+// connection on the token closes at once, past its expiry too.
 func (ac *AuthClient) RevokeToken(ctx context.Context, tokenID string, opts ...CallOption) (RevokeTokenResponse, error) {
 	return revokeToken(ctx, ac.caller, tokenID, opts...)
+}
+
+// RenewToken calls meshcall.router.v1.AuthService/renew_token: the token
+// expires ttlSeconds from now; its secret, scopes and instance ids stay, so
+// its holder reconnects nothing. An expired, revoked or unknown token is
+// invalid_argument with reason token_expired.
+func (ac *AuthClient) RenewToken(ctx context.Context, tokenID string, ttlSeconds int64, opts ...CallOption) (RenewedToken, error) {
+	type renewReq struct {
+		TokenID    string `json:"token_id"`
+		TTLSeconds int64  `json:"ttl_seconds"`
+	}
+	return Unary[renewReq, RenewedToken](ctx, ac.caller, routerAuthService, "renew_token", renewReq{tokenID, ttlSeconds}, opts...)
+}
+
+// ListTokens calls meshcall.router.v1.AuthService/list_tokens: your
+// outstanding tokens, expired ones still holding connections included.
+func (ac *AuthClient) ListTokens(ctx context.Context, opts ...CallOption) ([]TokenInfo, error) {
+	resp, err := Unary[struct{}, struct {
+		Tokens []TokenInfo `json:"tokens"`
+	}](ctx, ac.caller, routerAuthService, "list_tokens", struct{}{}, append([]CallOption{IdempotentCall()}, opts...)...)
+	return resp.Tokens, err
 }
 
 func listServices(ctx context.Context, c Caller, opts ...CallOption) ([]RegistryService, error) {

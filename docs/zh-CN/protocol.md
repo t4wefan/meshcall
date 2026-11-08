@@ -226,6 +226,23 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 ---
 
+## 临时令牌（Temporary tokens）
+
+`meshcall.router.v1.AuthService` 签发临时令牌（`mt_…`）：Router 账号把自身权限的一部分（可绑定实例 id）委托给一个密钥，交给调用方或服务实例。Router 只在内存中保存令牌的 SHA-256 摘要；令牌属于单个 Router 进程，重启后失效（持有方重连被拒时，由签发方重新签发）。
+
+| 方法 | 请求 | 结果 |
+| --- | --- | --- |
+| `issue_token` | `ttl_seconds`、`scopes[{service, methods?, register?, instance_ids?}]` | `token`（只返回一次）、`token_id`、`expires_at_unix_ms`、`scopes` |
+| `renew_token` | `token_id`、`ttl_seconds` | `token_id`、`expires_at_unix_ms` |
+| `revoke_token` | `token_id` | `revoked` |
+| `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
+
+只有账号或 API Key 可以调用这些方法（且 `call` ACL 中包含该方法）；`renew_token`、`revoke_token` 与 `list_tokens` 只能看到调用方自己签发的令牌。`ttl_seconds` 取 1 到 Router 的上限（`--token-max-ttl`，默认 30 天）；超过上限返回 `invalid_argument`，`details.reason: "ttl_too_long"`，并带 `details.max_ttl_seconds`；小于 1 返回 `invalid_argument`，`details.reason: "ttl_invalid"`。运行时默认 900 秒。Router 同时最多持有 `--max-tokens` 个未失效令牌（默认 4096；超出返回 `resource_exhausted`）。
+
+**生命周期。** 与隧道凭据一样，`expires_at` 只约束*新*连接与 HTTP 请求：过期令牌在连接时被拒绝（HTTP 401，或在 `hello` 中发送时为 4401），但过期前已认证的连接保持在线——其调用与实例注册照常工作——直到连接关闭或令牌被吊销。`revoke_token` 立即关闭该令牌上的所有连接（调用按连接丢失处理失败），过期后同样有效，也是切断活跃连接的唯一方式。仍持有连接的过期令牌会继续列出（`expired: true`），以便签发方吊销；没有连接的过期令牌会被遗忘。
+
+**续期。** `renew_token` 把 `expires_at` 设为当前时间加 `ttl_seconds`（受同一上限约束）。密钥、scope 与 `instance_ids` 都不变，因此无需重新分发，也无需重连。无法续期的令牌——已过期、已吊销、未知或属于其他签发方：应答相同，签发方因此无从得知其他签发方的令牌——返回 `invalid_argument`，`details.reason: "token_expired"`；签发方应改为签发新令牌。
+
 ## 超时（Timeouts）
 
 - **`timeout_ms`**：整个调用的总时间预算（相对时间，各节点使用本地单调时钟从处理 `call.open` 起独立计时，无需机器间时钟同步）。缺省表示不限。

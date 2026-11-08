@@ -25,7 +25,9 @@ import type { Metadata } from "./protocol.js";
 import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 // Types only: importing router-auth's values would pull contract.ts (and Node's
 // crypto/fs/path) into browser bundles.
-import type { IssuedToken, RegistryService, RouterIdentity, RouterScope } from "./router-auth.js";
+import type {
+  IssuedToken, RegistryService, RenewedToken, RouterIdentity, RouterScope, TokenInfo,
+} from "./router-auth.js";
 import { checkTunnelCredential, normalizeScopeService, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient } from "./tunnel.js";
 import { checkE2EAgreement, checkE2EKey } from "./e2e.js";
 import { WebSocketTransport } from "./web-socket.js";
@@ -529,6 +531,11 @@ export class AuthClient {
     return this.rpc.unary(ROUTER_AUTH_SERVICE, "whoami", {}, { idempotent: true, ...options });
   }
 
+  /**
+   * Issue a scoped Bearer token. `ttlSeconds` may reach the Router's maximum
+   * (`--token-max-ttl`, 30 days by default); expiry bounds new connections
+   * only, so one made before it stays up until it closes or is revoked.
+   */
   public issueToken(
     scopes: ReadonlyArray<RouterScope>, ttlSeconds = 900, options?: CallOptions,
   ): Promise<IssuedToken> {
@@ -546,6 +553,26 @@ export class AuthClient {
       ROUTER_AUTH_SERVICE, "revoke_token", { token_id: tokenId }, { idempotent: true, ...options },
     );
     return result.revoked;
+  }
+
+  /**
+   * Move a token you issued to expire `ttlSeconds` from now. The secret,
+   * scopes and instance ids stay, so its holder reconnects nothing. An
+   * expired, revoked or unknown token rejects with `InvalidArgumentError`
+   * (`reason: "token_expired"`): issue a new one.
+   */
+  public renewToken(tokenId: string, ttlSeconds: number, options?: CallOptions): Promise<RenewedToken> {
+    if (tokenId === "") throw new RangeError("tokenId must not be empty");
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) throw new RangeError("ttlSeconds must be a positive integer");
+    return this.rpc.unary(ROUTER_AUTH_SERVICE, "renew_token", { token_id: tokenId, ttl_seconds: ttlSeconds }, options);
+  }
+
+  /** Your outstanding tokens (never their secrets), expired ones still holding connections included. */
+  public async listTokens(options?: CallOptions): Promise<TokenInfo[]> {
+    const result = await this.rpc.unary<Record<string, never>, { tokens: TokenInfo[] }>(
+      ROUTER_AUTH_SERVICE, "list_tokens", {}, { idempotent: true, ...options },
+    );
+    return result.tokens ?? [];
   }
 }
 

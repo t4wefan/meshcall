@@ -64,10 +64,12 @@ from meshcall.router_auth import (
     RegistryInstance,
     RegistryMethod,
     RegistryService,
+    RenewedToken,
     RouterAuthClient,
     RouterCredentials,
     RouterIdentity,
     RouterScope,
+    TokenInfo,
 )
 from meshcall.server import RpcServer
 from meshcall.streams import (
@@ -123,6 +125,7 @@ __all__ = [
     "RegistryInstance",
     "RegistryMethod",
     "RegistryService",
+    "RenewedToken",
     "ResourceExhaustedError",
     "RetryPolicy",
     "Router",
@@ -141,6 +144,7 @@ __all__ = [
     "ServerCallNext",
     "ServerInterceptor",
     "StreamKind",
+    "TokenInfo",
     "Tunnel",
     "TunnelClosed",
     "TunnelInfo",
