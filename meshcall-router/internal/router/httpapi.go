@@ -381,17 +381,21 @@ func (c *httpCall) next() (frame, error) {
 		select {
 		case <-c.p.out.ready:
 		case <-c.p.ctx.Done():
-			if c.p.refusal != "" {
-				return frame{Kind: "call.error", CallID: c.id, Error: c.refused()}, nil
+			if refused := c.refused(); refused != nil {
+				return frame{Kind: "call.error", CallID: c.id, Error: refused}, nil
 			}
 			return frame{}, errHTTPGone
 		}
 	}
 }
 
-// refused is the error of a call whose credential was revoked mid-call.
+// refused is the error of a call whose credential was revoked mid-call, or nil.
 func (c *httpCall) refused() *errorPayload {
-	return routerHTTPError("unauthenticated", "The Router closed the connection: "+c.p.refusal, c.p.refusal)
+	reason := c.p.refusal.Load()
+	if reason == nil {
+		return nil
+	}
+	return routerHTTPError("unauthenticated", "The Router closed the connection: "+*reason, *reason)
 }
 
 func (c *httpCall) send(f frame) {
@@ -595,8 +599,8 @@ func (c *httpCall) clientStream(body *bufio.Reader) {
 				}
 			}
 		case <-c.p.ctx.Done():
-			if c.p.refusal != "" {
-				writeHTTPError(c.w, c.refused())
+			if refused := c.refused(); refused != nil {
+				writeHTTPError(c.w, refused)
 			}
 			return
 		}

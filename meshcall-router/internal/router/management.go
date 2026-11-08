@@ -302,7 +302,7 @@ func (r *Router) management(p *peer, f frame) {
 		}{p.user.Username, p.user.Roles, nonNil(p.user.Register), nonNil(p.user.Call), p.user.boundInstances(), expires, tunnel}
 	case "issue_token":
 		if !p.user.mayIssueTokens() {
-			fail("permission_denied", "Temporary tokens cannot issue tokens")
+			fail("permission_denied", "Only accounts may issue temporary tokens")
 			return
 		}
 		var request IssueTokenRequest
@@ -318,7 +318,7 @@ func (r *Router) management(p *peer, f frame) {
 		result = issued
 	case "renew_token":
 		if !p.user.mayIssueTokens() {
-			fail("permission_denied", "Temporary tokens cannot renew tokens")
+			fail("permission_denied", "Only accounts may renew temporary tokens")
 			return
 		}
 		var request struct {
@@ -341,7 +341,7 @@ func (r *Router) management(p *peer, f frame) {
 		}{renewed.TokenID, renewed.ExpiresUnixMS}
 	case "list_tokens":
 		if !p.user.mayIssueTokens() {
-			fail("permission_denied", "Temporary tokens cannot list tokens")
+			fail("permission_denied", "Only accounts may list temporary tokens")
 			return
 		}
 		var request struct{}
@@ -366,7 +366,7 @@ func (r *Router) management(p *peer, f frame) {
 		}{tokens}
 	case "revoke_token":
 		if !p.user.mayIssueTokens() {
-			fail("permission_denied", "Temporary tokens cannot revoke tokens")
+			fail("permission_denied", "Only accounts may revoke temporary tokens")
 			return
 		}
 		var request struct {

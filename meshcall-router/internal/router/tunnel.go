@@ -481,7 +481,7 @@ func (r *Router) abandonOffer(o *offer) {
 // the same reason. Close waits for the handshake, hence the goroutine: callers
 // hold r.mu.
 func (p *peer) refuse(reason string) {
-	p.refusal = reason
+	p.refusal.Store(&reason)
 	if p.conn == nil {
 		p.cancel()
 		return
