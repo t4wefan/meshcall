@@ -90,6 +90,7 @@ class Fixture:
         self.invoked: list[str] = []
         self.closed: list[ClosedTunnel] = []
         self.server: RpcServer | None = None
+        self.server_loop: asyncio.AbstractEventLoop | None = None
 
     def accept_tunnel(self, offer: TunnelOffer) -> bool:
         return offer.principal != "refuse:me"
@@ -209,7 +210,12 @@ class Fixture:
             assert self.server is not None
             await self.server.stop(drain=True, drain_timeout=30)
 
-        asyncio.get_running_loop().create_task(later())
+        # Handlers run on the service worker loop; the server belongs to the
+        # loop that started it. Stopping it from here signalled that loop's
+        # wait_closed() from the wrong thread, which on Windows could leave
+        # the process waiting forever after the drain.
+        assert self.server_loop is not None
+        asyncio.run_coroutine_threadsafe(later(), self.server_loop)
         return Ok()
 
 
@@ -244,6 +250,7 @@ async def main() -> None:
         tunnel_policies={"conformance.v1.Fixture": policy, "conformance.v1.Targeted": policy},
     )
     fixture.server = server
+    fixture.server_loop = asyncio.get_running_loop()
     await server.start()
     print("fixture registered", file=sys.stderr, flush=True)
     await server.wait_closed()
