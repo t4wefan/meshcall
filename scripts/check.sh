@@ -23,6 +23,8 @@ go_checks() {
 }
 py_checks() {
   step "python lint, types, tests (incl. interop)"
+  # The interop tests build and run the TypeScript runtime.
+  (cd meshcall-ts && yarn -s install --frozen-lockfile)
   (cd meshcall-py && uv sync --frozen --quiet && uv run ruff check src tests ../demo && uv run ruff format --check src tests \
     && uv run pyright src tests ../demo && uv run pytest -q)
 }
