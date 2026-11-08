@@ -338,6 +338,16 @@ class FrameConnection:
                     pending.future.set_exception(exc)
                 self._fail_pending(exc)
                 return
+            except BaseException:
+                # close() cancelled us mid-send: the frame is no longer queued,
+                # so _fail_pending cannot reach it, and its sender would wait
+                # forever.
+                if not pending.future.done():
+                    pending.future.set_exception(
+                        self._closed
+                        or ConnectionError("WebSocket connection is closed")
+                    )
+                raise
             if not pending.future.done():
                 pending.future.set_result(None)
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from meshcall.protocol import StreamItemFrame, StreamWindowFrame, decode_frame
 from meshcall.transport import FrameConnection
 
@@ -62,3 +64,30 @@ async def test_sends_control_first_and_round_robins_calls() -> None:
     assert len(items) == 4
     assert [frame.call_id for frame in items] == ["a", "b", "a", "b"]
     await connection.close()
+
+
+class StalledWebSocket(RecordingWebSocket):
+    """A socket whose send never completes, like one the peer just dropped."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sending = asyncio.Event()
+
+    async def send(self, message: str | bytes) -> None:
+        self.sending.set()
+        await asyncio.Event().wait()
+
+
+async def test_close_fails_the_frame_being_sent() -> None:
+    # The sender has taken the frame off its queue when close() cancels it;
+    # the caller of send() used to wait for it forever (a Router dropping a
+    # client mid-stream hung `async for` on the call).
+    websocket = StalledWebSocket()
+    connection = FrameConnection(websocket, max_frame_size=1024 * 1024, source="client")
+    sending = asyncio.create_task(
+        connection.send(StreamWindowFrame(call_id="a", direction="server", credit=1))
+    )
+    await websocket.sending.wait()
+    await connection.close()
+    with pytest.raises(ConnectionError):
+        await asyncio.wait_for(sending, 1)
