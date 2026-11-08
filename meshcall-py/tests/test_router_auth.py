@@ -19,6 +19,7 @@ from meshcall import (
 from meshcall.context import ReconnectPolicy
 from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
 from meshcall.errors import (
+    InvalidArgumentError,
     MeshCallError,
     PermissionDeniedError,
     UnauthenticatedError,
@@ -149,7 +150,7 @@ async def test_service_registration_scope_and_revocation(tmp_path: Path) -> None
                 await worker.stop()
 
 
-async def test_expiry_closes_existing_connection_and_method_scope_is_enforced(
+async def test_expiry_bounds_new_connections_and_method_scope_is_enforced(
     tmp_path: Path,
 ) -> None:
     name = get_service_contract(NumberService).name
@@ -175,8 +176,51 @@ async def test_expiry_closes_existing_connection_and_method_scope_is_enforced(
                         scopes=[RouterScope(service=name, methods=["unary"])]
                     )
                 assert denied.value.code == "permission_denied"
+                # Past its expiry the live connection keeps working ...
+                await asyncio.sleep(1.2)
+                assert (await scoped.whoami()).username == "issuer"
+                listed = {t.token_id: t for t in await auth.list_tokens()}
+                assert listed[token.token_id].expired
+                assert listed[token.token_id].connections == 1
+                # ... a new one is refused, and renewing it is too late.
+                with pytest.raises(UnauthenticatedError):
+                    await WebSocketClientDriver(
+                        uri, auth=RouterCredentials(token=token.token)
+                    ).connect()
+                with pytest.raises(InvalidArgumentError) as late:
+                    await auth.renew_token(token.token_id, ttl_seconds=60)
+                assert late.value.reason == "token_expired"
+                # Revocation still ends it at once.
+                assert await auth.revoke_token(token.token_id)
                 assert scoped._receive_task is not None
                 await asyncio.wait_for(scoped._receive_task, 3)
+            # Renewal moves expiry; the same secret connects past the old one.
+            renewable = await auth.issue_token(
+                ttl_seconds=1, scopes=[RouterScope(service=name, methods=["unary"])]
+            )
+            renewed = await auth.renew_token(renewable.token_id, ttl_seconds=3600)
+            assert renewed.expires_at_unix_ms > renewable.expires_at_unix_ms
+            await asyncio.sleep(1.2)
+            async with RouterAuthClient(
+                WebSocketClientDriver(
+                    uri, auth=RouterCredentials(token=renewable.token)
+                )
+            ) as later:
+                assert (
+                    await later.whoami()
+                ).expires_at_unix_ms == renewed.expires_at_unix_ms
+            # Lifetimes beyond an hour are fine up to the Router's maximum.
+            week = await auth.issue_token(
+                ttl_seconds=7 * 24 * 3600,
+                scopes=[RouterScope(service=name, methods=["unary"])],
+            )
+            assert week.expires_at_unix_ms > renewed.expires_at_unix_ms
+            with pytest.raises(InvalidArgumentError) as too_long:
+                await auth.issue_token(
+                    ttl_seconds=31 * 24 * 3600,
+                    scopes=[RouterScope(service=name, methods=["unary"])],
+                )
+            assert (too_long.value.details or {}).get("max_ttl_seconds") == 2592000
             reader = WebSocketClientDriver(
                 uri, auth=RouterCredentials(username="reader", password=PASSWORD)
             )

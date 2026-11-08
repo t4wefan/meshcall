@@ -69,6 +69,25 @@ class IssuedToken(BaseModel):
     scopes: list[RouterScope]
 
 
+class RenewedToken(BaseModel):
+    """``renew_token``'s answer: the same token, with its new expiry."""
+
+    token_id: str
+    expires_at_unix_ms: int
+
+
+class TokenInfo(BaseModel):
+    """An outstanding temporary token as its issuer sees it (never the secret)."""
+
+    token_id: str
+    issuer: str
+    instance_ids: list[str] = Field(default_factory=list)
+    expires_at_unix_ms: int
+    #: Past its expiry: it admits no new connection, but these stay up.
+    expired: bool = False
+    connections: int = 0
+
+
 class RouterIdentity(BaseModel):
     username: str
     roles: list[Literal["client", "server"]]
@@ -121,12 +140,22 @@ class _Empty(BaseModel):
 
 
 class _IssueRequest(BaseModel):
-    ttl_seconds: int = Field(ge=1, le=3600)
+    # The Router bounds it (--token-max-ttl; invalid_argument with the limit).
+    ttl_seconds: int
     scopes: list[RouterScope]
 
 
 class _RevokeRequest(BaseModel):
     token_id: str
+
+
+class _RenewRequest(BaseModel):
+    token_id: str
+    ttl_seconds: int
+
+
+class _ListTokensResult(BaseModel):
+    tokens: list[TokenInfo]
 
 
 class _RevokeResult(BaseModel):
@@ -180,3 +209,17 @@ class RouterAuthClient(ClientBase):
             _RevokeResult,
         )
         return result.revoked
+
+    async def renew_token(self, token_id: str, *, ttl_seconds: int) -> RenewedToken:
+        return await self.call_unary(
+            AUTH_SERVICE,
+            "renew_token",
+            _RenewRequest(token_id=token_id, ttl_seconds=ttl_seconds),
+            RenewedToken,
+        )
+
+    async def list_tokens(self) -> list[TokenInfo]:
+        result = await self.call_unary(
+            AUTH_SERVICE, "list_tokens", _Empty(), _ListTokensResult
+        )
+        return result.tokens
