@@ -212,6 +212,9 @@ export class MeshCallClient implements MeshCallRpc {
   private liveness: Liveness | undefined;
   private connectPromise: Promise<void> | undefined;
   private everConnected = false;
+  // The Router's 4401 answer (revoked or expired credentials): later calls
+  // fail with it, reason included, instead of reconnecting.
+  private refused: UnauthenticatedError | undefined;
   private closed = false;
   private readonly calls = new Map<string, PendingCall>();
   private readonly streams = new Map<string, ServerStreamState<unknown>>();
@@ -294,6 +297,7 @@ export class MeshCallClient implements MeshCallRpc {
   }
 
   private async openWithRetry(): Promise<void> {
+    if (this.refused !== undefined) throw this.refused;
     const policy = this.options.reconnect ?? {};
     const retry = (policy.enabled ?? true) && this.everConnected;
     const delays = retry ? reconnectDelays(policy) : undefined;
@@ -779,6 +783,7 @@ export class MeshCallClient implements MeshCallRpc {
           liveness.stop();
           writer.close();
           const error = closeError(code, reason.toString()) ?? new UnavailableError("Connection was lost", { retryable: true });
+          if (ready && error instanceof UnauthenticatedError) this.refused = error;
           if (this.socket === socket) {
             this.socket = undefined;
             this.writer = undefined;

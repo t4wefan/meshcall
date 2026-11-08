@@ -103,7 +103,7 @@ test("a tunnel scopes a Mesh to one instance", { timeout: 15000, skip: routerMis
 
   // The Router checks open; reserved metadata keys are refused in any case.
   const badTtl = await rejection(issuer.tunnels.open({ instance: "box-a", scopes: ["test.v1.Workspace"], principal: "p", ttlSeconds: 0 }));
-  assert.ok(badTtl instanceof InvalidArgumentError, String(badTtl));
+  assert.ok(badTtl instanceof InvalidArgumentError && badTtl.details?.source === "router", String(badTtl));
   const reserved = await rejection(client.unary("test.v1.Workspace", "whoami", {}, { instance: "box-a", metadata: { "MeshCall-Tunnel-Principal": "x" } }));
   assert.ok(reserved instanceof InvalidArgumentError && reserved.reason === "reserved_metadata", String(reserved));
 
@@ -116,7 +116,7 @@ test("a tunnel scopes a Mesh to one instance", { timeout: 15000, skip: routerMis
   const revoked = await rejection(held.next());
   assert.ok(revoked instanceof UnauthenticatedError && revoked.reason === "tunnel_revoked", String(revoked));
   const again = await rejection(client.unary("test.v1.Workspace", "whoami", {}, { instance: "box-a" }));
-  assert.ok(again instanceof UnauthenticatedError, String(again));
+  assert.ok(again instanceof UnauthenticatedError && again.reason === "tunnel_revoked", String(again));
   for (let i = 0; i < 100 && closed.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(closed, [{ tunnelId: opened.tunnel_id, principal: "user:alice", reason: "revoked" }]);
 });

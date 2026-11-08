@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   DeadlineExceededError, findRouterBinary, LocalRouter, Mesh as NodeMesh, method, PermissionDeniedError, service,
-  UnauthenticatedError, z,
+  ResourceExhaustedError, UnauthenticatedError, z,
   type DuplexChannel, type RpcContext,
 } from "../src/index.js";
 import { Mesh, Router } from "../src/web.js";
@@ -89,9 +89,36 @@ test("meshcall/web over WebSocket: every call shape through a tunnel", { timeout
     const inFlight = await held;
     assert.ok(inFlight instanceof UnauthenticatedError && inFlight.reason === "tunnel_revoked", String(inFlight));
     const gone = await browser.unary("test.v1.Box", "whoami", {}, at).then(() => undefined, (e: unknown) => e);
-    assert.ok(gone instanceof UnauthenticatedError, String(gone));
+    assert.ok(gone instanceof UnauthenticatedError && gone.reason === "tunnel_revoked", String(gone));
   } finally {
     await browser.close();
+  }
+});
+
+test("meshcall/web reports max_connections as a temporary limit", { timeout: 15000, skip: routerMissing }, async () => {
+  await using router = await LocalRouter.start({ port: 0 });
+  const host = new NodeMesh(router).mount(new Box(), { instanceId: "box-a", accessLog: false, acceptTunnels: true });
+  await using _host = await host.startServing();
+  await using issuer = await NodeMesh.connect(router);
+  const opened = await issuer.tunnels.open({ instance: "box-a", scopes: ["test.v1.Box"], principal: "user:phone", maxConnections: 1 });
+  const at = { instance: "box-a" } as const;
+  const first = await Mesh.connect(new Router(router.url), { tunnel: opened.credential });
+  const second = new Mesh(new Router(router.url), { tunnel: opened.credential, retry: false });
+  try {
+    // Credentials in hello: close 4429, a retryable resource_exhausted, not an auth failure.
+    const full = await second.unary("test.v1.Box", "whoami", {}, at).then(() => undefined, (e: unknown) => e);
+    assert.ok(full instanceof ResourceExhaustedError && full.retryable, String(full));
+    await first.close();
+    let seen: unknown;
+    for (let i = 0; i < 50; i++) {
+      seen = await second.unary("test.v1.Box", "whoami", {}, at).then((v) => v, (e: unknown) => e);
+      if (!(seen instanceof Error)) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.deepEqual(seen, { principal: "user:phone" });
+  } finally {
+    await first.close();
+    await second.close();
   }
 });
 

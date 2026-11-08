@@ -405,6 +405,53 @@ func tunnelLifetime(h *harness) error {
 	}
 }
 
+// tunnelLimit: max_connections is a temporary limit, reported alike whether
+// the credential came in the header (HTTP 429) or in hello, the browser's
+// only way (close 4429), and lifted when a connection ends.
+func tunnelLimit(h *harness) error {
+	issuer, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer issuer.close()
+	f, err := issuer.callService(tunnelService, "open", frame{"instance_id": InstanceID, "principal": "user:alice", "ttl_seconds": 60,
+		"max_connections": 1, "scopes": []frame{{"service": Service, "methods": []string{"echo"}}}}, nil)
+	if err != nil {
+		return err
+	}
+	var opened tunnelCredential
+	data, _ := json.Marshal(f["payload"])
+	if err := json.Unmarshal(data, &opened); err != nil || opened.Credential == "" {
+		return fmt.Errorf("open: %v", f)
+	}
+	defer issuer.callService(tunnelService, "revoke", frame{"tunnel_id": opened.TunnelID}, nil) //nolint:errcheck
+	bearer := "Bearer " + opened.Credential
+	first, err := h.clientWith("", bearer)
+	if err != nil {
+		return err
+	}
+	if _, err := h.clientWith(bearer, ""); err == nil || !strings.Contains(err.Error(), "429") {
+		return fmt.Errorf("a header credential over max_connections: %v, want HTTP 429", err)
+	}
+	var closed websocket.CloseError
+	if _, err := h.clientWith("", bearer); !errors.As(err, &closed) || closed.Code != router.StatusResourceExhausted {
+		return fmt.Errorf("a hello credential over max_connections: %v, want close 4429", err)
+	}
+	first.close()
+	deadline := time.Now().Add(h.opts.Timeout)
+	for {
+		again, err := h.clientWith("", bearer)
+		if err == nil {
+			again.close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the limit stayed after a connection ended: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // tunnelReconnect: while the instance is away calls fail with a retryable
 // error; once it re-registers and accepts the re-offer they resume.
 func tunnelReconnect(h *harness) error {

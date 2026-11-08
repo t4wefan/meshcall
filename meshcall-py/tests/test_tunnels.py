@@ -264,6 +264,7 @@ async def test_tunnel_errors_say_why() -> None:
                     ttl_seconds=0,
                 )
             assert "ttl_seconds" in bad_ttl.value.message
+            assert (bad_ttl.value.details or {}).get("source") == "router"
             opened = await issuer.tunnels.open(
                 instance="box-a", scopes=["test.v1.Slow"], principal="user:alice"
             )
@@ -278,10 +279,12 @@ async def test_tunnel_errors_say_why() -> None:
                 with pytest.raises(UnauthenticatedError) as revoked:
                     await held
                 assert revoked.value.reason == "tunnel_revoked"
-                with pytest.raises(UnauthenticatedError):  # HTTP 401 on reconnect
+                # Later calls get the same answer without reconnecting.
+                with pytest.raises(UnauthenticatedError) as later:
                     await mesh.with_options(instance="box-a").call_unary(
                         "test.v1.Slow", "hold", Empty(), Empty
                     )
+                assert later.value.reason == "tunnel_revoked"
 
 
 async def test_a_refused_registration_says_why(tmp_path: Path) -> None:

@@ -186,6 +186,9 @@ export function closeError(code: number, reason: string): MeshCallError | undefi
       details: { source: "router", reason: "policy_violation" },
     });
   }
+  // Credentials in hello refused like their header counterparts: 4000 + the
+  // HTTP status (403, 429, 503). The last two are temporary.
+  if (code === 4403 || code === 4429 || code === 4503) return handshakeError(code - 4000, reason);
   return undefined;
 }
 
@@ -196,5 +199,6 @@ export function handshakeError(status: number, body = ""): MeshCallError | undef
   if (status === 401) return new UnauthenticatedError("The Router refused the credentials" + text, { details });
   if (status === 403) return new PermissionDeniedError("The Router refused the connection" + text, { details });
   if (status === 429) return new ResourceExhaustedError("The Router refused the connection" + text, { retryable: true, details });
+  if (status === 503) return new UnavailableError("The Router is busy" + text, { retryable: true, details });
   return undefined;
 }

@@ -39,6 +39,7 @@ var scenarios = []scenario{
 	{"tunnel: every shape reaches only the target, Registry and OpenAPI too", tunnelScope},
 	{"tunnel: the instance sees an identity no client can forge", tunnelIdentity},
 	{"tunnel: revoke ends connections, expiry does not", tunnelLifetime},
+	{"tunnel: max_connections is a temporary limit on every auth path", tunnelLimit},
 	{"tunnel: calls resume when the instance reconnects", tunnelReconnect},
 	{"tunnel: a bound credential cannot register as another instance", tunnelBoundRegistration},
 	{"keepalive: instance pings within the router idle window", keepalive},

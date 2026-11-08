@@ -126,6 +126,10 @@ func closeError(code int, reason string) *Error {
 		return e
 	case 1008:
 		return detailed(CodePermissionDenied, "The Router refused the connection: "+orDefault(reason, "policy violation"), "router", "policy_violation", false)
+	case 4403, 4429, 4503:
+		// Credentials in hello refused like their header counterparts: 4000 +
+		// the HTTP status. The last two are temporary.
+		return handshakeError(code-4000, reason)
 	}
 	return nil
 }
@@ -144,6 +148,8 @@ func handshakeError(status int, body string) *Error {
 		return detailed(CodePermissionDenied, "The Router refused the connection"+text, "router", "", false)
 	case 429:
 		return detailed(CodeResourceExhausted, "The Router refused the connection"+text, "router", "", true)
+	case 503:
+		return detailed(CodeUnavailable, "The Router is busy"+text, "router", "", true)
 	}
 	return nil
 }

@@ -140,8 +140,19 @@ byte credit) are reserved for later minor revisions.
 `Bearer mtun_…`), for a peer that cannot set that header on the WebSocket
 upgrade: a browser. Credentials never go in the URL. A connection that sent
 an `Authorization` header and also `authorization` in `hello` is closed with
-1008; credentials in `hello` that fail are closed with 4401
-(unauthenticated), the WebSocket counterpart of the upgrade's HTTP 401.
+1008. Credentials in `hello` are refused the way the same credentials in the
+header would be, with close status 4000 plus that HTTP status, so a browser
+can tell a temporary refusal from a permanent one:
+
+| Header path | `hello` path | Client error | Example |
+| --- | --- | --- | --- |
+| HTTP 401 | close 4401 | `unauthenticated` (not retryable) | unknown, expired or revoked credential |
+| HTTP 403 | close 4403 | `permission_denied` (not retryable) | reserved for refusals of a valid identity |
+| HTTP 429 | close 4429 | `resource_exhausted` (retryable) | a tunnel at its `max_connections` |
+| HTTP 503 | close 4503 | `unavailable` (retryable) | the Router is busy verifying passwords |
+
+The close reason is the Router's message (for example `tunnel connection
+limit reached`).
 
 ## Capacity and health
 
@@ -350,9 +361,10 @@ connection at once with WebSocket status 4401 and the close reason
 connections (the instance changed or refused a re-offer) closes them with
 4401 `tunnel_closed`. Calls in flight then fail with non-retryable
 `unauthenticated`, `source: "router"`, and that close reason as
-`details.reason`, so a client tells revocation apart from a network loss; a
-later connection with the credential is refused with HTTP 401, which clients
-also report as `unauthenticated`. While the instance is disconnected, calls fail with
+`details.reason`, so a client tells revocation apart from a network loss.
+A client keeps that answer: later calls on the same client fail at once with
+the same error, reason included, without reconnecting (a new connection with
+the credential would be refused with HTTP 401 anyway). While the instance is disconnected, calls fail with
 retryable `unavailable` / `instance_offline`. When an instance registers
 under the target id again, with the same identity and the `tunnels`
 capability, the Router offers it each of its tunnels again with
@@ -585,11 +597,13 @@ did not send because it was over the size limit as non-retryable
 `attempts` to the final error when more than one attempt was made.
 
 Clients report how the Router ended a connection as an error, the same in
-every runtime: an upgrade refused with HTTP 401, 403 or 429 is
-`unauthenticated`, `permission_denied` or retryable `resource_exhausted`
-(`source: "router"`, the status in the message); a close with 4401 is
-non-retryable `unauthenticated` (with `details.reason` when the close reason
-is one of the reasons above); a close with 1008 is `permission_denied` with
+every runtime: an upgrade refused with HTTP 401, 403, 429 or 503, or a
+`hello` refused with close 4401, 4403, 4429 or 4503 (see [Connection
+handshake](#connection-handshake)), is `unauthenticated`,
+`permission_denied`, retryable `resource_exhausted` or retryable
+`unavailable` (`source: "router"`); a close with 4401 is non-retryable
+`unauthenticated` (with `details.reason` when the close reason is one of the
+reasons above); a close with 1008 is `permission_denied` with
 `reason: "policy_violation"` and the Router's close reason in the message
 (for a refused registration, why: an unauthorised service, an `instance_id`
 outside `instance_ids`, a conflicting method). Any other loss is retryable

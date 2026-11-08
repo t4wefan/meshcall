@@ -77,6 +77,10 @@ def close_error(code: int | None, reason: str) -> MeshCallError | None:
             f"The Router refused the connection: {reason or 'policy violation'}",
             details={"source": "router", "reason": "policy_violation"},
         )
+    # Credentials in hello refused like their header counterparts: 4000 + the
+    # HTTP status (403, 429, 503). The last two are temporary.
+    if code in (4403, 4429, 4503):
+        return handshake_error(code - 4000, reason)
     return None
 
 
@@ -96,6 +100,10 @@ def handshake_error(status: int, body: str = "") -> MeshCallError | None:
             f"The Router refused the connection{text}",
             retryable=True,
             details={"source": "router"},
+        )
+    if status == 503:
+        return UnavailableError(
+            f"The Router is busy{text}", retryable=True, details={"source": "router"}
         )
     return None
 

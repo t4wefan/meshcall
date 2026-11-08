@@ -156,8 +156,11 @@ type clientState struct {
 	connecting    chan struct{}
 	everConnected bool
 	closed        bool
-	calls         map[string]*clientCall
-	onClose       func()
+	// refused is the Router's 4401 answer (revoked or expired credentials):
+	// later calls fail with it, reason included, instead of reconnecting.
+	refused *Error
+	calls   map[string]*clientCall
+	onClose func()
 }
 
 // Client connects lazily to a Router or direct server and makes calls.
@@ -273,6 +276,11 @@ func (c *Client) connection(ctx context.Context) (*conn, error) {
 			conn := c.conn
 			c.mu.Unlock()
 			return conn, nil
+		}
+		if c.refused != nil {
+			refused := c.refused
+			c.mu.Unlock()
+			return nil, refused
 		}
 		if c.connecting != nil {
 			wait := c.connecting
@@ -395,6 +403,9 @@ func (c *Client) readLoop(conn *conn) {
 		}
 	}
 	c.mu.Lock()
+	if lost := conn.lost(); lost.Code == CodeUnauthenticated {
+		c.refused = lost
+	}
 	if c.conn == conn {
 		c.conn = nil
 		// The next connect starts from the following endpoint: the one that

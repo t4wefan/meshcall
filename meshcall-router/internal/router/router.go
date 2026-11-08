@@ -105,6 +105,24 @@ func closeReason(text string) string {
 	return text[:cut] + "..."
 }
 
+// Credentials in hello are refused with 4000 + the HTTP status the same
+// credentials get in an Authorization header (docs/protocol.md → Connection
+// handshake): 4401 unauthenticated, 4403 permission denied, 4429 a
+// temporary limit, 4503 temporarily unable to authenticate.
+const (
+	StatusPermissionDenied  websocket.StatusCode = 4403
+	StatusResourceExhausted websocket.StatusCode = 4429
+	StatusAuthUnavailable   websocket.StatusCode = 4503
+)
+
+func (f *authFailure) closeStatus() websocket.StatusCode {
+	switch f.status {
+	case http.StatusForbidden, http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return websocket.StatusCode(4000 + f.status)
+	}
+	return StatusUnauthenticated
+}
+
 // StatusUnauthenticated closes a WebSocket whose hello credentials failed:
 // the HTTP 401 of an upgrade, sent after it.
 const StatusUnauthenticated websocket.StatusCode = 4401
@@ -702,7 +720,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		}
 		helloUser, failure := r.authenticateRequest(f.Authorization)
 		if failure != nil {
-			_ = conn.Close(StatusUnauthenticated, failure.message)
+			_ = conn.Close(failure.closeStatus(), closeReason(failure.message))
 			return
 		}
 		r.mu.Lock()
@@ -710,10 +728,18 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		previous := p.user
 		p.user = helloUser
 		admitted := r.admit(p)
+		full := false
+		if t := helloUser.tunnelOrNil(); !admitted && t != nil && !t.closed && time.Now().Before(t.expires) {
+			full = t.maxConnections > 0 && t.connections >= t.maxConnections
+		}
 		if !admitted {
 			p.user = previous
 		}
 		r.mu.Unlock()
+		if full { // another connection took the last place since the check
+			_ = conn.Close(StatusResourceExhausted, "tunnel connection limit reached")
+			return
+		}
 		if !admitted {
 			_ = conn.Close(StatusUnauthenticated, "authentication failed")
 			return

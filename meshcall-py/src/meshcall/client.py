@@ -120,6 +120,9 @@ class ClientBase:
         self._state_lock = asyncio.Lock()
         self._receive_task: asyncio.Task[None] | None = None
         self._ever_connected = False
+        # The Router's 4401 answer (revoked or expired credentials): later
+        # calls fail with it, reason included, instead of reconnecting.
+        self._refused: UnauthenticatedError | None = None
 
     def with_options(
         self,
@@ -182,6 +185,8 @@ class ClientBase:
         async with self._state_lock:
             if self._connection is not None:
                 return
+            if self._refused is not None:
+                raise self._refused
             delays = (
                 self.reconnect.delays()
                 if self.reconnect.enabled and self._ever_connected
@@ -600,6 +605,8 @@ class ClientBase:
             raise
         except ConnectionError as exc:
             failure = connection_lost(exc)
+            if isinstance(failure, UnauthenticatedError):
+                self._refused = failure
         except Exception as exc:  # noqa: BLE001
             failure = exc if isinstance(exc, MeshCallError) else ProtocolError(str(exc))
         finally:

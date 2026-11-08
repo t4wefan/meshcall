@@ -132,7 +132,7 @@ MeshCall 不需要复杂的分布式共识（Raft/Etcd）即可实现 Router 层
 - `roles` 控制允许连接的角色（`client`、`server` 或两者皆可）。
 - `register` 控制允许注册的服务名列表；`call` 控制允许调用的 `服务名/方法名` 列表（支持 `service/*` 通配某个服务下的全部方法，或 `*` 通配全部）。缺失的列表不授予任何权限。注册权限与调用权限完全正交隔离。
 - `instance_ids`（账号与 API Key，可选）列出该身份唯一允许注册的实例 id，以其他 id 注册时连接以 1008 关闭。请把每个实例的凭据绑定到它的 id——尤其是[隧道](#隧道)的目标实例，否则可自选 id 的凭据可能在真实实例离线时冒充它：`{ "username": "box-a", "password_hash": "…", "roles": ["server"], "register": ["dev.v1.Workspace"], "instance_ids": ["box-a"] }`。
-- 凭据通过 WebSocket 升级或 HTTP 请求的 `Authorization` 头传输：账号使用 `Basic`，临时 Token（`mt_…`）、API Key（`mk_…`）与隧道凭据（`mtun_…`）使用 `Bearer`。绝不放在 URL 查询字符串中。无法设置该头的对端（浏览器）不带该头连接，并把同样的值放在 `hello` 帧的 `authorization` 字段中；那里的凭据校验失败时连接以 4401 关闭，两处同时发送会被拒绝。生产环境跨网络传输请务必配合 TLS 反向代理使用 `wss://`；Go 监听器自身不终结 TLS。同样的检查也适用于 Unix 套接字与命名管道；命名管道只允许 Router 自身用户、SYSTEM 与 Administrators 访问，与 Unix 套接字的文件权限效果相同。
+- 凭据通过 WebSocket 升级或 HTTP 请求的 `Authorization` 头传输：账号使用 `Basic`，临时 Token（`mt_…`）、API Key（`mk_…`）与隧道凭据（`mtun_…`）使用 `Bearer`。绝不放在 URL 查询字符串中。无法设置该头的对端（浏览器）不带该头连接，并把同样的值放在 `hello` 帧的 `authorization` 字段中；那里的凭据被拒时，连接以 4000 加请求头方式对应的 HTTP 状态码关闭（4401 校验失败，4429 隧道已达 `max_connections`，4503 繁忙；见[协议规范](protocol.md#连接握手与服务注册)），两处同时发送会被拒绝。生产环境跨网络传输请务必配合 TLS 反向代理使用 `wss://`；Go 监听器自身不终结 TLS。同样的检查也适用于 Unix 套接字与命名管道；命名管道只允许 Router 自身用户、SYSTEM 与 Administrators 访问，与 Unix 套接字的文件权限效果相同。
 
 ### 连接时认证，调用时授权
 

@@ -69,7 +69,12 @@ matching `meshcall-go/vX.Y.Z` tag.
   `unauthenticated`, a close with 1008 `permission_denied` /
   `policy_violation` carrying the Router's reason (a refused registration now
   says why, e.g. an `instance_id` outside `instance_ids`). Clients stop
-  reconnecting after either.
+  reconnecting after either. Credentials in `hello` are refused with close
+  status 4000 + the HTTP status the header path gets (4401, 4403, 4429,
+  4503), so a browser sees a tunnel at its `max_connections` as retryable
+  `resource_exhausted`, not an authentication failure. After a 4401 a client
+  fails later calls with the same error, reason included, without
+  reconnecting. `TunnelService` errors carry `details.source: "router"`.
 - `TunnelService/open` is checked by the Router only: a TTL out of range is
   `invalid_argument` in every runtime (was pydantic's `ValidationError` in
   Python and `RangeError` in TypeScript).

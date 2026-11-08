@@ -146,8 +146,9 @@ func TestTunnelsThroughALocalRouter(t *testing.T) {
 	} else if e, _ := meshcall.AsError(err); e.Reason() != "tunnel_revoked" {
 		t.Fatalf("revoke reason: %v", err)
 	}
-	if _, err := meshcall.Unary[Empty, Caller](ctx, client, "test.v1.Workspace", "whoami", Empty{}, meshcall.WithInstance("box-a")); !meshcall.IsCode(err, meshcall.CodeUnauthenticated) {
-		t.Fatalf("reconnecting with a revoked credential: %v", err)
+	_, err = meshcall.Unary[Empty, Caller](ctx, client, "test.v1.Workspace", "whoami", Empty{}, meshcall.WithInstance("box-a"))
+	if e, ok := meshcall.AsError(err); !ok || e.Code != meshcall.CodeUnauthenticated || e.Reason() != "tunnel_revoked" {
+		t.Fatalf("a later call on a revoked tunnel: %v", err)
 	}
 	select {
 	case c := <-closed:

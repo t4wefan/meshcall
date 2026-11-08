@@ -52,7 +52,16 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 
 `services[]` 中每项为 `{name, methods[{name, stream, balance{kind, key?}}], contract?}`。`contract` 是服务的可移植契约条目（与 `*.meshcall.json` 文档中的对象相同：版本、描述、带 Schema 的方法、参数、注解；duplex 方法另含 `duplex_reason`）。它对路由不透明，Router 为每个服务保留首个注册的契约，并通过 `meshcall.router.v1.Registry` 服务（`list`、`describe {service}`）对外提供。`stream` 取值为 `unary`、`server_stream`、`client_stream`、`duplex`；`balance.kind` 取值为 `round_robin`、`least_inflight`、`random`、`sticky`、`disabled`。`capabilities` 用于协商可选特性，对端忽略不认识的条目；会应答隧道 offer 的服务实例在其中列出 `tunnels`（见[隧道](#隧道tunnels)），其余条目（二进制编码、压缩、字节信用）保留给后续小版本。
 
-`authorization` 以 HTTP `Authorization` 头的格式（`Basic …`、`Bearer mk_…`、`Bearer mt_…`、`Bearer mtun_…`）携带凭据，供无法在 WebSocket 升级请求上设置该头的对端（浏览器）使用。凭据从不放进 URL。同时发送 `Authorization` 头与 `hello.authorization` 的连接以 1008 关闭；`hello` 中的凭据校验失败时以 4401（unauthenticated，相当于升级请求的 HTTP 401）关闭。
+`authorization` 以 HTTP `Authorization` 头的格式（`Basic …`、`Bearer mk_…`、`Bearer mt_…`、`Bearer mtun_…`）携带凭据，供无法在 WebSocket 升级请求上设置该头的对端（浏览器）使用。凭据从不放进 URL。同时发送 `Authorization` 头与 `hello.authorization` 的连接以 1008 关闭。`hello` 中的凭据按同样凭据放在请求头时的方式拒绝，关闭码为 4000 加该 HTTP 状态码，浏览器因此能区分暂时与永久的拒绝：
+
+| 请求头方式 | `hello` 方式 | 客户端错误 | 例子 |
+| --- | --- | --- | --- |
+| HTTP 401 | 关闭码 4401 | `unauthenticated`（不可重试） | 未知、过期或已撤销的凭据 |
+| HTTP 403 | 关闭码 4403 | `permission_denied`（不可重试） | 保留给对有效身份的拒绝 |
+| HTTP 429 | 关闭码 4429 | `resource_exhausted`（可重试） | 隧道已达 `max_connections` |
+| HTTP 503 | 关闭码 4503 | `unavailable`（可重试） | Router 正忙于校验密码 |
+
+关闭原因为 Router 的消息（例如 `tunnel connection limit reached`）。
 
 ### 帧大小（Frame size）
 
@@ -174,7 +183,7 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 - Router 在其路由的每个 `call.open` 上设置 `meshcall-tunnel-id`、`meshcall-tunnel-principal`，并把 `instance_id` 设为目标，覆盖客户端发送的任何值。运行时将它们暴露为 `ctx.tunnel`；
 - 幂等去重按隧道隔离：一个隧道的调用不会合并到另一个 principal 的调用上。
 
-**生命周期。** `expires_at` 只限制*新*连接：已建立的连接一直存活到隧道被撤销或关闭，过期的隧道在最后一个连接结束时关闭。撤销会立即以 WebSocket 状态码 4401、关闭原因 `tunnel_revoked` 关闭所有连接；隧道因其他原因（实例变更或拒绝重新 offer）在仍有连接时关闭，则以 4401 `tunnel_closed` 关闭。进行中的调用随之以不可重试的 `unauthenticated` 失败（`source: "router"`，`details.reason` 为该关闭原因），客户端因此能把撤销与网络断开区分开；之后用该凭据建立连接会得到 HTTP 401，客户端同样报告为 `unauthenticated`。实例断开期间，调用以可重试的 `unavailable` / `instance_offline` 失败。当实例以相同身份、带 `tunnels` 能力重新注册到目标 id 时，Router 以 `resumed: true` 重新 offer 它的每个隧道；接受则隧道恢复，拒绝或未应答则关闭；以其他身份或不带该能力注册则关闭隧道（`instance_changed`）。
+**生命周期。** `expires_at` 只限制*新*连接：已建立的连接一直存活到隧道被撤销或关闭，过期的隧道在最后一个连接结束时关闭。撤销会立即以 WebSocket 状态码 4401、关闭原因 `tunnel_revoked` 关闭所有连接；隧道因其他原因（实例变更或拒绝重新 offer）在仍有连接时关闭，则以 4401 `tunnel_closed` 关闭。进行中的调用随之以不可重试的 `unauthenticated` 失败（`source: "router"`，`details.reason` 为该关闭原因），客户端因此能把撤销与网络断开区分开。客户端会记住这一结果：同一客户端上之后的调用立即以同样的错误（含 reason）失败，不再重连（用该凭据新建连接反正也会得到 HTTP 401）。实例断开期间，调用以可重试的 `unavailable` / `instance_offline` 失败。当实例以相同身份、带 `tunnels` 能力重新注册到目标 id 时，Router 以 `resumed: true` 重新 offer 它的每个隧道；接受则隧道恢复，拒绝或未应答则关闭；以其他身份或不带该能力注册则关闭隧道（`instance_changed`）。
 
 ### 绑定实例的注册凭据
 
@@ -299,7 +308,7 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 
 直连服务端使用同样的 reason，但 `source: "server"`；服务端执行自身 `max_inflight` 时返回 `resource_exhausted`（`source: "server"`，`reason: "overloaded"`）。超过帧大小上限而未发出的帧，由客户端或服务端以不可重试的 `resource_exhausted`（`reason: "frame_too_large"`）报告，`source` 为拒绝发送的一方（见[帧大小](#帧大小frame-size)）。客户端重试策略在进行了多次尝试时向最终错误加入 `attempts`。
 
-各运行时以同样方式报告 Router 如何结束连接：升级请求被 HTTP 401、403、429 拒绝分别报告为 `unauthenticated`、`permission_denied`、可重试的 `resource_exhausted`（`source: "router"`，消息中含状态码）；以 4401 关闭为不可重试的 `unauthenticated`（关闭原因是上表中的 reason 时放入 `details.reason`）；以 1008 关闭为 `permission_denied`，`reason: "policy_violation"`，消息中带有 Router 的关闭原因（注册被拒时说明原因：无权注册的服务、`instance_ids` 之外的 `instance_id`、冲突的方法）；其他断开为可重试的 `unavailable`。收到 `unauthenticated` 或 `permission_denied` 后客户端不再重连：同样的凭据会以同样的方式失败。
+各运行时以同样方式报告 Router 如何结束连接：升级请求被 HTTP 401、403、429、503 拒绝，或 `hello` 被关闭码 4401、4403、4429、4503 拒绝（见[连接握手](#连接握手与服务注册)），分别报告为 `unauthenticated`、`permission_denied`、可重试的 `resource_exhausted`、可重试的 `unavailable`（`source: "router"`）；以 4401 关闭为不可重试的 `unauthenticated`（关闭原因是上表中的 reason 时放入 `details.reason`）；以 1008 关闭为 `permission_denied`，`reason: "policy_violation"`，消息中带有 Router 的关闭原因（注册被拒时说明原因：无权注册的服务、`instance_ids` 之外的 `instance_id`、冲突的方法）；其他断开为可重试的 `unavailable`。收到 `unauthenticated` 或 `permission_denied` 后客户端不再重连：同样的凭据会以同样的方式失败。
 
 ### 结构化校验错误（`details.violations`）
 

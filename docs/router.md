@@ -236,8 +236,10 @@ Accounts use HTTP Basic authentication; temporary tokens (`mt_…`), API keys
 Credentials are sent in the `Authorization` header of the WebSocket upgrade or
 HTTP request, never in URL query strings. A peer that cannot set that header
 (a browser) connects without it and sends the same value as `authorization`
-in its `hello` frame; failing credentials there close the connection with
-4401, and sending both is refused.
+in its `hello` frame; credentials refused there close the connection with
+4000 plus the HTTP status the header would get (4401 failed, 4429 a tunnel
+at its `max_connections`, 4503 busy; see [the
+protocol](protocol.md#connection-handshake)), and sending both is refused.
 
 **Authenticate at connect, authorise at call.** A connection or HTTP request
 without any `Authorization` header is the reserved user `anonymous`; it is

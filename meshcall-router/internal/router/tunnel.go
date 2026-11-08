@@ -145,6 +145,13 @@ func (r *Router) authenticateRequest(header string) (*User, *authFailure) {
 	return r.config.Auth.checkHeader(header)
 }
 
+func (u *User) tunnelOrNil() *tunnel {
+	if u == nil {
+		return nil
+	}
+	return u.tunnel
+}
+
 // admit counts a new connection (or HTTP request) against its identity.
 // Called under r.mu; remove releases it.
 func (r *Router) admit(p *peer) bool {
@@ -199,7 +206,7 @@ func (u *User) owner() string {
 
 // tunnelService serves meshcall.router.v1.TunnelService. Called under r.mu.
 func (r *Router) tunnelService(p *peer, f frame) {
-	fail := func(code, message string) { p.send(callError(f.CallID, code, message, false)) }
+	fail := func(code, message string) { p.send(sourcedError(f.CallID, code, message)) }
 	if !p.user.mayOpenTunnels() {
 		fail("permission_denied", "This identity cannot issue tunnels")
 		return
@@ -257,7 +264,7 @@ func (r *Router) tunnelService(p *peer, f frame) {
 // openTunnel validates a request and offers the tunnel to its instance; the
 // issuer's call is answered when the instance does. Called under r.mu.
 func (r *Router) openTunnel(p *peer, f frame, request OpenTunnelRequest) {
-	fail := func(code, message string) { p.send(callError(f.CallID, code, message, false)) }
+	fail := func(code, message string) { p.send(sourcedError(f.CallID, code, message)) }
 	if request.InstanceID == "" || request.Principal == "" || len(request.Principal) > maxPrincipal {
 		fail("invalid_argument", "instance_id and a principal of 1..512 bytes are required")
 		return

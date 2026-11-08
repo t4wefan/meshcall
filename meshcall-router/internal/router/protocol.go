@@ -185,6 +185,14 @@ func callError(id, code, message string, retryable bool) frame {
 	return frame{Kind: "call.error", CallID: id, Error: &errorPayload{Code: code, Message: message, Retryable: retryable}}
 }
 
+// sourcedError is a Router-synthesised error without a reason: details say
+// only that the Router answered.
+func sourcedError(id, code, message string) frame {
+	f := callError(id, code, message, false)
+	f.Error.Details = json.RawMessage(`{"source":"router"}`)
+	return f
+}
+
 // routerError is a Router-synthesised error carrying a machine-readable reason
 // so callers can tell "no instance registered" from "the instance died".
 func routerError(id, code, message string, retryable bool, reason string, instance string) frame {
