@@ -27,7 +27,7 @@ import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } fr
 // crypto/fs/path) into browser bundles.
 import type { IssuedToken, RegistryService, RouterIdentity, RouterScope } from "./router-auth.js";
 import { checkTunnelCredential, normalizeScopeService, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient } from "./tunnel.js";
-import { checkE2EKey } from "./e2e.js";
+import { checkE2EAgreement, checkE2EKey } from "./e2e.js";
 import { WebSocketTransport } from "./web-socket.js";
 import { checkReceived } from "./validation.js";
 
@@ -579,8 +579,14 @@ export class Mesh implements MeshCallRpc {
       throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
     }
     const bearer = options.tunnel !== undefined ? checkTunnelCredential(options.tunnel) : options.token;
+    if (options.e2eKey !== undefined || options.tunnel !== undefined) {
+      if (options.e2eKey !== undefined && options.tunnel === undefined) {
+        throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
+      }
+      // Refused here, before any payload goes towards the Router unsealed.
+      checkE2EAgreement(options.tunnel, options.e2eKey);
+    }
     if (options.e2eKey !== undefined) {
-      if (options.tunnel === undefined) throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
       if (router.isHttp) {
         throw new TypeError("An end-to-end tunnel needs a ws:// or wss:// Router; HTTP calls cannot be sealed");
       }

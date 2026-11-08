@@ -76,7 +76,7 @@ test("sealed calls through a Router", { timeout: 20000, skip: routerMissing }, a
   assert.equal(await e2ePublicKey(keys.privateKey), keys.publicKey);
   await using router = await LocalRouter.start({ port: 0 });
   const serve = () => new Mesh(router)
-    .mount(new Box(), { instanceId: "box-a", accessLog: false, acceptTunnels: true, e2ePrivateKey: keys.privateKey })
+    .mount(new Box(), { instanceId: "box-a", accessLog: false, acceptTunnels: true, e2ePrivateKey: keys.privateKey, requireE2E: true })
     .startServing();
   let running = await serve();
   try {
@@ -85,6 +85,11 @@ test("sealed calls through a Router", { timeout: 20000, skip: routerMissing }, a
       instance: "box-a", scopes: ["test.v1.Box"], principal: "user:alice", e2eKey: keys.publicKey,
     });
     assert.equal(opened.e2e_key, keys.publicKey);
+    assert.ok(opened.credential.startsWith("mtun_e2e."));
+    // The instance requires end-to-end tunnels: a plain offer is refused.
+    const plainOffer = await rejection(issuer.tunnels.open({ instance: "box-a", scopes: ["test.v1.Box"], principal: "p" }));
+    assert.ok(plainOffer instanceof PermissionDeniedError && plainOffer.reason === "tunnel_rejected"
+      && plainOffer.message.includes("end-to-end"), String(plainOffer));
     const refused = await rejection(issuer.tunnels.open({
       instance: "box-a", scopes: ["test.v1.Box"], principal: "p", e2eKey: other.publicKey,
     }));
@@ -111,20 +116,35 @@ test("sealed calls through a Router", { timeout: 20000, skip: routerMissing }, a
     assert.ok(app instanceof MeshCallError && app.code === "app.nope" && app.message === "secret 42", String(app));
     assert.deepEqual(app.details, { value: 3 });
 
-    // The same tunnel without sealing is refused by the Router.
-    await using plain = await Mesh.connect(url, { tunnel: opened.credential });
-    const required = await rejection(plain.unary("test.v1.Box", "double", { value: 1 }, at));
-    assert.ok(required instanceof PermissionDeniedError && required.reason === "tunnel_e2e_required", String(required));
+    // The Router's own services answer on an E2E connection: never sealed.
+    const who = await mesh.auth.whoami();
+    assert.equal(who.tunnel?.e2e_key, keys.publicKey);
+    assert.deepEqual((await mesh.registry.list()).map((s) => s.name), ["test.v1.Box"]);
+    // Without the key the credential is refused before anything is sent.
+    assert.throws(() => new Mesh(url, { tunnel: opened.credential }), /end-to-end tunnel credential/u);
     // A client pinning the wrong key cannot complete the handshake.
     const wrong = new Mesh(url, { tunnel: opened.credential, e2eKey: other.publicKey });
     const failed = await rejection(wrong.unary("test.v1.Box", "double", { value: 1 }, at));
     await wrong.close();
     assert.ok(failed instanceof UnauthenticatedError && failed.reason === "e2e_handshake_failed", String(failed));
 
-    // The instance restarts with the same key and loses its sessions; this
-    // client handshakes again after e2e_session_unknown.
+    // The instance restarts with the same key and loses its sessions: a
+    // stream is told once, and the next call handshakes again.
     await running.close();
     running = await serve();
+    let unknown = 0;
+    for (let i = 0; i < 100; i++) {
+      try {
+        const got: number[] = [];
+        for await (const item of box.serverStream<object, { value: number }>("test.v1.Box", "count", { value: 2 })) got.push(item.value);
+        assert.deepEqual(got, [0, 1]);
+        break;
+      } catch (error) {
+        if (error instanceof MeshCallError && error.reason === "e2e_session_unknown") unknown += 1;
+        assert.ok(unknown <= 1, String(error));
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
     let result: unknown;
     for (let i = 0; i < 100; i++) {
       try {
@@ -146,7 +166,7 @@ test("meshcall/web seals every call shape end to end", { timeout: 20000, skip: r
   const other = await generateE2EKey();
   await using router = await LocalRouter.start({ port: 0 });
   const serve = () => new Mesh(router)
-    .mount(new Box(), { instanceId: "box-a", accessLog: false, acceptTunnels: true, e2ePrivateKey: keys.privateKey })
+    .mount(new Box(), { instanceId: "box-a", accessLog: false, acceptTunnels: true, e2ePrivateKey: keys.privateKey, requireE2E: true })
     .startServing();
   let running = await serve();
   try {
@@ -181,8 +201,25 @@ test("meshcall/web seals every call shape end to end", { timeout: 20000, skip: r
       await wrong.close();
       assert.ok(failed instanceof MeshCallError && failed.reason === "e2e_handshake_failed", String(failed));
 
+      // A stream after the restart is told once; the next call handshakes again.
+      assert.deepEqual((await browser.registry.list()).map((s) => s.name), ["test.v1.Box"]);
       await running.close();
       running = await serve();
+      let unknown = 0;
+      for (let i = 0; i < 100; i++) {
+        try {
+          const got: number[] = [];
+          for await (const item of browser.serverStream<object, { value: number }>("test.v1.Box", "count", { value: 2 }, at)) {
+            got.push(item.value);
+          }
+          assert.deepEqual(got, [0, 1]);
+          break;
+        } catch (error) {
+          if (error instanceof MeshCallError && error.reason === "e2e_session_unknown") unknown += 1;
+          assert.ok(unknown <= 1, String(error));
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
       let result: unknown;
       for (let i = 0; i < 100; i++) {
         try {
@@ -205,8 +242,12 @@ test("meshcall/web seals every call shape end to end", { timeout: 20000, skip: r
 test("e2eKey needs a tunnel and a WebSocket Router", async () => {
   const { publicKey } = await generateE2EKey();
   assert.throws(() => new Mesh(new Router("ws://127.0.0.1:1"), { e2eKey: publicKey }), /tunnel/u);
-  assert.throws(() => new Mesh(new Router("http://127.0.0.1:1"), { tunnel: "mtun_x", e2eKey: publicKey }), /HTTP/u);
-  assert.throws(() => new Mesh(new Router("ws://127.0.0.1:1"), { tunnel: "mtun_x", e2eKey: "short" }), /32 bytes/u);
+  assert.throws(() => new Mesh(new Router("http://127.0.0.1:1"), { tunnel: "mtun_e2e.x", e2eKey: publicKey }), /HTTP/u);
+  assert.throws(() => new Mesh(new Router("ws://127.0.0.1:1"), { tunnel: "mtun_e2e.x", e2eKey: "short" }), /32 bytes/u);
+  assert.throws(() => new Mesh(new Router("ws://127.0.0.1:1"), { tunnel: "mtun_x", e2eKey: publicKey }), /mtun_e2e/u);
+  assert.throws(() => new Mesh(new Router("http://127.0.0.1:1"), { tunnel: "mtun_e2e.x" }), /end-to-end tunnel credential/u);
   assert.throws(() => new WebMesh(new WebRouter("ws://127.0.0.1:1"), { e2eKey: publicKey }), /tunnel/u);
-  assert.throws(() => new WebMesh(new WebRouter("https://r.example"), { tunnel: "mtun_x", e2eKey: publicKey }), /HTTP/u);
+  assert.throws(() => new WebMesh(new WebRouter("https://r.example"), { tunnel: "mtun_e2e.x", e2eKey: publicKey }), /HTTP/u);
+  assert.throws(() => new WebMesh(new WebRouter("https://r.example"), { tunnel: "mtun_e2e.x" }), /end-to-end tunnel credential/u);
+  assert.throws(() => new Mesh(new Router("ws://127.0.0.1:1")).mount(new Box(), { requireE2E: true }), /requireE2E needs acceptTunnels/u);
 });

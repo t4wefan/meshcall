@@ -4,7 +4,7 @@
 // credentials travel in the `hello` frame's `authorization` field.
 
 import type { CallOptions, DuplexCallOptions } from "./client.js";
-import { clientHandshake, SealedCall, type E2ESession } from "./e2e.js";
+import { checkE2EAgreement, clientHandshake, ROUTER_SERVICE_PREFIX, SealedCall, type E2ESession } from "./e2e.js";
 import {
   CallCancelledError, closeError, DeadlineExceededError, MeshCallError, ProtocolError, ResourceExhaustedError,
   UnauthenticatedError, UnavailableError,
@@ -127,7 +127,7 @@ class Connection {
           // before any call is made.
           const handshake: { id: string; finish?: (reply: WireFrame) => Promise<E2ESession> } = { id: randomId() };
           this.handshake = handshake;
-          clientHandshake(options.e2eKey, handshake.id).then((started) => {
+          clientHandshake(options.e2eKey, handshake.id, (options.authorization ?? "").replace(/^Bearer /u, "")).then((started) => {
             handshake.finish = started.finish;
             this.send(started.frame as unknown as Frame);
           }).catch(refuse);
@@ -201,12 +201,19 @@ class Connection {
         opened = await call.sealed.open(frame as unknown as WireFrame) as unknown as Frame;
       } catch (error) {
         // A frame the instance did not seal: not from the other end.
-        call.cancel("e2e_open_failed", new ProtocolError("Sealed call: " + (error as Error).message, {
-          details: { source: "client", reason: "e2e_open_failed" },
+        // The session stays; only this call ends.
+        call.cancel("e2e_frame_rejected", new UnauthenticatedError("Sealed frame rejected: " + (error as Error).message, {
+          details: { source: "client", reason: "e2e_frame_rejected" },
         }));
         return;
       }
       call.receive(opened);
+      const details = (opened.error as { details?: { reason?: unknown } } | undefined)?.details;
+      if (opened.kind === "call.error" && details?.reason === "e2e_session_unknown") {
+        // The instance lost the session: whatever the call shape, the next
+        // call handshakes again on a new connection.
+        this.close();
+      }
     }).catch(() => undefined);
   }
 
@@ -274,7 +281,8 @@ class WsCall {
   public open(service: string, method: string, request: unknown): void {
     if (this.terminal) return; // cancelled before it was sent
     const session = this.connection.e2e;
-    if (session !== undefined) this.sealed = new SealedCall(session, service, method);
+    // The Router answers its own services itself: those calls stay clear.
+    if (session !== undefined && !service.startsWith(ROUTER_SERVICE_PREFIX)) this.sealed = new SealedCall(session, service, method);
     const o = this.options;
     this.send({
       kind: "call.open", call_id: this.id, service, method, payload: request ?? null,
@@ -442,6 +450,7 @@ export class WebSocketTransport implements MeshCallRpc {
 
   public constructor(private readonly urls: ReadonlyArray<string>, private readonly options: WebSocketTransportOptions = {}) {
     if (urls.length === 0) throw new RangeError("WebSocketTransport needs at least one URL");
+    checkE2EAgreement(options.authorization?.replace(/^Bearer /u, ""), options.e2eKey);
   }
 
   public withOptions(options: CallOptions): this {

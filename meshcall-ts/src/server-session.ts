@@ -81,7 +81,7 @@ export class ServerSession {
       try {
         return { frame: await call.sealed.open(frame) };
       } catch (error) {
-        void call.fail(new ProtocolError("Sealed input item does not open: " + (error as Error).message));
+        void call.fail(frameRejected(error));
         return undefined;
       }
     }
@@ -95,16 +95,18 @@ export class ServerSession {
       return undefined;
     }
     const session = tunnel === null ? undefined : tunnels.sessions.find(tunnel.id, frame.e2e_session);
-    if (session !== undefined) {
-      const sealed = new SealedCall(session, frame.service, frame.method);
-      try {
-        return { frame: await sealed.open(frame), sealed };
-      } catch {
-        // Fall through: the client handshakes again.
-      }
+    if (session === undefined) {
+      this.refuse(frame.call_id, unknownSession());
+      return undefined;
     }
-    this.refuse(frame.call_id, unknownSession());
-    return undefined;
+    const sealed = new SealedCall(session, frame.service, frame.method);
+    try {
+      return { frame: await sealed.open(frame), sealed };
+    } catch (error) {
+      // The session is good; this frame was changed on the way.
+      this.refuse(frame.call_id, frameRejected(error));
+      return undefined;
+    }
   }
 
   private refuse(callId: string, error: MeshCallError): void {
@@ -274,6 +276,12 @@ export class ServerSession {
       + " duration_ms=" + (performance.now() - started).toFixed(2) + " call_id=" + frame.call_id,
     ));
   }
+}
+
+function frameRejected(error: unknown): UnauthenticatedError {
+  return new UnauthenticatedError("Sealed frame rejected: " + (error as Error).message, {
+    details: { source: "server", reason: "e2e_frame_rejected" },
+  });
 }
 
 function unknownSession(): UnauthenticatedError {

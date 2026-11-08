@@ -32,7 +32,7 @@ import {
   checkTunnelCredential, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient,
   type TunnelClosedHook, type TunnelOfferHook, type TunnelPolicy,
 } from "./tunnel.js";
-import { checkE2EKey, checkE2EPrivateKey } from "./e2e.js";
+import { checkE2EAgreement, checkE2EKey, checkE2EPrivateKey } from "./e2e.js";
 import {
   AuthClient,
   DEFAULT_ROUTER_URL,
@@ -501,6 +501,11 @@ export interface MountOptions extends ServeOptions {
   readonly acceptTunnels?: boolean | TunnelOfferHook;
   /** Told when a tunnel these services accepted ends. */
   readonly onTunnelClosed?: TunnelClosedHook;
+  /**
+   * Refuse plain tunnels for these services, so the instance never serves
+   * them in clear through a tunnel; needs `acceptTunnels` and `e2ePrivateKey`.
+   */
+  readonly requireE2E?: boolean;
 }
 
 export class RunningServer {
@@ -596,8 +601,14 @@ export class Mesh implements MeshCallRpc {
     if (bearer?.startsWith(TUNNEL_CREDENTIAL_PREFIX) === true) {
       throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
     }
+    if (options.e2eKey !== undefined || options.tunnel !== undefined) {
+      if (options.e2eKey !== undefined && options.tunnel === undefined) {
+        throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
+      }
+      // Refused here, before any payload goes towards the Router unsealed.
+      checkE2EAgreement(options.tunnel, options.e2eKey);
+    }
     if (options.e2eKey !== undefined) {
-      if (options.tunnel === undefined) throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
       if (router.isHttp) {
         throw new TypeError("An end-to-end tunnel needs a ws:// or wss:// Router; HTTP calls cannot be sealed");
       }
@@ -730,7 +741,7 @@ export class Mesh implements MeshCallRpc {
       throw new Error("Cannot mount services while Mesh is already serving");
     }
     const { services, options: mountOptions } = splitServicesAndOptions(args);
-    const { acceptTunnels, onTunnelClosed, ...options } = mountOptions as MountOptions;
+    const { acceptTunnels, onTunnelClosed, requireE2E, ...options } = mountOptions as MountOptions;
     for (const svc of services) {
       if (!isService(svc)) {
         throw new TypeError("mount() requires @service instances");
@@ -739,10 +750,17 @@ export class Mesh implements MeshCallRpc {
     if (onTunnelClosed !== undefined && (acceptTunnels === undefined || acceptTunnels === false)) {
       throw new TypeError("onTunnelClosed needs acceptTunnels");
     }
+    if (requireE2E === true && (acceptTunnels === undefined || acceptTunnels === false)) {
+      throw new TypeError("requireE2E needs acceptTunnels");
+    }
     this.mountedServices.push(...services);
     this.mountOptions = { ...this.mountOptions, ...options };
     if (acceptTunnels !== undefined && acceptTunnels !== false) {
-      const policy: TunnelPolicy = { accept: acceptTunnels, ...(onTunnelClosed === undefined ? {} : { onClosed: onTunnelClosed }) };
+      const policy: TunnelPolicy = {
+        accept: acceptTunnels,
+        ...(onTunnelClosed === undefined ? {} : { onClosed: onTunnelClosed }),
+        ...(requireE2E === true ? { requireE2E: true } : {}),
+      };
       for (const svc of services) this.tunnelPolicies.set(bindService(svc).definition.name, policy);
     }
     return this;

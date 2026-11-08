@@ -15,6 +15,37 @@ export const E2E_WINDOW = 1024;
 /** Sessions an instance keeps per tunnel (oldest dropped). */
 export const E2E_MAX_SESSIONS = 16;
 export const TUNNEL_HANDSHAKE_METHOD = "handshake";
+/** End-to-end tunnel credentials say so ("." never occurs in a plain one). */
+export const E2E_CREDENTIAL_PREFIX = "mtun_e2e.";
+/** The Router answers these services itself: calls to them are never sealed. */
+export const ROUTER_SERVICE_PREFIX = "meshcall.router.";
+
+export function isE2ECredential(credential: string | undefined): boolean {
+  return credential?.startsWith(E2E_CREDENTIAL_PREFIX) === true;
+}
+
+/**
+ * A credential and a key must agree, before anything is sent: an end-to-end
+ * tunnel never sees an unsealed payload by mistake.
+ */
+export function checkE2EAgreement(credential: string | undefined, e2eKey: string | undefined): void {
+  if (isE2ECredential(credential) && e2eKey === undefined) {
+    throw new TypeError("This is an end-to-end tunnel credential: pass the instance's e2eKey the issuer gave you");
+  }
+  if (e2eKey !== undefined && !isE2ECredential(credential)) {
+    throw new TypeError("e2eKey needs the credential of an end-to-end tunnel (mtun_e2e.…)");
+  }
+}
+
+/** The hex SHA-256 of a tunnel credential, which the handshake prologue binds. */
+export async function credentialDigest(credential: string): Promise<string> {
+  return hex(await sha256(text.encode(credential)));
+}
+
+/** The handshake prologue binding a session to the tunnel with this credential digest. */
+export function tunnelPrologue(digest: string): Uint8Array {
+  return text.encode(E2E_PROLOGUE + "|" + digest);
+}
 
 const NOISE_PROTOCOL = "Noise_NK_25519_AESGCM_SHA256";
 const SEALED_NOTICE = "sealed";
@@ -479,11 +510,14 @@ export function sameKey(a: string, b: string): boolean {
  * The client's handshake on a fresh connection to an E2E tunnel: `frame` is
  * the `TunnelHost/handshake` call to send; `finish` reads its answer.
  */
-export async function clientHandshake(pinnedKey: string, callId: string): Promise<{
+export async function clientHandshake(pinnedKey: string, callId: string, credential: string): Promise<{
   readonly frame: CallOpenFrame;
   finish(reply: Frame): Promise<E2ESession>;
 }> {
-  const initiator = await nkInitiate(keyBytes(pinnedKey, "An E2E key (the instance's X25519 public key)"));
+  // The prologue binds the session to this credential's tunnel.
+  const initiator = await nkInitiate(keyBytes(pinnedKey, "An E2E key (the instance's X25519 public key)"), {
+    prologue: tunnelPrologue(await credentialDigest(credential)),
+  });
   return {
     frame: {
       kind: "call.open", call_id: callId, service: "meshcall.router.v1.TunnelHost",

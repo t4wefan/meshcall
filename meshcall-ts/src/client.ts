@@ -8,7 +8,9 @@ import {
   CallCancelledError, closeError, DeadlineExceededError, handshakeError, MeshCallError, PermissionDeniedError, ProtocolError,
   UnauthenticatedError, UnavailableError,
 } from "./errors.js";
-import { clientHandshake, SealedCall, type E2ESession } from "./e2e.js";
+import {
+  checkE2EAgreement, clientHandshake, ROUTER_SERVICE_PREFIX, SealedCall, type E2ESession,
+} from "./e2e.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import {
   clientDeadlineGraceMs,
@@ -249,6 +251,7 @@ export class MeshCallClient implements MeshCallRpc {
   ) {
     this.root = this;
     this.endpoints = Array.isArray(url) ? [...(url as ReadonlyArray<WebSocketEndpoint>)] : [url as WebSocketEndpoint];
+    checkE2EAgreement(options.auth?.token, options.e2eKey);
     if (this.endpoints.length === 0) throw new RangeError("At least one endpoint is required");
     for (const value of [options.maxFrameSize, options.handshakeTimeoutMs, options.pingTimeoutMs]) {
       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
@@ -731,7 +734,10 @@ export class MeshCallClient implements MeshCallRpc {
     options: CallOptions,
   ): CallOpenFrame {
     // Every frame of a call opened on an E2E connection is sealed under its session.
-    if (this.e2e !== undefined) this.sealedCalls.set(callId, new SealedCall(this.e2e, service, method));
+    // The Router answers its own services itself: those calls stay clear.
+    if (this.e2e !== undefined && !service.startsWith(ROUTER_SERVICE_PREFIX)) {
+      this.sealedCalls.set(callId, new SealedCall(this.e2e, service, method));
+    }
     const frame: CallOpenFrame = {
       kind: "call.open",
       call_id: callId,
@@ -831,7 +837,7 @@ export class MeshCallClient implements MeshCallRpc {
               return;
             }
             const callId = handshakeId = newCallId();
-            void clientHandshake(e2eKey, callId).then(async (started) => {
+            void clientHandshake(e2eKey, callId, this.options.auth?.token ?? "").then(async (started) => {
               handshake = started;
               await writer.send(started.frame);
             }).catch(fail);
@@ -910,19 +916,25 @@ export class MeshCallClient implements MeshCallRpc {
         try {
           opened = await sealed.open(frame);
         } catch (error) {
-          // A frame the instance did not seal: not from the other end.
-          const failure = new ProtocolError("Sealed call: " + (error as Error).message, {
-            details: { source: "client", reason: "e2e_open_failed" },
+          // A frame the instance did not seal: not from the other end. The
+          // session stays; only this call ends.
+          const failure = new UnauthenticatedError("Sealed frame rejected: " + (error as Error).message, {
+            details: { source: "client", reason: "e2e_frame_rejected" },
           });
-          this.cancelPending(callId, failure, "e2e_open_failed");
+          this.cancelPending(callId, failure, "e2e_frame_rejected");
           const stream = this.streams.get(callId);
           if (stream !== undefined) {
             stream.fail(failure);
-            void this.send({ kind: "call.cancel", call_id: callId, reason: "e2e_open_failed" }).catch(() => undefined);
+            void this.send({ kind: "call.cancel", call_id: callId, reason: "e2e_frame_rejected" }).catch(() => undefined);
           }
           return;
         }
         this.route(opened);
+        if (opened.kind === "call.error" && opened.error.details?.reason === "e2e_session_unknown") {
+          // The instance lost the session: whatever the call shape, the next
+          // call handshakes again on a new connection.
+          this.resetConnection();
+        }
       }).catch(() => undefined);
       return;
     }
@@ -1098,7 +1110,8 @@ export class MeshCallClient implements MeshCallRpc {
     }
     // Taken now: a call settling meanwhile must not let its content out in clear.
     const sealed = "call_id" in frame ? this.sealedCalls.get(frame.call_id) : undefined;
-    if (sealed === undefined && (frame.kind === "call.open" || frame.kind === "stream.item")) {
+    if (sealed === undefined && (frame.kind === "stream.item"
+      || (frame.kind === "call.open" && !frame.service.startsWith(ROUTER_SERVICE_PREFIX)))) {
       throw new CallCancelledError("Call is closed");
     }
     const run = this.outbound.then(async () => writer.send(sealed === undefined ? frame : await sealed.seal(frame)));

@@ -105,6 +105,9 @@ export class MeshCallServer {
   private readonly tunnels: TunnelHost;
 
   public constructor(private readonly options: MeshCallServerOptions) {
+    if (options.e2ePrivateKey === undefined && [...(options.tunnelPolicies?.values() ?? [])].some((p) => p.requireE2E === true)) {
+      throw new TypeError("requireE2E needs e2ePrivateKey");
+    }
     this.tunnels = new TunnelHost(options.tunnelPolicies ?? new Map(), options.e2ePrivateKey);
     if (options.router !== undefined &&
       (options.host !== undefined || options.port !== undefined || options.unixPath !== undefined || options.pipe !== undefined)) {

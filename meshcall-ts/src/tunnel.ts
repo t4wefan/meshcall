@@ -3,8 +3,8 @@
 
 import type { CallOptions } from "./client.js";
 import {
-  b64decode, b64encode, checkE2EKey, checkE2EPrivateKey, e2ePublicKey, E2ESessionStore, handshakeFailed, nkRespond,
-  sameKey, TUNNEL_HANDSHAKE_METHOD,
+  b64decode, b64encode, checkE2EPrivateKey, e2ePublicKey, E2ESessionStore, handshakeFailed, nkRespond,
+  sameKey, TUNNEL_HANDSHAKE_METHOD, tunnelPrologue,
 } from "./e2e.js";
 import type { Metadata } from "./protocol.js";
 import type { MeshCallRpc } from "./rpc.js";
@@ -83,6 +83,8 @@ export type TunnelClosedHook = (closed: TunnelClosed) => void | Promise<void>;
 export interface TunnelPolicy {
   readonly accept: boolean | TunnelOfferHook;
   readonly onClosed?: TunnelClosedHook;
+  /** Refuse offers without `e2e_key` that scope these services. */
+  readonly requireE2E?: boolean;
 }
 
 export interface OpenTunnelRequest {
@@ -137,7 +139,8 @@ export class TunnelsClient {
       principal: request.principal,
       ttl_seconds: ttl,
       ...(request.maxConnections === undefined ? {} : { max_connections: request.maxConnections }),
-      ...(request.e2eKey === undefined ? {} : { e2e_key: checkE2EKey(request.e2eKey) }),
+      // The Router checks it (invalid_argument), as in every runtime.
+      ...(request.e2eKey === undefined ? {} : { e2e_key: request.e2eKey }),
     }, options);
   }
 
@@ -161,6 +164,8 @@ export class TunnelsClient {
 /** Server side: answers the Router's TunnelHost calls and keeps accepted tunnels. */
 export class TunnelHost {
   private readonly tunnels = new Map<string, Tunnel>();
+  /** Tunnel id → credential digest, which the handshake prologue binds. */
+  private readonly digests = new Map<string, string>();
   private readonly privateKey: Uint8Array | undefined;
   private publicKey: Promise<string> | undefined;
   /** Sessions this instance handshook, per tunnel. */
@@ -197,20 +202,31 @@ export class TunnelHost {
         throw new TypeError("Invalid tunnel offer");
       }
       const pinned = typeof offer.e2e_key === "string" && offer.e2e_key !== "" ? offer.e2e_key : undefined;
-      // An E2E tunnel pins a key: only the instance holding it may accept.
-      const pinnedOk = pinned === undefined || (this.publicKey !== undefined && sameKey(pinned, await this.publicKey));
-      const accept = pinnedOk && await this.decide(offer);
+      const digest = (payload as { credential_digest?: unknown }).credential_digest;
+      if (pinned !== undefined) {
+        // An E2E tunnel pins a key: only the instance holding it may accept.
+        if (this.publicKey === undefined || !sameKey(pinned, await this.publicKey) || typeof digest !== "string" || digest === "") {
+          return { accept: false, reason: "e2e_key_mismatch" };
+        }
+      } else if (offer.scopes.some((scope) => this.policies.get(scope.service)?.requireE2E === true)) {
+        return { accept: false, reason: "e2e_required" };
+      }
+      const accept = await this.decide(offer);
       if (accept) {
         this.tunnels.set(offer.tunnel_id, {
           id: offer.tunnel_id, principal: offer.principal, scopes: offer.scopes, sealed: pinned !== undefined,
         });
+        if (pinned !== undefined) this.digests.set(offer.tunnel_id, digest as string);
       }
       return { accept };
     }
     if (method === TUNNEL_HANDSHAKE_METHOD) return this.handshake(metadata, payload);
     if (method === "closed") {
       const { tunnel_id: tunnelId, reason } = (payload ?? {}) as { tunnel_id?: string; reason?: string };
-      if (tunnelId !== undefined) this.sessions.drop(tunnelId);
+      if (tunnelId !== undefined) {
+        this.sessions.drop(tunnelId);
+        this.digests.delete(tunnelId);
+      }
       const tunnel = tunnelId === undefined ? undefined : this.tunnels.get(tunnelId);
       if (tunnel !== undefined) {
         this.tunnels.delete(tunnel.id);
@@ -234,15 +250,20 @@ export class TunnelHost {
    */
   private async handshake(metadata: Readonly<Metadata> | null | undefined, payload: unknown): Promise<unknown> {
     const tunnel = this.lookup(metadata);
-    if (tunnel === null || !tunnel.sealed || this.privateKey === undefined) {
+    const digest = tunnel === null ? undefined : this.digests.get(tunnel.id);
+    if (tunnel === null || !tunnel.sealed || this.privateKey === undefined || digest === undefined) {
       throw handshakeFailed("not an end-to-end tunnel of this instance", "server");
     }
     let answer: Awaited<ReturnType<typeof nkRespond>>;
     try {
       const message = (payload as { message?: unknown } | null | undefined)?.message;
-      answer = await nkRespond(this.privateKey, b64decode(typeof message === "string" ? message : ""));
+      // The prologue binds the tunnel the handshake came through: one made
+      // for another tunnel's credential does not open here.
+      answer = await nkRespond(this.privateKey, b64decode(typeof message === "string" ? message : ""), {
+        prologue: tunnelPrologue(digest),
+      });
     } catch {
-      throw handshakeFailed("message 1 does not open with this instance's key", "server");
+      throw handshakeFailed("message 1 does not open with this instance's key on this tunnel", "server");
     }
     this.sessions.add(tunnel.id, answer.session);
     return { message: b64encode(answer.reply) };
