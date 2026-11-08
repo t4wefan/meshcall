@@ -24,6 +24,7 @@ from meshcall.contract import (
 from meshcall.contract_io import load_contract, render_contract, write_contract
 from meshcall.di import dependency, meta
 from meshcall.diagnostics import ContractWarning, MeshCallWarning, lint_contract
+from meshcall.e2e import E2EKeyPair, e2e_public_key, generate_e2e_key
 from meshcall.errors import (
     CallCancelledError,
     ContractError,
@@ -102,6 +103,7 @@ __all__ = [
     "ContractWarning",
     "DeadlineExceededError",
     "DuplexChannel",
+    "E2EKeyPair",
     "ErrorCode",
     "InternalError",
     "InvalidArgumentError",
@@ -150,6 +152,8 @@ __all__ = [
     "Violation",
     "WebSocketRouter",
     "dependency",
+    "e2e_public_key",
+    "generate_e2e_key",
     "get_service_contract",
     "get_service_method_binding",
     "get_service_warnings",

@@ -426,6 +426,9 @@ func (c *Client) e2eHandshake(conn *conn) (*e2eSession, error) {
 		}
 		if f.Kind == "call.error" {
 			e := errorFromPayload(f.Error)
+			if e.Reason() == "e2e_handshake_failed" {
+				return nil, e // the instance's own answer: message 1 did not open
+			}
 			return nil, failed(e.Code + ": " + e.Message)
 		}
 		var answer struct {

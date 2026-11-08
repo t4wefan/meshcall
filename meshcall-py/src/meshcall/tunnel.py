@@ -9,6 +9,7 @@ accept_tunnels=...)``. Calls arriving through an accepted tunnel expose it as
 
 from __future__ import annotations
 
+import hmac
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -17,6 +18,16 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from meshcall.contract import normalize_service_name
+from meshcall.e2e import (
+    SessionStore,
+    b64decode,
+    b64encode,
+    check_public_key,
+    e2e_public_key,
+    handshake_failed,
+    load_private_key,
+    nk_respond,
+)
 from meshcall.errors import ContractError
 
 if TYPE_CHECKING:
@@ -49,6 +60,7 @@ class TunnelInfo(BaseModel):
     scopes: list[TunnelScope]
     expires_at_unix_ms: int
     max_connections: int | None = None
+    e2e_key: str | None = None
     connections: int = 0
     online: bool = True
 
@@ -71,6 +83,10 @@ class TunnelOffer(BaseModel):
     expires_at_unix_ms: int
     #: Offered again after this instance reconnected.
     resumed: bool = False
+    #: The public key the issuer pinned for end-to-end sealing; ``None`` for a
+    #: plain tunnel. An offer pinning a key this instance does not hold is
+    #: refused before any hook sees it.
+    e2e_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +96,8 @@ class Tunnel:
     id: str
     principal: str
     scopes: tuple[TunnelScope, ...]
+    #: The tunnel carries end-to-end sealed calls only.
+    sealed: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,6 +146,7 @@ class _OpenRequest(BaseModel):
     principal: str
     ttl_seconds: int
     max_connections: int | None = None
+    e2e_key: str | None = None
 
 
 class _RevokeRequest(BaseModel):
@@ -167,11 +186,14 @@ class TunnelsClient:
         principal: str,
         ttl_seconds: int = 3600,
         max_connections: int | None = None,
+        e2e_key: str | None = None,
     ) -> OpenedTunnel:
         """Open a tunnel to one instance; returns once the instance accepted it.
 
         ``scopes`` names services of the instance (a bare name allows every
-        method). Raises ``PermissionDeniedError`` (``reason: tunnel_rejected``)
+        method). ``e2e_key`` pins the instance's public key (the one you
+        provisioned it with, not one learnt from the Router): every call on
+        the tunnel is then sealed end to end. Raises ``PermissionDeniedError`` (``reason: tunnel_rejected``)
         when the instance refuses and ``UnavailableError`` (``instance_unknown``)
         when it is not registered.
         """
@@ -183,6 +205,8 @@ class TunnelsClient:
         )
         if max_connections is not None:
             request.max_connections = max_connections
+        if e2e_key is not None:
+            request.e2e_key = check_public_key(e2e_key)
         return await self._mesh.call_unary(
             TUNNEL_SERVICE, "open", request, OpenedTunnel
         )
@@ -206,15 +230,31 @@ async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+def _same_key(a: str, b: str) -> bool:
+    try:
+        return hmac.compare_digest(b64decode(a), b64decode(b))
+    except (ValueError, TypeError):
+        return False
+
+
 class TunnelHost:
     """Server side: answers the Router's TunnelHost calls and keeps accepted tunnels."""
 
     def __init__(
-        self, policies: Mapping[str, TunnelPolicy], worker: WorkerLoop
+        self,
+        policies: Mapping[str, TunnelPolicy],
+        worker: WorkerLoop,
+        *,
+        e2e_private_key: str | None = None,
     ) -> None:
         self._policies = dict(policies)
         self._worker = worker
         self._tunnels: dict[str, Tunnel] = {}
+        self._e2e_private_key = e2e_private_key
+        self._e2e_public_key = (
+            e2e_public_key(e2e_private_key) if e2e_private_key is not None else None
+        )
+        self.sessions = SessionStore()
 
     @property
     def enabled(self) -> bool:
@@ -233,17 +273,30 @@ class TunnelHost:
             return None
         return tunnel
 
-    async def handle(self, method: str, payload: Any) -> dict[str, Any]:
+    async def handle(
+        self, method: str, payload: Any, metadata: Mapping[str, str] | None = None
+    ) -> dict[str, Any]:
         if method == "offer":
             offer = TunnelOffer.model_validate(payload)
-            accepted = await self._worker.run(self._decide(offer))
+            # An E2E tunnel pins a key: only the instance holding it may accept.
+            pinned_ok = offer.e2e_key is None or (
+                self._e2e_public_key is not None
+                and _same_key(offer.e2e_key, self._e2e_public_key)
+            )
+            accepted = pinned_ok and await self._worker.run(self._decide(offer))
             if accepted:
                 self._tunnels[offer.tunnel_id] = Tunnel(
-                    offer.tunnel_id, offer.principal, offer.scopes
+                    offer.tunnel_id,
+                    offer.principal,
+                    offer.scopes,
+                    sealed=offer.e2e_key is not None,
                 )
             return {"accept": accepted}
+        if method == "handshake":
+            return self._handshake(metadata, payload)
         if method == "closed":
             tunnel_id = str(payload.get("tunnel_id", ""))
+            self.sessions.drop(tunnel_id)
             tunnel = self._tunnels.pop(tunnel_id, None)
             if tunnel is not None:
                 closed = TunnelClosed(
@@ -252,6 +305,28 @@ class TunnelHost:
                 await self._worker.run(self._notify(tunnel, closed))
             return {}
         raise ContractError(f"Unknown {TUNNEL_HOST_SERVICE} method {method}")
+
+    def _handshake(
+        self, metadata: Mapping[str, str] | None, payload: Any
+    ) -> dict[str, Any]:
+        """Answer a client's Noise NK message 1 on an E2E tunnel this instance
+        accepted; the session is kept under that tunnel."""
+        tunnel = self.lookup(metadata)
+        if tunnel is None or not tunnel.sealed or self._e2e_private_key is None:
+            raise handshake_failed(
+                "not an end-to-end tunnel of this instance", "server"
+            )
+        try:
+            message = b64decode(str((payload or {}).get("message", "")))
+            reply, _, session = nk_respond(
+                load_private_key(self._e2e_private_key), message
+            )
+        except Exception as exc:
+            raise handshake_failed(
+                "message 1 does not open with this instance's key", "server"
+            ) from exc
+        self.sessions.add(tunnel.id, session)
+        return {"message": b64encode(reply)}
 
     async def _decide(self, offer: TunnelOffer) -> bool:
         # Every scoped service must have opted in, and every hook must agree.

@@ -23,6 +23,7 @@ from meshcall.context import (
     client_deadline_grace,
 )
 from meshcall.driver import ClientDriver
+from meshcall.e2e import SealedCall, SealingConnection
 from meshcall.errors import (
     CallCancelledError,
     DeadlineExceededError,
@@ -215,6 +216,15 @@ class ClientBase:
                 name="meshcall-client-receiver",
             )
 
+    async def _reset_connection(self) -> None:
+        """Drop the connection (its session is stale); the next call reconnects."""
+        async with self._state_lock:
+            if self._connection is not None:
+                self._connection = None
+                self._receive_task = None
+                with contextlib.suppress(Exception):
+                    await self.driver.close()
+
     async def stop(self) -> None:
         if self._root is not self:
             if self._owns_root:
@@ -281,21 +291,29 @@ class ClientBase:
         )
 
         async def innermost(info: ClientCallInfo) -> Any:
-            call = await root._open_call(
-                info.service,
-                info.method,
-                request,
-                response_type=response_type,
-                options=info.options,
-            )
-            try:
-                result = await call.result()
-            except asyncio.CancelledError:
-                await asyncio.shield(call.cancel("caller_cancelled"))
-                raise
-            finally:
-                info.trailers = call.trailers
-            return result
+            for attempt in range(2):
+                call = await root._open_call(
+                    info.service,
+                    info.method,
+                    request,
+                    response_type=response_type,
+                    options=info.options,
+                )
+                try:
+                    return await call.result()
+                except UnauthenticatedError as exc:
+                    if attempt == 0 and exc.reason == "e2e_session_unknown":
+                        # The instance lost the session (it reconnected): the
+                        # call never ran. Handshake again and retry once.
+                        await root._reset_connection()
+                        continue
+                    raise
+                except asyncio.CancelledError:
+                    await asyncio.shield(call.cancel("caller_cancelled"))
+                    raise
+                finally:
+                    info.trailers = call.trailers
+            raise AssertionError("unreachable")
 
         return await root._run_chain(info, innermost)
 
@@ -511,9 +529,17 @@ class ClientBase:
         if connection is None:
             raise UnavailableError("Client is not connected")
         call_id = uuid.uuid4().hex
+        sealed = (
+            SealedCall(connection.e2e, service, method)
+            if connection.e2e is not None
+            else None
+        )
         call = _ClientCall(
             client=self,
-            connection=connection,
+            connection=connection
+            if sealed is None
+            else SealingConnection(connection, sealed),
+            sealed=sealed,
             call_id=call_id,
             response_type=response_type,
             input_type=input_type,
@@ -524,7 +550,7 @@ class ClientBase:
         if budget is not None:
             call.arm_deadline(max(0.0, budget - (time.monotonic() - started)))
         try:
-            await connection.send(
+            await call.connection.send(
                 CallOpenFrame(
                     call_id=call_id,
                     service=service,
@@ -629,6 +655,19 @@ class ClientBase:
         call = self._calls.get(call_id)
         if call is None:
             return
+        if call.sealed is not None:
+            try:
+                frame = call.sealed.open(frame)
+            except ValueError as exc:
+                # A frame the instance did not seal: not from the other end.
+                self._calls.pop(call_id, None)
+                await call.fail(
+                    ProtocolError(
+                        f"Sealed call: {exc}",
+                        details={"source": "client", "reason": "e2e_open_failed"},
+                    )
+                )
+                return
         if isinstance(frame, StreamWindowFrame):
             await call.receive_window(frame)
         elif isinstance(frame, StreamItemFrame):
@@ -726,8 +765,9 @@ class _ClientCall:
         self,
         *,
         client: ClientBase,
-        connection: FrameConnection,
+        connection: FrameConnection | SealingConnection,
         call_id: str,
+        sealed: SealedCall | None = None,
         response_type: type[BaseModel] | None,
         input_type: type[BaseModel | str | bytes] | None,
         output_type: type[BaseModel | str | bytes] | None,
@@ -735,6 +775,7 @@ class _ClientCall:
     ) -> None:
         self.client = client
         self.connection = connection
+        self.sealed = sealed
         self.call_id = call_id
         self.response_type = response_type
         self.input_type = input_type

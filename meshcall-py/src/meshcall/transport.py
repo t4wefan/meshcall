@@ -5,7 +5,7 @@ import contextlib
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from websockets.exceptions import ConnectionClosed
 
@@ -26,6 +26,9 @@ from meshcall.protocol import (
     decode_frame,
     encode_frame,
 )
+
+if TYPE_CHECKING:
+    from meshcall.e2e import Session
 
 #: Largest encoded frame, sent or received, unless configured smaller; also
 #: the Router's ceiling.
@@ -153,6 +156,8 @@ class FrameConnection:
     ) -> None:
         self._websocket = websocket
         self._max_frame_size = max_frame_size
+        #: The connection's end-to-end session, set by the client's handshake.
+        self.e2e: Session | None = None
         self._source = source
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout

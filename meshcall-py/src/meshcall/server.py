@@ -25,6 +25,7 @@ from meshcall.contract import (
 from meshcall.di import DependencyScope, MetaPlan
 from meshcall.diagnostics import ContractWarning
 from meshcall.driver import DriverBinding, ServerDriver
+from meshcall.e2e import SealedCall, SealingConnection
 from meshcall.errors import (
     CallCancelledError,
     ContractError,
@@ -34,8 +35,10 @@ from meshcall.errors import (
     InternalError,
     InvalidArgumentError,
     MeshCallError,
+    PermissionDeniedError,
     ProtocolError,
     ResourceExhaustedError,
+    UnauthenticatedError,
     UnavailableError,
     invalid_argument,
     invalid_response,
@@ -108,9 +111,12 @@ class ServerRuntime:
         max_inflight: int | None = None,
         instance_id: str = "",
         tunnel_policies: Mapping[str, TunnelPolicy] | None = None,
+        e2e_private_key: str | None = None,
     ) -> None:
         self.worker = worker
-        self.tunnels = TunnelHost(tunnel_policies or {}, worker)
+        self.tunnels = TunnelHost(
+            tunnel_policies or {}, worker, e2e_private_key=e2e_private_key
+        )
         self.instance_id = instance_id
         self.access_log = access_log
         self.log_level = log_level
@@ -301,6 +307,16 @@ class _ServerSession:
         if call is None:
             return
         if isinstance(frame, StreamItemFrame):
+            if call.sealed is not None:
+                try:
+                    opened = call.sealed.open(frame)
+                except ValueError as exc:
+                    await call._application_failure(
+                        ProtocolError(f"Sealed input item does not open: {exc}")
+                    )
+                    return
+                assert isinstance(opened, StreamItemFrame)
+                frame = opened
             await call.receive_item(frame)
         elif isinstance(frame, StreamEndFrame):
             await call.receive_end(frame)
@@ -311,6 +327,21 @@ class _ServerSession:
 
     async def _open(self, frame: CallOpenFrame) -> None:
         started_at = time.perf_counter()
+        sealed, frame, refusal = self._unseal(frame)
+        if refusal is not None:
+            with contextlib.suppress(ConnectionError):
+                await self.connection.send(
+                    CallErrorFrame(
+                        call_id=frame.call_id,
+                        error=ErrorPayload(
+                            code=refusal.code,
+                            message=refusal.message,
+                            retryable=refusal.retryable,
+                            details=refusal.details,
+                        ),
+                    )
+                )
+            return
         if frame.call_id in self.calls:
             try:
                 await self.connection.send(
@@ -438,15 +469,65 @@ class _ServerSession:
                     colorize=self.colorize,
                 )
             return
-        call = _ServerCall(self, frame, method)
+        call = _ServerCall(self, frame, method, sealed)
         self.calls[frame.call_id] = call
         call.start()
 
+    def _unseal(
+        self, frame: CallOpenFrame
+    ) -> tuple[SealedCall | None, CallOpenFrame, MeshCallError | None]:
+        """Open an end-to-end sealed call.open; on a sealed tunnel a plain
+        call is refused here too, whatever the Router let through."""
+        if not self.from_router:
+            return None, frame, None
+        tunnel = self.runtime.tunnels.lookup(frame.metadata)
+        if not frame.e2e_session:
+            if tunnel is not None and tunnel.sealed:
+                return (
+                    None,
+                    frame,
+                    PermissionDeniedError(
+                        "This tunnel carries end-to-end sealed calls only",
+                        details={"source": "server", "reason": "tunnel_e2e_required"},
+                    ),
+                )
+            return None, frame, None
+        session = (
+            self.runtime.tunnels.sessions.find(tunnel.id, frame.e2e_session)
+            if tunnel is not None
+            else None
+        )
+        unknown = UnauthenticatedError(
+            "Unknown end-to-end session; handshake again",
+            details={"source": "server", "reason": "e2e_session_unknown"},
+        )
+        if session is None:
+            return None, frame, unknown
+        sealed = SealedCall(session, frame.service, frame.method)
+        try:
+            opened = sealed.open(frame)
+        except ValueError:
+            return None, frame, unknown
+        assert isinstance(opened, CallOpenFrame)
+        return sealed, opened, None
+
     async def _tunnel_call(self, frame: CallOpenFrame) -> None:
         try:
-            result = await self.runtime.tunnels.handle(frame.method, frame.payload)
+            result = await self.runtime.tunnels.handle(
+                frame.method, frame.payload, frame.metadata
+            )
             reply: CallResultFrame | CallErrorFrame = CallResultFrame(
                 call_id=frame.call_id, payload=result
+            )
+        except MeshCallError as exc:
+            reply = CallErrorFrame(
+                call_id=frame.call_id,
+                error=ErrorPayload(
+                    code=exc.code,
+                    message=exc.message,
+                    retryable=exc.retryable,
+                    details=exc.details,
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.warning(  # noqa: PLE1205
@@ -491,9 +572,15 @@ class _ServerCall:
         session: _ServerSession,
         open_frame: CallOpenFrame,
         method: RuntimeMethod,
+        sealed: SealedCall | None = None,
     ) -> None:
         self.session = session
-        self.connection = session.connection
+        self.sealed = sealed
+        self.connection: FrameConnection | SealingConnection = (
+            session.connection
+            if sealed is None
+            else SealingConnection(session.connection, sealed)
+        )
         self.open_frame = open_frame
         self.call_id = open_frame.call_id
         self.method = method
@@ -936,11 +1023,13 @@ class RpcServer:
         interceptors: Sequence[ServerInterceptor] = (),
         max_inflight: int | None = None,
         tunnel_policies: Mapping[str, TunnelPolicy] | None = None,
+        e2e_private_key: str | None = None,
     ) -> None:
         if max_inflight is not None and max_inflight < 1:
             raise ValueError("max_inflight must be positive")
         self.max_inflight = max_inflight
         self.tunnel_policies = dict(tunnel_policies or {})
+        self.e2e_private_key = e2e_private_key
         self._services = list(services)
         self.driver = driver
         self.access_log = access_log
@@ -993,6 +1082,7 @@ class RpcServer:
                     max_inflight=self.max_inflight,
                     instance_id=self.driver.instance_id,
                     tunnel_policies=self.tunnel_policies,
+                    e2e_private_key=self.e2e_private_key,
                 )
                 await self.driver.start(binding, runtime)
             except BaseException:
