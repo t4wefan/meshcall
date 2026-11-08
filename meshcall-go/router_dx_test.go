@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -256,5 +257,43 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 	_, err = adminMesh.Auth().RenewToken(ctx, issued.TokenID, 600)
 	if e, _ := meshcall.AsError(err); e == nil || e.Reason() != "token_expired" {
 		t.Fatalf("renewing a revoked token: %v", err)
+	}
+
+	// An instance whose token is revoked does not retry: serving ends, saying why.
+	serving, err := adminMesh.Auth().IssueToken(ctx, []meshcall.RouterScope{{Service: "test.v1.Other", Register: true}}, 300)
+	if err != nil {
+		t.Fatalf("issuing a registration token: %v", err)
+	}
+	other := meshcall.NewService("test.v1.Other", meshcall.Describe("Other service."))
+	meshcall.HandleUnary(other, "ping", func(_ *meshcall.Context, _ PingReq) (PingResp, error) {
+		return PingResp{OK: true}, nil
+	}, meshcall.Doc("Ping."), meshcall.Idempotent())
+	instance := meshcall.NewMesh(meshcall.NewRouter(router.URL()), meshcall.WithToken(serving.Token),
+		meshcall.WithReconnect(meshcall.ReconnectPolicy{InitialDelay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}))
+	instance.Mount(other)
+	served := make(chan error, 1)
+	go func() { served <- instance.Serve(ctx, meshcall.WithStrict(true)) }()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		tokens, err := adminMesh.Auth().ListTokens(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.ContainsFunc(tokens, func(i meshcall.TokenInfo) bool { return i.TokenID == serving.TokenID && i.Connections == 1 }) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the instance did not connect: %+v", tokens)
+		}
+	}
+	if revoked, err := adminMesh.Auth().RevokeToken(ctx, serving.TokenID); err != nil || !revoked.Revoked {
+		t.Fatalf("revoking the instance's token: %+v %v", revoked, err)
+	}
+	select {
+	case err := <-served:
+		if e, _ := meshcall.AsError(err); e == nil || e.Code != meshcall.CodeUnauthenticated {
+			t.Fatalf("Serve after its credentials were refused: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve kept retrying after its credentials were refused")
 	}
 }

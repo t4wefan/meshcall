@@ -1489,19 +1489,28 @@ func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningS
 	return running, nil
 }
 
-// Serve connects the Mesh's mounted services to the Router, blocks until ctx is done,
+// Serve connects the Mesh's mounted services to the Router, returns the error if every
+// Router refuses the credentials, otherwise blocks until ctx is done,
 // and then gracefully drains in-flight calls and closes the server.
 func (m *Mesh) Serve(ctx context.Context, opts ...ServeOption) error {
 	running, err := m.StartServing(ctx, opts...)
 	if err != nil {
 		return err
 	}
-	<-ctx.Done()
+	var refusal error
+	select {
+	case <-ctx.Done():
+	case <-running.Server.Refused():
+		refusal = running.Server.RefusalError()
+	}
 	closeErr := running.Close()
 	if m.ownsLocalRouter {
 		if err := m.Close(); err != nil && closeErr == nil {
 			closeErr = err
 		}
+	}
+	if refusal != nil {
+		return refusal
 	}
 	return closeErr
 }

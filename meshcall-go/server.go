@@ -59,6 +59,8 @@ type Server struct {
 	logger   *slog.Logger
 	inflight atomic.Int64
 	ctx      context.Context
+	refused  chan struct{}
+	refusal  *Error
 	stop     context.CancelFunc
 
 	mu       sync.Mutex
@@ -112,6 +114,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	s := &Server{opts: opts, services: map[string]*Service{}, targeted: map[string]bool{}, logger: opts.Logger, sessions: map[*session]struct{}{},
 		tunnels: tunnels}
 	s.ctx, s.stop = context.WithCancel(context.Background())
+	s.refused = make(chan struct{})
 	var findings []ContractWarning
 	for _, svc := range opts.Services {
 		if s.services[svc.name] != nil {
@@ -155,6 +158,7 @@ type routerLink struct {
 	endpoint endpoint
 	conn     *conn // set only while registered
 	session  *session
+	refused  bool // the Router refused the credentials; no more attempts
 }
 
 // ConnectRouter registers with one or more Routers (ws://, unix://, pipe://)
@@ -187,6 +191,8 @@ func (s *Server) ConnectRouter(ctx context.Context, urls ...string) error {
 		if errs[i] == nil {
 			registered++
 			go s.supervise(link, false)
+		} else if refusal := credentialRefusal(errs[i]); refusal != nil {
+			s.refuseLink(link, refusal)
 		} else {
 			s.logger.Warn("Router refused the instance at start; retrying in the background", "router", link.endpoint.text, "instance", s.opts.InstanceID, "error", errs[i])
 			go s.supervise(link, true)
@@ -245,6 +251,46 @@ func (s *Server) register(ctx context.Context, link *routerLink) error {
 	return nil
 }
 
+// credentialRefusal is err when it says the Router refused the credentials.
+func credentialRefusal(err error) *Error {
+	if e, ok := AsError(err); ok && e.Code == CodeUnauthenticated {
+		return e
+	}
+	return nil
+}
+
+// refuseLink stops a link's reconnects: the same credentials fail the same
+// way again. Once every link is refused, Refused reports it.
+func (s *Server) refuseLink(link *routerLink, err *Error) {
+	s.logger.Error("Router refused the instance's credentials; not retrying", "router", link.endpoint.text, "instance", s.opts.InstanceID, "error", err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	link.refused = true
+	for _, candidate := range s.links {
+		if !candidate.refused {
+			return
+		}
+	}
+	if s.refusal == nil {
+		s.refusal = err
+		close(s.refused)
+	}
+}
+
+// Refused is closed once every Router refused this instance's credentials, so
+// it can no longer register anywhere; RefusalError then says why.
+func (s *Server) Refused() <-chan struct{} { return s.refused }
+
+// RefusalError is the error Refused stands for, or nil.
+func (s *Server) RefusalError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refusal == nil {
+		return nil
+	}
+	return s.refusal
+}
+
 // supervise serves a link's connection and re-registers after it drops.
 func (s *Server) supervise(link *routerLink, startDown bool) {
 	for {
@@ -288,6 +334,10 @@ func (s *Server) supervise(link *routerLink, startDown bool) {
 			stopping := s.closed || s.draining
 			s.mu.Unlock()
 			if stopping {
+				return
+			}
+			if refusal := credentialRefusal(err); refusal != nil {
+				s.refuseLink(link, refusal)
 				return
 			}
 			s.logger.Warn("Router re-registration failed", "router", link.endpoint.text, "error", err)
