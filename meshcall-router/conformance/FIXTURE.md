@@ -25,10 +25,16 @@ annotation; duplex methods need a reason.
 | `announce` | duplex | — , items `{text}` | items `{text}` | sends `{text: "hello"}`, closes its output, then reads the input to its end and returns |
 | `big` | unary | `bytes: int` | `{text}` | returns a text of `bytes` characters |
 | `big_items` | server stream | `bytes: int` | items `{text}` | yields `{text: "small"}`, then a text of `bytes` characters |
+| `tunnel_info` | unary | — | `{tunnel_id: str \| null, principal: str \| null}` | the call's `ctx.tunnel`, or nulls |
+| `closed_tunnels` | unary | — | `{closed: [{tunnel_id, reason}]}` | every tunnel close notice received, in order |
 
 The program also registers `conformance.v1.Targeted` with `targeted: true`
 and one method, `whoami` (unary, read-only, no parameters), returning
 `{instance: <this instance's id>}`.
+
+Both services accept tunnels (`accept_tunnels` / `acceptTunnels` /
+`TunnelPolicies` at mount): every offer is accepted unless its principal is
+`refuse:me`, and each close notice is recorded for `closed_tunnels`.
 
 The suite expects the Python-style snake_case method names above in the
 registration (`echo`, `cancelled_tags`, `metadata_echo`, `drain_self`).

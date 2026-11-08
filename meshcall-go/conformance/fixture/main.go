@@ -45,6 +45,20 @@ func (o Ok) MarshalJSON() ([]byte, error) {
 
 type Empty struct{}
 
+type TunnelSeen struct {
+	TunnelID  *string `json:"tunnel_id"`
+	Principal *string `json:"principal"`
+}
+
+type ClosedTunnel struct {
+	TunnelID string `json:"tunnel_id"`
+	Reason   string `json:"reason"`
+}
+
+type ClosedTunnels struct {
+	Closed []ClosedTunnel `json:"closed"`
+}
+
 type Slow struct {
 	Ms  int    `json:"ms"`
 	Tag string `json:"tag,omitempty"`
@@ -227,6 +241,28 @@ func main() {
 		return Ok{OK: true}, nil
 	}, meshcall.Doc("Drain and stop this instance after delay_ms."), meshcall.Destructive())
 
+	var closedMu sync.Mutex
+	closed := []ClosedTunnel{}
+	tunnelPolicy := &meshcall.TunnelPolicy{
+		Accept: func(_ context.Context, offer meshcall.TunnelOffer) bool { return offer.Principal != "refuse:me" },
+		OnClosed: func(_ context.Context, c meshcall.TunnelClosed) {
+			closedMu.Lock()
+			closed = append(closed, ClosedTunnel{TunnelID: c.TunnelID, Reason: c.Reason})
+			closedMu.Unlock()
+		},
+	}
+	meshcall.HandleUnary(fixture, "tunnel_info", func(ctx *meshcall.Context, req Empty) (TunnelSeen, error) {
+		if ctx.Tunnel == nil {
+			return TunnelSeen{}, nil
+		}
+		return TunnelSeen{TunnelID: &ctx.Tunnel.ID, Principal: &ctx.Tunnel.Principal}, nil
+	}, meshcall.Doc("The tunnel this call arrived through (ctx.Tunnel), or nulls."), meshcall.ReadOnly())
+	meshcall.HandleUnary(fixture, "closed_tunnels", func(ctx *meshcall.Context, req Empty) (ClosedTunnels, error) {
+		closedMu.Lock()
+		defer closedMu.Unlock()
+		return ClosedTunnels{Closed: append([]ClosedTunnel{}, closed...)}, nil
+	}, meshcall.Doc("Tunnels this instance was told have closed, in order."), meshcall.ReadOnly())
+
 	targeted := meshcall.NewService("conformance.v1.Targeted", meshcall.Targeted(),
 		meshcall.Describe("A targeted service: every call must name the instance it is for."))
 	meshcall.HandleUnary(targeted, "whoami", func(ctx *meshcall.Context, req Empty) (Instance, error) {
@@ -247,6 +283,9 @@ func main() {
 		Services: []*meshcall.Service{fixture, targeted}, InstanceID: instance, MaxFrameSize: maxFrame,
 		PingInterval: time.Duration(ping) * time.Millisecond, PingTimeout: max(time.Second, 2*time.Duration(ping)*time.Millisecond),
 		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		TunnelPolicies: map[string]*meshcall.TunnelPolicy{
+			"conformance.v1.Fixture": tunnelPolicy, "conformance.v1.Targeted": tunnelPolicy,
+		},
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

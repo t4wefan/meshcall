@@ -5,6 +5,7 @@ import {
   MeshCallError, MeshCallServer, method, service, z,
   type DuplexChannel, type RpcContext, type WebSocketEndpoint,
 } from "../src/index.js";
+import type { TunnelPolicy } from "../src/tunnel.js";
 
 const Echo = z.object({ value: z.int(), text: z.string() }).meta({ id: "Echo" });
 const Fail = z.object({ code: z.string(), message: z.string(), retryable: z.boolean().default(false) }).meta({ id: "Fail" });
@@ -24,6 +25,14 @@ const Chat = z.object({ prefix: z.string().default("") }).meta({ id: "Chat" });
 const Text = z.object({ text: z.string() }).meta({ id: "Text" });
 const Size = z.object({ bytes: z.int() }).meta({ id: "Size" });
 const Drain = z.object({ delay_ms: z.int().default(0) }).meta({ id: "Drain" });
+const TunnelSeen = z.object({ tunnel_id: z.string().nullable(), principal: z.string().nullable() }).meta({ id: "TunnelSeen" });
+const ClosedTunnels = z.object({ closed: z.array(z.object({ tunnel_id: z.string(), reason: z.string() })) }).meta({ id: "ClosedTunnels" });
+
+const closedTunnels: Array<{ tunnel_id: string; reason: string }> = [];
+const tunnelPolicy: TunnelPolicy = {
+  accept: (offer) => offer.principal !== "refuse:me",
+  onClosed: (closed) => { closedTunnels.push({ tunnel_id: closed.tunnelId, reason: closed.reason }); },
+};
 
 type Text = z.infer<typeof Text>;
 
@@ -100,6 +109,16 @@ class Fixture {
     return { metadata: { ...ctx.metadata } };
   }
 
+  @method({ description: "The tunnel this call arrived through (ctx.tunnel), or nulls.", readOnly: true, request: Empty, response: TunnelSeen })
+  async tunnel_info(_: unknown, ctx: RpcContext) {
+    return { tunnel_id: ctx.tunnel?.id ?? null, principal: ctx.tunnel?.principal ?? null };
+  }
+
+  @method({ description: "Tunnels this instance was told have closed, in order.", readOnly: true, request: Empty, response: ClosedTunnels })
+  async closed_tunnels() {
+    return { closed: [...closedTunnels] };
+  }
+
   @method({ description: "Return a text of bytes bytes.", readOnly: true, request: Size, response: Text })
   async big({ bytes }: z.infer<typeof Size>) {
     return { text: "x".repeat(bytes) };
@@ -158,6 +177,7 @@ server = new MeshCallServer({
   pingIntervalMs: ping, pingTimeoutMs: Math.max(1000, ping * 2),
   ...(process.env.MESHCALL_MAX_FRAME_SIZE === undefined ? {} : { maxFrameSize: Number(process.env.MESHCALL_MAX_FRAME_SIZE) }),
   accessLog: false,
+  tunnelPolicies: new Map([["conformance.v1.Fixture", tunnelPolicy], ["conformance.v1.Targeted", tunnelPolicy]]),
 });
 await server.start();
 process.stderr.write("fixture registered\n");

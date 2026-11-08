@@ -35,6 +35,7 @@ MeshCall 在 Python、TypeScript 与 Go 中围绕清晰的**四层 API（4-Layer
    - [Router 停机、容量限制与指标](#router-停机容量限制与指标)
 8. [安全鉴权、ACL 权限控制与临时范围 Token](#8-安全鉴权acl-权限控制与临时范围-token)
    - [匿名调用方与 API Key](#匿名调用方与-api-key)
+   - [隧道：一个实例只给一个调用方](#3-隧道一个实例只给一个调用方)
 9. [拦截器（Interceptors）、元数据（Metadata）与结构化错误处理](#9-拦截器interceptors元数据metadata与结构化错误处理)
    - [OpenTelemetry 链路追踪](#opentelemetry-链路追踪)
 10. [AI 编程助手集成（`meshcall init`）](#10-ai-编程助手集成meshcall-init)
@@ -634,18 +635,18 @@ _, _ = chunk, err
 
 ### 从浏览器、边缘运行时或 curl 调用
 
-浏览器无法在 WebSocket 上设置 `Authorization` 头，因此 Web 与边缘代码调用 Router 的 HTTP API（同一端口，`/v1/` 路径下）。生成的 TypeScript 客户端可以直接接收来自 `meshcall/web`（不依赖 Node）的 `Mesh`（使用 `new Router("https://...")` 构造）；一元调用与服务端流均可用，duplex 不可用。
+生成的 TypeScript 客户端可以直接接收来自 `meshcall/web`（不依赖 Node）的 `Mesh`。Router URL 决定传输方式：`wss://` 通过浏览器自带的 `WebSocket` 收发协议帧，全部调用形状（包括 duplex）都可用；浏览器无法在 WebSocket 上设置请求头，因此凭据放在第一帧（`hello`）中，绝不放进 URL。`https://` 则通过 `fetch` 调用 Router 的 HTTP API（同一端口，`/v1/` 路径下）：支持一元与流式调用，不支持 duplex。
 
 ```typescript
 import { Mesh, Router } from "meshcall/web";
 import { TextProcessorClient } from "./generated/text-ts/src/index.js";
 
-const mesh = new Mesh(new Router("https://router.example"), { token });
+const mesh = new Mesh(new Router("wss://router.example"), { token }); // 或 "https://…"
 const client = new TextProcessorClient(mesh);
 const chunk = await client.withOptions({ timeoutMs: 5_000 }).echo("hello");
 ```
 
-`token` 传入短期 Token（`mt_…`）或 API Key（`mk_…`）；其他源的页面需要 Router 以 `--http-cors-origin https://app.example` 启动。任何 HTTP 客户端都可以这样调用：
+`token` 传入短期 Token（`mt_…`）或 API Key（`mk_…`），隧道凭据则作为 `tunnel` 传入（见[隧道](#3-隧道一个实例只给一个调用方)）；其他源的页面需要 Router 以 `--http-cors-origin https://app.example` 启动（它同样约束 WebSocket 升级）。任何 HTTP 客户端都可以这样调用：
 
 ```bash
 curl http://127.0.0.1:8765/v1/call/text.v1.TextProcessor/echo -d '{"text": "hi"}'
@@ -968,6 +969,51 @@ meshcall-router new-api-key ci-bot   # 只打印一次 Key，以及应加入 "ap
 ```
 
 填好条目的 `call` 列表后重启 Router。调用方以 `Authorization: Bearer mk_…` 发送 Key：Python 为 `Mesh(router, token="mk_…")`，TypeScript 为 `new Mesh(router, { token: "mk_…" })`，Go 为 `meshcall.NewMesh(router, meshcall.WithToken("mk_…"))`，curl 为 `-H 'Authorization: Bearer mk_…'`。校验 Key 只需一次哈希查找；轮换方式是先加新 Key 再删旧 Key。详见 [Router 架构与鉴权](router.md#连接时认证调用时授权)。
+
+用 `instance_ids` 把每个实例的注册凭据绑定到它的实例 id（账号、API Key，以及 Token 上的 `RouterScope(..., instance_ids=[...])`）：以其他 id 注册会被拒绝，这样就没有凭据能在实例离线时冒充它。
+
+### 3. 隧道：一个实例只给一个调用方
+
+**收益：** 平台可以给某个人的浏览器或手机发放一个只通向*一个*实例（他的开发容器、他的 Agent 会话）的凭据，Router 对这个连接的表现就像是该实例自己的 Router。控制面不在数据路径上；实例从 Router 得知调用者是谁，而不是从调用方自带的元数据。
+
+实例在挂载服务时选择加入，并逐个决定是否接受 offer：
+
+```python
+async def allow(offer: TunnelOffer) -> bool:
+    return offer.principal.startswith("user:")      # 签发方给出的不透明字符串
+
+mesh = Mesh(Router(url), token=box_token)           # 绑定了 instance_ids=["box-a"] 的 Token
+mesh.mount(Workspace(), instance_id="box-a", accept_tunnels=allow, on_tunnel_closed=cleanup)
+
+@service(name="dev.v1.Workspace", targeted=True)
+class Workspace:
+    @query()
+    async def whoami(self, ctx: RpcContext) -> str:
+        return ctx.tunnel.principal if ctx.tunnel else "local"   # 由 Router 设置，无法伪造
+```
+
+签发方（`call` 列表包含 `meshcall.router.v1.TunnelService/*` 的账号或 API Key）开启隧道；`open` 在实例接受后才返回：
+
+```python
+opened = await control.tunnels.open(
+    instance="box-a", scopes=["dev.v1.Workspace"], principal="user:alice/device:phone", ttl_seconds=600,
+)
+# 把 opened.credential（mtun_…）与 opened.instance_id 交给客户端；撤销用
+# await control.tunnels.revoke(opened.tunnel_id)，列出用 await control.tunnels.list()。
+```
+
+客户端只凭这个凭据连接：
+
+```typescript
+import { Mesh, Router } from "meshcall/web";
+const mesh = new Mesh(new Router("wss://relay.example"), { tunnel: credential });
+const box = new WorkspaceClient(mesh);
+await box.whoami({ instance: instanceId });   // 定向客户端仍然要写出实例：见下文
+```
+
+隧道连接上只存在该实例在 scope 内的方法：其他实例与服务、Registry 和 `/v1/openapi.json` 都看不到别的内容，该连接也不能注册或签发。`ttl_seconds` 只限制*新*连接；连接一直存活到 `revoke`，撤销会立即结束它。实例重连期间，调用以可重试的 `unavailable` / `instance_offline` 失败，实例接受 Router 的重新 offer 后恢复。隧道保存在 Router 内存中：Router 重启后客户端需要重新向签发方申请。
+
+`targeted` 服务的生成客户端在隧道上同样要求 `instance`：传入隧道的 `instance_id`。Router 会校验它（不符时返回 `permission_denied` / `tunnel_scope`，并给出正确的 id），而普通 `Mesh` 保留编译期检查。TypeScript 使用 `{ tunnel }` / `acceptTunnels` / `onTunnelClosed`，Go 使用 `meshcall.WithTunnel(cred)` / `meshcall.WithAcceptTunnels(decide)` / `meshcall.WithTunnelClosed(fn)` 与 `ctx.Tunnel`。CLI：`meshcall --tunnel mtun_… call dev.v1.Workspace.whoami '{}'`；`meshcall router inspect` 列出你开启的隧道，但从不显示凭据。
 
 ---
 

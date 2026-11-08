@@ -35,6 +35,7 @@ MeshCall is structured around a clean **4-layer API** across Python, TypeScript,
    - [Router Shutdown, Limits and Metrics](#router-shutdown-limits-and-metrics)
 8. [Authentication & Temporary Scoped Tokens](#8-authentication--temporary-scoped-tokens)
    - [Anonymous Callers and API Keys](#anonymous-callers-and-api-keys)
+   - [Tunnels: One Instance for One Caller](#3-tunnels-one-instance-for-one-caller)
 9. [Interceptors, Metadata & Structured Errors](#9-interceptors-metadata--structured-errors)
    - [OpenTelemetry Tracing](#opentelemetry-tracing)
 10. [AI Coding Assistant Integration (`meshcall init`)](#10-ai-coding-assistant-integration-meshcall-init)
@@ -632,18 +633,18 @@ A targeted service's generated client keeps `instance` a compile-time requiremen
 
 ### Calling from a Browser, an Edge Runtime or curl
 
-Browsers cannot set the `Authorization` header on a WebSocket, so web and edge code calls the Router's HTTP API (same port, under `/v1/`). Generated TypeScript clients accept a `Mesh` from `meshcall/web` (no Node dependency) constructed with `new Router("https://...")`; unary and server-streaming calls work, duplex does not.
+Generated TypeScript clients accept a `Mesh` from `meshcall/web` (no Node dependency). The Router URL picks the transport: `wss://` speaks the WebSocket protocol through the browser's own `WebSocket`, so every call shape works, duplex included; browsers cannot set headers on a WebSocket, so the credentials travel in the first (`hello`) frame, never in the URL. `https://` uses the Router's HTTP API (same port, under `/v1/`) over `fetch`: unary and streaming calls, no duplex.
 
 ```typescript
 import { Mesh, Router } from "meshcall/web";
 import { TextProcessorClient } from "./generated/text-ts/src/index.js";
 
-const mesh = new Mesh(new Router("https://router.example"), { token });
+const mesh = new Mesh(new Router("wss://router.example"), { token }); // or "https://…"
 const client = new TextProcessorClient(mesh);
 const chunk = await client.withOptions({ timeoutMs: 5_000 }).echo("hello");
 ```
 
-Pass a short-lived token (`mt_…`) or an API key (`mk_…`) as `token`, and start the Router with `--http-cors-origin https://app.example` for other origins. Any HTTP client works the same way:
+Pass a short-lived token (`mt_…`) or an API key (`mk_…`) as `token`, or a tunnel credential as `tunnel` (see [Tunnels](#3-tunnels-one-instance-for-one-caller)), and start the Router with `--http-cors-origin https://app.example` for pages on other origins (it governs WebSocket upgrades too). Any HTTP client works the same way:
 
 ```bash
 curl http://127.0.0.1:8765/v1/call/text.v1.TextProcessor/echo -d '{"text": "hi"}'
@@ -964,6 +965,51 @@ meshcall-router new-api-key ci-bot   # prints the key once, and the entry to add
 ```
 
 Fill in the entry's `call` list and restart the Router. Callers send the key as `Authorization: Bearer mk_…`: `Mesh(router, token="mk_…")` in Python, `new Mesh(router, { token: "mk_…" })` in TypeScript, `meshcall.NewMesh(router, meshcall.WithToken("mk_…"))` in Go, `-H 'Authorization: Bearer mk_…'` with curl. A key is checked with one hash lookup; rotate it by adding a new key and removing the old one.
+
+Bind each instance's registration credential to its instance id with `instance_ids` (accounts, API keys, and `RouterScope(..., instance_ids=[...])` on tokens): a registration under any other id is refused, so no credential can stand in for an instance that is offline.
+
+### 3. Tunnels: One Instance for One Caller
+
+**Benefit:** A platform hands a person's browser or phone a credential for *one* instance — their dev container, their agent session — and the Router behaves towards that connection like the instance's own Router. The control plane is not in the data path; the instance learns who is calling from the Router, not from caller-supplied metadata.
+
+The instance opts in when it mounts its services, and decides each offer:
+
+```python
+async def allow(offer: TunnelOffer) -> bool:
+    return offer.principal.startswith("user:")      # the issuer's opaque string
+
+mesh = Mesh(Router(url), token=box_token)           # a token bound to instance_ids=["box-a"]
+mesh.mount(Workspace(), instance_id="box-a", accept_tunnels=allow, on_tunnel_closed=cleanup)
+
+@service(name="dev.v1.Workspace", targeted=True)
+class Workspace:
+    @query()
+    async def whoami(self, ctx: RpcContext) -> str:
+        return ctx.tunnel.principal if ctx.tunnel else "local"   # set by the Router; unforgeable
+```
+
+The issuer (an account or API key with `meshcall.router.v1.TunnelService/*` in its `call` list) opens the tunnel; `open` returns once the instance accepted:
+
+```python
+opened = await control.tunnels.open(
+    instance="box-a", scopes=["dev.v1.Workspace"], principal="user:alice/device:phone", ttl_seconds=600,
+)
+# Hand opened.credential (mtun_…) and opened.instance_id to the client; revoke with
+# await control.tunnels.revoke(opened.tunnel_id); list with await control.tunnels.list().
+```
+
+The client connects with nothing but the credential:
+
+```typescript
+import { Mesh, Router } from "meshcall/web";
+const mesh = new Mesh(new Router("wss://relay.example"), { tunnel: credential });
+const box = new WorkspaceClient(mesh);
+await box.whoami({ instance: instanceId });   // targeted clients still name the instance: see below
+```
+
+On a tunnel connection only the scoped methods of that instance exist: other instances and services, the Registry and `/v1/openapi.json` show nothing else, and the connection cannot register or issue. `ttl_seconds` bounds *new* connections only; a connection lives until `revoke`, which ends it at once. While the instance reconnects, calls fail with retryable `unavailable` / `instance_offline` and resume when it accepts the Router's re-offer. Tunnels live in the Router's memory: after a Router restart the client asks the issuer again.
+
+Generated clients of `targeted` services keep `instance` required on tunnels too: pass the tunnel's `instance_id`. The Router checks it (`permission_denied` / `tunnel_scope`, naming the right one), and every ordinary `Mesh` keeps the compile-time check. TypeScript uses `{ tunnel }` / `acceptTunnels` / `onTunnelClosed`, Go `meshcall.WithTunnel(cred)` / `meshcall.WithAcceptTunnels(decide)` / `meshcall.WithTunnelClosed(fn)` and `ctx.Tunnel`. From the CLI: `meshcall --tunnel mtun_… call dev.v1.Workspace.whoami '{}'`; `meshcall router inspect` lists the tunnels you opened, never their credentials.
 
 ---
 

@@ -17,7 +17,10 @@ import (
 	"github.com/t4wefan/meshcall/meshcall-router/internal/wire"
 )
 
-const registryService = "meshcall.router.v1.Registry"
+const (
+	registryService = "meshcall.router.v1.Registry"
+	tunnelService   = "meshcall.router.v1.TunnelService"
+)
 
 // Options shared by every command.
 type Options struct {
@@ -67,7 +70,18 @@ func Inspect(ctx context.Context, opts Options, service string) (map[string]any,
 		return nil, err
 	}
 	defer conn.Close()
-	return registry(conn, service)
+	result, err := registry(conn, service)
+	if err != nil || service != "" {
+		return result, err
+	}
+	// The caller's own tunnels, never their credentials. Identities that may
+	// not issue tunnels (and older Routers) simply list none.
+	if f, err := conn.Unary(tunnelService, "list", map[string]any{}, nil); err == nil && f["kind"] == "call.result" {
+		if tunnels := asList(asMap(f["payload"])["tunnels"]); len(tunnels) > 0 {
+			result["tunnels"] = tunnels
+		}
+	}
+	return result, nil
 }
 
 func registry(conn *wire.Conn, service string) (map[string]any, error) {
@@ -100,6 +114,7 @@ func registry(conn *wire.Conn, service string) (map[string]any, error) {
 
 // FormatInspect renders a human-readable table for Inspect's result.
 func FormatInspect(result map[string]any, w io.Writer) {
+	defer formatTunnels(asList(result["tunnels"]), w)
 	services, _ := result["services"].([]any)
 	if services == nil { // describe
 		services = []any{result}
@@ -168,6 +183,32 @@ func FormatInspect(result map[string]any, w io.Writer) {
 			}
 			fmt.Fprintln(w, line)
 		}
+	}
+}
+
+func formatTunnels(tunnels []any, w io.Writer) {
+	if len(tunnels) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\ntunnels")
+	for _, tt := range tunnels {
+		t := asMap(tt)
+		scopes := []string{}
+		for _, ss := range asList(t["scopes"]) {
+			s := asMap(ss)
+			methods := []string{}
+			for _, m := range asList(s["methods"]) {
+				methods = append(methods, fmt.Sprint(m))
+			}
+			scopes = append(scopes, fmt.Sprintf("%v/%s", s["service"], strings.Join(methods, ",")))
+		}
+		state := "online"
+		if online, _ := t["online"].(bool); !online {
+			state = "offline"
+		}
+		expires := time.UnixMilli(int64(number(t["expires_at_unix_ms"]))).UTC().Format(time.RFC3339)
+		fmt.Fprintf(w, "  %v → %v  principal=%v  connections=%v  %s  expires=%s  scopes=%s\n",
+			t["tunnel_id"], t["instance_id"], t["principal"], number(t["connections"]), state, expires, strings.Join(scopes, " "))
 	}
 }
 
@@ -537,6 +578,9 @@ func emitTerminal(f wire.Frame, c CallOptions, w io.Writer, hints callHints) err
 			}
 		case "permission_denied":
 			hint = "the account lacks a call permission for this method"
+			if _, _, _, details := wire.Error(f); details["reason"] == "tunnel_scope" {
+				hint = fmt.Sprintf("this tunnel reaches only instance %v and the methods it was opened for; omit --instance or pass --instance %v, and `meshcall router inspect` lists what it allows", details["instance_id"], details["instance_id"])
+			}
 		case "internal":
 			if _, _, _, details := wire.Error(f); details["reason"] == "invalid_response" || details["reason"] == "invalid_output_item" {
 				hint = "the service answered with data that breaks its own contract; the violations are in the service's log"

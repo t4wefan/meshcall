@@ -34,7 +34,7 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 
 | 帧类型 (`kind`) | 核心字段 | 说明 |
 | --- | --- | --- |
-| `hello` | `protocol`, `role`, `peer_id`, `instance_id?`, `capabilities?` | 连接发起方发送的第一帧 |
+| `hello` | `protocol`, `role`, `peer_id`, `instance_id?`, `capabilities?`, `authorization?` | 连接发起方发送的第一帧 |
 | `hello.ack` | `protocol`, `connection_id` | 连接接收方的握手确认回复 |
 | `server.register` | `instance_id`, `services[{name, methods[], targeted?, contract?}]`, `max_inflight?` | 仅用于 Router 模式；每条服务端连接发送一次 |
 | `server.register.ack` | `instance_id` | Router 确认服务注册成功 |
@@ -50,7 +50,9 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 | `ping` | `nonce` | 协议层心跳探测帧 |
 | `pong` | `nonce` | 原样回显 `nonce` 的心跳响应帧 |
 
-`services[]` 中每项为 `{name, methods[{name, stream, balance{kind, key?}}], contract?}`。`contract` 是服务的可移植契约条目（与 `*.meshcall.json` 文档中的对象相同：版本、描述、带 Schema 的方法、参数、注解；duplex 方法另含 `duplex_reason`）。它对路由不透明，Router 为每个服务保留首个注册的契约，并通过 `meshcall.router.v1.Registry` 服务（`list`、`describe {service}`）对外提供。`stream` 取值为 `unary`、`server_stream`、`client_stream`、`duplex`；`balance.kind` 取值为 `round_robin`、`least_inflight`、`random`、`sticky`、`disabled`。`capabilities` 保留给后续小版本协商可选特性，对端忽略不认识的条目。
+`services[]` 中每项为 `{name, methods[{name, stream, balance{kind, key?}}], contract?}`。`contract` 是服务的可移植契约条目（与 `*.meshcall.json` 文档中的对象相同：版本、描述、带 Schema 的方法、参数、注解；duplex 方法另含 `duplex_reason`）。它对路由不透明，Router 为每个服务保留首个注册的契约，并通过 `meshcall.router.v1.Registry` 服务（`list`、`describe {service}`）对外提供。`stream` 取值为 `unary`、`server_stream`、`client_stream`、`duplex`；`balance.kind` 取值为 `round_robin`、`least_inflight`、`random`、`sticky`、`disabled`。`capabilities` 用于协商可选特性，对端忽略不认识的条目；会应答隧道 offer 的服务实例在其中列出 `tunnels`（见[隧道](#隧道tunnels)），其余条目（二进制编码、压缩、字节信用）保留给后续小版本。
+
+`authorization` 以 HTTP `Authorization` 头的格式（`Basic …`、`Bearer mk_…`、`Bearer mt_…`、`Bearer mtun_…`）携带凭据，供无法在 WebSocket 升级请求上设置该头的对端（浏览器）使用。凭据从不放进 URL。同时发送 `Authorization` 头与 `hello.authorization` 的连接以 1008 关闭；`hello` 中的凭据校验失败时以 4401（unauthenticated，相当于升级请求的 HTTP 401）关闭。
 
 ### 帧大小（Frame size）
 
@@ -63,7 +65,7 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 ### 元数据（Metadata 与 Trailers）
 - `call.open` 上的 `metadata` 携带调用方传入的请求头（如 Trace Context、关联 ID、租户标识）；
 - `call.result` 与 `call.error` 上的 `metadata` 携带服务端返回的响应尾标（Trailers）；
-- Key 与 Value 均为字符串，Key 区分大小写且不能为空；以 `meshcall-` 开头的 Key 保留给运行时内部使用；Router 原样转发元数据。
+- Key 与 Value 均为字符串，Key 区分大小写且不能为空；以 `meshcall-` 开头的 Key 保留给运行时内部使用；Router 原样转发元数据，唯一的例外是以 `meshcall-tunnel-` 开头的 Key 只由 Router 设置：它从客户端发出的每个 `call.open` 中移除这些 Key，并在隧道连接上设置 `meshcall-tunnel-id` 与 `meshcall-tunnel-principal`（见[隧道](#隧道tunnels)）。
 
 ---
 
@@ -130,6 +132,55 @@ Router 收到停止请求（SIGTERM 或 SIGINT；第二次信号跳过等待）�
 以 `targeted: true` 注册的服务要求每次调用都指定实例（各实例持有不同状态：会话、已加载的模型、Actor）。缺少 `instance_id` 的调用不经路由即返回 `invalid_argument`（`reason: "instance_required"`）。同一服务的所有实例必须在 `targeted` 上一致；`sticky` 负载均衡对定向服务无意义，会被忽略。直连服务端按自身 id 执行同样规则。幂等去重的键包含目标实例：同一个 Key 发往两个实例是两次调用。
 
 详见英文版 [Targeted calls](../protocol.md#targeted-calls)。
+
+---
+
+## 隧道（Tunnels）
+
+**隧道**让受信任的签发方（issuer）为客户端签发一个只通向**一个服务实例**的凭据。用它建立的连接上，Router 表现得像该实例自己的 Router：只存在该实例在隧道 `scopes` 内的服务，无需指定 `instance_id`，其余一律不可达。Router 只负责转发与校验范围；实例从 Router 而非调用方自带的元数据得知调用者是谁。
+
+隧道是单个 Router 内存中的一条记录：`tunnel_id`、凭据摘要、目标 `instance_id`、`scopes`（实例的服务及每个服务允许的方法，`"*"` 表示全部）、签发方自定的不透明 `principal`（例如 `user:alice/device:phone`，最长 512 字节）、`expires_at` 以及可选的 `max_connections`。Router 重启会丢失所有隧道，客户端届时重新向签发方申请。
+
+### 开启、撤销与列出
+
+Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
+
+| 方法 | 请求 | 结果 |
+| --- | --- | --- |
+| `open` | `instance_id`, `scopes[{service, methods[]}]`, `principal`, `ttl_seconds`（1–86400）, `max_connections?` | `credential`（`mtun_…`，只返回一次）, `tunnel_id`, `instance_id`, `principal`, `scopes`, `expires_at_unix_ms`, `max_connections?`, `connections`, `online` |
+| `revoke` | `tunnel_id` | `revoked` |
+| `list` | `{}` | `tunnels[]`：字段同 `open`，但不含 `credential` |
+
+调用方需要在调用权限中拥有对应方法，且必须是账号或 API Key（开发模式下任何人均可）；临时 Token、`anonymous` 用户和隧道连接不能签发隧道。每个 scope 必须指向实例已注册的服务及其提供的方法，并且不超出签发方自身的调用权限。`revoke` 与 `list` 只能看到调用方自己的隧道。
+
+`open` 的失败情形：实例未注册 → `unavailable` / `instance_unknown`；实例正在排空 → `unavailable` / `instance_draining`；scope 中有实例未提供的服务或方法 → `invalid_argument`；scope 超出签发方权限 → `permission_denied`；实例不接受该隧道 → `permission_denied`（`reason: "tunnel_rejected"`）。
+
+### 实例同意（Instance consent）
+
+`open` 返回前，Router 先把隧道 offer 给实例；只有在 `hello` 的 `capabilities` 中列出 `tunnels` 的实例才会收到 offer（其余实例立即拒绝，`tunnel_rejected`）。offer 是 Router 在实例连接上发起的一次普通一元调用，目标是保留服务 `meshcall.router.v1.TunnelHost`，由运行时自行应答：
+
+- `offer` — `{tunnel_id, instance_id, principal, scopes, expires_at_unix_ms, resumed}`；实例回答 `{"accept": true}` 表示接受，其他任何结果（`false`、错误、10 秒内未应答）都视为拒绝。只有接受后隧道才可用，`open` 才返回；
+- `closed` — `{tunnel_id, reason}`：隧道已结束（`revoked`、`expired`、`rejected`、`offer_timeout`、`instance_changed`，以及签发方在实例应答前放弃时的 `abandoned`）。Router 不等待应答。
+
+这些调用带有 `timeout_ms`，不计入 `max_inflight`。运行时保存自己接受的隧道（id → principal、scopes），收到 `closed` 时删除。
+
+### 隧道连接
+
+客户端把凭据作为 Bearer Token 连接：放在 WebSocket 升级请求或 HTTP 请求的 `Authorization` 头中，浏览器则放在 `hello.authorization` 中。已过 `expires_at` 的凭据被拒绝（HTTP 401，或在 `hello` 之后以 4401 关闭），已达 `max_connections` 的凭据返回 HTTP 429；进行中的 HTTP 请求也计为连接。在隧道连接上：
+
+- `call.open` 只会解析到目标实例，且只限隧道 scopes 内的方法。`instance_id` 是隐含的：省略，或等于目标。其他任何情形——别的实例、别的服务、scope 外的方法、Router 的管理服务——都返回 `permission_denied`，`reason: "tunnel_scope"`，并附上隧道自己的 `instance_id`，无论目标是否存在，返回都相同；
+- `Registry/list` 与 `describe`（始终允许）以及 `/v1/openapi.json` 只展示这一视图：目标实例提供的、在 scope 内的方法，且目标是唯一实例；
+- 该连接是 `client`，不能注册服务，也不能签发 Token 或隧道。`AuthService/whoami` 返回 `tunnel` 字段，内容即上述记录；
+- Router 在其路由的每个 `call.open` 上设置 `meshcall-tunnel-id`、`meshcall-tunnel-principal`，并把 `instance_id` 设为目标，覆盖客户端发送的任何值。运行时将它们暴露为 `ctx.tunnel`；
+- 幂等去重按隧道隔离：一个隧道的调用不会合并到另一个 principal 的调用上。
+
+**生命周期。** `expires_at` 只限制*新*连接：已建立的连接一直存活到隧道被撤销或关闭，过期的隧道在最后一个连接结束时关闭。撤销会立即关闭所有连接。实例断开期间，调用以可重试的 `unavailable` / `instance_offline` 失败。当实例以相同身份、带 `tunnels` 能力重新注册到目标 id 时，Router 以 `resumed: true` 重新 offer 它的每个隧道；接受则隧道恢复，拒绝或未应答则关闭；以其他身份或不带该能力注册则关闭隧道（`instance_changed`）。
+
+### 绑定实例的注册凭据
+
+注册凭据可以列出它允许注册的实例 id（账号、API Key 与 Token scope 上的 `instance_ids`，见 [Router 文档](router.md#5-账号鉴权与-acl-权限配置)）；以其他 id 注册时 Router 以 1008 关闭连接。否则，一个被允许注册某服务的凭据可以在隧道目标实例离线时冒充它注册。
+
+详见英文版 [Tunnels](../protocol.md#tunnels)。
 
 ---
 
@@ -238,6 +289,9 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 | `cancelled` | `cancelled` | 加入的幂等调用被其首个调用方取消 |
 | `instance_unknown` / `instance_draining` | `unavailable` | 定向调用指定的实例未注册 / 正在离开 |
 | `instance_required` | `invalid_argument` | 定向服务的调用缺少 `instance_id` |
+| `instance_offline` | `unavailable`（可重试） | 隧道的目标实例当前未连接 |
+| `tunnel_rejected` | `permission_denied` | `TunnelService/open`：实例拒绝或不接受隧道 |
+| `tunnel_scope` | `permission_denied` | 隧道连接上的调用超出隧道视图；`details.instance_id` 为隧道目标 |
 | `idempotency_key_on_duplex` | `invalid_argument` | duplex 调用携带了幂等键 |
 | `flow_control_violation` | `protocol_error` | 流条目超出消费方授予的信用（见[流量控制](#流方向与流量控制flow-control)） |
 | `router_draining` / `router_shutdown` | `unavailable` | Router 正在停止（见 [Router 停机](#router-停机router-shutdown)） |
@@ -260,12 +314,12 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 
 Router 在同一监听地址上也接受普通 HTTP 请求形式的调用，任何 HTTP 客户端无需 MeshCall 运行时即可调用网格。每个请求就是一次调用，Router 把它翻译成上述帧，因此权限检查、负载均衡、超时、熔断、去重与定向调用的行为与 WebSocket 调用方完全一致。HTTP **完整支持一元调用与服务端流，有限支持客户端流，不支持 duplex**。路径不以 `/v1/` 开头的请求是 WebSocket 升级（`/healthz` 与 `/readyz` 除外）。该映射在 `/v1` 下保持稳定，破坏性变更需要新的路径前缀。
 
-- **请求**：`POST /v1/call/{service}/{method}`。请求头 `Authorization`（`Basic …` 账号、`Bearer mk_…` API Key 或 `Bearer mt_…` 临时 Token；不带则为 `anonymous` 用户）、`MeshCall-Timeout-Ms`（不超过 `--http-max-timeout`）、`MeshCall-Idle-Timeout-Ms`、`Idempotency-Key`、`MeshCall-Instance`（定向调用）、`MeshCall-Meta-<key>`（元数据，key 转为小写）。未给出超时时，一元与客户端流调用使用 `--http-default-timeout`（默认 30 秒），服务端流没有默认超时。
+- **请求**：`POST /v1/call/{service}/{method}`。请求头 `Authorization`（`Basic …` 账号、`Bearer mk_…` API Key 或 `Bearer mt_…` 临时 Token 或 `Bearer mtun_…` 隧道凭据；不带则为 `anonymous` 用户）、`MeshCall-Timeout-Ms`（不超过 `--http-max-timeout`）、`MeshCall-Idle-Timeout-Ms`、`Idempotency-Key`、`MeshCall-Instance`（定向调用）、`MeshCall-Meta-<key>`（元数据，key 转为小写）。未给出超时时，一元与客户端流调用使用 `--http-default-timeout`（默认 30 秒），服务端流没有默认超时。
 - **请求体**：一元与服务端流为 JSON 请求负载（空请求体即 `{}`，不检查 Content-Type）；客户端流为 `Content-Type: application/x-ndjson`，第一行是请求负载，其后每个非空行是一个输入条目，Router 只在实例授予信用后才读取下一行；duplex 返回 `405` 与 `method_not_found`（`details.reason = "duplex_over_http"`）。客户端断开请求即发送 `call.cancel`。
 - **响应**：一元调用为 `200` 与 JSON 结果，每个 Trailer 是一个 `MeshCall-Trailer-<key>` 响应头；服务端流为 `200` 与 `application/x-ndjson`，每行一个信封 `{"item": …}`，最后一行是 `{"end": {"trailers": …}}`，或在出错时为 `{"error": …, "trailers": …}`，缺少结束行说明响应被截断。
 - **错误状态码**：首个条目之前的错误以 `{"error": {...}}` 为响应体，`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`method_not_found` 404（`duplex_over_http` 为 405）、`resource_exhausted` 429、`cancelled` 499、`internal` / `protocol_error` / 业务错误码 500、`unavailable` 503、`deadline_exceeded` 504。超过 `--http-max-inflight` 的并发 HTTP 调用收到 `429`（`overloaded`）与 `Retry-After`。
 - **发现与健康**：`GET /v1/services`（Registry `list`）、`GET /v1/services/{service}`（`describe`）与 `GET /v1/openapi.json`（OpenAPI 3.1）需要 Registry 权限，且只显示调用方有权调用的内容；`GET /healthz` 与 `GET /readyz`（停机时 `503`）无需凭据。
-- **浏览器**：跨域调用只对 `--http-cors-origin` 列出的源开放；从不使用 Cookie。浏览器无法在 WebSocket 上设置 `Authorization` 头，因此 Web 客户端使用 HTTP：TypeScript 包的 `meshcall/web` 入口（`new Mesh(new Router("https://…"), { token })`）基于 `fetch` 实现该映射，生成的 TypeScript 客户端可直接使用它。
+- **浏览器**：跨域调用只对 `--http-cors-origin` 列出的源开放，`Origin` 不在列表中的 WebSocket 升级同样被拒绝（同源页面或不发送 `Origin` 的客户端始终允许）；从不使用 Cookie，凭据总是显式的：`Authorization` 头，或在浏览器无法设置该头的 WebSocket 上使用 `hello.authorization`。TypeScript 包的 `meshcall/web` 入口不依赖 Node，并按 Router URL 选择传输：`new Mesh(new Router("wss://…"), { tunnel })` 通过浏览器的 WebSocket 收发协议帧（支持全部调用形状，包括 duplex），`new Mesh(new Router("https://…"), { token })` 基于 `fetch` 实现 HTTP 映射。生成的 TypeScript 客户端两者皆可使用。
 - **部署**：反向代理不应缓冲客户端流的请求体与服务端流的响应（nginx：`proxy_request_buffering off`、`proxy_buffering off`；Router 在流式响应上发送 `X-Accel-Buffering: no`）。
 
 完整映射详见英文版 [HTTP calls](../protocol.md#http-calls)。

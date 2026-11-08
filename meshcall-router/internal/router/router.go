@@ -476,6 +476,18 @@ func (r *Router) Snapshot() Snapshot {
 	return snapshot
 }
 
+// DropInstance closes a registered instance's connection as if the network
+// had dropped it, so its runtime reconnects; for tests and tooling.
+func (r *Router) DropInstance(instanceID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p := r.instances[instanceID]
+	if p != nil {
+		p.cancel()
+	}
+	return p != nil
+}
+
 func (r *Router) Ready() Ready          { return r.ready }
 func (r *Router) Done() <-chan struct{} { return r.done }
 

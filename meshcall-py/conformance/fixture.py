@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from meshcall import RpcContext, RpcDuplex, RpcInputStream, RpcServer, method, service
 from meshcall.drivers import WebSocketRouterServerDriver
 from meshcall.errors import MeshCallError
+from meshcall.tunnel import TunnelClosed, TunnelOffer, TunnelPolicy
 
 
 class Echo(BaseModel):
@@ -56,6 +57,20 @@ class Text(BaseModel):
     text: str
 
 
+class TunnelSeen(BaseModel):
+    tunnel_id: str | None
+    principal: str | None
+
+
+class ClosedTunnel(BaseModel):
+    tunnel_id: str
+    reason: str
+
+
+class ClosedTunnels(BaseModel):
+    closed: list[ClosedTunnel]
+
+
 @service("conformance.v1.Targeted", targeted=True)
 class Targeted:
     """A targeted service: every call must name the instance it is for."""
@@ -73,7 +88,28 @@ class Fixture:
     def __init__(self) -> None:
         self.cancelled: list[str] = []
         self.invoked: list[str] = []
+        self.closed: list[ClosedTunnel] = []
         self.server: RpcServer | None = None
+
+    def accept_tunnel(self, offer: TunnelOffer) -> bool:
+        return offer.principal != "refuse:me"
+
+    def tunnel_closed(self, closed: TunnelClosed) -> None:
+        self.closed.append(ClosedTunnel(tunnel_id=closed.tunnel_id, reason=closed.reason))
+
+    @method(read_only=True)
+    async def tunnel_info(self, ctx: RpcContext) -> TunnelSeen:
+        """The tunnel this call arrived through (ctx.tunnel), or nulls."""
+        tunnel = ctx.tunnel
+        return TunnelSeen(
+            tunnel_id=tunnel.id if tunnel else None,
+            principal=tunnel.principal if tunnel else None,
+        )
+
+    @method(read_only=True)
+    async def closed_tunnels(self) -> ClosedTunnels:
+        """Tunnels this instance was told have closed, in order."""
+        return ClosedTunnels(closed=list(self.closed))
 
     @method(read_only=True)
     async def echo(self, value: int, text: str) -> Echo:
@@ -200,7 +236,13 @@ async def main() -> None:
         )
     else:
         driver = WebSocketRouterServerDriver(url, **options)
-    server = RpcServer(services=[fixture, Targeted], driver=driver, access_log=False)
+    policy = TunnelPolicy(fixture.accept_tunnel, fixture.tunnel_closed)
+    server = RpcServer(
+        services=[fixture, Targeted],
+        driver=driver,
+        access_log=False,
+        tunnel_policies={"conformance.v1.Fixture": policy, "conformance.v1.Targeted": policy},
+    )
     fixture.server = server
     await server.start()
     print("fixture registered", file=sys.stderr, flush=True)
