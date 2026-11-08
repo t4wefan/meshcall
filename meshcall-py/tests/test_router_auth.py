@@ -190,10 +190,15 @@ async def test_expiry_bounds_new_connections_and_method_scope_is_enforced(
                 with pytest.raises(InvalidArgumentError) as late:
                     await auth.renew_token(token.token_id, ttl_seconds=60)
                 assert late.value.reason == "token_expired"
-                # Revocation still ends it at once.
+                # Revocation still ends it at once. Take the receive task
+                # first: the close may be handled before revoke's answer, and
+                # the client forgets the task of a connection it lost.
+                receive = scoped._receive_task
+                assert receive is not None
                 assert await auth.revoke_token(token.token_id)
-                assert scoped._receive_task is not None
-                await asyncio.wait_for(scoped._receive_task, 3)
+                await asyncio.wait_for(receive, 3)
+                with pytest.raises(UnauthenticatedError):
+                    await scoped.whoami()
             # Renewal moves expiry; the same secret connects past the old one.
             renewable = await auth.issue_token(
                 ttl_seconds=1, scopes=[RouterScope(service=name, methods=["unary"])]
@@ -209,6 +214,9 @@ async def test_expiry_bounds_new_connections_and_method_scope_is_enforced(
                 assert (
                     await later.whoami()
                 ).expires_at_unix_ms == renewed.expires_at_unix_ms
+            with pytest.raises(InvalidArgumentError) as invalid:
+                await auth.renew_token(renewable.token_id, ttl_seconds=0)
+            assert invalid.value.reason == "ttl_invalid"
             # Lifetimes beyond an hour are fine up to the Router's maximum.
             week = await auth.issue_token(
                 ttl_seconds=7 * 24 * 3600,
