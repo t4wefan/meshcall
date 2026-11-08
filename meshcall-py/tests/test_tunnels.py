@@ -197,4 +197,4 @@ async def test_generated_targeted_client_over_a_tunnel(meshcall_cli, tmp_path) -
                 with pytest.raises(PermissionDeniedError) as wrong:
                     await client.whoami(instance="box-b")
                 assert wrong.value.reason == "tunnel_scope"
-                assert wrong.value.details["instance_id"] == "box-a"
+                assert (wrong.value.details or {}).get("instance_id") == "box-a"
