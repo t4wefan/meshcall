@@ -80,7 +80,10 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check src tests ../demo
       - run: uv run pyright src tests ../demo
+      # A hung test fails at its deadline (tests/conftest.py); the step
+      # timeout is the last resort, far below the job's.
       - run: uv run pytest -q
+        timeout-minutes: 10
 
   demos:
     needs: router
@@ -177,6 +180,7 @@ jobs:
         working-directory: meshcall-py
       - run: uv run --no-sync pytest -q tests/test_multilang_interop.py
         working-directory: meshcall-py
+        timeout-minutes: 10
         env:
           MESHCALL_RUN_INTEROP: "1"
 
@@ -222,6 +226,7 @@ jobs:
           cache-dependency-path: meshcall-ts/yarn.lock
       - name: Python and TypeScript runtimes pass the protocol conformance suite
         run: scripts/check.sh conformance
+        timeout-minutes: 10
 
   windows:
     # Windows' local transport is a named pipe (#29): the Router, both
@@ -264,9 +269,11 @@ jobs:
         working-directory: meshcall-ts
       - run: uv sync --frozen && uv run --no-sync pytest -q
         working-directory: meshcall-py
+        timeout-minutes: 10
         env:
           MESHCALL_RUN_INTEROP: "1"
       - name: Conformance over a named pipe and over TCP
+        timeout-minutes: 10
         run: |
           for transport in local tcp; do
             meshcall-router/bin/meshcall-conformance.exe --transport $transport \
