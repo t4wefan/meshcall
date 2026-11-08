@@ -548,10 +548,18 @@ refuses the offer, and the client pins the same key (`e2e_key=` /
 `{ e2eKey }` / `meshcall.WithE2EKey(pub)`). The Router then relays sealed
 payloads, metadata and error messages it cannot read; it still routes,
 enforces scopes, deadlines and flow control, and sees methods, sizes, timing
-and error codes. It refuses unsealed calls on such a tunnel, HTTP ones
-included (`permission_denied` / `tunnel_e2e_required`), routes the
-`meshcall.router.v1.TunnelHost/handshake` call to the target, and never
-deduplicates sealed calls. `list` and `whoami` show the pinned `e2e_key`.
+and error codes. Its credential starts with `mtun_e2e.`, so clients
+without the key refuse before sending anything, and its offer carries
+`credential_digest` (the SHA-256 of the credential, never the credential),
+which binds every handshake to that tunnel. The Router refuses unsealed calls
+on such a tunnel, HTTP ones included (`permission_denied` /
+`tunnel_e2e_required`), answers its own services (`AuthService`, `Registry`)
+in clear, routes the `meshcall.router.v1.TunnelHost/handshake` call to the
+target, and never deduplicates sealed calls. When the instance refuses for an
+end-to-end reason (`e2e_key_mismatch`, or `e2e_required` from an instance
+mounted with `require_e2e`), the issuer's `tunnel_rejected` message says so,
+and a refused re-offer after a key change closes the tunnel as `key_changed`.
+`list` and `whoami` show the pinned `e2e_key`.
 See [the protocol](protocol.md#end-to-end-encryption).
 
 ## Connecting services

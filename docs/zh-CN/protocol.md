@@ -187,11 +187,19 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 ### 端到端加密
 
-用 `e2e_key` 开启的隧道会在客户端与实例之间端到端承载调用内容；Router 仍然路由、执行 scope、超时与流控，能看到服务、方法、时间、流结构、大小与错误码，但看不到 payload、元数据与错误消息。它按隧道选择启用。
+用 `e2e_key` 开启的隧道会在客户端与实例之间端到端承载调用内容；Router 仍然路由、执行 scope、超时与流控，能看到服务、方法、时间、流结构、大小与错误码，但看不到 payload、元数据与错误消息。它按隧道选择启用；实例也可以强制要求（见下文）。
 
-**密钥与固定（pinning）。** 实例有一对静态 X25519 密钥，像实例 id 一样配置（它是稳定配置，不随进程变化）。签发方通过带外方式得知实例公钥——实例是它部署的——并在 `TunnelService/open` 中作为 `e2e_key` 传入（32 字节，无填充 base64url）。Router 把它放进 offer；`e2e_key` 不是自己公钥的 offer，实例一律拒绝（`tunnel_rejected`）。签发方把同一个公钥与凭据一起交给客户端。客户端**从不从 Router 或实例获取公钥**：它用固定的公钥发起握手，只有持有对应私钥的一方才能完成；握手失败是不可重试的 `unauthenticated`，`reason: "e2e_handshake_failed"`，且从不回退到明文。这就挡住了中间人，包括 Router 自身。谁可以连接仍由 Router 决定：它看得到凭据，而客户端没有静态密钥（Noise `NK`）。
+**密钥与固定（pinning）。** 实例有一对静态 X25519 密钥，像实例 id 一样配置（它是稳定配置，不随进程变化）。签发方通过带外方式得知实例公钥——实例是它部署的——并在 `TunnelService/open` 中作为 `e2e_key` 传入（32 字节，无填充 base64url；其他内容由 Router 返回 `invalid_argument`）。Router 把它放进 offer；`e2e_key` 不是自己公钥的 offer，实例一律拒绝。签发方把同一个公钥与凭据一起交给客户端。客户端**从不从 Router 或实例获取公钥**：它用固定的公钥发起握手，只有持有对应私钥的一方才能完成；握手失败是不可重试的 `unauthenticated`，`reason: "e2e_handshake_failed"`，且从不回退到明文。这就挡住了中间人，包括 Router 自身。谁可以连接仍由 Router 决定：它看得到凭据，而客户端没有静态密钥（Noise `NK`）。
 
-**握手。** 每个客户端连接在第一个密封调用之前握手一次：客户端调用 `meshcall.router.v1.TunnelHost/handshake`（一元）`{message}` → `{message}`，即 `Noise_NK_25519_AESGCM_SHA256` 的两条消息，payload 为空，无填充 base64url，prologue 为 `"meshcall-e2e/1"`。Router 只在端到端隧道的连接上路由这个方法，并带着隧道元数据送到目标实例（对其他任何连接都是 `method_not_found`）。会话 id 是握手哈希的前 16 字节（十六进制）；实例把会话记在握手所经过的隧道下，因此它只在该隧道上有效。Noise `Split()` 得到的两把密钥分别密封客户端 → 实例与实例 → 客户端。实例每个隧道最多保留 16 个会话（丢弃最旧的），隧道关闭时全部丢弃；指名未知会话的调用在任何处理器运行前即被拒绝，返回 `unauthenticated`，`reason: "e2e_session_unknown"`（重连过的实例已丢失会话）。客户端随即丢弃会话，在下一次调用前重新握手，并把一元调用重试一次；流式调用则报告该错误。
+**凭据表明自身类型。** 端到端隧道的凭据以 `mtun_e2e.` 开头（普通凭据从不包含 `.`）。运行时拿到端到端凭据却没有 `e2e_key`，或拿到 `e2e_key` 却配普通凭据，会在配置客户端时、连接之前就拒绝，因此不会因疏忽把未密封的 payload 发往 Router。
+
+**强制要求。** 实例可以为某次挂载的服务强制要求端到端隧道（`require_e2e`）；此后凡是 scope 涉及这些服务却没有 `e2e_key` 的 offer 一律拒绝，持有密钥的实例因此绝不会通过隧道以明文提供这些服务。没有私钥却要求端到端是配置错误。
+
+**offer 应答。** 实例因端到端原因拒绝 offer 时会说明：`{"accept": false, "reason": "e2e_key_mismatch"}`（固定的公钥不是自己的）或 `"e2e_required"`（对要求端到端的服务发来了明文 offer）。Router 在签发方收到的 `tunnel_rejected` 消息中写明原因；若重新 offer 因 `e2e_key_mismatch` 被拒绝，Router 以 `key_changed` 原因关闭隧道（其连接以 `tunnel_closed` 关闭）。
+
+**握手。** 每个客户端连接在第一个密封调用之前握手一次：客户端调用 `meshcall.router.v1.TunnelHost/handshake`（一元）`{message}` → `{message}`，即 `Noise_NK_25519_AESGCM_SHA256` 的两条消息，payload 为空，无填充 base64url。prologue 为 `meshcall-e2e/1|<credential_digest>`，其中 `credential_digest` 是隧道凭据（UTF-8 字节）的小写十六进制 SHA-256。客户端对自己的凭据求哈希；Router 在端到端隧道的 offer 中放入该摘要（绝不是凭据本身），字段为 `credential_digest`，实例使用握手所经过隧道的摘要。因此为一个隧道做的握手无法经由另一个隧道完成（`e2e_handshake_failed`）：持有第二个凭据的中继无法让某个客户端的密封调用以另一个隧道的 principal 执行；而一个隧道只有一个目标，会话也就绑定到了该实例。Router 只在端到端隧道的连接上路由这个方法，并带着隧道元数据送到目标实例；对其他连接，它与任何不可调用的保留方法一样被拒绝（普通隧道上为 `permission_denied`，`reason: "tunnel_scope"`，其他连接为 `method_not_found`）。会话 id 是握手哈希的前 16 字节（十六进制）；实例把会话记在该隧道下。Noise `Split()` 得到的两把密钥分别密封客户端 → 实例与实例 → 客户端。实例每个隧道最多保留 16 个会话（丢弃最旧的），隧道关闭时全部丢弃。
+
+**未知会话与被拒绝的帧。** 指名实例不认识的会话的调用，在任何处理器运行前即被拒绝，返回 `unauthenticated`，`reason: "e2e_session_unknown"`（重连过的实例已丢失会话）。收到这个应答时，无论调用形状，客户端都丢弃会话及其连接，在下一次调用前重新握手；一元调用重试一次，流式调用报告该错误。已知会话的帧若无法打开——被篡改、重放、过旧、被挪到别的调用或方法——则被拒绝（`call.open`）或结束其调用（后续帧），返回 `unauthenticated`，`reason: "e2e_frame_rejected"`；会话保留，因为只有 Router 或路径上的其他方才可能改动帧。客户端收到无法打开的帧时，以同样方式结束该调用（`source: "client"`）。
 
 **密封帧。** 帧的密封部分放在可选的 `sealed` 字段中：8 字节大端计数器加上一个 JSON 对象的 AES-256-GCM 密文（nonce：4 个零字节加计数器），整体做无填充 base64url。会话的每个方向从 0 计数；接收方在最近 1024 个计数器的窗口内只接受每个计数器一次，因此 Router 丢弃或乱序的帧不会使密钥失步，重放的帧会被拒绝。
 
@@ -206,9 +214,9 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 `meshcall-e2e/1|<kind>|<call_id>|<service>|<method>|<direction>|<sequence>|<e2e_session>`
 的 UTF-8 编码（帧中没有的字段为空；`call.open` 之后的帧使用该调用的服务、方法与会话），因此密封部分无法挪到别的调用、条目或会话上。窗口、结束、取消与保活帧不携带内容，保持明文。Router 合成的错误是明文。Router 设置的元数据键（`meshcall-tunnel-*`）保留在明文 `metadata` 中；运行时忽略密封对象里的 `meshcall-` 键。
 
-在端到端隧道上，Router 拒绝除握手与 Registry 之外、缺少 `e2e_session` 与 `sealed` 的所有 `call.open`，以及所有 HTTP `/v1/call`（HTTP 无法承载会话），返回 `permission_denied`，`reason: "tunnel_e2e_required"`。它不按幂等键对密封调用去重：重放的终止帧在另一个会话里无法打开。`TunnelService/list` 与 `AuthService/whoami` 会显示隧道的 `e2e_key`。
+对 Router 自身服务（`meshcall.router.*`：`AuthService`、`Registry`、`TunnelService`）的调用由 Router 应答，即使在端到端连接上也从不密封。在端到端隧道上，Router 拒绝其余所有缺少 `e2e_session` 与 `sealed` 的 `call.open`，以及所有 HTTP `/v1/call`（HTTP 无法承载会话），返回 `permission_denied`，`reason: "tunnel_e2e_required"`。它不按幂等键对密封调用去重：重放的终止帧在另一个会话里无法打开。`TunnelService/list` 与 `AuthService/whoami` 会显示隧道的 `e2e_key`。
 
-**密钥轮换。** 换了新密钥的实例会拒绝固定旧公钥的隧道的重新 offer，这些隧道因此关闭（`rejected`），其客户端需要重新向签发方申请。第一个版本没有新旧密钥并存的过渡期。
+**密钥轮换。** 换了新密钥的实例会拒绝固定旧公钥的隧道的重新 offer（`e2e_key_mismatch`），这些隧道因此以 `key_changed` 原因关闭；其客户端的调用以 `unauthenticated` / `tunnel_closed` 失败，需要重新向签发方申请。第一个版本没有新旧密钥并存的过渡期。
 
 ### 绑定实例的注册凭据
 

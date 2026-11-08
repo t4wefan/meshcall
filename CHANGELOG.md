@@ -43,8 +43,18 @@ matching `meshcall-go/vX.Y.Z` tag.
   `sealed` frame field; the Router routes on the clear header, cannot read
   the content and refuses plain and HTTP calls on such a tunnel. A key the
   client never got from the Router means no man in the middle and no
-  plaintext fallback. Services see `ctx.tunnel.sealed`. New error reasons:
-  `tunnel_e2e_required`, `e2e_handshake_failed`, `e2e_session_unknown`.
+  plaintext fallback. Each handshake is bound to the tunnel whose credential
+  the client holds (the prologue carries the credential's SHA-256, which the
+  Router passes to the instance as `credential_digest`), so a relay holding
+  another credential cannot move a client's session to another tunnel. E2E
+  credentials start with `mtun_e2e.`: a Mesh given one without the key, or a
+  key with a plain credential, refuses before connecting. `require_e2e=True`
+  at mount (`requireE2E`, `WithRequireE2E()`) refuses plain tunnels for those
+  services; the issuer's `tunnel_rejected` says why. Calls to the Router's own
+  services stay clear on E2E connections. Services see `ctx.tunnel.sealed`.
+  New error reasons: `tunnel_e2e_required`, `e2e_handshake_failed`,
+  `e2e_session_unknown` (the client handshakes again for any call shape),
+  `e2e_frame_rejected` (a frame altered on the way; the session stays).
   Python needs the new `meshcall[e2e]` extra (`cryptography`); TypeScript
   uses WebCrypto; Go the standard library. The conformance suite checks it
   against every runtime with its own Noise implementation.
