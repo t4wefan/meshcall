@@ -341,6 +341,16 @@ func TestAccountAndTokenScopesExpiryRevocation(t *testing.T) {
 		got.Error.Code != "invalid_argument" || !strings.Contains(string(got.Error.Details), `"max_ttl_seconds":2592000`) {
 		t.Fatalf("a TTL above the maximum: %+v", got.Error)
 	}
+	for method, payload := range map[string]any{
+		"issue_token": map[string]any{"ttl_seconds": 0, "scopes": scope},
+		"renew_token": map[string]any{"token_id": renewable.TokenID, "ttl_seconds": 0},
+	} {
+		got := rpc(issuer, method, payload)
+		if got.Error == nil || got.Error.Code != "invalid_argument" || !strings.Contains(string(got.Error.Details), `"reason":"ttl_invalid"`) ||
+			strings.Contains(string(got.Error.Details), "max_ttl_seconds") {
+			t.Fatalf("%s with ttl_seconds 0: %+v", method, got.Error)
+		}
+	}
 	if long := issue(7*24*3600, scope); long.ExpiresUnixMS < time.Now().Add(6*24*time.Hour).UnixMilli() {
 		t.Fatalf("a week-long token: %+v", long)
 	}

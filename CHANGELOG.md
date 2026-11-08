@@ -84,7 +84,8 @@ matching `meshcall-go/vX.Y.Z` tag.
   (`list_tokens()`, `listTokens()`, `ListTokens`) and `meshcall router
   inspect` show the caller's tokens with expiry and live connection count,
   never secrets. New Router flags `--token-max-ttl` (default 30 days; longer
-  requests answer `invalid_argument` / `ttl_too_long` with `max_ttl_seconds`)
+  requests answer `invalid_argument` / `ttl_too_long` with `max_ttl_seconds`,
+  and a TTL below 1 answers `ttl_invalid`)
   and `--max-tokens` (default 4096).
 
 ### Changed

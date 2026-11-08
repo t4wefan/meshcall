@@ -92,6 +92,19 @@ func tokenLifetime(h *harness) error {
 		return fmt.Errorf("a TTL above the maximum: %v", f)
 	}
 
+	for method, payload := range map[string]frame{
+		"issue_token": {"ttl_seconds": 0, "scopes": []frame{{"service": service, "methods": []string{"*"}}}},
+		"renew_token": {"token_id": "x", "ttl_seconds": 0},
+	} {
+		f, err := ctl.callService(authService, method, payload, nil)
+		if err != nil {
+			return err
+		}
+		if code, reason := refusal(f); code != "invalid_argument" || reason != "ttl_invalid" {
+			return fmt.Errorf("%s with ttl_seconds 0: %v", method, f)
+		}
+	}
+
 	// Two one-second tokens: one runs past its expiry, the other is renewed.
 	expiring, expiringID, err := issue(1)
 	if err != nil {

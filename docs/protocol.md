@@ -523,7 +523,8 @@ ACL), and `renew_token`, `revoke_token` and `list_tokens` see only the
 caller's own tokens. `ttl_seconds` is 1 up to the Router's maximum
 (`--token-max-ttl`, 30 days by default); above it the answer is
 `invalid_argument` with `details.reason: "ttl_too_long"` and
-`details.max_ttl_seconds`. Runtimes default to 900 s. The Router holds at most
+`details.max_ttl_seconds`; below 1 it is `invalid_argument` with
+`details.reason: "ttl_invalid"`. Runtimes default to 900 s. The Router holds at most
 `--max-tokens` outstanding tokens (4096 by default; `resource_exhausted`
 beyond).
 

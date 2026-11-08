@@ -125,15 +125,35 @@ func Inspect(ctx context.Context, opts Options, service string) (map[string]any,
 	return result, nil
 }
 
+// formatSeconds renders a JSON number of seconds as a duration: 720h, 90s.
+func formatSeconds(v any) string {
+	n, ok := v.(float64)
+	if !ok {
+		return fmt.Sprint(v)
+	}
+	s := (time.Duration(n) * time.Second).String() // 720h0m0s
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
+
 // RenewToken moves a temporary token's expiry (AuthService/renew_token): the
 // secret stays, so nothing is redelivered and nothing reconnects.
 func RenewToken(ctx context.Context, opts Options, tokenID string, ttl time.Duration) (map[string]any, error) {
+	if ttl < time.Second {
+		return nil, fmt.Errorf("--ttl must be at least 1s (e.g. 720h), got %v", ttl)
+	}
 	conn, err := opts.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
-	f, err := conn.Unary(authService, "renew_token", map[string]any{"token_id": tokenID, "ttl_seconds": int(ttl / time.Second)}, nil)
+	seconds := int64((ttl + time.Second - 1) / time.Second) // tokens expire on whole seconds; round up
+	f, err := conn.Unary(authService, "renew_token", map[string]any{"token_id": tokenID, "ttl_seconds": seconds}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +162,7 @@ func RenewToken(ctx context.Context, opts Options, tokenID string, ttl time.Dura
 		if _, _, _, details := wire.Error(f); details["reason"] == "token_expired" {
 			hint = "renew before it expires; issue a new token otherwise (`meshcall router inspect` lists yours)"
 		} else if details["reason"] == "ttl_too_long" {
-			hint = fmt.Sprintf("the Router allows at most %vs (--token-max-ttl)", details["max_ttl_seconds"])
+			hint = "the Router allows at most " + formatSeconds(details["max_ttl_seconds"]) + " (--token-max-ttl)"
 		}
 		return nil, failureOf(f, hint)
 	}

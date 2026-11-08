@@ -237,7 +237,7 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 | `revoke_token` | `token_id` | `revoked` |
 | `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
 
-只有账号或 API Key 可以调用这些方法（且 `call` ACL 中包含该方法）；`renew_token`、`revoke_token` 与 `list_tokens` 只能看到调用方自己签发的令牌。`ttl_seconds` 取 1 到 Router 的上限（`--token-max-ttl`，默认 30 天）；超过上限返回 `invalid_argument`，`details.reason: "ttl_too_long"`，并带 `details.max_ttl_seconds`。运行时默认 900 秒。Router 同时最多持有 `--max-tokens` 个未失效令牌（默认 4096；超出返回 `resource_exhausted`）。
+只有账号或 API Key 可以调用这些方法（且 `call` ACL 中包含该方法）；`renew_token`、`revoke_token` 与 `list_tokens` 只能看到调用方自己签发的令牌。`ttl_seconds` 取 1 到 Router 的上限（`--token-max-ttl`，默认 30 天）；超过上限返回 `invalid_argument`，`details.reason: "ttl_too_long"`，并带 `details.max_ttl_seconds`；小于 1 返回 `invalid_argument`，`details.reason: "ttl_invalid"`。运行时默认 900 秒。Router 同时最多持有 `--max-tokens` 个未失效令牌（默认 4096；超出返回 `resource_exhausted`）。
 
 **生命周期。** 与隧道凭据一样，`expires_at` 只约束*新*连接与 HTTP 请求：过期令牌在连接时被拒绝（HTTP 401，或在 `hello` 中发送时为 4401），但过期前已认证的连接保持在线——其调用与实例注册照常工作——直到连接关闭或令牌被吊销。`revoke_token` 立即关闭该令牌上的所有连接（调用按连接丢失处理失败），过期后同样有效，也是切断活跃连接的唯一方式。仍持有连接的过期令牌会继续列出（`expired: true`），以便签发方吊销；没有连接的过期令牌会被遗忘。
 

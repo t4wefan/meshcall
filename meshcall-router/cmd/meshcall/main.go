@@ -179,7 +179,10 @@ func run(args []string) error {
 		cli.FormatInspect(result, os.Stdout)
 		return nil
 	case "token":
-		if len(positional) < 3 || positional[1] != "renew" || callFlags.ttl <= 0 {
+		if callFlags.ttlErr != nil {
+			return callFlags.ttlErr
+		}
+		if len(positional) < 3 || positional[1] != "renew" || callFlags.ttl == 0 {
 			return errors.New("usage: meshcall token renew TOKEN_ID --ttl DURATION (e.g. 720h)")
 		}
 		renewed, err := cli.RenewToken(ctx, opts, positional[2], callFlags.ttl)
@@ -233,6 +236,7 @@ type callFlagSet struct {
 	agents         []string
 	instance       string
 	ttl            time.Duration // token renew
+	ttlErr         error         // an unparsable --ttl, reported by the command that takes it
 	// generate / export
 	output, service, language, className, packageName, packageVersion string
 	runtimeImport, runtimeVersion, meshcallRequirement                string
@@ -265,7 +269,11 @@ func extractCallFlags(flags *[]string) callFlagSet {
 		case "instance":
 			out.instance = next()
 		case "ttl":
-			out.ttl, _ = time.ParseDuration(next())
+			value := next()
+			var err error
+			if out.ttl, err = time.ParseDuration(value); err != nil {
+				out.ttlErr = fmt.Errorf("--ttl takes a duration such as 720h, got %q", value)
+			}
 		case "idle-timeout":
 			out.idleTimeout, _ = time.ParseDuration(next())
 		case "items-from-stdin", "stdin":

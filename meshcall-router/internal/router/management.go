@@ -42,12 +42,18 @@ type IssueTokenResult struct {
 	Scopes        []Scope `json:"scopes"`
 }
 
-// ttlError: ttl_seconds outside 1..the Router's maximum; the answer names
-// the limit.
-type ttlError struct{ max time.Duration }
+// ttlError: ttl_seconds below 1 (tooShort) or above the Router's maximum,
+// which the answer then names.
+type ttlError struct {
+	max      time.Duration
+	tooShort bool
+}
 
 func (e *ttlError) Error() string {
-	return "ttl_seconds must be 1.." + strconv.Itoa(int(e.max/time.Second))
+	if e.tooShort {
+		return "ttl_seconds must be at least 1"
+	}
+	return "ttl_seconds must be at most " + strconv.Itoa(int(e.max/time.Second)) + " (the Router's --token-max-ttl)"
 }
 
 // capacityError: the Router holds its maximum of outstanding tokens.
@@ -59,7 +65,10 @@ func (a *Auth) checkTTL(seconds int) error {
 	a.mu.Lock()
 	limit := a.tokenMaxTTL
 	a.mu.Unlock()
-	if seconds < 1 || time.Duration(seconds)*time.Second > limit {
+	if seconds < 1 {
+		return &ttlError{tooShort: true}
+	}
+	if time.Duration(seconds)*time.Second > limit {
 		return &ttlError{max: limit}
 	}
 	return nil
@@ -216,6 +225,8 @@ func tokenRefusal(id string, err error) frame {
 	var tooLong *ttlError
 	var denied *scopeError
 	switch {
+	case errors.As(err, &tooLong) && tooLong.tooShort:
+		return routerError(id, "invalid_argument", err.Error(), false, "ttl_invalid", "")
 	case errors.As(err, &tooLong):
 		f := callError(id, "invalid_argument", err.Error(), false)
 		f.Error.Details, _ = json.Marshal(map[string]any{"source": "router", "reason": "ttl_too_long",
