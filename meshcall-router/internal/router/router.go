@@ -911,6 +911,10 @@ func (r *Router) forward(p *peer, f frame) {
 			p.send(e)
 		}
 		if !(f.Service == AuthService && f.Method == "whoami") && !p.user.allowsCall(f.Service, f.Method) {
+			if t := p.user.tunnelOf(); t != nil {
+				refuse(tunnelScopeError(f.CallID, t))
+				return
+			}
 			refuse(callError(f.CallID, "permission_denied", "Call is not permitted", false))
 			return
 		}

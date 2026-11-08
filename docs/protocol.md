@@ -323,7 +323,8 @@ requests in progress count as connections. On a tunnel connection:
   the tunnel's scopes. `instance_id` is implied: omitted, or equal to the
   target. Anything else — another instance, another service, a method
   outside the scopes, the Router's management services — is
-  `permission_denied`, identical whether or not it exists;
+  `permission_denied` with `reason: "tunnel_scope"` and the tunnel's own
+  `instance_id`, identical whether or not it exists;
 - `Registry/list` and `describe` (always allowed) and `/v1/openapi.json`
   show only that view: the scoped methods the target serves, with the target
   as the only instance;
@@ -552,6 +553,8 @@ was cancelled by its first caller), `instance_unknown` / `instance_draining`
 without `instance_id`), `instance_offline` (a retryable `unavailable`: a
 tunnel's target is not connected), `tunnel_rejected` (a `permission_denied`
 from `TunnelService/open`: the instance refused or does not accept tunnels),
+`tunnel_scope` (a `permission_denied` on a tunnel connection: the call is
+outside the tunnel's view),
 `idempotency_key_on_duplex` (an
 `invalid_argument` for a duplex call carrying an idempotency key) and
 `flow_control_violation` (a `protocol_error`: a stream item beyond the

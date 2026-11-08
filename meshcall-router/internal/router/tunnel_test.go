@@ -159,7 +159,7 @@ func TestTunnelScopesTheConnectionToOneInstance(t *testing.T) {
 		{"tunnel issuance", TunnelService, "list", nil},
 		{"token issuance", AuthService, "issue_token", nil},
 	} {
-		if got := call(t, client, "deny-"+c.name, c.service, c.method, `{}`, c.extra); got.Error == nil || got.Error.Code != "permission_denied" {
+		if got := call(t, client, "deny-"+c.name, c.service, c.method, `{}`, c.extra); got.Error == nil || got.Error.Code != "permission_denied" || errorReason(got) != "tunnel_scope" {
 			t.Fatalf("%s: %+v", c.name, got)
 		}
 	}
@@ -177,6 +177,13 @@ func TestTunnelScopesTheConnectionToOneInstance(t *testing.T) {
 	if got := call(t, client, "desc", RegistryService, "describe", `{"service":"test.v1.Other"}`, nil); got.Error == nil || got.Error.Code != "method_not_found" {
 		t.Fatalf("describe outside the view: %+v", got)
 	}
+	// "metadata": null, as some runtimes send it, gets the identity too.
+	openCall(t, client, "c-null", testService, "echo", `{}`, map[string]any{"metadata": nil})
+	if routed := next(t, frames); !strings.Contains(string(routed.Metadata), opened.TunnelID) {
+		t.Fatalf("null metadata: %s", routed.raw)
+	}
+	send(t, host, frame{Kind: "call.result", CallID: "c-null", Payload: json.RawMessage(`{}`)})
+	_ = receive(t, client)
 	who := call(t, client, "who", AuthService, "whoami", `{}`, nil)
 	if !strings.Contains(string(who.Payload), opened.TunnelID) {
 		t.Fatalf("whoami: %s", who.Payload)

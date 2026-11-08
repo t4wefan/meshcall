@@ -507,7 +507,7 @@ func (r *Router) tunnelPeerGone(p *peer) {
 func (r *Router) tunnelCall(t *tunnel, f frame) (frame, *frame) {
 	if f.InstanceID != "" && f.InstanceID != t.instanceID {
 		// Other instances do not exist for this connection.
-		e := callError(f.CallID, "permission_denied", "Call is not permitted", false)
+		e := tunnelScopeError(f.CallID, t)
 		return f, &e
 	}
 	if t.host == nil || r.instances[t.instanceID] != t.host {
@@ -520,6 +520,13 @@ func (r *Router) tunnelCall(t *tunnel, f frame) (frame, *frame) {
 		return f, &e
 	}
 	return rewritten, nil
+}
+
+// tunnelScopeError refuses anything outside a tunnel's view. It names only
+// the tunnel's own target, which the caller already knows, and reads the
+// same whether or not what was asked for exists.
+func tunnelScopeError(callID string, t *tunnel) frame {
+	return routerError(callID, "permission_denied", "Outside this tunnel's scope (instance "+t.instanceID+")", false, "tunnel_scope", t.instanceID)
 }
 
 // stripTunnelMetadata removes meshcall-tunnel-* keys a caller sent on an
@@ -551,11 +558,14 @@ func rewriteCallOpen(f frame, t *tunnel) (frame, error) {
 	if err := json.Unmarshal(f.raw, &fields); err != nil {
 		return f, err
 	}
-	metadata := map[string]string{}
+	var metadata map[string]string
 	if f.Metadata != nil {
 		if err := json.Unmarshal(f.Metadata, &metadata); err != nil {
 			return f, err
 		}
+	}
+	if metadata == nil { // absent, or "metadata": null
+		metadata = map[string]string{}
 	}
 	for key := range metadata {
 		if strings.HasPrefix(key, tunnelMetaPrefix) {
