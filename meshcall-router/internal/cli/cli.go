@@ -20,6 +20,7 @@ import (
 const (
 	registryService = "meshcall.router.v1.Registry"
 	tunnelService   = "meshcall.router.v1.TunnelService"
+	authService     = "meshcall.router.v1.AuthService"
 )
 
 // Options shared by every command.
@@ -114,7 +115,38 @@ func Inspect(ctx context.Context, opts Options, service string) (map[string]any,
 			result["tunnels"] = tunnels
 		}
 	}
+	// The caller's own temporary tokens, never their secrets, expired ones
+	// still holding connections included.
+	if f, err := conn.Unary(authService, "list_tokens", map[string]any{}, nil); err == nil && f["kind"] == "call.result" {
+		if tokens := asList(asMap(f["payload"])["tokens"]); len(tokens) > 0 {
+			result["tokens"] = tokens
+		}
+	}
 	return result, nil
+}
+
+// RenewToken moves a temporary token's expiry (AuthService/renew_token): the
+// secret stays, so nothing is redelivered and nothing reconnects.
+func RenewToken(ctx context.Context, opts Options, tokenID string, ttl time.Duration) (map[string]any, error) {
+	conn, err := opts.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	f, err := conn.Unary(authService, "renew_token", map[string]any{"token_id": tokenID, "ttl_seconds": int(ttl / time.Second)}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if f["kind"] == "call.error" {
+		hint := ""
+		if _, _, _, details := wire.Error(f); details["reason"] == "token_expired" {
+			hint = "renew before it expires; issue a new token otherwise (`meshcall router inspect` lists yours)"
+		} else if details["reason"] == "ttl_too_long" {
+			hint = fmt.Sprintf("the Router allows at most %vs (--token-max-ttl)", details["max_ttl_seconds"])
+		}
+		return nil, failureOf(f, hint)
+	}
+	return asMap(f["payload"]), nil
 }
 
 func registry(conn *wire.Conn, service string) (map[string]any, error) {
@@ -147,6 +179,7 @@ func registry(conn *wire.Conn, service string) (map[string]any, error) {
 
 // FormatInspect renders a human-readable table for Inspect's result.
 func FormatInspect(result map[string]any, w io.Writer) {
+	defer formatTokens(asList(result["tokens"]), w)
 	defer formatTunnels(asList(result["tunnels"]), w)
 	services, _ := result["services"].([]any)
 	if services == nil { // describe
@@ -242,6 +275,30 @@ func formatTunnels(tunnels []any, w io.Writer) {
 		expires := time.UnixMilli(int64(number(t["expires_at_unix_ms"]))).UTC().Format(time.RFC3339)
 		fmt.Fprintf(w, "  %v → %v  principal=%v  connections=%v  %s  expires=%s  scopes=%s\n",
 			t["tunnel_id"], t["instance_id"], t["principal"], number(t["connections"]), state, expires, strings.Join(scopes, " "))
+	}
+}
+
+func formatTokens(tokens []any, w io.Writer) {
+	if len(tokens) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\ntokens")
+	for _, tt := range tokens {
+		t := asMap(tt)
+		state := "valid"
+		if expired, _ := t["expired"].(bool); expired {
+			state = "expired (live connections only; revoke to end them)"
+		}
+		ids := []string{}
+		for _, id := range asList(t["instance_ids"]) {
+			ids = append(ids, fmt.Sprint(id))
+		}
+		expires := time.UnixMilli(int64(number(t["expires_at_unix_ms"]))).UTC().Format(time.RFC3339)
+		line := fmt.Sprintf("  %v  issuer=%v  connections=%v  expires=%s  %s", t["token_id"], t["issuer"], number(t["connections"]), expires, state)
+		if len(ids) > 0 {
+			line += "  instance_ids=" + strings.Join(ids, ",")
+		}
+		fmt.Fprintln(w, line)
 	}
 }
 

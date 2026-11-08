@@ -161,10 +161,14 @@ func (u *User) tunnelOrNil() *tunnel {
 // admit counts a new connection (or HTTP request) against its identity.
 // Called under r.mu; remove releases it.
 func (r *Router) admit(p *peer) bool {
-	if !r.config.Auth.valid(p.user) {
+	if !r.config.Auth.admits(p.user) {
 		return false
 	}
 	if p.user == nil || p.user.tunnel == nil {
+		if p.user != nil && p.user.tokenID != "" && !p.tokenCounted {
+			r.config.Auth.countConnection(p.user, 1)
+			p.tokenCounted = true
+		}
 		return true
 	}
 	t := p.user.tunnel
@@ -179,6 +183,10 @@ func (r *Router) admit(p *peer) bool {
 // release undoes admit. A tunnel that has expired closes with its last
 // connection: nothing can use it any more. Called under r.mu.
 func (r *Router) release(p *peer) {
+	if p.tokenCounted {
+		r.config.Auth.countConnection(p.user, -1)
+		p.tokenCounted = false
+	}
 	if p.user == nil || p.user.tunnel == nil || !p.admitted {
 		return
 	}

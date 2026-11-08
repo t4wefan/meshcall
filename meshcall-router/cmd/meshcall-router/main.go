@@ -83,6 +83,8 @@ func run() error {
 	})
 	flag.IntVar(&config.MaxAnonymousConnections, "max-anonymous-connections", router.DefaultMaxAnonymousConnections, "WebSocket connections without credentials, within max-connections")
 	flag.IntVar(&config.MaxConnections, "max-connections", router.DefaultMaxConnections, "open WebSocket connections; more are refused with 503 (HTTP calls are not counted)")
+	flag.DurationVar(&config.TokenMaxTTL, "token-max-ttl", router.DefaultTokenMaxTTL, "longest ttl issue_token and renew_token accept (expiry bounds new connections only)")
+	flag.IntVar(&config.MaxTokens, "max-tokens", router.DefaultMaxTokens, "outstanding temporary tokens, expired ones still holding connections included")
 	flag.StringVar(&config.MetricsListen, "metrics-listen", "", "serve Prometheus /metrics on this TCP address (e.g. 127.0.0.1:9464); off by default, never on the public port")
 	flag.BoolVar(&parentStdin, "shutdown-on-stdin-close", false, "exit when the owning process closes stdin")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")

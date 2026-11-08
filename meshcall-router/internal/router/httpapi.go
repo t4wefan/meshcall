@@ -331,13 +331,9 @@ func (r *Router) httpOpenFrame(service, method, stream string, payload []byte, h
 // forgets it; any route it still owns is cancelled towards the instance,
 // exactly as when a WebSocket client disconnects.
 func (r *Router) virtualClient(parent context.Context, user *User) (*peer, func(), bool) {
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if user != nil && !user.expires.IsZero() {
-		ctx, cancel = context.WithDeadline(parent, user.expires)
-	} else {
-		ctx, cancel = context.WithCancel(parent)
-	}
+	// Like a connection: admitted while the token is valid, then it lives
+	// until it ends or the token is revoked.
+	ctx, cancel := context.WithCancel(parent)
 	id := make([]byte, 16)
 	_, _ = rand.Read(id)
 	p := &peer{ctx: ctx, cancel: cancel, user: user, role: "client", id: hex.EncodeToString(id),

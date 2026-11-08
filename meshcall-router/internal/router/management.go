@@ -11,6 +11,7 @@ import (
 	"github.com/t4wefan/meshcall/meshcall-router/internal/contract"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,6 +42,29 @@ type IssueTokenResult struct {
 	Scopes        []Scope `json:"scopes"`
 }
 
+// ttlError: ttl_seconds outside 1..the Router's maximum; the answer names
+// the limit.
+type ttlError struct{ max time.Duration }
+
+func (e *ttlError) Error() string {
+	return "ttl_seconds must be 1.." + strconv.Itoa(int(e.max/time.Second))
+}
+
+// capacityError: the Router holds its maximum of outstanding tokens.
+type capacityError struct{}
+
+func (capacityError) Error() string { return "temporary token capacity reached" }
+
+func (a *Auth) checkTTL(seconds int) error {
+	a.mu.Lock()
+	limit := a.tokenMaxTTL
+	a.mu.Unlock()
+	if seconds < 1 || time.Duration(seconds)*time.Second > limit {
+		return &ttlError{max: limit}
+	}
+	return nil
+}
+
 type scopeError struct{ message string }
 
 func (e *scopeError) Error() string { return e.message }
@@ -50,8 +74,11 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 	if issuer.tokenID != "" {
 		return result, errors.New("temporary tokens cannot issue tokens")
 	}
-	if request.TTLSeconds < 1 || request.TTLSeconds > 3600 || len(request.Scopes) == 0 || len(request.Scopes) > 128 {
-		return result, errors.New("ttl_seconds must be 1..3600 and scopes must contain 1..128 services")
+	if err := a.checkTTL(request.TTLSeconds); err != nil {
+		return result, err
+	}
+	if len(request.Scopes) == 0 || len(request.Scopes) > 128 {
+		return result, errors.New("scopes must contain 1..128 services")
 	}
 	user := &User{Username: issuer.Username}
 	seen := make(map[string]bool)
@@ -122,16 +149,86 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 	user.expires = time.Now().Add(time.Duration(request.TTLSeconds) * time.Second)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for id, candidate := range a.tokens {
-		if !time.Now().Before(candidate.expires) {
-			delete(a.tokens, id)
-		}
-	}
-	if len(a.tokens) >= 4096 {
-		return result, errors.New("temporary token capacity reached")
+	a.pruneLocked()
+	if len(a.tokens) >= a.maxTokens {
+		return result, capacityError{}
 	}
 	a.tokens[user.tokenID] = user
 	return IssueTokenResult{Token: token, TokenID: user.tokenID, ExpiresUnixMS: user.expires.UnixMilli(), Scopes: effective}, nil
+}
+
+// pruneLocked forgets expired tokens no connection uses any more; one that
+// still has connections stays so revoke_token can end them. Called under a.mu.
+func (a *Auth) pruneLocked() {
+	for id, candidate := range a.tokens {
+		if !time.Now().Before(candidate.expires) && candidate.connections == 0 {
+			delete(a.tokens, id)
+		}
+	}
+}
+
+// TokenInfo describes an outstanding temporary token, never its secret.
+type TokenInfo struct {
+	TokenID       string   `json:"token_id"`
+	Issuer        string   `json:"issuer"`
+	InstanceIDs   []string `json:"instance_ids,omitempty"`
+	ExpiresUnixMS int64    `json:"expires_at_unix_ms"`
+	Expired       bool     `json:"expired"`
+	Connections   int      `json:"connections"`
+}
+
+func (u *User) tokenInfo(now time.Time) TokenInfo {
+	var ids []string
+	for _, list := range u.registerInstances {
+		for _, id := range list {
+			if !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+	}
+	slices.Sort(ids)
+	return TokenInfo{TokenID: u.tokenID, Issuer: u.Username, InstanceIDs: ids, ExpiresUnixMS: u.expires.UnixMilli(),
+		Expired: !now.Before(u.expires), Connections: u.connections}
+}
+
+// renew moves a token's expiry; the secret, scopes and instance ids stay.
+func (a *Auth) renew(issuer *User, tokenID string, seconds int) (TokenInfo, error) {
+	if err := a.checkTTL(seconds); err != nil {
+		return TokenInfo{}, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	user := a.tokens[tokenID]
+	now := time.Now()
+	// Unknown, someone else's, revoked (forgotten) or expired: one answer, so
+	// an issuer learns nothing about other issuers' tokens.
+	if user == nil || user.Username != issuer.Username || !now.Before(user.expires) {
+		return TokenInfo{}, errTokenExpired
+	}
+	user.expires = now.Add(time.Duration(seconds) * time.Second)
+	return user.tokenInfo(now), nil
+}
+
+var errTokenExpired = errors.New("Token is unknown, expired or revoked; issue a new one")
+
+// tokenRefusal answers issue_token / renew_token failures.
+func tokenRefusal(id string, err error) frame {
+	var tooLong *ttlError
+	var denied *scopeError
+	switch {
+	case errors.As(err, &tooLong):
+		f := callError(id, "invalid_argument", err.Error(), false)
+		f.Error.Details, _ = json.Marshal(map[string]any{"source": "router", "reason": "ttl_too_long",
+			"max_ttl_seconds": int(tooLong.max / time.Second)})
+		return f
+	case errors.Is(err, errTokenExpired):
+		return routerError(id, "invalid_argument", err.Error(), false, "token_expired", "")
+	case errors.As(err, &denied):
+		return callError(id, "permission_denied", err.Error(), false)
+	case errors.As(err, new(capacityError)):
+		return routerError(id, "resource_exhausted", "Router temporary token capacity reached", true, "overloaded", "")
+	}
+	return callError(id, "invalid_argument", err.Error(), false)
 }
 
 // Called under Router.mu, as are all forwarding and registration mutations.
@@ -192,15 +289,58 @@ func (r *Router) management(p *peer, f frame) {
 		}
 		issued, err := r.config.Auth.issue(p.user, request)
 		if err != nil {
-			var denied *scopeError
-			if errors.As(err, &denied) {
-				fail("permission_denied", err.Error())
-			} else {
-				fail("invalid_argument", err.Error())
-			}
+			p.send(tokenRefusal(f.CallID, err))
 			return
 		}
 		result = issued
+	case "renew_token":
+		if !p.user.mayIssueTokens() {
+			fail("permission_denied", "Temporary tokens cannot renew tokens")
+			return
+		}
+		var request struct {
+			TokenID    string `json:"token_id"`
+			TTLSeconds int    `json:"ttl_seconds"`
+		}
+		if !readRequest(f.Payload, &request) || request.TokenID == "" {
+			fail("invalid_argument", "token_id and ttl_seconds are required")
+			return
+		}
+		// Under r.mu and a.mu: every reader of a token's expiry holds one.
+		renewed, err := r.config.Auth.renew(p.user, request.TokenID, request.TTLSeconds)
+		if err != nil {
+			p.send(tokenRefusal(f.CallID, err))
+			return
+		}
+		result = struct {
+			TokenID       string `json:"token_id"`
+			ExpiresUnixMS int64  `json:"expires_at_unix_ms"`
+		}{renewed.TokenID, renewed.ExpiresUnixMS}
+	case "list_tokens":
+		if !p.user.mayIssueTokens() {
+			fail("permission_denied", "Temporary tokens cannot list tokens")
+			return
+		}
+		var request struct{}
+		if !readRequest(f.Payload, &request) {
+			fail("invalid_argument", "list_tokens expects an empty object")
+			return
+		}
+		a := r.config.Auth
+		a.mu.Lock()
+		a.pruneLocked()
+		now := time.Now()
+		tokens := []TokenInfo{}
+		for _, user := range a.tokens {
+			if user.Username == p.user.Username {
+				tokens = append(tokens, user.tokenInfo(now))
+			}
+		}
+		a.mu.Unlock()
+		slices.SortFunc(tokens, func(x, y TokenInfo) int { return int(x.ExpiresUnixMS - y.ExpiresUnixMS) })
+		result = struct {
+			Tokens []TokenInfo `json:"tokens"`
+		}{tokens}
 	case "revoke_token":
 		if !p.user.mayIssueTokens() {
 			fail("permission_denied", "Temporary tokens cannot revoke tokens")

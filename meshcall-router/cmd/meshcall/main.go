@@ -57,7 +57,8 @@ func run(args []string) error {
 	global.DurationVar(&timeout, "timeout", 30*time.Second, "call timeout (also the Router-enforced deadline)")
 	global.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: meshcall [--router URL] [--auth user:pass | --token T | --tunnel C] [--json] [--timeout D] <command>")
-		fmt.Fprintln(os.Stderr, "  router inspect [service]       list services, instances, health and methods")
+		fmt.Fprintln(os.Stderr, "  router inspect [service]       list services, instances, health and methods (and your tunnels and tokens)")
+		fmt.Fprintln(os.Stderr, "  token renew TOKEN_ID --ttl D   move a temporary token's expiry (the secret stays; nothing reconnects)")
 		fmt.Fprintln(os.Stderr, "  call svc.method ['{json}']     call a method; with --stdin, client streams and duplex calls read JSON lines from stdin")
 		fmt.Fprintln(os.Stderr, "    --metadata k=v (repeatable)  --idempotency-key K   --idle-timeout D   --instance ID")
 		fmt.Fprintln(os.Stderr, "    --stdin  input items as JSON lines (a duplex call sends each line as it is read)   --http  through the Router's HTTP entry point (not for duplex)")
@@ -177,6 +178,19 @@ func run(args []string) error {
 		}
 		cli.FormatInspect(result, os.Stdout)
 		return nil
+	case "token":
+		if len(positional) < 3 || positional[1] != "renew" || callFlags.ttl <= 0 {
+			return errors.New("usage: meshcall token renew TOKEN_ID --ttl DURATION (e.g. 720h)")
+		}
+		renewed, err := cli.RenewToken(ctx, opts, positional[2], callFlags.ttl)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return json.NewEncoder(os.Stdout).Encode(renewed)
+		}
+		fmt.Printf("%v expires %s\n", renewed["token_id"], time.UnixMilli(int64(renewed["expires_at_unix_ms"].(float64))).UTC().Format(time.RFC3339))
+		return nil
 	case "call":
 		if len(positional) < 2 {
 			return errors.New("usage: meshcall call svc.method ['{json}']")
@@ -218,6 +232,7 @@ type callFlagSet struct {
 	force          bool
 	agents         []string
 	instance       string
+	ttl            time.Duration // token renew
 	// generate / export
 	output, service, language, className, packageName, packageVersion string
 	runtimeImport, runtimeVersion, meshcallRequirement                string
@@ -249,6 +264,8 @@ func extractCallFlags(flags *[]string) callFlagSet {
 			out.idempotencyKey = next()
 		case "instance":
 			out.instance = next()
+		case "ttl":
+			out.ttl, _ = time.ParseDuration(next())
 		case "idle-timeout":
 			out.idleTimeout, _ = time.ParseDuration(next())
 		case "items-from-stdin", "stdin":
@@ -289,7 +306,7 @@ func extractCallFlags(flags *[]string) callFlagSet {
 
 func needsValue(flag string) bool {
 	switch strings.TrimLeft(flag, "-") {
-	case "router", "auth", "token", "tunnel", "timeout", "metadata", "idempotency-key", "idle-timeout", "instance",
+	case "router", "auth", "token", "tunnel", "timeout", "metadata", "idempotency-key", "idle-timeout", "instance", "ttl",
 		"agent", "output", "o", "service", "language", "class-name", "package-name", "package-version",
 		"runtime-import", "runtime-version", "meshcall-requirement":
 		return true
