@@ -7,9 +7,12 @@ import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from meshcall.logging import RpcLogger
+
+if TYPE_CHECKING:
+    from meshcall.tunnel import Tunnel
 
 DEFAULT_PING_INTERVAL = 15.0
 DEFAULT_PING_TIMEOUT = 10.0
@@ -170,6 +173,9 @@ class RpcContext:
     idempotency_key: str | None = None
     #: This server's instance id; what a targeted caller addressed.
     instance_id: str = ""
+    #: The tunnel the call arrived through (its id and the principal the
+    #: issuer set), or ``None``. Set by the Router; callers cannot forge it.
+    tunnel: Tunnel | None = None
     _deadline: float | None = field(default=None, repr=False)
     _trailers: dict[str, str] = field(default_factory=dict, repr=False)
 

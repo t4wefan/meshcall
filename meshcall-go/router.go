@@ -101,6 +101,8 @@ type RouterScope struct {
 	Service  string   `json:"service"`
 	Methods  []string `json:"methods,omitempty"`
 	Register bool     `json:"register,omitempty"`
+	// InstanceIDs restricts a registration scope to these instance ids.
+	InstanceIDs []string `json:"instance_ids,omitempty"`
 }
 
 // WhoamiResponse is returned by Mesh.Auth().Whoami() (meshcall.router.v1.AuthService/whoami).
@@ -110,6 +112,10 @@ type WhoamiResponse struct {
 	Register        []string `json:"register"`
 	Call            []string `json:"call"`
 	ExpiresAtUnixMS *int64   `json:"expires_at_unix_ms,omitempty"`
+	// InstanceIDs lists the instance ids the identity may register under, when bound.
+	InstanceIDs []string `json:"instance_ids,omitempty"`
+	// Tunnel is set on a tunnel connection.
+	Tunnel *TunnelInfo `json:"tunnel,omitempty"`
 }
 
 // IssuedToken is returned by Mesh.Auth().IssueToken() (meshcall.router.v1.AuthService/issue_token).
@@ -735,6 +741,7 @@ func revokeToken(ctx context.Context, c Caller, tokenID string, opts ...CallOpti
 
 type meshConfig struct {
 	token              string
+	tunnel             string
 	auth               string
 	headers            map[string]string
 	httpTimeout        time.Duration
@@ -842,14 +849,17 @@ func WithRouterLogger(logger *slog.Logger) MeshOption {
 
 // Mesh is the Layer 3 RPC runtime for calling and serving services over a Router or LocalRouter.
 type Mesh struct {
-	router          RouterEndpoint
-	cfg             meshConfig
-	authHeader      string
-	wsClient        *Client
-	httpCaller      *httpTransport
-	registry        *RegistryClient
-	auth            *AuthClient
-	mountedRaw      []any
+	router     RouterEndpoint
+	cfg        meshConfig
+	authHeader string
+	wsClient   *Client
+	httpCaller *httpTransport
+	registry   *RegistryClient
+	auth       *AuthClient
+	tunnels    *TunnelsClient
+	mountedRaw []any
+	// mountedTunnels[i] is the tunnel policy of mountedRaw[i], or nil.
+	mountedTunnels  []*TunnelPolicy
 	mountCfg        serveConfig
 	activeSrvMu     sync.Mutex
 	activeSrv       *RunningServer
@@ -877,12 +887,19 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 			opt.applyMesh(&cfg)
 		}
 	}
-	if cfg.token != "" && cfg.auth != "" {
-		panic("meshcall: pass either WithToken or WithAuth to NewMesh, not both")
+	if (cfg.token != "") && (cfg.auth != "") || (cfg.tunnel != "" && (cfg.token != "" || cfg.auth != "")) {
+		panic("meshcall: pass one of WithToken, WithAuth or WithTunnel to NewMesh")
+	}
+	if strings.HasPrefix(cfg.token, tunnelPrefix) || strings.HasPrefix(cfg.auth, "Bearer "+tunnelPrefix) {
+		panic("meshcall: this is a tunnel credential: pass it as WithTunnel(...)")
 	}
 	authHeader := cfg.auth
 	if cfg.token != "" {
 		authHeader = BearerToken(cfg.token)
+	}
+	if cfg.tunnel != "" {
+		checkTunnelCredential(cfg.tunnel)
+		authHeader = BearerToken(cfg.tunnel)
 	}
 	m := &Mesh{
 		router:     router,
@@ -894,6 +911,7 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 	}
 	m.registry = &RegistryClient{caller: m}
 	m.auth = &AuthClient{caller: m}
+	m.tunnels = &TunnelsClient{caller: m}
 	return m
 }
 
@@ -1009,6 +1027,11 @@ func (m *Mesh) Auth() *AuthClient {
 	return m.auth
 }
 
+// Tunnels returns the built-in TunnelsClient: open, revoke and list tunnels.
+func (m *Mesh) Tunnels() *TunnelsClient {
+	return m.tunnels
+}
+
 // WithOptions returns a shallow copy of Mesh that attaches default CallOptions to calls made through it.
 func (m *Mesh) WithOptions(opts CallOptions) *Mesh {
 	clone := &Mesh{
@@ -1017,6 +1040,8 @@ func (m *Mesh) WithOptions(opts CallOptions) *Mesh {
 		authHeader: m.authHeader,
 		mountedRaw: m.mountedRaw,
 		mountCfg:   m.mountCfg,
+
+		mountedTunnels: m.mountedTunnels,
 	}
 	if m.router.IsHTTP() {
 		_, _ = m.ensureCaller()
@@ -1027,6 +1052,7 @@ func (m *Mesh) WithOptions(opts CallOptions) *Mesh {
 	}
 	clone.registry = &RegistryClient{caller: clone}
 	clone.auth = &AuthClient{caller: clone}
+	clone.tunnels = &TunnelsClient{caller: clone}
 	return clone
 }
 
@@ -1206,8 +1232,12 @@ func (r *RunningServer) Close() error {
 
 // Mount registers one or more services (and optional ServeOptions such as WithDependencies)
 // on the Mesh without performing any network I/O.
-// Arguments may be *Service, []*Service, a struct (or pointer) embedding ServiceMeta, or ServeOption.
+// Arguments may be *Service, []*Service, a struct (or pointer) embedding ServiceMeta, ServeOption,
+// or MountOption (WithAcceptTunnels, WithTunnelClosed), which applies to the services of this call.
 func (m *Mesh) Mount(args ...any) *Mesh {
+	if m.cfg.tunnel != "" {
+		panic("meshcall: a tunnel Mesh reaches one instance and cannot serve; mount services on a Mesh with registration credentials")
+	}
 	if m.router.IsHTTP() {
 		panic("meshcall: cannot mount services on a Mesh configured with an HTTP(S) Router; serving requires ws://, wss://, unix://, or pipe://")
 	}
@@ -1218,17 +1248,28 @@ func (m *Mesh) Mount(args ...any) *Mesh {
 		panic("meshcall: cannot mount services while Mesh is already serving")
 	}
 
+	var mount mountConfig
+	for _, arg := range args {
+		if v, ok := arg.(MountOption); ok {
+			v.applyMount(&mount)
+		}
+	}
+	if mount.tunnels != nil && mount.tunnels.Accept == nil {
+		panic("meshcall: WithTunnelClosed needs WithAcceptTunnels in the same Mount call")
+	}
 	for _, arg := range args {
 		switch v := arg.(type) {
-		case nil:
+		case nil, MountOption:
 			continue
 		case *Service, []*Service:
 			m.mountedRaw = append(m.mountedRaw, v)
+			m.mountedTunnels = append(m.mountedTunnels, mount.tunnels)
 		case ServeOption:
 			v.applyServe(&m.mountCfg)
 		default:
 			if hasServiceMeta(arg) {
 				m.mountedRaw = append(m.mountedRaw, arg)
+				m.mountedTunnels = append(m.mountedTunnels, mount.tunnels)
 				continue
 			}
 			panic(fmt.Sprintf("meshcall: unsupported Mount argument of type %T", arg))
@@ -1260,7 +1301,9 @@ func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningS
 	}
 
 	var services []*Service
-	for _, item := range m.mountedRaw {
+	tunnelPolicies := map[string]*TunnelPolicy{}
+	for i, item := range m.mountedRaw {
+		first := len(services)
 		switch v := item.(type) {
 		case *Service:
 			services = append(services, v)
@@ -1273,6 +1316,11 @@ func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningS
 					return nil, err
 				}
 				services = append(services, svc)
+			}
+		}
+		if policy := m.mountedTunnels[i]; policy != nil {
+			for _, svc := range services[first:] {
+				tunnelPolicies[svc.Name()] = policy
 			}
 		}
 	}
@@ -1297,6 +1345,8 @@ func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningS
 		IdleTimeout:   cfg.idleTimeout,
 		MaxFrameSize:  m.cfg.maxFrameSize,
 		Strict:        cfg.strict,
+
+		TunnelPolicies: tunnelPolicies,
 	}
 	if m.cfg.reconnect != nil {
 		serverOpts.Reconnect = *m.cfg.reconnect

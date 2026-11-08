@@ -76,6 +76,15 @@ from meshcall.streams import (
     RpcInputStream,
     RpcServerStream,
 )
+from meshcall.tunnel import (
+    OpenedTunnel,
+    Tunnel,
+    TunnelClosed,
+    TunnelInfo,
+    TunnelOffer,
+    TunnelsClient,
+    TunnelScope,
+)
 
 __all__ = [
     "AuthClient",
@@ -103,6 +112,7 @@ __all__ = [
     "MeshCallWarning",
     "MethodAnnotations",
     "MethodNotFoundError",
+    "OpenedTunnel",
     "PermissionDeniedError",
     "ProtocolError",
     "ReconnectPolicy",
@@ -129,6 +139,12 @@ __all__ = [
     "ServerCallNext",
     "ServerInterceptor",
     "StreamKind",
+    "Tunnel",
+    "TunnelClosed",
+    "TunnelInfo",
+    "TunnelOffer",
+    "TunnelScope",
+    "TunnelsClient",
     "UnauthenticatedError",
     "UnavailableError",
     "Violation",

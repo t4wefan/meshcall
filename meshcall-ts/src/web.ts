@@ -26,6 +26,7 @@ import { mergeCallOptions, type MeshCallRpc, type RpcStream } from "./rpc.js";
 // Types only: importing router-auth's values would pull contract.ts (and Node's
 // crypto/fs/path) into browser bundles.
 import type { IssuedToken, RegistryService, RouterIdentity, RouterScope } from "./router-auth.js";
+import { normalizeScopeService, TunnelsClient } from "./tunnel.js";
 import { checkReceived } from "./validation.js";
 
 export type { CallOptions } from "./client.js";
@@ -35,6 +36,9 @@ export {
   UnavailableError, type Violation,
 } from "./errors.js";
 export type { MeshCallRpc, RpcStream } from "./rpc.js";
+export {
+  TunnelsClient, type OpenedTunnel, type OpenTunnelRequest, type TunnelInfo, type TunnelScope,
+} from "./tunnel.js";
 
 export const DEFAULT_ROUTER_URL = "ws://127.0.0.1:8765";
 
@@ -209,11 +213,6 @@ export interface MeshWebOptions {
 const REGISTRY_SERVICE = "meshcall.router.v1.Registry";
 const ROUTER_AUTH_SERVICE = "meshcall.router.v1.AuthService";
 
-/** The Router normalises a service name without a version segment to `.v0`. */
-function normalizeScopeService(service: string): string {
-  if (service === "*" || service === "" || /\.v\d/u.test(service)) return service;
-  return `${service}.v0`;
-}
 
 /** Local deadline and caller signal folded into one AbortController. */
 class CallControl {
@@ -562,6 +561,8 @@ export class Mesh implements MeshCallRpc {
   public readonly router: Router;
   public readonly registry: RegistryClient;
   public readonly auth: AuthClient;
+  /** The Router's `TunnelService`: open, revoke and list tunnels. */
+  public readonly tunnels: TunnelsClient;
   private readonly transport: HttpTransport;
 
   public constructor(router: Router, options: MeshWebOptions = {}) {
@@ -574,6 +575,7 @@ export class Mesh implements MeshCallRpc {
     this.transport = new HttpTransport(router.url, options);
     this.registry = new RegistryClient(this);
     this.auth = new AuthClient(this);
+    this.tunnels = new TunnelsClient(this);
   }
 
   public static async connect(router: Router, options: MeshWebOptions = {}): Promise<Mesh> {
@@ -590,6 +592,7 @@ export class Mesh implements MeshCallRpc {
       transport,
       registry: new RegistryClient(clone),
       auth: new AuthClient(clone),
+      tunnels: new TunnelsClient(clone),
     });
     return clone;
   }

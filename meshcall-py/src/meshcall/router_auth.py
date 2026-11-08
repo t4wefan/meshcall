@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from meshcall.client import ClientBase
 from meshcall.contract import normalize_service_name
+from meshcall.tunnel import TunnelInfo
 
 AUTH_SERVICE = "meshcall.router.v1.AuthService"
 REGISTRY_SERVICE = "meshcall.router.v1.Registry"
@@ -57,6 +58,8 @@ class RouterScope(BaseModel):
     register_service: bool = Field(
         default=False, validation_alias="register", serialization_alias="register"
     )
+    #: Restrict a registration scope to these instance ids.
+    instance_ids: list[str] | None = None
 
 
 class IssuedToken(BaseModel):
@@ -72,6 +75,10 @@ class RouterIdentity(BaseModel):
     register_services: list[str] = Field(alias="register")
     call: list[str]
     expires_at_unix_ms: int | None
+    #: The instance ids this identity may register under, when bound.
+    instance_ids: list[str] | None = None
+    #: The tunnel this connection belongs to, on a tunnel connection.
+    tunnel: TunnelInfo | None = None
 
 
 class RegistryBalance(BaseModel):

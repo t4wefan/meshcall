@@ -43,6 +43,9 @@ type ServerOptions struct {
 	// Strict turns contract warnings into an error from NewServer (also set
 	// by MESHCALL_STRICT=1).
 	Strict bool
+	// TunnelPolicies opts services in to tunnels, by service name (Router
+	// mode). Services that share a policy pointer were mounted together.
+	TunnelPolicies map[string]*TunnelPolicy
 }
 
 // Server runs services in Router mode (ConnectRouter) or direct mode (Listen).
@@ -64,6 +67,7 @@ type Server struct {
 	unixInfo os.FileInfo
 	draining bool
 	closed   bool
+	tunnels  *tunnelHost
 }
 
 // NewServer validates the services and lints their contracts.
@@ -89,7 +93,8 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if opts.MaxFrameSize == 0 {
 		opts.MaxFrameSize = DefaultMaxFrameSize
 	}
-	s := &Server{opts: opts, services: map[string]*Service{}, targeted: map[string]bool{}, logger: opts.Logger, sessions: map[*session]struct{}{}}
+	s := &Server{opts: opts, services: map[string]*Service{}, targeted: map[string]bool{}, logger: opts.Logger, sessions: map[*session]struct{}{},
+		tunnels: newTunnelHost(opts.TunnelPolicies)}
 	s.ctx, s.stop = context.WithCancel(context.Background())
 	var findings []ContractWarning
 	for _, svc := range opts.Services {
@@ -187,7 +192,11 @@ func (s *Server) register(ctx context.Context, link *routerLink) error {
 		return err
 	}
 	fail := func(err error) error { c.close(); return err }
-	if err := c.send(frame{Kind: "hello", Protocol: Protocol, Role: "server", PeerID: s.opts.InstanceID, InstanceID: s.opts.InstanceID}); err != nil {
+	hello := frame{Kind: "hello", Protocol: Protocol, Role: "server", PeerID: s.opts.InstanceID, InstanceID: s.opts.InstanceID}
+	if s.tunnels.enabled() {
+		hello.Capabilities = []string{tunnelCapability}
+	}
+	if err := c.send(hello); err != nil {
 		return fail(err)
 	}
 	ack, err := c.receive()
@@ -205,6 +214,7 @@ func (s *Server) register(ctx context.Context, link *routerLink) error {
 		return fail(err)
 	}
 	sess := s.newSession(c)
+	sess.fromRouter = true
 	s.mu.Lock()
 	if s.closed || s.draining {
 		s.mu.Unlock()
@@ -447,11 +457,14 @@ func (s *Server) Close() error {
 // --- sessions and calls ----------------------------------------------------
 
 type session struct {
-	server    *Server
-	conn      *conn
-	mu        sync.Mutex
-	calls     map[string]*serverCall
-	drainAcks []chan struct{}
+	server *Server
+	// fromRouter: only a Router offers tunnels and sets tunnel metadata, so
+	// a direct caller can do neither.
+	fromRouter bool
+	conn       *conn
+	mu         sync.Mutex
+	calls      map[string]*serverCall
+	drainAcks  []chan struct{}
 }
 
 func (s *Server) newSession(c *conn) *session {
@@ -509,6 +522,12 @@ func (sess *session) handle(f frame) {
 		sess.drainAcks = nil
 		sess.mu.Unlock()
 	case "call.open":
+		if f.Service == tunnelHostService && sess.fromRouter {
+			// The Router's own calls: answered by the runtime, outside
+			// max_inflight and the access log.
+			go sess.tunnelCall(f)
+			return
+		}
 		sess.open(f)
 	case "call.cancel", "stream.item", "stream.end", "stream.window":
 		sess.mu.Lock()
@@ -518,6 +537,17 @@ func (sess *session) handle(f frame) {
 			call.receive(f)
 		}
 	}
+}
+
+func (sess *session) tunnelCall(f frame) {
+	result, err := sess.server.tunnels.handle(sess.server.ctx, f.Method, f.Payload)
+	if err != nil {
+		sess.server.logger.Warn("tunnel request failed", "method", f.Method, "error", err)
+		_ = sess.conn.send(frame{Kind: "call.error", CallID: f.CallID, Error: (&Error{Code: CodeInternal, Message: "Tunnel request failed"}).payload()})
+		return
+	}
+	payload, _ := json.Marshal(result)
+	_ = sess.conn.send(frame{Kind: "call.result", CallID: f.CallID, Payload: payload})
 }
 
 func (sess *session) reject(f frame, e *Error) {
@@ -627,6 +657,12 @@ func newServerCall(sess *session, f frame, m *method) *serverCall {
 	call.ctx = &Context{
 		Context: base, CallID: f.CallID, Service: f.Service, Method: f.Method, Metadata: metadata,
 		IdempotencyKey: f.Idempotency, InstanceID: sess.server.opts.InstanceID, call: call,
+		Tunnel: func() *Tunnel {
+			if sess.fromRouter {
+				return sess.server.tunnels.lookup(metadata)
+			}
+			return nil
+		}(),
 		Logger: sess.server.logger.With("service", f.Service, "method", f.Method, "call_id", f.CallID),
 	}
 	return call

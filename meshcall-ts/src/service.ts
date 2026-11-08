@@ -1,5 +1,6 @@
 import type { RpcLogger } from "./logging.js";
 import type { BalancePolicy, Metadata } from "./protocol.js";
+import type { Tunnel } from "./tunnel.js";
 
 export interface RpcContext {
   readonly signal: AbortSignal;
@@ -19,6 +20,11 @@ export interface RpcContext {
   readonly idempotencyKey: string | null;
   /** This server's instance id; what a targeted caller addressed. */
   readonly instanceId: string;
+  /**
+   * The tunnel the call arrived through (its id and the principal the issuer
+   * set), or `null`. Set by the Router; callers cannot forge it.
+   */
+  readonly tunnel: Tunnel | null;
   /** Attach a trailer to the terminal `call.result` or `call.error` frame. */
   setTrailer(key: string, value: string): void;
   readonly trailers: Readonly<Metadata>;

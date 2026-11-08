@@ -525,7 +525,7 @@ list and can scope a tunnel only to methods it may call itself:
 `open {instance_id, scopes, principal, ttl_seconds, max_connections?}` offers
 the tunnel to the instance, which must have opted in (Python
 `mesh.mount(svc, accept_tunnels=True)`, TypeScript `{ acceptTunnels: true }`,
-Go `meshcall.WithTunnels(...)`), and returns the `mtun_…` credential once the
+Go `mesh.Mount(svc, meshcall.WithAcceptTunnels(decide))`), and returns the `mtun_…` credential once the
 instance accepts. A client connecting with it sees only that instance's
 scoped methods, calls them without naming the instance, and cannot forge the
 `meshcall-tunnel-id` / `meshcall-tunnel-principal` metadata the Router sets

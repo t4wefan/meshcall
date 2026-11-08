@@ -2,6 +2,7 @@ import type { CallOptions } from "./client.js";
 import { normalizeServiceName } from "./contract.js";
 import type { BalanceKind, StreamKind } from "./protocol.js";
 import type { MeshCallRpc } from "./rpc.js";
+import type { TunnelInfo } from "./tunnel.js";
 
 export type RouterCredentials =
   | { readonly username: string; readonly password: string; readonly token?: never }
@@ -37,6 +38,8 @@ export interface RouterScope {
   readonly service: string;
   readonly methods?: ReadonlyArray<string>;
   readonly register?: boolean;
+  /** Restrict a registration scope to these instance ids. */
+  readonly instance_ids?: ReadonlyArray<string>;
 }
 
 export function normalizeScopeService(service: string): string {
@@ -61,6 +64,10 @@ export interface RouterIdentity {
   readonly register: ReadonlyArray<string>;
   readonly call: ReadonlyArray<string>;
   readonly expires_at_unix_ms: number | null;
+  /** The instance ids this identity may register under, when bound. */
+  readonly instance_ids?: ReadonlyArray<string>;
+  /** The tunnel this connection belongs to, on a tunnel connection. */
+  readonly tunnel?: TunnelInfo;
 }
 
 export const ROUTER_AUTH_SERVICE = "meshcall.router.v1.AuthService";

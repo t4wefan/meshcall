@@ -22,6 +22,7 @@ import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import { methodValidators } from "./validation.js";
 
 import type { RouterCredentials } from "./router-auth.js";
+import { TUNNEL_CAPABILITY, TunnelHost, type TunnelPolicy } from "./tunnel.js";
 
 export type { RpcContext, ServerCallNext, ServerInterceptor, DuplexChannel } from "./service.js";
 
@@ -80,6 +81,8 @@ export interface MeshCallServerOptions {
   readonly logLevel?: LogLevel;
   readonly colorize?: boolean;
   readonly logger?: RpcLogger;
+  /** Router mode: tunnel consent per service name (`mesh.mount(..., { acceptTunnels })`). */
+  readonly tunnelPolicies?: ReadonlyMap<string, TunnelPolicy>;
 }
 
 export class MeshCallServer {
@@ -97,8 +100,10 @@ export class MeshCallServer {
   private readonly maxFrameSize: number;
   private readonly handshakeTimeout: number;
   private readonly instanceId: string;
+  private readonly tunnels: TunnelHost;
 
   public constructor(private readonly options: MeshCallServerOptions) {
+    this.tunnels = new TunnelHost(options.tunnelPolicies ?? new Map());
     if (options.router !== undefined &&
       (options.host !== undefined || options.port !== undefined || options.unixPath !== undefined || options.pipe !== undefined)) {
       throw new TypeError("Router mode cannot be combined with a Direct listener");
@@ -324,6 +329,7 @@ export class MeshCallServer {
       targeted: this.targeted,
       inflight: () => [...this.sessions.values()].reduce((sum, s) => sum + s.inFlight, 0),
       ...(this.options.maxInflight === undefined ? {} : { maxInflight: this.options.maxInflight }),
+      ...(role === "router" ? { tunnels: this.tunnels } : {}),
     }, liveness);
     this.sessions.set(socket, session);
     socket.on("close", () => {
@@ -444,6 +450,7 @@ export class MeshCallServer {
         void session.writer.send({
           kind: "hello", protocol: PROTOCOL_VERSION, role: "server",
           peer_id: this.instanceId, instance_id: this.instanceId,
+          ...(this.tunnels.enabled ? { capabilities: [TUNNEL_CAPABILITY] } : {}),
         }).catch(fail);
       });
       socket.on("message", (data: RawData) => {

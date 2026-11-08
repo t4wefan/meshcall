@@ -37,6 +37,7 @@ from meshcall.protocol import (
 )
 from meshcall.router_auth import RouterCredentials
 from meshcall.transport import DEFAULT_MAX_FRAME_SIZE, FrameConnection
+from meshcall.tunnel import TUNNEL_CAPABILITY
 
 if TYPE_CHECKING:
     from meshcall.server import ServerRuntime
@@ -417,6 +418,9 @@ class _RouterLink:
                     role="server",
                     peer_id=driver.instance_id,
                     instance_id=driver.instance_id,
+                    capabilities=(
+                        [TUNNEL_CAPABILITY] if runtime.tunnels.enabled else None
+                    ),
                 )
             )
             hello_ack = await connection.receive()
@@ -490,7 +494,7 @@ class _RouterLink:
                     return
             connection = self.connection
             assert connection is not None
-            await runtime.serve_connection(connection)
+            await runtime.serve_connection(connection, from_router=True)
             if self.connection is not connection:
                 return  # stop() took the connection away
             self.connection = None
