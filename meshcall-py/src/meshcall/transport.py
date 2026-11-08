@@ -26,6 +26,7 @@ from meshcall.protocol import (
     decode_frame,
     encode_frame,
 )
+from meshcall.worker import cancel_and_wait
 
 #: Largest encoded frame, sent or received, unless configured smaller; also
 #: the Router's ceiling.
@@ -261,17 +262,22 @@ class FrameConnection:
     async def close(self) -> None:
         if self._closed is None:
             self._closed = ConnectionError("WebSocket connection is closed")
-        await self._websocket.close()
-        for attribute in ("_sender_task", "_keepalive_task"):
-            task: asyncio.Task[None] | None = getattr(self, attribute)
-            if task is not None:
-                setattr(self, attribute, None)
+        tasks = [t for t in (self._sender_task, self._keepalive_task) if t]
+        self._sender_task = self._keepalive_task = None
+        try:
+            await self._websocket.close()
+        finally:
+            # Even when the caller is cancelled meanwhile, no task of this
+            # connection outlives it and no sender is left waiting.
+            for task in tasks:
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-        self._fail_pending(self._closed)
-        if self._drain_ack is not None and not self._drain_ack.done():
-            self._drain_ack.set_exception(self._closed)
+            try:
+                for task in tasks:
+                    await cancel_and_wait(task)
+            finally:
+                self._fail_pending(self._closed)
+                if self._drain_ack is not None and not self._drain_ack.done():
+                    self._drain_ack.set_exception(self._closed)
 
     def _mark_closed(self, message: str) -> BaseException:
         if self._closed is None:
@@ -332,6 +338,16 @@ class FrameConnection:
                     pending.future.set_exception(exc)
                 self._fail_pending(exc)
                 return
+            except BaseException:
+                # close() cancelled us mid-send: the frame is no longer queued,
+                # so _fail_pending cannot reach it, and its sender would wait
+                # forever.
+                if not pending.future.done():
+                    pending.future.set_exception(
+                        self._closed
+                        or ConnectionError("WebSocket connection is closed")
+                    )
+                raise
             if not pending.future.done():
                 pending.future.set_result(None)
 

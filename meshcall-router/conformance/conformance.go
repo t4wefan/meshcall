@@ -35,6 +35,13 @@ const (
 	protocol   = "meshcall/1"
 )
 
+// The harness never waits unboundedly for the fixture process: a run ends
+// with a report, never with a hang.
+const (
+	fixtureWaitDelay   = 2 * time.Second
+	fixtureExitTimeout = 10 * time.Second
+)
+
 // Options configures one run.
 type Options struct {
 	// Fixture is the command that starts the runtime under test; it receives
@@ -212,6 +219,12 @@ func (h *harness) startFixture() error {
 	)
 	cmd.Stdout = &lockedWriter{h: h}
 	cmd.Stderr = &lockedWriter{h: h}
+	isolate(cmd)
+	cmd.Cancel = func() error { return killFixture(cmd.Process) }
+	// A launcher (`uv run`, `npx`) may exit while the program it started
+	// still holds the output pipes; Wait then gives up on them instead of
+	// waiting for an EOF that never comes.
+	cmd.WaitDelay = fixtureWaitDelay
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start fixture: %w", err)
 	}
@@ -237,8 +250,13 @@ func (h *harness) fixtureOutput() string {
 
 func (h *harness) close() {
 	if h.fixture != nil && h.fixture.Process != nil {
-		_ = h.fixture.Process.Kill()
-		<-h.exited
+		_ = killFixture(h.fixture.Process)
+		select {
+		case <-h.exited:
+		case <-time.After(fixtureExitTimeout):
+			fmt.Fprintf(os.Stderr, "conformance: fixture (pid %d) did not exit within %s of being killed; abandoning it\n",
+				h.fixture.Process.Pid, fixtureExitTimeout)
+		}
 	}
 	if h.router != nil {
 		h.router.Close()

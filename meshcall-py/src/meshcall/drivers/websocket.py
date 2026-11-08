@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 import uuid
 from collections.abc import Sequence
@@ -44,6 +43,7 @@ from meshcall.transport import (
     handshake_error,
 )
 from meshcall.tunnel import TUNNEL_CAPABILITY
+from meshcall.worker import cancel_and_wait
 
 if TYPE_CHECKING:
     from meshcall.server import ServerRuntime
@@ -519,9 +519,7 @@ class _RouterLink:
         if connection is not None:
             await connection.close()
         if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            await cancel_and_wait(task)
 
 
 async def _connect_endpoint(**options: Any) -> ClientConnection:

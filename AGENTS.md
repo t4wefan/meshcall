@@ -97,6 +97,10 @@ for you. When running tools directly:
 - Build the Router first: `go -C meshcall-router build -o bin/meshcall-router ./cmd/meshcall-router`
   and export `MESHCALL_ROUTER_BINARY=$PWD/meshcall-router/bin/meshcall-router`.
 - Python interop tests are skipped unless `MESHCALL_RUN_INTEROP=1`.
+- An async Python test fails after 60s (`MESHCALL_TEST_DEADLINE`, or
+  `@pytest.mark.deadline(seconds)`) and prints every asyncio task's stack;
+  read those stacks rather than raising the limit. Bound every subprocess
+  wait in tests too, and start launched peers in their own process group.
 - Demos are uv projects with `meshcall` as a path dependency; uv caches that
   build, so after editing `meshcall-py` run them with
   `uv run --locked --reinstall-package meshcall demo`.

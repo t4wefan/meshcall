@@ -11,6 +11,7 @@ from meshcall import RpcServer, method, service
 from meshcall.client import ClientBase
 from meshcall.drivers import WebSocketClientDriver, WebSocketDirectServerDriver
 from meshcall.errors import ErrorCode, MeshCallError
+from meshcall.worker import cancel_and_wait
 
 
 class WorkRequest(BaseModel):
@@ -92,3 +93,48 @@ async def test_blocking_handler_cannot_block_rpc_loop() -> None:
     finally:
         await client.stop()
         await server.stop()
+
+
+async def test_cancel_and_wait_keeps_the_callers_own_cancellation() -> None:
+    # A supervisor cancelled while it waits for a child to finish must stop:
+    # `suppress(CancelledError)` around that wait swallowed the supervisor's
+    # cancellation, so it reconnected forever and server.stop() never returned.
+    async def slow_to_finish() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+            raise
+
+    child = asyncio.create_task(slow_to_finish())
+    await asyncio.sleep(0)
+    after_wait = asyncio.Event()
+
+    async def supervisor() -> None:
+        await cancel_and_wait(child)
+        after_wait.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(supervisor())
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1)
+    assert not after_wait.is_set()
+    assert child.cancelled()
+
+
+async def test_cancel_and_wait_ignores_only_the_tasks_own_ending() -> None:
+    async def fails() -> None:
+        raise MeshCallError(ErrorCode.UNAVAILABLE, "gone")
+
+    failed = asyncio.create_task(fails())
+    await asyncio.sleep(0)
+    await cancel_and_wait(failed, MeshCallError)
+    sleeper = asyncio.create_task(asyncio.sleep(10))
+    await cancel_and_wait(sleeper)
+    assert sleeper.cancelled()
+    broken = asyncio.create_task(fails())
+    await asyncio.sleep(0)
+    with pytest.raises(MeshCallError):
+        await cancel_and_wait(broken)

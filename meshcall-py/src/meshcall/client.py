@@ -51,6 +51,7 @@ from meshcall.transport import (
     connection_lost,
     is_frame_too_large,
 )
+from meshcall.worker import cancel_and_wait
 
 if TYPE_CHECKING:
     from meshcall.router import Mesh
@@ -225,9 +226,7 @@ class ClientBase:
             self._connection = None
             await self.driver.close()
             if receive_task is not None:
-                receive_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await receive_task
+                await cancel_and_wait(receive_task)
             calls = tuple(self._calls.values())
             self._calls.clear()
             for call in calls:
@@ -400,10 +399,7 @@ class ClientBase:
                 raise
             finally:
                 info.trailers = call.trailers
-                if not pump.done():
-                    pump.cancel()
-                with contextlib.suppress(asyncio.CancelledError, MeshCallError):
-                    await pump
+                await cancel_and_wait(pump, MeshCallError)
             return result
 
         return await root._run_chain(info, innermost)

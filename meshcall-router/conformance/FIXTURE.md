@@ -5,7 +5,9 @@ A runtime is tested by running a *fixture program* that registers the service
 using the instance id in `MESHCALL_CONFORMANCE_INSTANCE` and a keepalive ping
 interval of `MESHCALL_PING_INTERVAL_MS` milliseconds, and, when
 `MESHCALL_MAX_FRAME_SIZE` is set, that maximum frame size in bytes. The program keeps running
-until it is drained (see `drain_self`) or killed. It must start under
+until it is drained (see `drain_self`) or killed; the harness kills its whole
+process group (process tree on Windows), so a launcher such as `uv run` may
+sit in front of it. It must start under
 `MESHCALL_STRICT=1`, so every method needs a description and mutating ones an
 annotation; duplex methods need a reason.
 

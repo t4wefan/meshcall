@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import uuid
@@ -43,6 +45,16 @@ INTEROP_ROOT = Path(__file__).parent / "interop"
 # TypeScript services use decorators, so they are compiled with meshcall-ts.
 TYPESCRIPT_INTEROP = TYPESCRIPT_ROOT / "dist" / "tests" / "interop"
 RUN_INTEROP = os.environ.get("MESHCALL_RUN_INTEROP") == "1"
+# Every child process wait is bounded: a stuck peer fails its test with the
+# command and its output instead of hanging the run.
+COMMAND_TIMEOUT = 300
+# Peers are started in a process group of their own so a kill also reaches
+# what a launcher (`go run`, `yarn`) started: otherwise the orphan keeps the
+# pipes open and reading them never ends.
+if sys.platform == "win32":
+    NEW_GROUP: dict = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+else:
+    NEW_GROUP: dict = {"start_new_session": True}
 
 
 def _tool(name: str) -> str:
@@ -60,14 +72,19 @@ def _generate(*args: str) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=COMMAND_TIMEOUT,
     )
     assert completed.returncode == 0, completed.stderr
 
 
-pytestmark = pytest.mark.skipif(
-    not RUN_INTEROP,
-    reason="set MESHCALL_RUN_INTEROP=1 to run Node/Python package interop",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not RUN_INTEROP,
+        reason="set MESHCALL_RUN_INTEROP=1 to run Node/Python package interop",
+    ),
+    # Package installs and `go run` builds are slow on a cold CI cache.
+    pytest.mark.deadline(240),
+]
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -88,6 +105,7 @@ def build_typescript_runtime() -> None:
         check=True,
         capture_output=True,
         text=True,
+        timeout=COMMAND_TIMEOUT,
     )
 
 
@@ -157,6 +175,7 @@ async def test_typescript_service_with_generated_python_package(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **NEW_GROUP,
     )
     assert process.stdout is not None
     try:
@@ -212,6 +231,7 @@ async def running_typescript(root: Path, options: dict):
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **NEW_GROUP,
     )
     assert process.stdout is not None
     try:
@@ -354,8 +374,15 @@ async def _run_process(
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **NEW_GROUP,
     )
-    stdout, stderr = await process.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), COMMAND_TIMEOUT)
+    except TimeoutError:
+        await _kill(process)
+        raise AssertionError(
+            f"Command did not finish within {COMMAND_TIMEOUT}s: {' '.join(command)}"
+        ) from None
     if process.returncode != 0:
         raise AssertionError(
             f"Command failed ({process.returncode}): {' '.join(command)}\n"
@@ -380,18 +407,58 @@ async def _stop_server_process(process: asyncio.subprocess.Process) -> None:
     try:
         await asyncio.wait_for(process.wait(), timeout=10)
     except TimeoutError:
-        process.kill()
-        await process.wait()
-        raise AssertionError("TypeScript server did not stop cleanly") from None
+        await _kill(process)
+        raise AssertionError(
+            f"Server process did not stop within 10s of `stop`:\n"
+            f"{await _stderr_of(process)}"
+        ) from None
     if process.returncode != 0:
         raise AssertionError(await _process_failure(process))
+    await _kill(process)  # what `go run` started, if it outlived `go`
+
+
+async def _kill(process: asyncio.subprocess.Process) -> None:
+    """Kill the process and its group, and reap it."""
+    if sys.platform == "win32":
+        if process.returncode is not None:
+            return  # taskkill finds children only through a live parent
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/T",
+            "/F",
+            "/PID",
+            str(process.pid),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(killer.wait(), 30)
+    else:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+    if process.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+    await asyncio.wait_for(process.wait(), 30)
+
+
+async def _stderr_of(process: asyncio.subprocess.Process) -> str:
+    """What the process wrote to stderr, without waiting on a pipe that a
+    surviving child may hold open."""
+    if process.stderr is None:
+        return ""
+    try:
+        return (await asyncio.wait_for(process.stderr.read(), 5)).decode()
+    except TimeoutError:
+        return "(stderr still open after 5s)"
 
 
 async def _process_failure(process: asyncio.subprocess.Process) -> str:
-    stderr = b""
-    if process.stderr is not None:
-        stderr = await process.stderr.read()
-    return f"TypeScript server failed with {process.returncode}: {stderr.decode()}"
+    if process.returncode is None:
+        # Its stdout closed, but it is still running.
+        await _kill(process)
+    return (
+        f"Server process failed with {process.returncode}: {await _stderr_of(process)}"
+    )
 
 
 async def _auth_peer(options: dict[str, object]) -> dict[str, object]:
@@ -402,6 +469,7 @@ async def _auth_peer(options: dict[str, object]) -> dict[str, object]:
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **NEW_GROUP,
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -412,8 +480,7 @@ async def _auth_peer(options: dict[str, object]) -> dict[str, object]:
         return json.loads(stdout)
     finally:
         if process.returncode is None:
-            process.kill()
-            await process.wait()
+            await _kill(process)
 
 
 @pytest.mark.parametrize("launcher", ["python", "typescript"])
@@ -437,6 +504,7 @@ async def test_go_router_launchers_and_service_scoped_tokens_interoperate(
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **NEW_GROUP,
             )
             assert node.stdin is not None and node.stdout is not None
             node.stdin.write(
@@ -504,8 +572,7 @@ async def test_go_router_launchers_and_service_scoped_tokens_interoperate(
             try:
                 await asyncio.wait_for(node.wait(), 5)
             except TimeoutError:
-                node.kill()
-                await node.wait()
+                await _kill(node)
 
 
 async def test_one_trace_from_a_python_client_to_a_typescript_service(
@@ -542,6 +609,7 @@ async def test_one_trace_from_a_python_client_to_a_typescript_service(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **NEW_GROUP,
     )
     assert process.stdout is not None
     client = ClientBase(
@@ -600,6 +668,7 @@ async def test_go_service_with_generated_python_client(tmp_path: Path) -> None:
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **NEW_GROUP,
     )
     assert process.stdout is not None
     try:
