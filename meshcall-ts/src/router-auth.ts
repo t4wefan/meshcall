@@ -58,6 +58,23 @@ export interface IssuedToken {
   readonly scopes: ReadonlyArray<RouterScope>;
 }
 
+/** `renewToken`'s answer: the same token, with its new expiry. */
+export interface RenewedToken {
+  readonly token_id: string;
+  readonly expires_at_unix_ms: number;
+}
+
+/** An outstanding temporary token as its issuer sees it (never the secret). */
+export interface TokenInfo {
+  readonly token_id: string;
+  readonly issuer: string;
+  readonly instance_ids?: ReadonlyArray<string>;
+  readonly expires_at_unix_ms: number;
+  /** Past its expiry: it admits no new connection, but these stay up until revoked. */
+  readonly expired: boolean;
+  readonly connections: number;
+}
+
 export interface RouterIdentity {
   readonly username: string;
   readonly roles: ReadonlyArray<"client" | "server">;
@@ -139,5 +156,16 @@ export class RouterAuthClient {
       ROUTER_AUTH_SERVICE, "revoke_token", { token_id: tokenId }, options,
     );
     return result.revoked;
+  }
+
+  public renewToken(tokenId: string, ttlSeconds: number, options?: CallOptions): Promise<RenewedToken> {
+    return this.client.unary(ROUTER_AUTH_SERVICE, "renew_token", { token_id: tokenId, ttl_seconds: ttlSeconds }, options);
+  }
+
+  public async listTokens(options?: CallOptions): Promise<TokenInfo[]> {
+    const result = await this.client.unary<Record<string, never>, { tokens: TokenInfo[] }>(
+      ROUTER_AUTH_SERVICE, "list_tokens", {}, options,
+    );
+    return result.tokens ?? [];
   }
 }

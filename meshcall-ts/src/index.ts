@@ -116,6 +116,8 @@ export {
   type RegistryInstance,
   type RegistryMethod,
   type RegistryService,
+  type RenewedToken,
+  type TokenInfo,
   type RouterIdentity,
   type RouterScope,
 } from "./router-auth.js";
