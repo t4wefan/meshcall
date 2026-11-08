@@ -1,5 +1,7 @@
+import { SealedCall } from "./e2e.js";
 import {
-  CallCancelledError, DeadlineExceededError, ErrorCode, InvalidArgumentError, MeshCallError, ProtocolError, UnavailableError,
+  CallCancelledError, DeadlineExceededError, ErrorCode, InvalidArgumentError, MeshCallError, PermissionDeniedError,
+  ProtocolError, UnauthenticatedError, UnavailableError,
 } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import type { Liveness } from "./liveness.js";
@@ -43,6 +45,8 @@ export class ServerSession {
   private closed = false;
   private drainAcked: (() => void) | undefined;
   private readonly drainAck = new Promise<void>((resolve) => { this.drainAcked = resolve; });
+  /** Opening sealed frames is async: call frames queue here to keep their order. */
+  private inbound: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly services: RuntimeServices,
@@ -53,6 +57,64 @@ export class ServerSession {
 
   public handle(frame: Frame): void {
     if (this.closed) return;
+    if (this.options.tunnels?.e2e === true && "call_id" in frame) {
+      this.inbound = this.inbound
+        .then(() => this.unseal(frame))
+        .then((opened) => { if (opened !== undefined && !this.closed) this.dispatch(opened.frame, opened.sealed); })
+        .catch(() => undefined);
+      return;
+    }
+    this.dispatch(frame);
+  }
+
+  /**
+   * Open an end-to-end sealed frame; `undefined` once it has been answered.
+   * On a sealed tunnel a plain call is refused here too, whatever the Router
+   * let through.
+   */
+  private async unseal(frame: Frame): Promise<{ frame: Frame; sealed?: SealedCall } | undefined> {
+    const tunnels = this.options.tunnels;
+    if (tunnels === undefined) return { frame };
+    if (frame.kind === "stream.item") {
+      const call = this.calls.get(frame.call_id);
+      if (call?.sealed === undefined) return { frame };
+      try {
+        return { frame: await call.sealed.open(frame) };
+      } catch (error) {
+        void call.fail(new ProtocolError("Sealed input item does not open: " + (error as Error).message));
+        return undefined;
+      }
+    }
+    if (frame.kind !== "call.open" || frame.service === TUNNEL_HOST_SERVICE) return { frame };
+    const tunnel = tunnels.lookup(frame.metadata);
+    if (frame.e2e_session == null || frame.e2e_session === "") {
+      if (tunnel?.sealed !== true) return { frame };
+      this.refuse(frame.call_id, new PermissionDeniedError("This tunnel carries end-to-end sealed calls only", {
+        details: { source: "server", reason: "tunnel_e2e_required" },
+      }));
+      return undefined;
+    }
+    const session = tunnel === null ? undefined : tunnels.sessions.find(tunnel.id, frame.e2e_session);
+    if (session !== undefined) {
+      const sealed = new SealedCall(session, frame.service, frame.method);
+      try {
+        return { frame: await sealed.open(frame), sealed };
+      } catch {
+        // Fall through: the client handshakes again.
+      }
+    }
+    this.refuse(frame.call_id, unknownSession());
+    return undefined;
+  }
+
+  private refuse(callId: string, error: MeshCallError): void {
+    void this.writer.send({
+      kind: "call.error", call_id: callId,
+      error: { code: error.code, message: error.message, retryable: error.retryable, details: error.details },
+    }).catch(() => undefined);
+  }
+
+  private dispatch(frame: Frame, sealed?: SealedCall): void {
     if (this.liveness?.observe(frame) === true) return;
     if (frame.kind === "ping") {
       void this.writer.send({ kind: "pong", nonce: frame.nonce }).catch(() => this.close());
@@ -66,15 +128,24 @@ export class ServerSession {
     if (frame.kind === "call.open" && frame.service === TUNNEL_HOST_SERVICE && this.options.tunnels !== undefined) {
       // The Router's own calls: answered by the runtime, outside max_inflight and the access log.
       const tunnels = this.options.tunnels;
-      void tunnels.handle(frame.method, frame.payload).then(
+      void tunnels.handle(frame.method, frame.payload, frame.metadata).then(
         (payload) => this.writer.send({ kind: "call.result", call_id: frame.call_id, payload }),
         (error: unknown) => {
+          if (error instanceof MeshCallError) {
+            this.refuse(frame.call_id, error);
+            return;
+          }
           safelyLog(() => this.options.logger.warning("Tunnel " + frame.method + " failed: " + String(error)));
           return this.writer.send({
             kind: "call.error", call_id: frame.call_id, error: { code: "internal", message: "Tunnel request failed" },
           });
         },
       ).catch(() => undefined);
+      return;
+    }
+    if (frame.kind === "call.open" && frame.e2e_session != null && frame.e2e_session !== "" && sealed === undefined) {
+      // Sealed for a session this instance never made (it holds no E2E key).
+      this.refuse(frame.call_id, unknownSession());
       return;
     }
     if (frame.kind === "call.open") {
@@ -116,7 +187,7 @@ export class ServerSession {
         }).catch(() => undefined).finally(() => this.logAccess(frame, rejection.code, started, this.options.logger));
         return;
       }
-      const call = new ServerCall(this, frame, method);
+      const call = new ServerCall(this, frame, method, sealed);
       this.calls.set(frame.call_id, call);
       call.start();
       return;
@@ -205,6 +276,12 @@ export class ServerSession {
   }
 }
 
+function unknownSession(): UnauthenticatedError {
+  return new UnauthenticatedError("Unknown end-to-end session; handshake again", {
+    details: { source: "server", reason: "e2e_session_unknown" },
+  });
+}
+
 class ServerCall {
   private readonly controller = new AbortController();
   private readonly input = new AsyncQueue<unknown>();
@@ -224,11 +301,15 @@ class ServerCall {
   private inputSequence = 0;
   private outputSequence = 0;
   private output: AsyncIterator<unknown> | undefined;
+  /** Sealing is async: a sealed call's frames leave in this order. */
+  private outbound: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly session: ServerSession,
     public readonly frame: CallOpenFrame,
     private readonly method: RuntimeMethod,
+    /** Set for an end-to-end sealed call. */
+    public readonly sealed?: SealedCall,
   ) {
     // The budget is relative and measured from when this peer saw call.open.
     const deadlineMs = frame.timeout_ms === undefined || frame.timeout_ms === null
@@ -418,7 +499,7 @@ class ServerCall {
   /** Grant the client its first input credit and start the input idle clock. */
   private async openInput(): Promise<void> {
     this.inputAllowance = INITIAL_STREAM_CREDIT;
-    await this.session.writer.send({
+    await this.send({
       kind: "stream.window", call_id: this.frame.call_id,
       direction: "client", credit: INITIAL_STREAM_CREDIT,
     });
@@ -431,7 +512,7 @@ class ServerCall {
     await this.credit.acquire();
     if (this.terminal) return false;
     try {
-      await this.session.writer.send({
+      await this.send({
         kind: "stream.item", call_id: this.frame.call_id, direction: "server",
         sequence: this.outputSequence, payload,
       });
@@ -447,9 +528,17 @@ class ServerCall {
   private async closeOutput(): Promise<void> {
     if (this.outputClosed || this.terminal) return;
     this.outputClosed = true;
-    await this.session.writer.send({
+    await this.send({
       kind: "stream.end", call_id: this.frame.call_id, direction: "server",
     });
+  }
+
+  private send(frame: Frame): Promise<void> {
+    const sealed = this.sealed;
+    if (sealed === undefined) return this.session.writer.send(frame);
+    const run = this.outbound.then(async () => this.session.writer.send(await sealed.seal(frame)));
+    this.outbound = run.catch(() => undefined);
+    return run;
   }
 
   private serialized(operation: () => Promise<void>): Promise<void> {
@@ -481,7 +570,7 @@ class ServerCall {
       if (next.done === true || this.terminal) return;
       if (!this.inputClosed) {
         this.inputAllowance += 1;
-        await this.session.writer.send({
+        await this.send({
           kind: "stream.window", call_id: this.frame.call_id, direction: "client", credit: 1,
         });
       }
@@ -504,14 +593,14 @@ class ServerCall {
   private async finish(frame: Frame, status: string): Promise<void> {
     if (!this.cleanup()) return;
     try {
-      await this.session.writer.send(frame);
+      await this.send(frame);
     } catch (error) {
       if (!isFrameTooLarge(error)) {
         this.session.close();
       } else {
         safelyLog(() => this.context.logger.error("Terminal frame over the size limit: %s", error.message));
         status = error.code;
-        await this.session.writer.send({
+        await this.send({
           kind: "call.error", call_id: this.frame.call_id,
           error: { code: error.code, message: error.message, retryable: false, details: error.details },
         }).catch(() => this.session.close());

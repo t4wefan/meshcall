@@ -83,6 +83,8 @@ export interface MeshCallServerOptions {
   readonly logger?: RpcLogger;
   /** Router mode: tunnel consent per service name (`mesh.mount(..., { acceptTunnels })`). */
   readonly tunnelPolicies?: ReadonlyMap<string, TunnelPolicy>;
+  /** Router mode: this instance's E2E private key, for end-to-end sealed tunnels. */
+  readonly e2ePrivateKey?: string;
 }
 
 export class MeshCallServer {
@@ -103,7 +105,7 @@ export class MeshCallServer {
   private readonly tunnels: TunnelHost;
 
   public constructor(private readonly options: MeshCallServerOptions) {
-    this.tunnels = new TunnelHost(options.tunnelPolicies ?? new Map());
+    this.tunnels = new TunnelHost(options.tunnelPolicies ?? new Map(), options.e2ePrivateKey);
     if (options.router !== undefined &&
       (options.host !== undefined || options.port !== undefined || options.unixPath !== undefined || options.pipe !== undefined)) {
       throw new TypeError("Router mode cannot be combined with a Direct listener");

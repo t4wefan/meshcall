@@ -32,6 +32,7 @@ import {
   checkTunnelCredential, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient,
   type TunnelClosedHook, type TunnelOfferHook, type TunnelPolicy,
 } from "./tunnel.js";
+import { checkE2EKey, checkE2EPrivateKey } from "./e2e.js";
 import {
   AuthClient,
   DEFAULT_ROUTER_URL,
@@ -448,6 +449,13 @@ export interface MeshOptions {
    * reaches only the tunnel's instance and cannot mount services.
    */
   readonly tunnel?: string;
+  /**
+   * The instance public key the issuer pinned for this tunnel (`e2eKey` of
+   * `tunnels.open`): every call is then sealed end to end, and the connection
+   * fails unless the instance proves it holds the matching private key. Take
+   * it from the issuer, never from the Router. Needs `tunnel` and a WebSocket Router.
+   */
+  readonly e2eKey?: string;
   /** Extra HTTP headers when connecting to an HTTP(S) Router. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Custom `fetch` implementation when connecting to an HTTP(S) Router. */
@@ -476,6 +484,12 @@ export interface ServeOptions {
   readonly interceptors?: ReadonlyArray<ServerInterceptor>;
   readonly handshakeTimeoutMs?: number;
   readonly idleTimeoutMs?: number | null;
+  /**
+   * This instance's E2E private key (`generateE2EKey().privateKey`): it can
+   * then accept end-to-end sealed tunnels whose issuer pinned its public key.
+   * Configure it as stably as `instanceId`.
+   */
+  readonly e2ePrivateKey?: string;
 }
 
 export interface MountOptions extends ServeOptions {
@@ -582,6 +596,13 @@ export class Mesh implements MeshCallRpc {
     if (bearer?.startsWith(TUNNEL_CREDENTIAL_PREFIX) === true) {
       throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
     }
+    if (options.e2eKey !== undefined) {
+      if (options.tunnel === undefined) throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
+      if (router.isHttp) {
+        throw new TypeError("An end-to-end tunnel needs a ws:// or wss:// Router; HTTP calls cannot be sealed");
+      }
+      checkE2EKey(options.e2eKey);
+    }
     this.router = router;
     this.options = options;
     this.credentials = options.credentials ?? (options.token !== undefined
@@ -655,6 +676,7 @@ export class Mesh implements MeshCallRpc {
           ...(this.options.interceptors === undefined ? {} : { interceptors: this.options.interceptors }),
           ...(this.options.retry === undefined ? {} : { retry: this.options.retry }),
           ...(this.options.logger === undefined ? {} : { logger: this.options.logger }),
+          ...(this.options.e2eKey === undefined ? {} : { e2eKey: this.options.e2eKey }),
         };
         this.transport = new MeshCallClient(this.router.endpoints, this.options.peerId, clientOptions);
       }
@@ -779,6 +801,7 @@ export class Mesh implements MeshCallRpc {
           : {}),
       ...(merged.interceptors === undefined ? {} : { interceptors: merged.interceptors }),
       tunnelPolicies: this.tunnelPolicies,
+      ...(merged.e2ePrivateKey === undefined ? {} : { e2ePrivateKey: checkE2EPrivateKey(merged.e2ePrivateKey) }),
     };
 
     const server = new MeshCallServer(serverOptions);

@@ -8,6 +8,7 @@ import {
   CallCancelledError, closeError, DeadlineExceededError, handshakeError, MeshCallError, PermissionDeniedError, ProtocolError,
   UnauthenticatedError, UnavailableError,
 } from "./errors.js";
+import { clientHandshake, SealedCall, type E2ESession } from "./e2e.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import {
   clientDeadlineGraceMs,
@@ -101,6 +102,11 @@ export interface MeshCallClientOptions {
   readonly retry?: RetryPolicy | false;
   /** Where the client reports background events that callers cannot see. */
   readonly logger?: RpcLogger;
+  /**
+   * Seal every call end to end towards the instance holding this pinned
+   * public key (a tunnel connection; docs/protocol.md → End-to-end encryption).
+   */
+  readonly e2eKey?: string;
 }
 
 /**
@@ -220,6 +226,12 @@ export class MeshCallClient implements MeshCallRpc {
   private readonly streams = new Map<string, ServerStreamState<unknown>>();
   /** Trailers of settled non-stream calls, consumed once by the call entry point. */
   private readonly trailers = new Map<string, Readonly<Metadata>>();
+  /** The end-to-end session of the current connection (`e2eKey` set). */
+  private e2e: E2ESession | undefined;
+  private readonly sealedCalls = new Map<string, SealedCall>();
+  // Sealing and opening are async: frames go through these in order.
+  private outbound: Promise<void> = Promise.resolve();
+  private inbound: Promise<void> = Promise.resolve();
 
   private readonly endpoints: ReadonlyArray<WebSocketEndpoint>;
   /** Index of the endpoint in use (or to try first); advances on failure. */
@@ -350,26 +362,58 @@ export class MeshCallClient implements MeshCallRpc {
     this.validateOptions(merged);
     const info: ClientCallInfo = { service, method, stream: "unary", options: merged, trailers: {} };
     return this.runChain(info, async (info) => {
-      this.ensureNotAborted(info.options);
-      const startedAt = performance.now();
-      await this.connectWithin(info.options, startedAt);
-      this.ensureNotAborted(info.options);
-
-      const callId = newCallId();
-      const { result } = this.registerCall<Response>(callId, info.options, startedAt);
       try {
-        await this.send(this.openFrame(callId, info.service, info.method, request, info.options));
+        return await this.unaryAttempt<Response>(info, request);
       } catch (error) {
-        this.rejectPending(callId, error);
-      }
-      try {
-        const payload = await result;
-        checkReceived(info.options.responseSchema, payload, "response");
-        return payload;
-      } finally {
-        info.trailers = this.trailerOf(callId);
+        if (!(error instanceof UnauthenticatedError) || error.reason !== "e2e_session_unknown") throw error;
+        // The instance lost the session (it reconnected): the call never ran.
+        // Handshake again on a new connection and retry once.
+        this.resetConnection();
+        return this.unaryAttempt<Response>(info, request);
       }
     }) as Promise<Response>;
+  }
+
+  private async unaryAttempt<Response>(info: ClientCallInfo, request: unknown): Promise<Response> {
+    this.ensureNotAborted(info.options);
+    const startedAt = performance.now();
+    await this.connectWithin(info.options, startedAt);
+    this.ensureNotAborted(info.options);
+
+    const callId = newCallId();
+    const { result } = this.registerCall<Response>(callId, info.options, startedAt);
+    try {
+      await this.send(this.openFrame(callId, info.service, info.method, request, info.options));
+    } catch (error) {
+      this.rejectPending(callId, error);
+    }
+    try {
+      const payload = await result;
+      checkReceived(info.options.responseSchema, payload, "response");
+      return payload;
+    } finally {
+      info.trailers = this.trailerOf(callId);
+    }
+  }
+
+  /** Drop the connection (its end-to-end session is stale); the next call reconnects. */
+  private resetConnection(): void {
+    const socket = this.socket;
+    if (socket === undefined) return;
+    this.detach(socket, new UnavailableError("End-to-end session reset", { retryable: true }));
+    socket.close(1000, "e2e session reset");
+  }
+
+  private detach(socket: WebSocket, error: unknown): void {
+    if (this.socket !== socket) return;
+    this.socket = undefined;
+    this.writer?.close();
+    this.writer = undefined;
+    this.liveness?.stop();
+    this.liveness = undefined;
+    this.e2e = undefined;
+    this.rejectAll(error);
+    this.sealedCalls.clear();
   }
 
   /**
@@ -558,7 +602,10 @@ export class MeshCallClient implements MeshCallRpc {
     const stream = new ServerStreamState<Item>(
       callId,
       (frame) => this.send(frame),
-      () => this.streams.delete(callId),
+      () => {
+        this.streams.delete(callId);
+        this.sealedCalls.delete(callId);
+      },
       options.itemSchema,
       duplex,
     );
@@ -683,6 +730,8 @@ export class MeshCallClient implements MeshCallRpc {
     request: unknown,
     options: CallOptions,
   ): CallOpenFrame {
+    // Every frame of a call opened on an E2E connection is sealed under its session.
+    if (this.e2e !== undefined) this.sealedCalls.set(callId, new SealedCall(this.e2e, service, method));
     const frame: CallOpenFrame = {
       kind: "call.open",
       call_id: callId,
@@ -745,6 +794,22 @@ export class MeshCallClient implements MeshCallRpc {
             kind: "hello", protocol: PROTOCOL_VERSION, role: "client", peer_id: this.peerId,
           }).catch(fail);
         });
+        const becomeReady = (session: E2ESession | undefined) => {
+          ready = true;
+          this.socket = socket;
+          this.writer = writer;
+          this.liveness = liveness;
+          this.e2e = session;
+          this.outbound = Promise.resolve();
+          this.inbound = Promise.resolve();
+          liveness.start();
+          clearTimeout(timer);
+          resolve();
+        };
+        // After hello.ack on an E2E tunnel: the instance must answer the
+        // handshake towards the pinned key before any call is made.
+        let handshake: Awaited<ReturnType<typeof clientHandshake>> | undefined;
+        let handshakeId: string | undefined;
         socket.on("message", (data) => {
           if (ready) {
             this.handleMessage(data);
@@ -752,16 +817,24 @@ export class MeshCallClient implements MeshCallRpc {
           }
           try {
             const frame = decodeFrame(data);
+            if (handshakeId !== undefined) {
+              if (handshake === undefined || !("call_id" in frame) || frame.call_id !== handshakeId) return;
+              handshake.finish(frame).then(becomeReady, fail);
+              return;
+            }
             if (frame.kind !== "hello.ack" || frame.protocol !== PROTOCOL_VERSION) {
               throw new ProtocolError("Expected compatible hello.ack");
             }
-            ready = true;
-            this.socket = socket;
-            this.writer = writer;
-            this.liveness = liveness;
-            liveness.start();
-            clearTimeout(timer);
-            resolve();
+            const e2eKey = this.options.e2eKey;
+            if (e2eKey === undefined) {
+              becomeReady(undefined);
+              return;
+            }
+            const callId = handshakeId = newCallId();
+            void clientHandshake(e2eKey, callId).then(async (started) => {
+              handshake = started;
+              await writer.send(started.frame);
+            }).catch(fail);
           } catch (error) {
             fail(error);
           }
@@ -785,10 +858,7 @@ export class MeshCallClient implements MeshCallRpc {
           const error = closeError(code, reason.toString()) ?? new UnavailableError("Connection was lost", { retryable: true });
           if (ready && error instanceof UnauthenticatedError) this.refused = error;
           if (this.socket === socket) {
-            this.socket = undefined;
-            this.writer = undefined;
-            this.liveness = undefined;
-            this.rejectAll(error);
+            this.detach(socket, error);
             // Start the next connect from the following endpoint: the one
             // that just died is the least likely to come back first.
             if (this.endpoints.length > 1) this.cursor = (this.cursor + 1) % this.endpoints.length;
@@ -828,6 +898,38 @@ export class MeshCallClient implements MeshCallRpc {
     if (this.liveness?.observe(frame) === true) {
       return;
     }
+    if (this.e2e !== undefined && "call_id" in frame) {
+      const callId = frame.call_id;
+      this.inbound = this.inbound.then(async () => {
+        const sealed = this.sealedCalls.get(callId);
+        if (sealed === undefined) {
+          this.route(frame);
+          return;
+        }
+        let opened: Frame;
+        try {
+          opened = await sealed.open(frame);
+        } catch (error) {
+          // A frame the instance did not seal: not from the other end.
+          const failure = new ProtocolError("Sealed call: " + (error as Error).message, {
+            details: { source: "client", reason: "e2e_open_failed" },
+          });
+          this.cancelPending(callId, failure, "e2e_open_failed");
+          const stream = this.streams.get(callId);
+          if (stream !== undefined) {
+            stream.fail(failure);
+            void this.send({ kind: "call.cancel", call_id: callId, reason: "e2e_open_failed" }).catch(() => undefined);
+          }
+          return;
+        }
+        this.route(opened);
+      }).catch(() => undefined);
+      return;
+    }
+    this.route(frame);
+  }
+
+  private route(frame: Frame): void {
     if (frame.kind === "stream.window") {
       this.handleWindow(frame);
     } else if (frame.kind === "stream.item") {
@@ -953,6 +1055,7 @@ export class MeshCallClient implements MeshCallRpc {
       return undefined;
     }
     this.calls.delete(callId);
+    this.sealedCalls.delete(callId);
     pending.closed = true;
     pending.input?.credit.close(closeError);
     if (pending.timer !== undefined) {
@@ -989,7 +1092,18 @@ export class MeshCallClient implements MeshCallRpc {
     if (writer === undefined) {
       throw new UnavailableError("Client is not connected");
     }
-    await writer.send(frame);
+    if (this.e2e === undefined) {
+      await writer.send(frame);
+      return;
+    }
+    // Taken now: a call settling meanwhile must not let its content out in clear.
+    const sealed = "call_id" in frame ? this.sealedCalls.get(frame.call_id) : undefined;
+    if (sealed === undefined && (frame.kind === "call.open" || frame.kind === "stream.item")) {
+      throw new CallCancelledError("Call is closed");
+    }
+    const run = this.outbound.then(async () => writer.send(sealed === undefined ? frame : await sealed.seal(frame)));
+    this.outbound = run.catch(() => undefined);
+    await run;
   }
 }
 
