@@ -604,7 +604,7 @@ func (c *Client) open(ctx context.Context, info *CallInfo, payload json.RawMessa
 		if e := frameTooLarge("client", err); e != nil {
 			call.fail(e)
 		} else {
-			call.fail(conn.lost())
+			call.fail(conn.lostAfterSend())
 		}
 		return nil, call.failure
 	}
@@ -821,7 +821,10 @@ func (call *clientCall) sendInput(ctx context.Context, payload json.RawMessage) 
 		call.abort(e, "frame_too_large") // the call is open at the peer
 		return e
 	}
-	return err
+	if err != nil {
+		return call.conn.lostAfterSend()
+	}
+	return nil
 }
 
 func (call *clientCall) closeInput() error {
@@ -832,7 +835,10 @@ func (call *clientCall) closeInput() error {
 	if closed {
 		return nil
 	}
-	return call.conn.send(frame{Kind: "stream.end", CallID: call.id, Direction: "client"})
+	if err := call.conn.send(frame{Kind: "stream.end", CallID: call.id, Direction: "client"}); err != nil {
+		return call.conn.lostAfterSend()
+	}
+	return nil
 }
 
 // result waits for the terminal frame of a unary or client-stream call.

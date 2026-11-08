@@ -176,8 +176,27 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 	meshcall.HandleUnary(svc, "ping", func(_ *meshcall.Context, _ PingReq) (PingResp, error) {
 		return PingResp{OK: true}, nil
 	}, meshcall.Doc("Ping."), meshcall.Idempotent())
+	type CountReq struct {
+		N     int `json:"n"`
+		GapMs int `json:"gap_ms"`
+	}
+	meshcall.HandleServerStream(svc, "count", func(c *meshcall.Context, req CountReq, send func(PingResp) error) error {
+		for range req.N {
+			if req.GapMs > 0 {
+				select {
+				case <-time.After(time.Duration(req.GapMs) * time.Millisecond):
+				case <-c.Done():
+					return c.Err()
+				}
+			}
+			if err := send(PingResp{OK: true}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, meshcall.Doc("Yield n items."), meshcall.ReadOnly())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	router, err := meshcall.StartLocalRouter(
@@ -259,6 +278,44 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 		t.Fatalf("renewing a revoked token: %v", err)
 	}
 
+	// A stream in flight keeps the reason of the revocation, fast or slow: the
+	// client sends credit while the socket closes.
+	for round := range 16 {
+		token, err := adminMesh.Auth().IssueToken(ctx, []meshcall.RouterScope{{Service: "test.v1.Echo", Methods: []string{"count"}}}, 300)
+		if err != nil {
+			t.Fatal(err)
+		}
+		consumer, err := meshcall.ConnectMesh(ctx, meshcall.NewRouter(router.URL()), meshcall.WithToken(token.Token))
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, err := meshcall.ServerStream[CountReq, PingResp](ctx, consumer, "test.v1.Echo", "count", CountReq{N: 100000, GapMs: round % 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Recv(); err != nil {
+			t.Fatal(err)
+		}
+		if revoked, err := adminMesh.Auth().RevokeToken(ctx, token.TokenID); err != nil || !revoked.Revoked {
+			t.Fatalf("revoke: %+v %v", revoked, err)
+		}
+		for {
+			if _, err = stream.Recv(); err != nil {
+				break
+			}
+		}
+		if e, _ := meshcall.AsError(err); e == nil || e.Code != meshcall.CodeUnauthenticated || e.Reason() != "token_revoked" {
+			t.Fatalf("round %d: a stream in flight when its token was revoked: %v", round, err)
+		}
+		// It does not reconnect either: the next call gets the same answer.
+		if _, err := consumer.Auth().Whoami(ctx); err == nil {
+			t.Fatalf("round %d: a call after revocation succeeded", round)
+		} else if e, _ := meshcall.AsError(err); e == nil || e.Reason() != "token_revoked" {
+			t.Fatalf("round %d: a call after revocation: %v", round, err)
+		}
+		_ = consumer.Close()
+	}
+
 	// An instance whose token is revoked does not retry: serving ends, saying why.
 	serving, err := adminMesh.Auth().IssueToken(ctx, []meshcall.RouterScope{{Service: "test.v1.Other", Register: true}}, 300)
 	if err != nil {
@@ -290,7 +347,7 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 	}
 	select {
 	case err := <-served:
-		if e, _ := meshcall.AsError(err); e == nil || e.Code != meshcall.CodeUnauthenticated {
+		if e, _ := meshcall.AsError(err); e == nil || e.Code != meshcall.CodeUnauthenticated || e.Reason() != "token_revoked" {
 			t.Fatalf("Serve after its credentials were refused: %v", err)
 		}
 	case <-time.After(5 * time.Second):

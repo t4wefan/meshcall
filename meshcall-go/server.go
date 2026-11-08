@@ -296,7 +296,7 @@ func (s *Server) supervise(link *routerLink, startDown bool) {
 	for {
 		if !startDown {
 			s.mu.Lock()
-			sess := link.session
+			sess, conn := link.session, link.conn
 			s.mu.Unlock()
 			if sess != nil {
 				sess.serve()
@@ -307,6 +307,12 @@ func (s *Server) supervise(link *routerLink, startDown bool) {
 			s.mu.Unlock()
 			if stopping {
 				return
+			}
+			if conn != nil {
+				if lost := conn.lost(); lost.Code == CodeUnauthenticated {
+					s.refuseLink(link, lost) // the Router closed it with 4401
+					return
+				}
 			}
 			s.logger.Warn("Router connection lost; reconnecting", "router", link.endpoint.text, "instance", s.opts.InstanceID)
 		}
