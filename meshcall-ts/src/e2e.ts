@@ -93,7 +93,7 @@ function keyBytes(value: string, what: string): Uint8Array<ArrayBuffer> {
   } catch {
     raw = new Uint8Array();
   }
-  if (raw.length !== 32) throw new RangeError(what + " is 32 bytes, base64url without padding");
+  if (raw.length !== 32) throw new TypeError(what + " is 32 bytes, base64url without padding");
   return raw;
 }
 

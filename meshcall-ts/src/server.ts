@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { closeSocket, createSocket, namedPipePath, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
 import { bindService, contractEntry } from "./contract.js";
 import { contractWarnings, renderWarning } from "./diagnostics.js";
-import { closeError, DeadlineExceededError, handshakeError, ProtocolError, UnavailableError } from "./errors.js";
+import { closeError, DeadlineExceededError, handshakeError, ProtocolError, UnauthenticatedError, UnavailableError } from "./errors.js";
 import {
   DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS, Liveness,
   reconnectDelays, type ReconnectPolicy,
@@ -41,6 +41,8 @@ interface RouterLink {
   readonly endpoint: WebSocketEndpoint;
   socket: WebSocket | undefined;
   timer: ReturnType<typeof setTimeout> | undefined;
+  /** The Router refused the credentials; no more attempts. */
+  refused?: boolean;
 }
 
 export interface MeshCallServerOptions {
@@ -103,6 +105,12 @@ export class MeshCallServer {
   private readonly handshakeTimeout: number;
   private readonly instanceId: string;
   private readonly tunnels: TunnelHost;
+  private settleRefused!: (error: UnauthenticatedError) => void;
+  /**
+   * Router mode: settles with the error once every Router refused this
+   * instance's credentials, so it can no longer register anywhere.
+   */
+  public readonly refused = new Promise<UnauthenticatedError>((resolve) => { this.settleRefused = resolve; });
 
   public constructor(private readonly options: MeshCallServerOptions) {
     if (options.e2ePrivateKey === undefined && [...(options.tunnelPolicies?.values() ?? [])].some((p) => p.requireE2E === true)) {
@@ -221,6 +229,10 @@ export class MeshCallServer {
         this.startRouterLink(router, link).then(
           () => this.logger.info("Router connection restored for %s", where),
           (error: unknown) => {
+            if (error instanceof UnauthenticatedError) {
+              this.refuseLink(link, error);
+              return;
+            }
             this.logger.warning("Router re-registration failed for %s: %s", where, error);
             attempt();
           },
@@ -228,6 +240,17 @@ export class MeshCallServer {
       }, next.value);
     };
     attempt();
+  }
+
+  /** The same credentials fail the same way again: stop reconnecting this link. */
+  private refuseLink(link: RouterLink, error: UnauthenticatedError): void {
+    this.logger.error("Router %s refused the credentials of instance %s; not retrying: %s",
+      JSON.stringify(link.endpoint), this.instanceId, error);
+    link.refused = true;
+    if (this.routerLinks.every((candidate) => candidate.refused === true)) {
+      this.running = false;
+      this.settleRefused(error);
+    }
   }
 
   public start(): Promise<void> {
@@ -426,6 +449,10 @@ export class MeshCallServer {
     results.forEach((result, index) => {
       if (result.status === "rejected") {
         const link = this.routerLinks[index] as RouterLink;
+        if (result.reason instanceof UnauthenticatedError) {
+          this.refuseLink(link, result.reason);
+          return;
+        }
         this.logger.warning("Router %s refused instance %s at start (%s); retrying in the background",
           JSON.stringify(link.endpoint), this.instanceId, result.reason);
         this.scheduleRouterReconnect(link, true);

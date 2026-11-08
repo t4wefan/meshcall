@@ -167,12 +167,12 @@ const BY_CODE = new Map<string, Factory>([
 /** WebSocket close status for credentials that are not, or no longer, valid. */
 export const CLOSE_UNAUTHENTICATED = 4401;
 /** Close reasons that name an error reason (docs/protocol.md → Tunnels). */
-const CLOSE_REASONS = new Set(["tunnel_revoked", "tunnel_closed"]);
+const CLOSE_REASONS = new Set(["tunnel_revoked", "tunnel_closed", "key_changed", "token_revoked"]);
 
 /**
  * @internal The error a Router close status stands for, or `undefined` for a
  * plain loss: 4401 the credentials are not (or no longer) valid, a revoked
- * tunnel saying `tunnel_revoked`; 1008 the Router refused the connection's
+ * tunnel saying `tunnel_revoked`, a revoked token `token_revoked`; 1008 the Router refused the connection's
  * request (a registration, a role) and says why.
  */
 export function closeError(code: number, reason: string): MeshCallError | undefined {
