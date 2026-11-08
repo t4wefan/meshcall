@@ -162,6 +162,16 @@ class Fixture {
   }
 }
 
+const Peek = z.object({ sealed: z.boolean() }).meta({ id: "Peek" });
+
+@service("conformance.v1.Vault", { description: "Served through end-to-end tunnels only (requireE2E)." })
+class Vault {
+  @method({ description: "Whether the call came through a sealed tunnel.", readOnly: true, request: Empty, response: Peek })
+  async peek(_: unknown, ctx: RpcContext) {
+    return { sealed: ctx.tunnel?.sealed === true };
+  }
+}
+
 @service("conformance.v1.Targeted", { description: "A targeted service: every call must name the instance it is for.", targeted: true })
 class Targeted {
   @method({ description: "Return the id of the instance that served the call.", readOnly: true, request: Empty, response: Instance })
@@ -172,13 +182,16 @@ class Targeted {
 
 const ping = Number(process.env.MESHCALL_PING_INTERVAL_MS ?? "15000");
 server = new MeshCallServer({
-  services: [new Fixture(), new Targeted()],
+  services: [new Fixture(), new Targeted(), new Vault()],
   router: { endpoint: routerEndpoint(process.env.MESHCALL_ROUTER_URL as string), instanceId: process.env.MESHCALL_CONFORMANCE_INSTANCE ?? "fixture-1" },
   pingIntervalMs: ping, pingTimeoutMs: Math.max(1000, ping * 2),
   ...(process.env.MESHCALL_MAX_FRAME_SIZE === undefined ? {} : { maxFrameSize: Number(process.env.MESHCALL_MAX_FRAME_SIZE) }),
   accessLog: false,
-  tunnelPolicies: new Map([["conformance.v1.Fixture", tunnelPolicy], ["conformance.v1.Targeted", tunnelPolicy]]),
-  ...(process.env.MESHCALL_E2E_PRIVATE_KEY === undefined ? {} : { e2ePrivateKey: process.env.MESHCALL_E2E_PRIVATE_KEY }),
+  tunnelPolicies: new Map([
+    ["conformance.v1.Fixture", tunnelPolicy], ["conformance.v1.Targeted", tunnelPolicy],
+    ["conformance.v1.Vault", { ...tunnelPolicy, requireE2E: true }],
+  ]),
+  e2ePrivateKey: process.env.MESHCALL_E2E_PRIVATE_KEY as string,
 });
 await server.start();
 process.stderr.write("fixture registered\n");

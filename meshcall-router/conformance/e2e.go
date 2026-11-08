@@ -26,6 +26,7 @@ import (
 var b64 = base64.RawURLEncoding
 
 const (
+	vaultName      = "conformance.v1.Vault"
 	tunnelHostName = "meshcall.router.v1.TunnelHost"
 	e2ePrologue    = "meshcall-e2e/1"
 )
@@ -244,10 +245,18 @@ func (s *e2eSession) open(f frame, service, method string) (frame, error) {
 	return out, nil
 }
 
+// tunnelPrologue binds a handshake to the tunnel with this credential: the
+// hex SHA-256 of the credential.
+func tunnelPrologue(credential string) []byte {
+	digest := sha256.Sum256([]byte(credential))
+	return []byte(e2ePrologue + "|" + hex.EncodeToString(digest[:]))
+}
+
 // e2eHandshake runs TunnelHost/handshake towards pinned on a tunnel
-// connection; on refusal it returns the error frame instead of a session.
-func (c *client) e2eHandshake(pinned *ecdh.PublicKey) (*e2eSession, frame, error) {
-	initiator, message, err := nkInitiate(pinned, nil, []byte(e2ePrologue), nil)
+// connection, bound to the tunnel of credential; on refusal it returns the
+// error frame instead of a session.
+func (c *client) e2eHandshake(pinned *ecdh.PublicKey, credential string) (*e2eSession, frame, error) {
+	initiator, message, err := nkInitiate(pinned, nil, tunnelPrologue(credential), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -279,6 +288,26 @@ func (c *client) sealedOpen(s *e2eSession, method string, payload any, metadata 
 	return id, c.send(s.seal(f, Service, method))
 }
 
+func (c *client) sealedOpenOn(s *e2eSession, service, method string, payload any) (string, error) {
+	id := c.callID()
+	f := frame{"kind": "call.open", "call_id": id, "service": service, "method": method, "payload": payload}
+	return id, c.send(s.seal(f, service, method))
+}
+
+func (c *client) receiveCallOn(s *e2eSession, id, service, method string) (opened, relayed frame, err error) {
+	for {
+		f, err := c.receive()
+		if err != nil {
+			return nil, nil, err
+		}
+		if f["call_id"] != id {
+			continue
+		}
+		opened, err := s.open(f, service, method)
+		return opened, f, err
+	}
+}
+
 // receiveCall returns the next frame of call id, opened, and the frame as
 // the Router relayed it.
 func (c *client) receiveCall(s *e2eSession, id, method string) (opened, relayed frame, err error) {
@@ -307,10 +336,13 @@ func inClear(f frame, secrets ...string) error {
 }
 
 func (h *harness) openE2ETunnel(issuer *client, key *ecdh.PublicKey, methods ...string) (tunnelCredential, frame, error) {
+	return h.openE2ETunnelAs(issuer, key, "user:alice", []frame{{"service": Service, "methods": methods}})
+}
+
+func (h *harness) openE2ETunnelAs(issuer *client, key *ecdh.PublicKey, principal string, scopes []frame) (tunnelCredential, frame, error) {
 	f, err := issuer.callService(tunnelService, "open", frame{
-		"instance_id": InstanceID, "principal": "user:alice", "ttl_seconds": 60,
-		"scopes":  []frame{{"service": Service, "methods": methods}},
-		"e2e_key": b64.EncodeToString(key.Bytes()),
+		"instance_id": InstanceID, "principal": principal, "ttl_seconds": 60,
+		"scopes": scopes, "e2e_key": b64.EncodeToString(key.Bytes()),
 	}, nil)
 	if err != nil {
 		return tunnelCredential{}, nil, err
@@ -335,8 +367,9 @@ func tunnelE2ESealed(h *harness) error {
 	if err != nil {
 		return err
 	}
-	if f["kind"] != "call.result" || asMap(f["payload"])["e2e_key"] != b64.EncodeToString(h.e2e.PublicKey().Bytes()) {
-		return fmt.Errorf("open with the fixture's key: %v", f)
+	if f["kind"] != "call.result" || asMap(f["payload"])["e2e_key"] != b64.EncodeToString(h.e2e.PublicKey().Bytes()) ||
+		!strings.HasPrefix(opened.Credential, "mtun_e2e.") {
+		return fmt.Errorf("open with the fixture's key (an mtun_e2e. credential): %v", f)
 	}
 	defer issuer.callService(tunnelService, "revoke", frame{"tunnel_id": opened.TunnelID}, nil) //nolint:errcheck
 	c, err := h.clientWith("Bearer "+opened.Credential, "")
@@ -344,9 +377,13 @@ func tunnelE2ESealed(h *harness) error {
 		return err
 	}
 	defer c.close()
-	s, refused, err := c.e2eHandshake(h.e2e.PublicKey())
+	s, refused, err := c.e2eHandshake(h.e2e.PublicKey(), opened.Credential)
 	if err != nil || s == nil {
 		return fmt.Errorf("handshake with the pinned key: %v %v", err, refused)
+	}
+	// The Router answers its own services in clear on this connection.
+	if f, err := c.callService("meshcall.router.v1.AuthService", "whoami", frame{}, nil); err != nil || f["kind"] != "call.result" {
+		return fmt.Errorf("whoami on an end-to-end connection: %v %v", err, f)
 	}
 
 	// Unary: payload and metadata sealed both ways.
@@ -549,7 +586,7 @@ func tunnelE2ERefusals(h *harness) error {
 	}
 
 	// A client pinning another key: the instance cannot open message 1.
-	if s, f, err := c.e2eHandshake(other.PublicKey()); err != nil || s != nil {
+	if s, f, err := c.e2eHandshake(other.PublicKey(), opened.Credential); err != nil || s != nil {
 		return fmt.Errorf("a handshake towards another key: %v %v", err, s)
 	} else if err := expectReason(f, "unauthenticated", "e2e_handshake_failed"); err != nil {
 		return fmt.Errorf("a handshake towards another key: %w", err)
@@ -562,7 +599,7 @@ func tunnelE2ERefusals(h *harness) error {
 		return fmt.Errorf("a malformed handshake: %w", err)
 	}
 
-	s, refused, err := c.e2eHandshake(h.e2e.PublicKey())
+	s, refused, err := c.e2eHandshake(h.e2e.PublicKey(), opened.Credential)
 	if err != nil || s == nil {
 		return fmt.Errorf("handshake with the pinned key: %v %v", err, refused)
 	}
@@ -579,8 +616,10 @@ func tunnelE2ERefusals(h *harness) error {
 			}
 		}
 	}
-	// An unknown session, an altered sealed field and content in clear are
-	// all refused before the handler; the client handshakes again.
+	// An unknown session is refused (the client handshakes again); an altered
+	// sealed field or one moved to another method is rejected and the session
+	// stays. Neither reaches the handler.
+	want := map[string]string{"e2e-unknown": "e2e_session_unknown", "e2e-altered": "e2e_frame_rejected", "e2e-moved": "e2e_frame_rejected"}
 	cases := map[string]func(frame) frame{
 		"e2e-unknown": func(f frame) frame { f["e2e_session"] = strings.Repeat("0", 32); return f },
 		"e2e-altered": func(f frame) frame {
@@ -596,7 +635,7 @@ func tunnelE2ERefusals(h *harness) error {
 		if err != nil {
 			return err
 		}
-		if err := expectReason(f, "unauthenticated", "e2e_session_unknown"); err != nil {
+		if err := expectReason(f, "unauthenticated", want[tag]); err != nil {
 			return fmt.Errorf("%s: %w", tag, err)
 		}
 	}
@@ -615,6 +654,71 @@ func tunnelE2ERefusals(h *harness) error {
 	}
 	if strings.Join(ran, ",") != "e2e-sealed" {
 		return fmt.Errorf("handlers that ran: %v, want only e2e-sealed", ran)
+	}
+	return nil
+}
+
+// tunnelE2EBinding: a session is bound to the tunnel whose credential the
+// client holds, and an instance can require end-to-end tunnels.
+func tunnelE2EBinding(h *harness) error {
+	issuer, err := h.client()
+	if err != nil {
+		return err
+	}
+	defer issuer.close()
+	key := h.e2e.PublicKey()
+	scopes := []frame{{"service": Service, "methods": []string{"echo"}}, {"service": vaultName, "methods": []string{"peek"}}}
+	alice, _, err := h.openE2ETunnelAs(issuer, key, "user:alice", scopes)
+	if err != nil || alice.Credential == "" {
+		return fmt.Errorf("open alice's tunnel: %v", err)
+	}
+	defer issuer.callService(tunnelService, "revoke", frame{"tunnel_id": alice.TunnelID}, nil) //nolint:errcheck
+	bob, _, err := h.openE2ETunnelAs(issuer, key, "user:bob", scopes)
+	if err != nil || bob.Credential == "" {
+		return fmt.Errorf("open bob's tunnel: %v", err)
+	}
+	defer issuer.callService(tunnelService, "revoke", frame{"tunnel_id": bob.TunnelID}, nil) //nolint:errcheck
+
+	// A relay holding bob's credential forwards alice's handshake: it was made
+	// for alice's tunnel and does not complete on bob's.
+	c, err := h.clientWith("Bearer "+bob.Credential, "")
+	if err != nil {
+		return err
+	}
+	defer c.close()
+	if s, f, err := c.e2eHandshake(key, alice.Credential); err != nil || s != nil {
+		return fmt.Errorf("alice's handshake through bob's tunnel: %v %v", err, s)
+	} else if err := expectReason(f, "unauthenticated", "e2e_handshake_failed"); err != nil {
+		return fmt.Errorf("alice's handshake through bob's tunnel: %w", err)
+	}
+	s, f, err := c.e2eHandshake(key, bob.Credential)
+	if err != nil || s == nil {
+		return fmt.Errorf("bob's own handshake: %v %v", err, f)
+	}
+	// The vault requires end-to-end tunnels and serves them.
+	id, _ := c.sealedOpenOn(s, vaultName, "peek", frame{})
+	got, _, err := c.receiveCallOn(s, id, vaultName, "peek")
+	if err != nil {
+		return err
+	}
+	if got["kind"] != "call.result" || asMap(got["payload"])["sealed"] != true {
+		return fmt.Errorf("a sealed call to a service requiring E2E: %v", got)
+	}
+	_, f, err = h.openTunnel(issuer, "user:plain", 60, []frame{{"service": vaultName, "methods": []string{"peek"}}})
+	if err != nil {
+		return err
+	}
+	if err := expectReason(f, "permission_denied", "tunnel_rejected"); err != nil || !strings.Contains(fmt.Sprint(asMap(f["error"])["message"]), "end-to-end") {
+		return fmt.Errorf("a plain tunnel to a service requiring E2E: %v %v", err, f)
+	}
+	// A plain tunnel credential never looks like an end-to-end one.
+	other, _, err := h.openTunnel(issuer, "user:plain", 60, []frame{{"service": Service, "methods": []string{"echo"}}})
+	if err != nil {
+		return err
+	}
+	defer issuer.callService(tunnelService, "revoke", frame{"tunnel_id": other.TunnelID}, nil) //nolint:errcheck
+	if strings.HasPrefix(other.Credential, "mtun_e2e.") || strings.Contains(other.Credential, ".") {
+		return fmt.Errorf("a plain tunnel credential: %s", other.Credential)
 	}
 	return nil
 }

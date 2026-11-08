@@ -34,11 +34,15 @@ and one method, `whoami` (unary, read-only, no parameters), returning
 
 Both services accept tunnels (`accept_tunnels` / `acceptTunnels` /
 `TunnelPolicies` at mount): every offer is accepted unless its principal is
-`refuse:me`, and each close notice is recorded for `closed_tunnels`. When
-`MESHCALL_E2E_PRIVATE_KEY` is set (the harness always sets it), the program
-serves with that end-to-end private key (`e2e_private_key` /
-`e2ePrivateKey` / `E2EPrivateKey`), so it can accept end-to-end tunnels
-pinned to the matching public key.
+`refuse:me`, and each close notice is recorded for `closed_tunnels`. The
+program serves with the end-to-end private key in `MESHCALL_E2E_PRIVATE_KEY`
+(`e2e_private_key` / `e2ePrivateKey` / `E2EPrivateKey`), so it can accept
+end-to-end tunnels pinned to the matching public key.
+
+It also registers `conformance.v1.Vault`, accepting tunnels like the others
+but only end-to-end ones (`require_e2e` / `requireE2E` / `RequireE2E`), with
+one method, `peek` (unary, read-only, no parameters), returning
+`{sealed: <ctx.tunnel is sealed>}`.
 
 The suite expects the Python-style snake_case method names above in the
 registration (`echo`, `cancelled_tags`, `metadata_echo`, `drain_self`).

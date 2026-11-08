@@ -264,6 +264,16 @@ func main() {
 		return ClosedTunnels{Closed: append([]ClosedTunnel{}, closed...)}, nil
 	}, meshcall.Doc("Tunnels this instance was told have closed, in order."), meshcall.ReadOnly())
 
+	type Peek struct {
+		Sealed bool `json:"sealed"`
+	}
+	vault := meshcall.NewService("conformance.v1.Vault", meshcall.Describe("Served through end-to-end tunnels only (RequireE2E)."))
+	meshcall.HandleUnary(vault, "peek", func(ctx *meshcall.Context, req Empty) (Peek, error) {
+		return Peek{Sealed: ctx.Tunnel != nil && ctx.Tunnel.Sealed}, nil
+	}, meshcall.Doc("Whether the call came through a sealed tunnel."), meshcall.ReadOnly())
+	vaultPolicy := *tunnelPolicy
+	vaultPolicy.RequireE2E = true
+
 	targeted := meshcall.NewService("conformance.v1.Targeted", meshcall.Targeted(),
 		meshcall.Describe("A targeted service: every call must name the instance it is for."))
 	meshcall.HandleUnary(targeted, "whoami", func(ctx *meshcall.Context, req Empty) (Instance, error) {
@@ -281,11 +291,12 @@ func main() {
 	maxFrame, _ := strconv.Atoi(os.Getenv("MESHCALL_MAX_FRAME_SIZE")) // 0: the default
 	var err error
 	server, err = meshcall.NewServer(meshcall.ServerOptions{
-		Services: []*meshcall.Service{fixture, targeted}, InstanceID: instance, MaxFrameSize: maxFrame,
+		Services: []*meshcall.Service{fixture, targeted, vault}, InstanceID: instance, MaxFrameSize: maxFrame,
 		PingInterval: time.Duration(ping) * time.Millisecond, PingTimeout: max(time.Second, 2*time.Duration(ping)*time.Millisecond),
 		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
 		TunnelPolicies: map[string]*meshcall.TunnelPolicy{
 			"conformance.v1.Fixture": tunnelPolicy, "conformance.v1.Targeted": tunnelPolicy,
+			"conformance.v1.Vault": &vaultPolicy,
 		},
 		E2EPrivateKey: os.Getenv("MESHCALL_E2E_PRIVATE_KEY"),
 	})
