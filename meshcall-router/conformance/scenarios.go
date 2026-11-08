@@ -42,6 +42,8 @@ var scenarios = []scenario{
 	{"tunnel: max_connections is a temporary limit on every auth path", tunnelLimit},
 	{"tunnel: calls resume when the instance reconnects", tunnelReconnect},
 	{"tunnel: a bound credential cannot register as another instance", tunnelBoundRegistration},
+	{"tunnel e2e: every shape works and the Router relays only sealed content", tunnelE2ESealed},
+	{"tunnel e2e: a plain call, a wrong key or an altered frame never reaches a handler", tunnelE2ERefusals},
 	{"keepalive: instance pings within the router idle window", keepalive},
 	{"reconnect: instance re-registers after a router shutdown", routerRestart},
 	{"drain: leaves the pool, finishes streams, disconnects", drain},

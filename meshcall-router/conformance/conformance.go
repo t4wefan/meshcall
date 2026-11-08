@@ -9,6 +9,8 @@ package conformance
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,13 +128,19 @@ type harness struct {
 	output  bytes.Buffer
 	outMu   sync.Mutex
 	exited  chan struct{}
+	// The fixture's end-to-end key pair (MESHCALL_E2E_PRIVATE_KEY).
+	e2e *ecdh.PrivateKey
 }
 
 func newHarness(ctx context.Context, opts Options) (*harness, error) {
 	if len(opts.Fixture) == 0 {
 		return nil, errors.New("a fixture command is required")
 	}
-	h := &harness{ctx: ctx, opts: opts}
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	h := &harness{ctx: ctx, opts: opts, e2e: key}
 	// Short Router idle timeout so the keepalive scenario is observable.
 	if err := h.startRouter(); err != nil {
 		return nil, err
@@ -209,6 +217,7 @@ func (h *harness) startFixture() error {
 		"MESHCALL_PING_INTERVAL_MS=500",
 		fmt.Sprintf("MESHCALL_MAX_FRAME_SIZE=%d", FixtureMaxFrameSize),
 		"MESHCALL_STRICT=1",
+		"MESHCALL_E2E_PRIVATE_KEY="+b64.EncodeToString(h.e2e.Bytes()),
 	)
 	cmd.Stdout = &lockedWriter{h: h}
 	cmd.Stderr = &lockedWriter{h: h}

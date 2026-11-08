@@ -60,6 +60,7 @@ class Text(BaseModel):
 class TunnelSeen(BaseModel):
     tunnel_id: str | None
     principal: str | None
+    sealed: bool
 
 
 class ClosedTunnel(BaseModel):
@@ -104,6 +105,7 @@ class Fixture:
         return TunnelSeen(
             tunnel_id=tunnel.id if tunnel else None,
             principal=tunnel.principal if tunnel else None,
+            sealed=tunnel.sealed if tunnel else False,
         )
 
     @method(read_only=True)
@@ -242,6 +244,7 @@ async def main() -> None:
         driver=driver,
         access_log=False,
         tunnel_policies={"conformance.v1.Fixture": policy, "conformance.v1.Targeted": policy},
+        e2e_private_key=os.environ.get("MESHCALL_E2E_PRIVATE_KEY"),
     )
     fixture.server = server
     await server.start()

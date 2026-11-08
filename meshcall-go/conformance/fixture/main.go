@@ -48,6 +48,7 @@ type Empty struct{}
 type TunnelSeen struct {
 	TunnelID  *string `json:"tunnel_id"`
 	Principal *string `json:"principal"`
+	Sealed    bool    `json:"sealed"`
 }
 
 type ClosedTunnel struct {
@@ -255,7 +256,7 @@ func main() {
 		if ctx.Tunnel == nil {
 			return TunnelSeen{}, nil
 		}
-		return TunnelSeen{TunnelID: &ctx.Tunnel.ID, Principal: &ctx.Tunnel.Principal}, nil
+		return TunnelSeen{TunnelID: &ctx.Tunnel.ID, Principal: &ctx.Tunnel.Principal, Sealed: ctx.Tunnel.Sealed}, nil
 	}, meshcall.Doc("The tunnel this call arrived through (ctx.Tunnel), or nulls."), meshcall.ReadOnly())
 	meshcall.HandleUnary(fixture, "closed_tunnels", func(ctx *meshcall.Context, req Empty) (ClosedTunnels, error) {
 		closedMu.Lock()
@@ -286,6 +287,7 @@ func main() {
 		TunnelPolicies: map[string]*meshcall.TunnelPolicy{
 			"conformance.v1.Fixture": tunnelPolicy, "conformance.v1.Targeted": tunnelPolicy,
 		},
+		E2EPrivateKey: os.Getenv("MESHCALL_E2E_PRIVATE_KEY"),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
