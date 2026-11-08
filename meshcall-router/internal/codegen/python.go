@@ -131,6 +131,11 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 		request := registry.Name(m.Request)
 		params := pyParameters(m, registry)
 		if service.Targeted {
+			// instance stays required on tunnel connections too, where the Router
+			// implies it: the caller passes the tunnel's instance id and the Router
+			// checks it, so every Mesh keeps this compile-time check (Go cannot vary
+			// a signature by Mesh type, so a tunnel-only shape would differ by
+			// language).
 			params = append(params, "*", "instance: str")
 		}
 		lines = append(lines, "")

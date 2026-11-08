@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
@@ -162,3 +164,37 @@ async def test_tunnel_credentials_have_one_way_in() -> None:
         Mesh(router, tunnel="mtun_abc").mount(Workspace())
     with pytest.raises(ValueError, match="needs accept_tunnels"):
         Mesh(router).mount(Workspace(), on_tunnel_closed=print)
+
+
+async def test_generated_targeted_client_over_a_tunnel(meshcall_cli, tmp_path) -> None:
+    """Generated clients keep `instance` required (T76): on a tunnel the
+    caller passes the tunnel's instance, and the Router checks it."""
+    out = tmp_path / "workspace_client.py"
+    meshcall_cli(
+        "generate",
+        "test_tunnels:Workspace",
+        "--language",
+        "python",
+        "--single-file",
+        "--output",
+        str(out),
+        cwd=Path(__file__).resolve().parent,
+    )
+    spec = importlib.util.spec_from_file_location("workspace_client", out)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    async with LocalRouter(port=0) as router:
+        box = Mesh(router).mount(Workspace(), instance_id="box-a", accept_tunnels=True)
+        async with box.serve(access_log=False), Mesh(router) as issuer:
+            opened = await issuer.tunnels.open(
+                instance="box-a", scopes=["test.v1.Workspace"], principal="user:alice"
+            )
+            async with Mesh(Router(router.url), tunnel=opened.credential) as mesh:
+                client = module.WorkspaceClient(mesh)
+                seen = await client.whoami(instance=opened.instance_id)
+                assert seen.principal == "user:alice"
+                with pytest.raises(PermissionDeniedError) as wrong:
+                    await client.whoami(instance="box-b")
+                assert wrong.value.reason == "tunnel_scope"
+                assert wrong.value.details["instance_id"] == "box-a"

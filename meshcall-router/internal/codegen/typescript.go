@@ -221,6 +221,7 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 			lines = append(lines, "    "+p+",")
 		}
 		if service.Targeted {
+			// Required on tunnel connections too: see renderPythonClientClass.
 			lines = append(lines, "    options: "+optionsType+" & { instance: string },")
 		} else {
 			lines = append(lines, "    options?: "+optionsType+",")

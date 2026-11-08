@@ -404,6 +404,7 @@ func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m 
 	}
 	sigParams := []string{"ctx context.Context"}
 	if service.Targeted {
+		// Required on tunnel connections too: see renderPythonClientClass.
 		sigParams = append(sigParams, "instance string")
 	}
 	paramDecls, reqExpr := g.goMethodParams(m, request)
