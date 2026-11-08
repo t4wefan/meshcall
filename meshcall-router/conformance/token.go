@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -187,6 +188,11 @@ func tokenLifetime(h *harness) error {
 		if _, err := caller.receiveWithin(h.opts.Timeout); err != nil {
 			if err == errNoFrame {
 				return fmt.Errorf("a revoked token's client connection stayed open")
+			}
+			// 4401 token_revoked tells revocation apart from a network loss.
+			var closed websocket.CloseError
+			if !errors.As(err, &closed) || closed.Code != router.StatusUnauthenticated || closed.Reason != "token_revoked" {
+				return fmt.Errorf("a revoked token's connection closed with %v, want 4401 token_revoked", err)
 			}
 			break
 		}

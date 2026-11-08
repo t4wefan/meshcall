@@ -34,6 +34,7 @@ type User struct {
 	key         []byte
 	expires     time.Time
 	tokenID     string
+	tokenDigest [32]byte
 	// connections counts the live connections (and HTTP requests) on a
 	// token, so an expired token holding some is kept for revoke_token.
 	connections int
@@ -84,8 +85,10 @@ type Auth struct {
 	slots     chan struct{}
 	dummy     *User
 	mu        sync.Mutex
-	tokens    map[string]*User
-	verified  map[[32]byte]verifiedBasic // successful Basic checks, a cache
+	tokens    map[string]*User // by token id
+	// tokenDigests finds a token's id from its secret's digest.
+	tokenDigests map[[32]byte]string
+	verified     map[[32]byte]verifiedBasic // successful Basic checks, a cache
 	// Token limits, set by the Router (Config.TokenMaxTTL, MaxTokens).
 	tokenMaxTTL time.Duration
 	maxTokens   int
@@ -155,7 +158,7 @@ func ParseAuth(data []byte) (*Auth, error) {
 	}
 	auth := &Auth{
 		users: make(map[string]*User), apiKeys: make(map[string]apiKeyEntry), slots: make(chan struct{}, 8),
-		tokens: make(map[string]*User), verified: make(map[[32]byte]verifiedBasic),
+		tokens: make(map[string]*User), tokenDigests: make(map[[32]byte]string), verified: make(map[[32]byte]verifiedBasic),
 		// Without an "anonymous" entry, callers without credentials may connect but call nothing.
 		anonymous: &User{Username: AnonymousUser, Roles: []string{"client"}, kind: identityAnonymous},
 	}
@@ -325,10 +328,8 @@ func (a *Auth) checkHeader(header string) (*User, *authFailure) {
 		return nil, &authFailure{status: http.StatusUnauthorized, message: "authentication failed"}
 	}
 	if scheme, token, ok := strings.Cut(header, " "); ok && strings.EqualFold(scheme, "Bearer") {
-		digest := sha256.Sum256([]byte(token))
-		id := hex.EncodeToString(digest[:])
 		a.mu.Lock()
-		user := a.tokens[id]
+		user := a.tokens[a.tokenDigests[sha256.Sum256([]byte(token))]]
 		valid := user != nil && time.Now().Before(user.expires)
 		a.mu.Unlock()
 		if valid {

@@ -3,8 +3,11 @@ package router
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -318,8 +321,12 @@ func TestAccountAndTokenScopesExpiryRevocation(t *testing.T) {
 	if got := rpc(issuer, "revoke_token", map[string]any{"token_id": short.TokenID}); string(got.Payload) != `{"revoked":true}` {
 		t.Fatalf("revoking an expired token with a live connection: %s", got.Payload)
 	}
-	if _, _, err := shortConn.Read(ctx); err == nil {
-		t.Fatal("a revoked connection past expiry survived")
+	var closed websocket.CloseError
+	if _, _, err := shortConn.Read(ctx); !errors.As(err, &closed) || closed.Code != StatusUnauthenticated || closed.Reason != "token_revoked" {
+		t.Fatalf("a revoked connection past expiry: %v, want a close with 4401 token_revoked", err)
+	}
+	if digest := sha256.Sum256([]byte(short.Token)); !strings.HasPrefix(short.TokenID, "tok_") || strings.Contains(short.TokenID, hex.EncodeToString(digest[:])) {
+		t.Fatalf("the token id %q must be independent of the secret", short.TokenID)
 	}
 
 	// Renewal moves expiry; only the issuer renews; the TTL is bounded.

@@ -169,8 +169,9 @@ type peer struct {
 	drops       *atomic.Uint64 // the Router's outbox-overflow counter
 	// capabilities from hello; "tunnels" means the instance answers offers.
 	capabilities []string
-	admitted     bool // counted against a tunnel's connections
-	tokenCounted bool // counted against its token's connections
+	admitted     bool   // counted against a tunnel's connections
+	tokenCounted bool   // counted against its token's connections
+	refusal      string // why the Router ended it; read after ctx is done
 }
 
 func (p *peer) send(f frame) {
