@@ -243,6 +243,7 @@ test(
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.equal(await adminMesh.auth.revokeToken(serving.token_id), true);
-    await assert.rejects(served, UnauthenticatedError);
+    await assert.rejects(served, (error: unknown) =>
+      error instanceof UnauthenticatedError && error.details?.["reason"] === "token_revoked");
   },
 );

@@ -360,13 +360,15 @@ export class MeshCallServer {
       ...(role === "router" ? { tunnels: this.tunnels } : {}),
     }, liveness);
     this.sessions.set(socket, session);
-    socket.on("close", () => {
+    socket.on("close", (code: number, reason: Buffer) => {
       session.close();
       this.sessions.delete(socket);
       const link = this.routerLinks.find((candidate) => candidate.socket === socket);
       if (link !== undefined) {
         link.socket = undefined;
-        this.scheduleRouterReconnect(link);
+        const refusal = closeError(code, reason.toString());
+        if (refusal instanceof UnauthenticatedError && !this.stopping) this.refuseLink(link, refusal);
+        else this.scheduleRouterReconnect(link);
       }
     });
     socket.on("error", () => {
