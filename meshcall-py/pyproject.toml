@@ -62,9 +62,13 @@ exclude = ["src/meshcall/bin"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# A test stuck this long dumps every thread's stack, so a hang in CI names
-# its test instead of sitting silent until the job is cancelled.
-faulthandler_timeout = 120
+# An async test fails at its deadline (tests/conftest.py, 60s by default) with
+# every asyncio task's stack. Anything stuck this long after that (a sync
+# wait, or the cleanup of a cancelled test) dumps every thread's stack and
+# ends the run, so a hang in CI fails in minutes instead of sitting silent
+# until the job is cancelled.
+faulthandler_timeout = 300
+faulthandler_exit_on_timeout = true
 testpaths = ["tests"]
 # Test fixtures are deliberately terse; test_diagnostics asserts the warnings.
 filterwarnings = ["ignore::meshcall.diagnostics.MeshCallWarning"]
