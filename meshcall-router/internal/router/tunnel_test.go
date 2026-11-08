@@ -2,6 +2,8 @@ package router
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -518,7 +520,29 @@ func TestEndToEndTunnelRelaysSealedCallsOnly(t *testing.T) {
 	if offered["e2e_key"] != key || opened["e2e_key"] != key {
 		t.Fatalf("the pinned key travels in the offer and the result: %s / %s", offer.Payload, result.Payload)
 	}
-	client := clientConn(t, r, "Bearer "+opened["credential"].(string))
+	// The credential says it is end to end; the offer binds its digest, never the credential.
+	credential := opened["credential"].(string)
+	digest := sha256.Sum256([]byte(credential))
+	if !strings.HasPrefix(credential, "mtun_e2e.") || offered["credential_digest"] != hex.EncodeToString(digest[:]) || strings.Contains(string(offer.Payload), credential) {
+		t.Fatalf("an end-to-end credential and its offer: %s / %s", credential, offer.Payload)
+	}
+	plainOffer, plainResult := openTunnelVia(t, issuer, host, frames, `{"instance_id":"box-a","principal":"user:p","ttl_seconds":60,
+		"scopes":[{"service":"test.v1.Echo","methods":["echo"]}]}`, true)
+	if strings.Contains(string(plainResult.Payload), "mtun_e2e.") || strings.Contains(string(plainResult.Payload), "e2e.") || strings.Contains(string(plainOffer.Payload), "credential_digest") {
+		t.Fatalf("a plain tunnel: %s / %s", plainResult.Payload, plainOffer.Payload)
+	}
+	// The instance's end-to-end reason reaches the issuer.
+	data, _ := json.Marshal(map[string]any{"kind": "call.open", "call_id": "open-mismatch", "service": TunnelService, "method": "open",
+		"payload": json.RawMessage(`{"instance_id":"box-a","principal":"user:x","ttl_seconds":60,"scopes":[{"service":"test.v1.Echo","methods":["echo"]}],"e2e_key":"` + key + `"}`)})
+	if err := issuer.Write(context.Background(), websocket.MessageText, data); err != nil {
+		t.Fatal(err)
+	}
+	refusedOffer := next(t, frames)
+	send(t, host, frame{Kind: "call.result", CallID: refusedOffer.CallID, Payload: json.RawMessage(`{"accept":false,"reason":"e2e_key_mismatch"}`)})
+	if refused := receive(t, issuer); refused.Error == nil || refused.Error.Code != "permission_denied" || !strings.Contains(refused.Error.Message, "e2e_key") {
+		t.Fatalf("a refusal for a key mismatch: %+v", refused.Error)
+	}
+	client := clientConn(t, r, "Bearer "+credential)
 
 	// The handshake is routed to the target with the tunnel's identity.
 	openCall(t, client, "hs", TunnelHostService, "handshake", `{"message":"m1"}`, nil)

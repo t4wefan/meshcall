@@ -329,6 +329,11 @@ func (r *Router) openTunnel(p *peer, f frame, request OpenTunnelRequest) {
 		return
 	}
 	credential := tunnelPrefix + base64.RawURLEncoding.EncodeToString(secret)
+	if request.E2EKey != "" {
+		// Clients tell an end-to-end credential from a plain one before they
+		// connect; "." never occurs in a plain one.
+		credential = tunnelPrefix + "e2e." + base64.RawURLEncoding.EncodeToString(secret)
+	}
 	t := &tunnel{
 		id: "tun_" + randomHex(12), digest: sha256.Sum256([]byte(credential)), owner: p.user.owner(),
 		instanceID: request.InstanceID, principal: request.Principal, scopes: request.Scopes,
@@ -359,7 +364,10 @@ func (r *Router) sendOffer(t *tunnel, instance *peer, client *peer, clientCall, 
 		ExpiresUnixMS int64         `json:"expires_at_unix_ms"`
 		Resumed       bool          `json:"resumed"`
 		E2EKey        string        `json:"e2e_key,omitempty"`
-	}{t.id, t.instanceID, t.principal, t.scopes, t.expires.UnixMilli(), resumed, t.e2eKey})
+		// The handshake prologue binds a session to this credential; the
+		// instance learns its digest, never the credential.
+		CredentialDigest string `json:"credential_digest,omitempty"`
+	}{t.id, t.instanceID, t.principal, t.scopes, t.expires.UnixMilli(), resumed, t.e2eKey, t.credentialDigest()})
 	timeout := offerTimeout.Milliseconds()
 	r.offers[o.callID] = o
 	if client != nil {
@@ -393,12 +401,20 @@ func (r *Router) answerOffer(o *offer, f frame) {
 	}
 	r.endOffer(o)
 	var answer struct {
-		Accept bool `json:"accept"`
+		Accept bool   `json:"accept"`
+		Reason string `json:"reason"`
 	}
 	accepted := f.Kind == "call.result" && json.Unmarshal(f.Payload, &answer) == nil && answer.Accept
 	t := o.tunnel
 	if !accepted {
-		r.offerRefused(o, routerError(o.clientCall, "permission_denied", "Instance "+t.instanceID+" refused the tunnel", false, "tunnel_rejected", t.instanceID), "rejected")
+		message, reason := "Instance "+t.instanceID+" refused the tunnel", "rejected"
+		switch answer.Reason {
+		case "e2e_key_mismatch":
+			message, reason = message+": it does not hold the pinned e2e_key", "key_changed"
+		case "e2e_required":
+			message += ": it requires end-to-end tunnels (open with e2e_key)"
+		}
+		r.offerRefused(o, routerError(o.clientCall, "permission_denied", message, false, "tunnel_rejected", t.instanceID), reason)
 		return
 	}
 	if t.closed || r.instances[t.instanceID] != o.instance {
@@ -567,6 +583,15 @@ func (r *Router) tunnelCall(t *tunnel, f frame) (frame, *frame) {
 // same whether or not what was asked for exists.
 func tunnelScopeError(callID string, t *tunnel) frame {
 	return routerError(callID, "permission_denied", "Outside this tunnel's scope (instance "+t.instanceID+")", false, "tunnel_scope", t.instanceID)
+}
+
+// credentialDigest is the hex SHA-256 of an end-to-end tunnel's credential,
+// which the handshake prologue binds; empty for a plain tunnel.
+func (t *tunnel) credentialDigest() string {
+	if t.e2eKey == "" {
+		return ""
+	}
+	return hex.EncodeToString(t.digest[:])
 }
 
 // isHandshake reports an end-to-end session handshake, the one TunnelHost

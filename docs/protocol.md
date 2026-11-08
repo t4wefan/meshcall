@@ -315,11 +315,13 @@ reserved service `meshcall.router.v1.TunnelHost`, which runtimes answer
 themselves:
 
 - `offer` — `{tunnel_id, instance_id, principal, scopes, expires_at_unix_ms,
-  resumed, e2e_key?}`; the instance answers `{"accept": true}` to accept and anything
-  else (`false`, an error, no answer within 10 s) to refuse. Only after
+  resumed, e2e_key?, credential_digest?}` (the last two for an end-to-end
+  tunnel); the instance answers `{"accept": true}` to accept and anything
+  else (`false`, an error, no answer within 10 s) to refuse, optionally with
+  a `reason` (see [End-to-end encryption](#end-to-end-encryption)). Only after
   acceptance does the tunnel become usable and `open` return.
 - `closed` — `{tunnel_id, reason}`: the tunnel ended (`revoked`, `expired`,
-  `rejected`, `offer_timeout`, `instance_changed`, `abandoned` when the
+  `rejected`, `key_changed`, `offer_timeout`, `instance_changed`, `abandoned` when the
   issuer gave up before the instance answered). The Router does not wait for
   the answer.
 
@@ -378,41 +380,78 @@ A tunnel opened with `e2e_key` carries its calls' contents end to end
 between the client and the instance; the Router still routes, enforces the
 scopes, deadlines and flow control, and sees service, method, timing, stream
 structure, sizes and error codes, but not payloads, metadata or error
-messages. It is opt-in per tunnel.
+messages. It is opt-in per tunnel; an instance may require it (below).
 
 **Keys and pinning.** The instance has a static X25519 key pair, configured
 like its instance id (it is stable configuration, not per process). The
 issuer knows the instance's public key out of band — it provisioned the
 instance — and passes it to `TunnelService/open` as `e2e_key` (32 bytes,
-base64url without padding). The Router puts it in the offer; an instance
-refuses (`tunnel_rejected`) an offer whose `e2e_key` is not its own public
-key. The issuer gives the client the same key with the credential. The client
-**never takes the key from the Router or the instance**: it starts the
-handshake with the pinned key, so only the holder of the matching private key
-can complete it, and a handshake that fails is a non-retryable
-`unauthenticated` with `reason: "e2e_handshake_failed"` and never falls back
-to plaintext. This is what defeats a man in the middle, the Router included.
-The Router still decides who may connect: it sees the credential, and the
-client has no static key (Noise `NK`).
+base64url without padding; anything else is `invalid_argument` from the
+Router). The Router puts it in the offer; an instance refuses an offer whose
+`e2e_key` is not its own public key. The issuer gives the client the same key
+with the credential. The client **never takes the key from the Router or the
+instance**: it starts the handshake with the pinned key, so only the holder of
+the matching private key can complete it, and a handshake that fails is a
+non-retryable `unauthenticated` with `reason: "e2e_handshake_failed"` and
+never falls back to plaintext. This is what defeats a man in the middle, the
+Router included. The Router still decides who may connect: it sees the
+credential, and the client has no static key (Noise `NK`).
+
+**Credentials say what they are.** The credential of an end-to-end tunnel
+starts with `mtun_e2e.` (a plain one never contains `.`). A runtime given an
+end-to-end credential without `e2e_key`, or `e2e_key` with a plain
+credential, refuses when the client is configured, before it connects, so no
+payload is ever sent towards the Router unsealed by mistake.
+
+**Requiring it.** An instance may require end-to-end tunnels for the services
+of a mount (`require_e2e`); it then refuses every offer scoping one of them
+that has no `e2e_key`, so a key-holding instance never serves those services
+in clear through a tunnel. Requiring it without a private key is a
+configuration error.
+
+**Offer answers.** An instance that refuses an offer for an end-to-end reason
+says so: `{"accept": false, "reason": "e2e_key_mismatch"}` (the pinned key is
+not its own) or `"e2e_required"` (a plain offer for services that require
+it). The Router names the reason in the issuer's `tunnel_rejected` message,
+and closes a tunnel whose re-offer is refused with `e2e_key_mismatch` with the
+reason `key_changed` (its connections close as `tunnel_closed`).
 
 **Handshake.** Once per client connection, before its first sealed call, the
 client calls `meshcall.router.v1.TunnelHost/handshake` (unary)
 `{message}` → `{message}`: the two messages of
 `Noise_NK_25519_AESGCM_SHA256` with empty payloads, base64url without
-padding, prologue `"meshcall-e2e/1"`. The
-Router routes this method only from a connection of an E2E tunnel, to its
-target, with the tunnel metadata set (to anyone else it is
-`method_not_found`). The session id is the first 16 bytes of the handshake
-hash, hex; the instance keeps it under the tunnel the handshake came
-through, so it is good on that tunnel only. The two keys of the Noise
-`Split()` seal client → instance and instance → client. The instance keeps
-at most 16 sessions per tunnel (the
-oldest is dropped) and drops them when the tunnel closes; a call naming a
-session it does not know is refused before any handler runs with
+padding. The prologue is `meshcall-e2e/1|<credential_digest>`, where
+`credential_digest` is the lowercase hex SHA-256 of the tunnel credential
+(its UTF-8 bytes). The client hashes its own credential; the Router puts the
+digest (never the credential) in the offer of an end-to-end tunnel as
+`credential_digest`, and the instance uses the digest of the tunnel the
+handshake came through. A handshake made for one tunnel therefore cannot
+complete through another (`e2e_handshake_failed`): a relay holding a second
+credential cannot run one client's sealed calls under another tunnel's
+principal, and since a tunnel has one target, the session is bound to that
+instance too. The Router routes this method only from a connection of an E2E
+tunnel, to its target, with the tunnel metadata set; to any other connection
+it is refused like any reserved method it may not call (`permission_denied`
+with `reason: "tunnel_scope"` on a plain tunnel, `method_not_found`
+elsewhere). The
+session id is the first 16 bytes of the handshake hash, hex; the instance
+keeps the session under that tunnel. The two keys of the Noise `Split()` seal
+client → instance and instance → client. The instance keeps at most 16
+sessions per tunnel (the oldest is dropped) and drops them when the tunnel
+closes.
+
+**Unknown sessions and rejected frames.** A call naming a session the
+instance does not know is refused before any handler runs with
 `unauthenticated`, `reason: "e2e_session_unknown"` (an instance that
-reconnected has lost its sessions). The client then drops the session and
-handshakes again before its next call, retrying a unary call once; a
-streaming call reports the error.
+reconnected has lost its sessions). On that answer, for any call shape, the
+client drops the session and its connection and handshakes again before its
+next call; it retries a unary call once, and a streaming call reports the
+error. A frame of a known session that does not open — altered, replayed,
+too old, moved to another call or method — is refused (`call.open`) or ends
+its call (a later frame) with `unauthenticated`,
+`reason: "e2e_frame_rejected"`; the session stays, since only the Router or
+someone on the path can have changed the frame. A client receiving a frame
+that does not open ends that call the same way (`source: "client"`).
 
 **Sealed frames.** The sealed parts of a frame travel in an optional
 `sealed` field: base64url without padding of an 8-byte big-endian counter
@@ -438,17 +477,21 @@ content and stay clear. Router-synthesised errors are clear. The Router keeps
 the metadata keys it sets (`meshcall-tunnel-*`) in clear `metadata`; a
 runtime ignores `meshcall-` keys inside a sealed object.
 
-On an E2E tunnel the Router refuses, with `permission_denied` and
-`reason: "tunnel_e2e_required"`, every `call.open` other than the handshake
-and the Registry that lacks `e2e_session` and `sealed`, and every HTTP
-`/v1/call` (HTTP cannot carry a session). It does not deduplicate sealed
-calls by idempotency key: a replayed terminal frame could not be opened by
-another session. `TunnelService/list` and `AuthService/whoami` show the
-tunnel's `e2e_key`.
+Calls to the Router's own services (`meshcall.router.*`: `AuthService`,
+`Registry`, `TunnelService`) are answered by the Router and are never sealed,
+on an end-to-end connection too. On an E2E tunnel the Router refuses, with
+`permission_denied` and `reason: "tunnel_e2e_required"`, every other
+`call.open` that lacks `e2e_session` and `sealed`, and every HTTP `/v1/call`
+(HTTP cannot carry a session). It does not deduplicate sealed calls by
+idempotency key: a replayed terminal frame could not be opened by another
+session. `TunnelService/list` and `AuthService/whoami` show the tunnel's
+`e2e_key`.
 
 **Rotation.** An instance configured with a new key refuses the re-offers of
-tunnels that pinned its old one, which closes them (`rejected`); their
-clients ask the issuer again. The first version has no overlap window.
+tunnels that pinned its old one (`e2e_key_mismatch`), which closes them with
+the reason `key_changed`; their clients' calls fail with `unauthenticated` /
+`tunnel_closed` and they ask the issuer again. The first version has no
+overlap window.
 
 ### Instance-bound registration
 
@@ -659,7 +702,7 @@ from `TunnelService/open`: the instance refused or does not accept tunnels),
 `tunnel_scope` (a `permission_denied` on a tunnel connection: the call is
 outside the tunnel's view), `tunnel_e2e_required` (a `permission_denied`: a
 plain call on an end-to-end tunnel), `e2e_handshake_failed` /
-`e2e_session_unknown` (an `unauthenticated` from the client or the instance,
+`e2e_session_unknown` / `e2e_frame_rejected` (an `unauthenticated` from the client or the instance,
 see [End-to-end encryption](#end-to-end-encryption)), `tunnel_revoked` / `tunnel_closed` (an
 `unauthenticated` for calls on a tunnel connection the Router closed with
 4401, see [Tunnel connections](#tunnel-connections)),

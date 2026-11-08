@@ -185,6 +185,10 @@ func run(args []string) error {
 		if dot <= 0 || dot == len(positional[1])-1 {
 			return fmt.Errorf("expected service.method (e.g. chat.v1.Chat.send), got %q", positional[1])
 		}
+		if strings.HasPrefix(tunnel, "mtun_e2e.") {
+			// Refused here, before any payload leaves this process unsealed.
+			return errors.New("this is an end-to-end tunnel credential and the meshcall CLI does not seal calls; call through a runtime given the tunnel's e2e_key (inspect works)")
+		}
 		call := cli.CallOptions{
 			Service: positional[1][:dot], Method: positional[1][dot+1:], Timeout: timeout, JSON: asJSON,
 			Metadata: callFlags.metadata, IdempotencyKey: callFlags.idempotencyKey, IdleTimeout: callFlags.idleTimeout,
