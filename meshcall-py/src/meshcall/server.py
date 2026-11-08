@@ -1151,9 +1151,26 @@ class RpcServer:
     async def wait_closed(self) -> None:
         await self._closed.wait()
 
+    async def wait_refused(self) -> MeshCallError:
+        """Resolves once every Router refused this instance's credentials, so
+        it can no longer register anywhere; the links stopped reconnecting."""
+        return await self.driver.wait_refused()
+
     async def run(self) -> None:
+        """Serve until stopped; raises when every Router refuses the credentials."""
         await self.start()
-        await self.wait_closed()
+        closed = asyncio.create_task(self.wait_closed())
+        refused = asyncio.create_task(self.wait_refused())
+        try:
+            done, _ = await asyncio.wait(
+                {closed, refused}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            closed.cancel()
+            refused.cancel()
+        if refused in done:
+            await self.stop()
+            raise refused.result()
 
 
 def _log_contract_warnings(logger: Any, services: Sequence[object]) -> None:

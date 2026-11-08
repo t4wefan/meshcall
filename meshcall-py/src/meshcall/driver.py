@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from meshcall.errors import DriverStateError
+from meshcall.errors import DriverStateError, MeshCallError
 from meshcall.transport import FrameConnection
 
 if TYPE_CHECKING:
@@ -25,6 +26,11 @@ class ServerDriver(ABC):
         self.instance_id = instance_id or uuid.uuid4().hex
         self._binding_lock = threading.Lock()
         self._binding: DriverBinding | None = None
+
+    async def wait_refused(self) -> MeshCallError:
+        """Resolves if the instance's credentials are refused everywhere it
+        registers. A driver that registers nowhere is never refused."""
+        return await asyncio.get_running_loop().create_future()
 
     def acquire_binding(self, owner_id: str) -> DriverBinding:
         with self._binding_lock:

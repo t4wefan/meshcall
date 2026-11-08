@@ -46,7 +46,9 @@ def is_frame_too_large(error: BaseException) -> bool:
 #: WebSocket close status for credentials that are not (or no longer) valid.
 CLOSE_UNAUTHENTICATED = 4401
 #: Close reasons that name an error reason (docs/protocol.md → Tunnels).
-_CLOSE_REASONS = frozenset({"tunnel_revoked", "tunnel_closed"})
+_CLOSE_REASONS = frozenset(
+    {"tunnel_revoked", "tunnel_closed", "key_changed", "token_revoked"}
+)
 
 
 class PeerClosedError(ConnectionError):
@@ -64,7 +66,7 @@ def close_error(code: int | None, reason: str) -> MeshCallError | None:
     """The error a Router close status stands for, or ``None`` for a plain loss.
 
     4401: the credentials are not, or are no longer, valid (a revoked
-    tunnel says ``tunnel_revoked``); 1008: the Router refused the
+    tunnel says ``tunnel_revoked``, a revoked token ``token_revoked``); 1008: the Router refused the
     connection's request (a registration, a role) and says why.
     """
     if code == CLOSE_UNAUTHENTICATED:
@@ -324,6 +326,15 @@ class FrameConnection:
                 continue
             try:
                 await self._websocket.send(pending.encoded)
+            except asyncio.CancelledError:
+                # close() stopped the sender mid-frame: whoever awaits this
+                # frame must not wait forever.
+                if not pending.future.done():
+                    pending.future.set_exception(
+                        self._closed
+                        or ConnectionError("WebSocket connection is closed")
+                    )
+                raise
             except ConnectionClosed as exc:
                 error = self._closed or _closed_by(exc)
                 self._closed = error

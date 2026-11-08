@@ -364,6 +364,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         endpoints: list[str | None] = list(uris) if uris else [None]
         self._links = [_RouterLink(self, endpoint) for endpoint in endpoints]
         self._draining = False
+        self._refused: asyncio.Future[UnauthenticatedError] | None = None
 
     @property
     def connected(self) -> bool:
@@ -382,6 +383,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         runtime: ServerRuntime,
     ) -> None:
         self.check_binding(binding)
+        self._refused = asyncio.get_running_loop().create_future()
         results = await asyncio.gather(
             *(link.register(runtime) for link in self._links), return_exceptions=True
         )
@@ -389,6 +391,9 @@ class WebSocketRouterServerDriver(ServerDriver):
         if len(failures) == len(self._links):
             raise failures[0]
         for link, result in zip(self._links, results, strict=True):
+            if isinstance(result, UnauthenticatedError):
+                link.refuse(runtime, result)
+                continue
             if isinstance(result, BaseException):
                 runtime.logger.warning(  # noqa: PLE1205
                     "Router {} rejected or refused instance {} at start ({}); retrying in the background",
@@ -402,6 +407,21 @@ class WebSocketRouterServerDriver(ServerDriver):
                 ),
                 name=f"meshcall-router-server-{self.instance_id}",
             )
+
+    async def wait_refused(self) -> UnauthenticatedError:
+        """Resolves once every Router refused this instance's credentials."""
+        if self._refused is None:
+            await asyncio.get_running_loop().create_future()
+        assert self._refused is not None
+        return await asyncio.shield(self._refused)
+
+    def _link_refused(self, error: UnauthenticatedError) -> None:
+        if (
+            self._refused is not None
+            and not self._refused.done()
+            and all(link.refused for link in self._links)
+        ):
+            self._refused.set_result(error)
 
     async def drain(
         self,
@@ -437,9 +457,21 @@ class _RouterLink:
         self.endpoint = endpoint
         self.connection: FrameConnection | None = None
         self.task: asyncio.Task[None] | None = None
+        self.refused = False
 
     async def register(self, runtime: ServerRuntime) -> None:
         self.connection = await self._open(runtime)
+
+    def refuse(self, runtime: ServerRuntime, error: UnauthenticatedError) -> None:
+        """The same credentials fail the same way again: stop reconnecting."""
+        runtime.logger.error(  # noqa: PLE1205
+            "Router {} refused the credentials of instance {}; not retrying: {}",
+            self.endpoint or self.driver.unix_path or self.driver.pipe,
+            self.driver.instance_id,
+            error,
+        )
+        self.refused = True
+        self.driver._link_refused(error)
 
     async def _open(self, runtime: ServerRuntime) -> FrameConnection:
         driver = self.driver
@@ -527,6 +559,9 @@ class _RouterLink:
                     await asyncio.sleep(delay)
                     try:
                         self.connection = await self._open(runtime)
+                    except UnauthenticatedError as exc:
+                        self.refuse(runtime, exc)
+                        return
                     except (OSError, ConnectionError, MeshCallError) as exc:
                         runtime.logger.warning(  # noqa: PLE1205
                             "Router re-registration failed for {}: {}", where, exc
