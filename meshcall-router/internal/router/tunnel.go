@@ -50,6 +50,10 @@ type OpenTunnelRequest struct {
 	Principal      string        `json:"principal"`
 	TTLSeconds     int           `json:"ttl_seconds"`
 	MaxConnections int           `json:"max_connections,omitempty"`
+	// E2EKey pins the instance's X25519 public key (base64url): calls on the
+	// tunnel must then be sealed end to end (docs/protocol.md → End-to-end
+	// encryption).
+	E2EKey string `json:"e2e_key,omitempty"`
 }
 
 type tunnel struct {
@@ -61,6 +65,7 @@ type tunnel struct {
 	scopes         []TunnelScope
 	expires        time.Time
 	maxConnections int // 0: unlimited
+	e2eKey         string
 	connections    int // WebSocket connections and HTTP requests in progress
 	host           *peer
 	hostUser       string // identity that accepted; a re-registration must match
@@ -78,13 +83,14 @@ type TunnelInfo struct {
 	Scopes         []TunnelScope `json:"scopes"`
 	ExpiresUnixMS  int64         `json:"expires_at_unix_ms"`
 	MaxConnections int           `json:"max_connections,omitempty"`
+	E2EKey         string        `json:"e2e_key,omitempty"`
 	Connections    int           `json:"connections"`
 	Online         bool          `json:"online"`
 }
 
 func (t *tunnel) info() TunnelInfo {
 	return TunnelInfo{TunnelID: t.id, InstanceID: t.instanceID, Principal: t.principal, Scopes: t.scopes,
-		ExpiresUnixMS: t.expires.UnixMilli(), MaxConnections: t.maxConnections, Connections: t.connections, Online: t.host != nil}
+		ExpiresUnixMS: t.expires.UnixMilli(), MaxConnections: t.maxConnections, E2EKey: t.e2eKey, Connections: t.connections, Online: t.host != nil}
 }
 
 // offer is a TunnelHost/offer call in flight to an instance. client is the
@@ -274,6 +280,12 @@ func (r *Router) openTunnel(p *peer, f frame, request OpenTunnelRequest) {
 		fail("invalid_argument", "ttl_seconds must be 1..86400, max_connections non-negative and scopes 1..128 services")
 		return
 	}
+	if request.E2EKey != "" {
+		if key, err := base64.RawURLEncoding.DecodeString(request.E2EKey); err != nil || len(key) != 32 {
+			fail("invalid_argument", "e2e_key must be a 32-byte X25519 public key, base64url without padding")
+			return
+		}
+	}
 	target := r.instances[request.InstanceID]
 	if target == nil {
 		p.send(routerError(f.CallID, "unavailable", "Instance "+request.InstanceID+" is not registered", false, "instance_unknown", request.InstanceID))
@@ -321,8 +333,12 @@ func (r *Router) openTunnel(p *peer, f frame, request OpenTunnelRequest) {
 		id: "tun_" + randomHex(12), digest: sha256.Sum256([]byte(credential)), owner: p.user.owner(),
 		instanceID: request.InstanceID, principal: request.Principal, scopes: request.Scopes,
 		expires: time.Now().Add(time.Duration(request.TTLSeconds) * time.Second), maxConnections: request.MaxConnections,
+		e2eKey: request.E2EKey,
 	}
 	call := []string{RegistryService + "/list", RegistryService + "/describe"}
+	if t.e2eKey != "" {
+		call = append(call, TunnelHostService+"/handshake")
+	}
 	for _, scope := range t.scopes {
 		for _, m := range scope.Methods {
 			call = append(call, scope.Service+"/"+m)
@@ -342,7 +358,8 @@ func (r *Router) sendOffer(t *tunnel, instance *peer, client *peer, clientCall, 
 		Scopes        []TunnelScope `json:"scopes"`
 		ExpiresUnixMS int64         `json:"expires_at_unix_ms"`
 		Resumed       bool          `json:"resumed"`
-	}{t.id, t.instanceID, t.principal, t.scopes, t.expires.UnixMilli(), resumed})
+		E2EKey        string        `json:"e2e_key,omitempty"`
+	}{t.id, t.instanceID, t.principal, t.scopes, t.expires.UnixMilli(), resumed, t.e2eKey})
 	timeout := offerTimeout.Milliseconds()
 	r.offers[o.callID] = o
 	if client != nil {
@@ -527,6 +544,12 @@ func (r *Router) tunnelCall(t *tunnel, f frame) (frame, *frame) {
 		e := tunnelScopeError(f.CallID, t)
 		return f, &e
 	}
+	if t.e2eKey != "" && !isHandshake(f) && (f.E2ESession == "" || f.Sealed == "") {
+		// Plain calls (HTTP ones included) would expose what the issuer asked
+		// to keep end to end.
+		e := routerError(f.CallID, "permission_denied", "This tunnel carries end-to-end sealed calls only", false, "tunnel_e2e_required", t.instanceID)
+		return f, &e
+	}
 	if t.host == nil || r.instances[t.instanceID] != t.host {
 		e := routerError(f.CallID, "unavailable", "Instance "+t.instanceID+" is offline", true, "instance_offline", t.instanceID)
 		return f, &e
@@ -546,8 +569,10 @@ func tunnelScopeError(callID string, t *tunnel) frame {
 	return routerError(callID, "permission_denied", "Outside this tunnel's scope (instance "+t.instanceID+")", false, "tunnel_scope", t.instanceID)
 }
 
-// stripTunnelMetadata removes meshcall-tunnel-* keys a caller sent on an
-// ordinary connection: only the Router may set them.
+// isHandshake reports an end-to-end session handshake, the one TunnelHost
+// method a tunnel connection may call: it is routed to the tunnel's target.
+func isHandshake(f frame) bool { return f.Service == TunnelHostService && f.Method == "handshake" }
+
 // reservedTunnelKey matches meshcall-tunnel-* in any letter case: metadata
 // lookups (meta() in the runtimes) may ignore case, so a mixed-case key must
 // not survive to forge what only the Router sets.
@@ -555,6 +580,8 @@ func reservedTunnelKey(key string) bool {
 	return len(key) >= len(tunnelMetaPrefix) && strings.EqualFold(key[:len(tunnelMetaPrefix)], tunnelMetaPrefix)
 }
 
+// stripTunnelMetadata removes meshcall-tunnel-* keys a caller sent on an
+// ordinary connection: only the Router may set them.
 func stripTunnelMetadata(f frame) frame {
 	if f.Metadata == nil {
 		return f

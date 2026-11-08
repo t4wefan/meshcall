@@ -979,7 +979,10 @@ func (r *Router) forward(p *peer, f frame) {
 			refuse(routerError(f.CallID, "unavailable", "Router is shutting down", true, "router_draining", ""))
 			return
 		}
-		if strings.HasPrefix(f.Service, reservedPrefix) {
+		handshake := false
+		if t := p.user.tunnelOf(); t != nil && t.e2eKey != "" && isHandshake(f) {
+			handshake = true // routed to the tunnel's target, not answered here
+		} else if strings.HasPrefix(f.Service, reservedPrefix) {
 			r.management(p, f)
 			return
 		}
@@ -1005,9 +1008,12 @@ func (r *Router) forward(p *peer, f frame) {
 			refuse(routerError(f.CallID, "invalid_argument", "Duplex calls are never replayed and take no idempotency key", false, "idempotency_key_on_duplex", ""))
 			return
 		}
+		// A sealed call's terminal frame opens only in its own session: never
+		// replay it to another caller.
+		dedup := f.Idempotency != "" && stream == "unary" && f.Sealed == ""
 		var entry *dedupEntry
 		var avoid *peer
-		if f.Idempotency != "" && stream == "unary" {
+		if dedup {
 			key := dedupKey(f, p)
 			if entry = r.dedupLookup(key); entry != nil {
 				if entry.result != nil {
@@ -1024,7 +1030,13 @@ func (r *Router) forward(p *peer, f frame) {
 				entry = nil
 			}
 		}
-		instance, errorFrame := r.selectInstance(f, avoid)
+		var instance *peer
+		var errorFrame *frame
+		if handshake {
+			instance = p.user.tunnelOf().host // tunnelCall checked it is online
+		} else {
+			instance, errorFrame = r.selectInstance(f, avoid)
+		}
 		if errorFrame != nil {
 			refuse(*errorFrame)
 			return
@@ -1036,7 +1048,7 @@ func (r *Router) forward(p *peer, f frame) {
 		if f.TimeoutMS != nil {
 			r.track(rt, time.Duration(*f.TimeoutMS)*time.Millisecond)
 		}
-		if f.Idempotency != "" && stream == "unary" {
+		if dedup {
 			r.dedupInsert(dedupKey(f, p), rt)
 		}
 		instance.send(f)
