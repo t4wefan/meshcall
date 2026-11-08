@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  DeadlineExceededError, findRouterBinary, LocalRouter, Mesh as NodeMesh, method, PermissionDeniedError, service, z,
+  DeadlineExceededError, findRouterBinary, LocalRouter, Mesh as NodeMesh, method, PermissionDeniedError, service,
+  UnauthenticatedError, z,
   type DuplexChannel, type RpcContext,
 } from "../src/index.js";
 import { Mesh, Router } from "../src/web.js";
@@ -80,10 +81,15 @@ test("meshcall/web over WebSocket: every call shape through a tunnel", { timeout
     const late = await browser.unary("test.v1.Box", "slow", {}, { ...at, timeoutMs: 100 }).then(() => undefined, (e: unknown) => e);
     assert.ok(late instanceof DeadlineExceededError);
 
-    // Revoking closes the connection; the next call cannot reconnect.
+    // Revoking closes the connection with 4401 tunnel_revoked; later calls
+    // get the same answer rather than a bare connection loss.
+    const held = browser.unary("test.v1.Box", "slow", {}, at).then(() => undefined, (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 100));
     await issuer.tunnels.revoke(opened.tunnel_id);
+    const inFlight = await held;
+    assert.ok(inFlight instanceof UnauthenticatedError && inFlight.reason === "tunnel_revoked", String(inFlight));
     const gone = await browser.unary("test.v1.Box", "whoami", {}, at).then(() => undefined, (e: unknown) => e);
-    assert.ok(gone instanceof Error, String(gone));
+    assert.ok(gone instanceof UnauthenticatedError, String(gone));
   } finally {
     await browser.close();
   }

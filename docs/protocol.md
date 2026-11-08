@@ -102,12 +102,17 @@ while more than that is owed to it is disconnected.
 `call.open` it carries caller-supplied request metadata (trace context,
 correlation ids, tenant identifiers). On `call.result` and `call.error` it
 carries server-supplied trailers. Keys are case-sensitive and must not be
-empty. Keys beginning with `meshcall-` are reserved for the runtime. Metadata is
+empty. Keys beginning with `meshcall-`, in any letter case, are reserved for
+the runtime and the Router, which set them in lower case: a client refuses
+such a key in caller metadata with non-retryable `invalid_argument`
+(`source: "client"`, `reason: "reserved_metadata"`; an empty key is
+`reason: "invalid_metadata"`), and a server refuses it as a trailer. Lookups
+that ignore letter case (`meta()`) match a reserved key exactly. Metadata is
 opaque to the Router, which forwards it unchanged, with one exception: keys
-beginning with `meshcall-tunnel-` are set only by the Router. It removes them
-from every `call.open` a client sends and, on a tunnel connection, sets
-`meshcall-tunnel-id` and `meshcall-tunnel-principal` (see
-[Tunnels](#tunnels)). Runtimes expose request metadata to handlers and
+beginning with `meshcall-tunnel-`, in any letter case, are set only by the
+Router. It removes them from every `call.open` a client sends and, on a
+tunnel connection, sets `meshcall-tunnel-id` and `meshcall-tunnel-principal`
+(see [Tunnels](#tunnels)). Runtimes expose request metadata to handlers and
 interceptors and expose trailers to callers.
 
 ## Service names
@@ -327,7 +332,8 @@ requests in progress count as connections. On a tunnel connection:
   `instance_id`, identical whether or not it exists;
 - `Registry/list` and `describe` (always allowed) and `/v1/openapi.json`
   show only that view: the scoped methods the target serves, with the target
-  as the only instance;
+  as the only instance. `describe` of a service outside the view is
+  `method_not_found`, the same answer as for a service that does not exist;
 - the connection is a `client`; it cannot register services or issue tokens
   or tunnels. `AuthService/whoami` returns `tunnel` with the record above;
 - the Router sets `meshcall-tunnel-id` and `meshcall-tunnel-principal` on
@@ -339,7 +345,14 @@ requests in progress count as connections. On a tunnel connection:
 **Lifetime.** `expires_at` bounds *new* connections only: an established
 connection lives until the tunnel is revoked or closed, and an expired
 tunnel closes when its last connection ends. Revoking closes every
-connection at once. While the instance is disconnected, calls fail with
+connection at once with WebSocket status 4401 and the close reason
+`tunnel_revoked`; a tunnel that closes for another reason while it has
+connections (the instance changed or refused a re-offer) closes them with
+4401 `tunnel_closed`. Calls in flight then fail with non-retryable
+`unauthenticated`, `source: "router"`, and that close reason as
+`details.reason`, so a client tells revocation apart from a network loss; a
+later connection with the credential is refused with HTTP 401, which clients
+also report as `unauthenticated`. While the instance is disconnected, calls fail with
 retryable `unavailable` / `instance_offline`. When an instance registers
 under the target id again, with the same identity and the `tunnels`
 capability, the Router offers it each of its tunnels again with
@@ -352,7 +365,7 @@ capability closes it (`instance_changed`).
 A registration credential may name the instance ids it registers under
 (`instance_ids` on accounts, API keys and token scopes, see
 [the Router](router.md#accounts-and-permissions)); the Router closes a
-registration under any other id with 1008. Without it, a credential allowed
+registration under any other id with 1008 and a close reason saying so. Without it, a credential allowed
 to register a service could register as a tunnel's target while that
 instance is offline.
 
@@ -554,7 +567,9 @@ without `instance_id`), `instance_offline` (a retryable `unavailable`: a
 tunnel's target is not connected), `tunnel_rejected` (a `permission_denied`
 from `TunnelService/open`: the instance refused or does not accept tunnels),
 `tunnel_scope` (a `permission_denied` on a tunnel connection: the call is
-outside the tunnel's view),
+outside the tunnel's view), `tunnel_revoked` / `tunnel_closed` (an
+`unauthenticated` for calls on a tunnel connection the Router closed with
+4401, see [Tunnel connections](#tunnel-connections)),
 `idempotency_key_on_duplex` (an
 `invalid_argument` for a duplex call carrying an idempotency key) and
 `flow_control_violation` (a `protocol_error`: a stream item beyond the
@@ -568,6 +583,18 @@ did not send because it was over the size limit as non-retryable
 `resource_exhausted`, `reason: "frame_too_large"`, with their own `source`
 (see [Frame size](#frame-size)). Client retry policies add
 `attempts` to the final error when more than one attempt was made.
+
+Clients report how the Router ended a connection as an error, the same in
+every runtime: an upgrade refused with HTTP 401, 403 or 429 is
+`unauthenticated`, `permission_denied` or retryable `resource_exhausted`
+(`source: "router"`, the status in the message); a close with 4401 is
+non-retryable `unauthenticated` (with `details.reason` when the close reason
+is one of the reasons above); a close with 1008 is `permission_denied` with
+`reason: "policy_violation"` and the Router's close reason in the message
+(for a refused registration, why: an unauthorised service, an `instance_id`
+outside `instance_ids`, a conflicting method). Any other loss is retryable
+`unavailable`. A client does not reconnect after `unauthenticated` or
+`permission_denied`: the same credentials fail the same way again.
 
 ### Validation failures
 

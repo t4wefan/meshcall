@@ -314,6 +314,10 @@ func (c *Client) connectWithBackoff(ctx context.Context, retry bool) (*conn, err
 		if err == nil {
 			return conn, nil
 		}
+		// Refused credentials fail the same way again: report them at once.
+		if e, isMesh := AsError(err); isMesh && (e.Code == CodeUnauthenticated || e.Code == CodePermissionDenied) {
+			return nil, e
+		}
 		delay, ok := next()
 		if !retry || !ok {
 			if e, isMesh := AsError(err); isMesh {
@@ -366,6 +370,9 @@ func (c *Client) handshake(ctx context.Context, e endpoint) (*conn, error) {
 	ack, err := receiveWithin(conn, c.opts.HandshakeTimeout)
 	if err != nil || ack.Kind != "hello.ack" || ack.Protocol != Protocol {
 		conn.close()
+		if e, ok := AsError(err); ok {
+			return nil, e // the Router closed with a status that says why
+		}
 		return nil, &Error{Code: CodeProtocolError, Message: "Expected a compatible hello.ack"}
 	}
 	return conn, nil
@@ -397,7 +404,7 @@ func (c *Client) readLoop(conn *conn) {
 		}
 	}
 	c.mu.Unlock()
-	c.failAll(&Error{Code: CodeUnavailable, Message: "Connection was lost", Retryable: true}, conn)
+	c.failAll(conn.lost(), conn)
 }
 
 func (c *Client) failAll(e *Error, only ...*conn) {
@@ -453,6 +460,9 @@ type clientCall struct {
 
 func (c *Client) open(ctx context.Context, info *CallInfo, payload json.RawMessage) (*clientCall, error) {
 	o := info.Options
+	if err := checkMetadata(o.Metadata); err != nil {
+		return nil, err
+	}
 	timeout := o.Timeout
 	if deadline, ok := ctx.Deadline(); ok {
 		if until := time.Until(deadline); timeout == 0 || until < timeout {
@@ -503,7 +513,7 @@ func (c *Client) open(ctx context.Context, info *CallInfo, payload json.RawMessa
 		if e := frameTooLarge("client", err); e != nil {
 			call.fail(e)
 		} else {
-			call.fail(&Error{Code: CodeUnavailable, Message: "Connection was lost", Retryable: true})
+			call.fail(conn.lost())
 		}
 		return nil, call.failure
 	}

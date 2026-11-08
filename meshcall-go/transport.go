@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -36,6 +37,17 @@ type conn struct {
 	closed   chan struct{}
 	once     sync.Once
 	maxFrame int
+	// closedBy is the error a Router close status stood for (closeError).
+	closedBy atomic.Pointer[Error]
+}
+
+// lost is the error calls on c fail with once it is gone: what the Router's
+// close status said, or a retryable connection loss.
+func (c *conn) lost() *Error {
+	if e := c.closedBy.Load(); e != nil {
+		return e
+	}
+	return &Error{Code: CodeUnavailable, Message: "Connection was lost", Retryable: true}
 }
 
 // errFrameTooLarge marks a frame send refused: the peer would close the
@@ -71,6 +83,13 @@ func (c *conn) receive() (frame, error) {
 	for {
 		_, data, err := c.ws.Read(c.ctx)
 		if err != nil {
+			var closed websocket.CloseError
+			if errors.As(err, &closed) {
+				if e := closeError(int(closed.Code), closed.Reason); e != nil {
+					c.closedBy.CompareAndSwap(nil, e)
+					err = e
+				}
+			}
 			c.close()
 			return frame{}, err
 		}
@@ -214,8 +233,17 @@ func (e endpoint) httpClient() *http.Client {
 }
 
 func (e endpoint) connect(ctx context.Context, header http.Header, maxFrame int) (*conn, error) {
-	ws, _, err := websocket.Dial(ctx, e.url, &websocket.DialOptions{HTTPHeader: header, HTTPClient: e.httpClient()})
+	ws, resp, err := websocket.Dial(ctx, e.url, &websocket.DialOptions{HTTPHeader: header, HTTPClient: e.httpClient()})
 	if err != nil {
+		if resp != nil {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if e := handshakeError(resp.StatusCode, string(body)); e != nil {
+				return nil, e
+			}
+		}
 		return nil, err
 	}
 	return newConn(ws, maxFrame), nil

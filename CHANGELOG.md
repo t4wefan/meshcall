@@ -58,9 +58,34 @@ matching `meshcall-go/vX.Y.Z` tag.
 - `token=` / `{ token }` / `WithToken` refuse a tunnel credential with a hint
   to pass it as `tunnel`.
 
+- Request metadata keys starting with `meshcall-` are refused in any letter
+  case, with `invalid_argument` / `reserved_metadata` in every runtime (was
+  `ValueError` in Python and `RangeError` in TypeScript; Go did not check).
+  `meta()` / `Meta[T]` match reserved keys exactly.
+- Clients report how the Router ended a connection, alike in Python,
+  TypeScript and Go: an upgrade refused with HTTP 401 / 403 / 429 is
+  `unauthenticated` / `permission_denied` / `resource_exhausted` (Python no
+  longer raises websockets' `InvalidStatus`); a close with 4401 is
+  `unauthenticated`, a close with 1008 `permission_denied` /
+  `policy_violation` carrying the Router's reason (a refused registration now
+  says why, e.g. an `instance_id` outside `instance_ids`). Clients stop
+  reconnecting after either.
+- `TunnelService/open` is checked by the Router only: a TTL out of range is
+  `invalid_argument` in every runtime (was pydantic's `ValidationError` in
+  Python and `RangeError` in TypeScript).
+- `issue_token` returns the effective scopes, including `instance_ids`
+  inherited from the issuer.
+
 ### Fixed
 
 - A tunnel call with `"metadata": null` no longer drops the connection.
+- The Router strips `meshcall-tunnel-*` metadata in any letter case, so a
+  mixed-case key cannot reach a handler that reads metadata case-insensitively.
+- Revoking a tunnel closes its connections with 4401 `tunnel_revoked`, so calls
+  in flight fail with `unauthenticated` / `tunnel_revoked` instead of a bare
+  "Connection was lost".
+- `meshcall --tunnel … call` reports the Router's `tunnel_scope` for a method
+  outside the tunnel instead of its own `method_not_found`.
 
 ## [0.3.0] - 2026-10-18
 

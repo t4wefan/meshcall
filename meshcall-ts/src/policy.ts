@@ -3,10 +3,15 @@
  * backoff, deadline grace, metadata rules. Shared by the WebSocket client
  * and the HTTP web client.
  */
-import { MeshCallError } from "./errors.js";
+import { InvalidArgumentError, MeshCallError } from "./errors.js";
 import type { Metadata } from "./protocol.js";
 
 export const RESERVED_METADATA_PREFIX = "meshcall-";
+
+/** `meshcall-…` in any letter case: set only by the runtime and the Router. */
+export function isReservedKey(key: string): boolean {
+  return key.slice(0, RESERVED_METADATA_PREFIX.length).toLowerCase() === RESERVED_METADATA_PREFIX;
+}
 
 /**
  * Exponential backoff with jitter for re-establishing a lost connection.
@@ -111,9 +116,13 @@ export function clientDeadlineGraceMs(timeoutMs: number): number {
 export function validateMetadata(metadata: Metadata | undefined | null): Metadata | null {
   if (metadata === undefined || metadata === null) return null;
   for (const [key, value] of Object.entries(metadata)) {
-    if (key.length === 0) throw new RangeError("metadata keys must not be empty");
-    if (key.startsWith(RESERVED_METADATA_PREFIX)) {
-      throw new RangeError("metadata key " + JSON.stringify(key) + " uses the reserved prefix");
+    if (key.length === 0) {
+      throw new InvalidArgumentError("metadata keys must not be empty", { details: { source: "client", reason: "invalid_metadata" } });
+    }
+    if (isReservedKey(key)) {
+      throw new InvalidArgumentError("metadata key " + JSON.stringify(key) + " uses the reserved prefix \"meshcall-\"", {
+        details: { source: "client", reason: "reserved_metadata" },
+      });
     }
     if (typeof value !== "string") {
       throw new TypeError("metadata value for " + JSON.stringify(key) + " must be a string");

@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { closeSocket, createSocket, namedPipePath, unixSocketPath, type WebSocketEndpoint } from "./endpoint.js";
 import { bindService, contractEntry } from "./contract.js";
 import { contractWarnings, renderWarning } from "./diagnostics.js";
-import { DeadlineExceededError, ProtocolError, UnavailableError } from "./errors.js";
+import { closeError, DeadlineExceededError, handshakeError, ProtocolError, UnavailableError } from "./errors.js";
 import {
   DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS, Liveness,
   reconnectDelays, type ReconnectPolicy,
@@ -442,9 +442,16 @@ export class MeshCallServer {
         this.handshakeTimeout,
       );
       socket.once("error", fail);
-      socket.once("close", () => {
+      socket.once("unexpected-response", (request, response) => {
+        const status = response.statusCode ?? 0;
+        response.resume();
+        request.on("error", () => undefined);
+        fail(handshakeError(status) ?? new UnavailableError("Unexpected server response: " + String(status)));
+      });
+      socket.once("close", (code: number, reason: Buffer) => {
         clearTimeout(timer);
-        reject(new UnavailableError("Router disconnected during registration"));
+        // A refused registration says why (1008 with the Router's reason).
+        reject(closeError(code, reason.toString()) ?? new UnavailableError("Router disconnected during registration"));
       });
       socket.once("open", () => {
         void session.writer.send({

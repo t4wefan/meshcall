@@ -5,7 +5,7 @@ import test from "node:test";
 import { WebSocketServer } from "ws";
 
 import {
-  MeshCallClient, MeshCallError, MeshCallServer, method, service, WebSocketRouter, z,
+  InvalidArgumentError, MeshCallClient, MeshCallError, MeshCallServer, method, service, WebSocketRouter, z,
   type MeshCallServerOptions, type RpcContext,
 } from "../src/index.js";
 import { decodeFrame, encodeFrame, PROTOCOL_VERSION, type CallOpenFrame } from "../src/protocol.js";
@@ -73,8 +73,8 @@ test("metadata reaches the handler and trailers come back on streams", { timeout
   });
   assert.deepEqual(echoed, { value: 4, metadata: { traceparent: "00-abc", tenant: "t1" }, remainingKnown: true });
   await assert.rejects(
-    app.client.unary(NAME, "echo", { value: 1 }, { metadata: { "meshcall-x": "1" } }),
-    RangeError,
+    app.client.unary(NAME, "echo", { value: 1 }, { metadata: { "MeshCall-X": "1" } }),
+    (error: unknown) => error instanceof InvalidArgumentError && error.reason === "reserved_metadata",
   );
   const stream = app.client.serverStream<Trickle, Value>(NAME, "trickle", { count: 2, gapMs: 1 });
   const seen: number[] = [];

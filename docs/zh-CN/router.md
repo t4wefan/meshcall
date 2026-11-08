@@ -209,7 +209,7 @@ meshcall call demo.v1.Counter.add '{"a": 1, "b": 2}' --http   # 通过 HTTP 调�
 
 ## 8. 内置 `Registry` 服务与 `meshcall` CLI
 
-服务实例注册时会将自身的完整契约上报给 Router，Router 通过内置的 `meshcall.router.v1.Registry` 服务对外提供查询：`list` 返回每个服务及其实例（进行中调用数、上限、熔断状态、是否排空）与方法（形状、描述、注解、参数）；`describe {service}` 额外返回完整契约条目。开发模式下无需账号即可使用；启用账号后需要在 `call` 中包含 `meshcall.router.v1.Registry/*`，并且**只显示调用方有权调用的内容**：调用方至少能调用其中一个方法的服务才会出现，且只列出这些方法及其契约条目。描述一个无权调用的服务与描述不存在的服务返回同样的错误。
+服务实例注册时会将自身的完整契约上报给 Router，Router 通过内置的 `meshcall.router.v1.Registry` 服务对外提供查询：`list` 返回每个服务及其实例（进行中调用数、上限、熔断状态、是否排空）与方法（形状、描述、注解、参数）；`describe {service}` 额外返回完整契约条目。开发模式下无需账号即可使用；启用账号后需要在 `call` 中包含 `meshcall.router.v1.Registry/*`，并且**只显示调用方有权调用的内容**：调用方至少能调用其中一个方法的服务才会出现，且只列出这些方法及其契约条目。描述一个无权调用的服务（或在隧道上描述隧道视图外的服务）与描述不存在的服务返回同样的 `method_not_found`，这是有意为之。
 
 `meshcall` CLI（由 `cmd/meshcall` 构建，与 `meshcall-router` 一同发布）正是基于该服务构建的交互式前端：
 

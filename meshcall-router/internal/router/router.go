@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 
@@ -91,6 +92,18 @@ const (
 	DefaultMaxCallsPerConnection = 1000
 	DefaultShutdownTimeout       = 10 * time.Second
 )
+
+// closeReason fits text into a WebSocket close frame (at most 123 bytes).
+func closeReason(text string) string {
+	if len(text) <= 123 {
+		return text
+	}
+	cut := 120
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "..."
+}
 
 // StatusUnauthenticated closes a WebSocket whose hello credentials failed:
 // the HTTP 401 of an upgrade, sent after it.
@@ -732,7 +745,7 @@ func (r *Router) handle(w http.ResponseWriter, req *http.Request) {
 		}
 		if err := r.register(p, registration); err != nil {
 			slog.Warn("registration rejected", "reason", err)
-			_ = conn.Close(websocket.StatusPolicyViolation, "registration rejected")
+			_ = conn.Close(websocket.StatusPolicyViolation, closeReason("registration rejected: "+err.Error()))
 			return
 		}
 	}
@@ -836,9 +849,11 @@ func allowedFrame(role string, f frame) bool {
 func (r *Router) register(p *peer, f frame) error {
 	seen := make(map[string]bool)
 	for _, s := range f.Services {
-		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) ||
-			!p.user.allowsInstance(s.Name, f.InstanceID) {
+		if !validServiceName(s.Name) || strings.HasPrefix(s.Name, reservedPrefix) || seen[s.Name] || !p.user.allowsRegistration(s.Name) {
 			return errors.New("duplicate, invalid, or unauthorized service")
+		}
+		if !p.user.allowsInstance(s.Name, f.InstanceID) {
+			return errors.New("instance_id not allowed for these credentials (instance_ids)")
 		}
 		seen[s.Name] = true
 		methods := make(map[string]bool)

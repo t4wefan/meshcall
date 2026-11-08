@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -306,7 +307,9 @@ func tunnelIdentity(h *harness) error {
 		return err
 	}
 	defer tunnel.close()
-	forged := frame{"metadata": map[string]string{tunnelIDKey: "tun_forged", tunnelPrinKey: "user:mallory", "meshcall-tunnel-extra": "x"}}
+	// Mixed case too: metadata lookups (meta()) may ignore letter case.
+	forged := frame{"metadata": map[string]string{tunnelIDKey: "tun_forged", tunnelPrinKey: "user:mallory", "meshcall-tunnel-extra": "x",
+		"MESHCALL-TUNNEL-PRINCIPAL": "user:mallory2", "MeshCall-Tunnel-Id": "tun_forged2"}}
 	f, err := tunnel.unary("tunnel_info", frame{}, forged)
 	if err != nil {
 		return err
@@ -318,8 +321,8 @@ func tunnelIdentity(h *harness) error {
 	if err != nil {
 		return err
 	}
-	if md := asMap(asMap(f["payload"])["metadata"]); md[tunnelPrinKey] != "user:alice" || md["meshcall-tunnel-extra"] != nil {
-		return fmt.Errorf("metadata on the tunnel: %v", f)
+	if md := asMap(asMap(f["payload"])["metadata"]); md[tunnelPrinKey] != "user:alice" || md[tunnelIDKey] != opened.TunnelID || len(md) != 2 {
+		return fmt.Errorf("metadata on the tunnel: only the Router's two keys may arrive: %v", f)
 	}
 	// Off the tunnel: the same keys, even with the real id, are stripped.
 	plain, err := h.client()
@@ -327,7 +330,7 @@ func tunnelIdentity(h *harness) error {
 		return err
 	}
 	defer plain.close()
-	spoof := frame{"metadata": map[string]string{tunnelIDKey: opened.TunnelID, tunnelPrinKey: "user:alice"}}
+	spoof := frame{"metadata": map[string]string{tunnelIDKey: opened.TunnelID, tunnelPrinKey: "user:alice", "MESHCALL-TUNNEL-PRINCIPAL": "user:mallory"}}
 	if f, err = plain.unary("tunnel_info", frame{}, spoof); err != nil {
 		return err
 	}
@@ -375,6 +378,11 @@ func tunnelLifetime(h *harness) error {
 		if _, err := live.receiveWithin(h.opts.Timeout); err != nil {
 			if err == errNoFrame {
 				return fmt.Errorf("a revoked tunnel's connection stayed open")
+			}
+			// 4401 tunnel_revoked tells revocation apart from a network loss.
+			var closed websocket.CloseError
+			if !errors.As(err, &closed) || closed.Code != router.StatusUnauthenticated || closed.Reason != "tunnel_revoked" {
+				return fmt.Errorf("a revoked tunnel's connection closed with %v, want 4401 tunnel_revoked", err)
 			}
 			break
 		}

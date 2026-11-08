@@ -108,9 +108,8 @@ export class TunnelsClient {
    * registered.
    */
   public open(request: OpenTunnelRequest, options?: CallOptions): Promise<OpenedTunnel> {
-    if (request.scopes.length === 0) throw new RangeError("open needs at least one scope");
+    // The Router checks the request (`invalid_argument`), so every runtime fails alike.
     const ttl = request.ttlSeconds ?? 3600;
-    if (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > 86400) throw new RangeError("ttlSeconds must be 1..86400");
     return this.rpc.unary(TUNNEL_SERVICE, "open", {
       instance_id: request.instance,
       scopes: request.scopes.map((scope) => typeof scope === "string"

@@ -27,7 +27,9 @@ from meshcall.errors import (
     CallCancelledError,
     DeadlineExceededError,
     MeshCallError,
+    PermissionDeniedError,
     ProtocolError,
+    UnauthenticatedError,
     UnavailableError,
     violations_of,
 )
@@ -46,6 +48,7 @@ from meshcall.server import INITIAL_STREAM_CREDIT
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 from meshcall.transport import (
     FrameConnection,
+    connection_lost,
     is_frame_too_large,
 )
 
@@ -189,6 +192,8 @@ class ClientBase:
                     self._connection = await self.driver.connect()
                     break
                 except (OSError, ConnectionError, MeshCallError) as exc:
+                    if isinstance(exc, (UnauthenticatedError, PermissionDeniedError)):
+                        raise  # refused credentials fail the same way again
                     delay = next(delays, None)
                     if delay is None:
                         if isinstance(exc, MeshCallError):
@@ -550,7 +555,7 @@ class ClientBase:
         except ConnectionError as exc:
             call.disarm_timers()
             self._calls.pop(call_id, None)
-            raise UnavailableError("Connection was lost", retryable=True) from exc
+            raise connection_lost(exc) from exc
         except BaseException:
             call.disarm_timers()
             self._calls.pop(call_id, None)
@@ -593,11 +598,8 @@ class ClientBase:
                 await self._dispatch(frame)
         except asyncio.CancelledError:
             raise
-        except ConnectionError:
-            failure = UnavailableError(
-                "Connection was lost",
-                retryable=True,
-            )
+        except ConnectionError as exc:
+            failure = connection_lost(exc)
         except Exception as exc:  # noqa: BLE001
             failure = exc if isinstance(exc, MeshCallError) else ProtocolError(str(exc))
         finally:
@@ -847,7 +849,7 @@ class _ClientCall:
                     )
                 )
             except ConnectionError as exc:
-                error = UnavailableError("Connection was lost", retryable=True)
+                error = connection_lost(exc)
                 await self.fail(error)
                 raise error from exc
         return value

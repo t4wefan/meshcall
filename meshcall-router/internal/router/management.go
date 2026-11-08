@@ -55,7 +55,9 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 	}
 	user := &User{Username: issuer.Username}
 	seen := make(map[string]bool)
-	for _, scope := range request.Scopes {
+	// The result reports the effective scopes: inherited instance_ids included.
+	effective := slices.Clone(request.Scopes)
+	for i, scope := range request.Scopes {
 		// Require concrete services. A token cannot grant a namespace wildcard
 		// that might later include new services or the router's management API.
 		if scope.Service == "" || strings.ContainsAny(scope.Service, "*/") || strings.HasPrefix(scope.Service, reservedPrefix) || seen[scope.Service] {
@@ -85,6 +87,7 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 			}
 			if ids == nil {
 				ids = issuer.InstanceIDs
+				effective[i].InstanceIDs = slices.Clone(ids)
 			}
 			for _, id := range ids {
 				if !issuer.allowsInstance(scope.Service, id) {
@@ -128,7 +131,7 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 		return result, errors.New("temporary token capacity reached")
 	}
 	a.tokens[user.tokenID] = user
-	return IssueTokenResult{Token: token, TokenID: user.tokenID, ExpiresUnixMS: user.expires.UnixMilli(), Scopes: request.Scopes}, nil
+	return IssueTokenResult{Token: token, TokenID: user.tokenID, ExpiresUnixMS: user.expires.UnixMilli(), Scopes: effective}, nil
 }
 
 // Called under Router.mu, as are all forwarding and registration mutations.

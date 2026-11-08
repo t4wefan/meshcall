@@ -65,7 +65,7 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 ### 元数据（Metadata 与 Trailers）
 - `call.open` 上的 `metadata` 携带调用方传入的请求头（如 Trace Context、关联 ID、租户标识）；
 - `call.result` 与 `call.error` 上的 `metadata` 携带服务端返回的响应尾标（Trailers）；
-- Key 与 Value 均为字符串，Key 区分大小写且不能为空；以 `meshcall-` 开头的 Key 保留给运行时内部使用；Router 原样转发元数据，唯一的例外是以 `meshcall-tunnel-` 开头的 Key 只由 Router 设置：它从客户端发出的每个 `call.open` 中移除这些 Key，并在隧道连接上设置 `meshcall-tunnel-id` 与 `meshcall-tunnel-principal`（见[隧道](#隧道tunnels)）。
+- Key 与 Value 均为字符串，Key 区分大小写且不能为空；以 `meshcall-` 开头的 Key（不区分大小写）保留给运行时与 Router，由它们以小写设置：客户端拒绝调用方元数据中的此类 Key，返回不可重试的 `invalid_argument`（`source: "client"`，`reason: "reserved_metadata"`；空 Key 为 `reason: "invalid_metadata"`），服务端也拒绝把它用作 Trailer；不区分大小写的查找（`meta()`）对保留 Key 只做精确匹配。Router 原样转发元数据，唯一的例外是以 `meshcall-tunnel-` 开头的 Key（不区分大小写）只由 Router 设置：它从客户端发出的每个 `call.open` 中移除这些 Key，并在隧道连接上设置 `meshcall-tunnel-id` 与 `meshcall-tunnel-principal`（见[隧道](#隧道tunnels)）。
 
 ---
 
@@ -169,16 +169,16 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 客户端把凭据作为 Bearer Token 连接：放在 WebSocket 升级请求或 HTTP 请求的 `Authorization` 头中，浏览器则放在 `hello.authorization` 中。已过 `expires_at` 的凭据被拒绝（HTTP 401，或在 `hello` 之后以 4401 关闭），已达 `max_connections` 的凭据返回 HTTP 429；进行中的 HTTP 请求也计为连接。在隧道连接上：
 
 - `call.open` 只会解析到目标实例，且只限隧道 scopes 内的方法。`instance_id` 是隐含的：省略，或等于目标。其他任何情形——别的实例、别的服务、scope 外的方法、Router 的管理服务——都返回 `permission_denied`，`reason: "tunnel_scope"`，并附上隧道自己的 `instance_id`，无论目标是否存在，返回都相同；
-- `Registry/list` 与 `describe`（始终允许）以及 `/v1/openapi.json` 只展示这一视图：目标实例提供的、在 scope 内的方法，且目标是唯一实例；
+- `Registry/list` 与 `describe`（始终允许）以及 `/v1/openapi.json` 只展示这一视图：目标实例提供的、在 scope 内的方法，且目标是唯一实例。对视图外服务的 `describe` 返回 `method_not_found`，与不存在的服务相同；
 - 该连接是 `client`，不能注册服务，也不能签发 Token 或隧道。`AuthService/whoami` 返回 `tunnel` 字段，内容即上述记录；
 - Router 在其路由的每个 `call.open` 上设置 `meshcall-tunnel-id`、`meshcall-tunnel-principal`，并把 `instance_id` 设为目标，覆盖客户端发送的任何值。运行时将它们暴露为 `ctx.tunnel`；
 - 幂等去重按隧道隔离：一个隧道的调用不会合并到另一个 principal 的调用上。
 
-**生命周期。** `expires_at` 只限制*新*连接：已建立的连接一直存活到隧道被撤销或关闭，过期的隧道在最后一个连接结束时关闭。撤销会立即关闭所有连接。实例断开期间，调用以可重试的 `unavailable` / `instance_offline` 失败。当实例以相同身份、带 `tunnels` 能力重新注册到目标 id 时，Router 以 `resumed: true` 重新 offer 它的每个隧道；接受则隧道恢复，拒绝或未应答则关闭；以其他身份或不带该能力注册则关闭隧道（`instance_changed`）。
+**生命周期。** `expires_at` 只限制*新*连接：已建立的连接一直存活到隧道被撤销或关闭，过期的隧道在最后一个连接结束时关闭。撤销会立即以 WebSocket 状态码 4401、关闭原因 `tunnel_revoked` 关闭所有连接；隧道因其他原因（实例变更或拒绝重新 offer）在仍有连接时关闭，则以 4401 `tunnel_closed` 关闭。进行中的调用随之以不可重试的 `unauthenticated` 失败（`source: "router"`，`details.reason` 为该关闭原因），客户端因此能把撤销与网络断开区分开；之后用该凭据建立连接会得到 HTTP 401，客户端同样报告为 `unauthenticated`。实例断开期间，调用以可重试的 `unavailable` / `instance_offline` 失败。当实例以相同身份、带 `tunnels` 能力重新注册到目标 id 时，Router 以 `resumed: true` 重新 offer 它的每个隧道；接受则隧道恢复，拒绝或未应答则关闭；以其他身份或不带该能力注册则关闭隧道（`instance_changed`）。
 
 ### 绑定实例的注册凭据
 
-注册凭据可以列出它允许注册的实例 id（账号、API Key 与 Token scope 上的 `instance_ids`，见 [Router 文档](router.md#5-账号鉴权与-acl-权限配置)）；以其他 id 注册时 Router 以 1008 关闭连接。否则，一个被允许注册某服务的凭据可以在隧道目标实例离线时冒充它注册。
+注册凭据可以列出它允许注册的实例 id（账号、API Key 与 Token scope 上的 `instance_ids`，见 [Router 文档](router.md#5-账号鉴权与-acl-权限配置)）；以其他 id 注册时 Router 以 1008 关闭连接，并在关闭原因中说明。否则，一个被允许注册某服务的凭据可以在隧道目标实例离线时冒充它注册。
 
 详见英文版 [Tunnels](../protocol.md#tunnels)。
 
@@ -292,11 +292,14 @@ duplex 是最后的选择：它关闭了其他形状所保有的保证，方法�
 | `instance_offline` | `unavailable`（可重试） | 隧道的目标实例当前未连接 |
 | `tunnel_rejected` | `permission_denied` | `TunnelService/open`：实例拒绝或不接受隧道 |
 | `tunnel_scope` | `permission_denied` | 隧道连接上的调用超出隧道视图；`details.instance_id` 为隧道目标 |
+| `tunnel_revoked` / `tunnel_closed` | `unauthenticated` | Router 以 4401 关闭了隧道连接（见[隧道连接](#隧道连接)） |
 | `idempotency_key_on_duplex` | `invalid_argument` | duplex 调用携带了幂等键 |
 | `flow_control_violation` | `protocol_error` | 流条目超出消费方授予的信用（见[流量控制](#流方向与流量控制flow-control)） |
 | `router_draining` / `router_shutdown` | `unavailable` | Router 正在停止（见 [Router 停机](#router-停机router-shutdown)） |
 
 直连服务端使用同样的 reason，但 `source: "server"`；服务端执行自身 `max_inflight` 时返回 `resource_exhausted`（`source: "server"`，`reason: "overloaded"`）。超过帧大小上限而未发出的帧，由客户端或服务端以不可重试的 `resource_exhausted`（`reason: "frame_too_large"`）报告，`source` 为拒绝发送的一方（见[帧大小](#帧大小frame-size)）。客户端重试策略在进行了多次尝试时向最终错误加入 `attempts`。
+
+各运行时以同样方式报告 Router 如何结束连接：升级请求被 HTTP 401、403、429 拒绝分别报告为 `unauthenticated`、`permission_denied`、可重试的 `resource_exhausted`（`source: "router"`，消息中含状态码）；以 4401 关闭为不可重试的 `unauthenticated`（关闭原因是上表中的 reason 时放入 `details.reason`）；以 1008 关闭为 `permission_denied`，`reason: "policy_violation"`，消息中带有 Router 的关闭原因（注册被拒时说明原因：无权注册的服务、`instance_ids` 之外的 `instance_id`、冲突的方法）；其他断开为可重试的 `unavailable`。收到 `unauthenticated` 或 `permission_denied` 后客户端不再重连：同样的凭据会以同样的方式失败。
 
 ### 结构化校验错误（`details.violations`）
 

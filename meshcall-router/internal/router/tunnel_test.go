@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -245,6 +246,10 @@ func TestTunnelRevokeClosesAndExpiryDoesNot(t *testing.T) {
 			if ctx.Err() != nil {
 				t.Fatal("revoked connection stayed open")
 			}
+			var closeErr websocket.CloseError
+			if !errors.As(err, &closeErr) || closeErr.Code != StatusUnauthenticated || closeErr.Reason != "tunnel_revoked" {
+				t.Fatalf("revoked connection closed with %v, want 4401 tunnel_revoked", err)
+			}
 			break
 		}
 	}
@@ -356,6 +361,12 @@ func TestIssuerPermissionsAndInstanceBoundRegistration(t *testing.T) {
 		if got := call(t, issuerOfTokens, "t-"+c.code, AuthService, "issue_token", `{"ttl_seconds":60,"scopes":[`+c.scope+`]}`, nil); got.Error == nil || got.Error.Code != c.code {
 			t.Fatalf("token scope %s: %+v", c.scope, got)
 		}
+	}
+	inherited := call(t, issuerOfTokens, "t-inherit", AuthService, "issue_token", `{"ttl_seconds":60,"scopes":[{"service":"test.v1.Echo","register":true}]}`, nil)
+	var effective IssueTokenResult
+	if err := json.Unmarshal(inherited.Payload, &effective); err != nil || len(effective.Scopes) != 1 ||
+		strings.Join(effective.Scopes[0].InstanceIDs, ",") != "box-a,box-b" {
+		t.Fatalf("issue_token reports the inherited instance_ids: %s", inherited.Payload)
 	}
 	issued := call(t, issuerOfTokens, "t-ok", AuthService, "issue_token", `{"ttl_seconds":60,"scopes":[{"service":"test.v1.Echo","register":true,"instance_ids":["box-b"]}]}`, nil)
 	var token IssueTokenResult

@@ -5,7 +5,7 @@
 
 import type { CallOptions, DuplexCallOptions } from "./client.js";
 import {
-  CallCancelledError, DeadlineExceededError, MeshCallError, ProtocolError, ResourceExhaustedError,
+  CallCancelledError, closeError, DeadlineExceededError, MeshCallError, ProtocolError, ResourceExhaustedError,
   UnauthenticatedError, UnavailableError,
 } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
@@ -17,8 +17,6 @@ import { checkReceived } from "./validation.js";
 
 const PROTOCOL = "meshcall/1";
 const DEFAULT_MAX_FRAME_SIZE = 64 * 1024 * 1024;
-/** WebSocket close status for credentials in `hello` that fail. */
-const CLOSE_UNAUTHENTICATED = 4401;
 
 export interface WebSocketTransportOptions {
   /** Sent as `hello.authorization` (`Bearer …` or `Basic …`). */
@@ -61,7 +59,9 @@ class Connection {
   private pong: ReturnType<typeof setTimeout> | undefined;
   private nonce: string | undefined;
 
-  public constructor(url: string, private readonly options: WebSocketTransportOptions, private readonly onGone: () => void) {
+  public constructor(
+    url: string, private readonly options: WebSocketTransportOptions, private readonly onGone: (error: MeshCallError) => void,
+  ) {
     const Socket = options.WebSocket ?? globalThis.WebSocket;
     if (Socket === undefined) throw new UnavailableError("No WebSocket implementation is available", { retryable: false });
     this.socket = new Socket(url);
@@ -100,9 +100,7 @@ class Connection {
       };
       this.socket.onclose = (event: CloseEvent) => {
         clearTimeout(timer);
-        const error = event.code === CLOSE_UNAUTHENTICATED
-          ? new UnauthenticatedError("The Router refused the credentials: " + event.reason)
-          : new UnavailableError("Connection was lost", { retryable: true });
+        const error = closeError(event.code, event.reason) ?? new UnavailableError("Connection was lost", { retryable: true });
         reject(error);
         this.gone(error);
       };
@@ -165,7 +163,7 @@ class Connection {
     clearInterval(this.ping);
     clearTimeout(this.pong);
     for (const call of [...this.calls.values()]) call.fail(error);
-    this.onGone();
+    this.onGone(error);
   }
 }
 
@@ -362,6 +360,10 @@ export class WebSocketTransport implements MeshCallRpc {
   private connecting: Promise<Connection> | undefined;
   private cursor = 0;
   private defaultCallOptions: CallOptions = {};
+  // A browser cannot see the HTTP 401 a reconnect with revoked credentials
+  // gets (only a 1006 close), so the Router's 4401 answer is kept and given
+  // to every later call.
+  private refused: UnauthenticatedError | undefined;
 
   public constructor(private readonly urls: ReadonlyArray<string>, private readonly options: WebSocketTransportOptions = {}) {
     if (urls.length === 0) throw new RangeError("WebSocketTransport needs at least one URL");
@@ -449,6 +451,7 @@ export class WebSocketTransport implements MeshCallRpc {
 
   private ensureConnection(): Promise<Connection> {
     if (this.connection?.isOpen === true) return Promise.resolve(this.connection);
+    if (this.refused !== undefined) return Promise.reject(this.refused);
     this.connecting ??= this.dial().finally(() => { this.connecting = undefined; });
     return this.connecting;
   }
@@ -458,8 +461,9 @@ export class WebSocketTransport implements MeshCallRpc {
     let last: unknown;
     for (let i = 0; i < this.urls.length; i += 1) {
       const index = (this.cursor + i) % this.urls.length;
-      const connection = new Connection(this.urls[index]!, this.options, () => {
+      const connection = new Connection(this.urls[index]!, this.options, (error) => {
         if (this.connection === connection) this.connection = undefined;
+        if (error instanceof UnauthenticatedError) this.refused = error;
       });
       try {
         await connection.ready;

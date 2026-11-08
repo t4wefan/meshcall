@@ -2,7 +2,8 @@ import {
   CallCancelledError, DeadlineExceededError, ErrorCode, InvalidArgumentError, MeshCallError, ProtocolError, UnavailableError,
 } from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
-import { validateMetadata, type Liveness } from "./liveness.js";
+import type { Liveness } from "./liveness.js";
+import { isReservedKey } from "./policy.js";
 import { safelyLog, type LogLevel, type RpcLogger } from "./logging.js";
 import type {
   CallOpenFrame, ErrorPayload, Frame, Metadata, StreamEndFrame, StreamItemFrame, StreamWindowFrame,
@@ -246,7 +247,8 @@ class ServerCall {
       instanceId: session.options.instanceId,
       tunnel: session.options.tunnels?.lookup(frame.metadata) ?? null,
       setTrailer(key: string, value: string): void {
-        validateMetadata({ [key]: value });
+        if (key === "" || isReservedKey(key)) throw new RangeError("trailer key " + JSON.stringify(key) + " is empty or reserved (\"meshcall-\")");
+        if (typeof value !== "string") throw new TypeError("trailer value for " + JSON.stringify(key) + " must be a string");
         trailers[key] = value;
       },
       get trailers(): Readonly<Metadata> { return { ...trailers }; },

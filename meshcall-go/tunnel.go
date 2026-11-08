@@ -149,9 +149,7 @@ type openTunnelWire struct {
 // it. A refusal is CodePermissionDenied with reason "tunnel_rejected"; an
 // unknown instance CodeUnavailable with reason "instance_unknown".
 func (tc *TunnelsClient) Open(ctx context.Context, request OpenTunnelRequest, opts ...CallOption) (OpenedTunnel, error) {
-	if len(request.Scopes) == 0 {
-		return OpenedTunnel{}, errors.New("meshcall: Open needs at least one scope")
-	}
+	// The Router checks the request (CodeInvalidArgument), so every runtime fails alike.
 	wire := openTunnelWire{InstanceID: request.Instance, Principal: request.Principal, TTLSeconds: request.TTLSeconds, MaxConnections: request.MaxConnections}
 	if wire.TTLSeconds == 0 {
 		wire.TTLSeconds = 3600

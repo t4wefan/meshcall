@@ -7,10 +7,11 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from stat import S_ISSOCK
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from websockets.asyncio.client import ClientConnection, connect, unix_connect
 from websockets.asyncio.server import Server, ServerConnection, serve, unix_serve
+from websockets.exceptions import InvalidStatus
 
 from meshcall.context import (
     DEFAULT_IDLE_TIMEOUT,
@@ -36,7 +37,12 @@ from meshcall.protocol import (
     ServerRegisterFrame,
 )
 from meshcall.router_auth import RouterCredentials
-from meshcall.transport import DEFAULT_MAX_FRAME_SIZE, FrameConnection
+from meshcall.transport import (
+    DEFAULT_MAX_FRAME_SIZE,
+    FrameConnection,
+    PeerClosedError,
+    handshake_error,
+)
 from meshcall.tunnel import TUNNEL_CAPABILITY
 
 if TYPE_CHECKING:
@@ -142,6 +148,9 @@ class WebSocketClientDriver(ClientDriver):
                 raise ProtocolError("Expected hello.ack from WebSocket endpoint")
             if response.protocol != PROTOCOL_VERSION:
                 raise ProtocolError(f"Unsupported protocol: {response.protocol}")
+        except PeerClosedError as exc:
+            await connection.close()
+            raise exc.error from exc
         except BaseException:
             await connection.close()
             raise
@@ -441,6 +450,10 @@ class _RouterLink:
                 or register_ack.instance_id != driver.instance_id
             ):
                 raise ProtocolError("Expected matching server.register.ack")
+        except PeerClosedError as exc:
+            # The Router said why it refused (a 1008 with the reason, a 4401).
+            await connection.close()
+            raise exc.error from exc
         except BaseException:
             await connection.close()
             raise
@@ -511,7 +524,20 @@ class _RouterLink:
                 await task
 
 
-async def _connect_endpoint(
+async def _connect_endpoint(**options: Any) -> ClientConnection:
+    """Open the WebSocket; an HTTP refusal of the upgrade becomes its error."""
+    try:
+        return await _open_endpoint(**options)
+    except InvalidStatus as exc:
+        response = exc.response
+        body = response.body.decode(errors="replace") if response.body else ""
+        error = handshake_error(response.status_code, body)
+        if error is None:
+            raise
+        raise error from exc
+
+
+async def _open_endpoint(
     *,
     uri: str | None,
     unix_path: Path | None,

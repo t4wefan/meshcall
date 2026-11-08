@@ -163,3 +163,38 @@ const BY_CODE = new Map<string, Factory>([
   [ErrorCode.PROTOCOL_ERROR, (m, o) => new ProtocolError(m, o)],
   [ErrorCode.INTERNAL, (m, o) => new InternalError(m, o)],
 ]);
+
+/** WebSocket close status for credentials that are not, or no longer, valid. */
+export const CLOSE_UNAUTHENTICATED = 4401;
+/** Close reasons that name an error reason (docs/protocol.md → Tunnels). */
+const CLOSE_REASONS = new Set(["tunnel_revoked", "tunnel_closed"]);
+
+/**
+ * @internal The error a Router close status stands for, or `undefined` for a
+ * plain loss: 4401 the credentials are not (or no longer) valid, a revoked
+ * tunnel saying `tunnel_revoked`; 1008 the Router refused the connection's
+ * request (a registration, a role) and says why.
+ */
+export function closeError(code: number, reason: string): MeshCallError | undefined {
+  if (code === CLOSE_UNAUTHENTICATED) {
+    return new UnauthenticatedError("The Router closed the connection: " + (reason || "unauthenticated"), {
+      details: { source: "router", ...(CLOSE_REASONS.has(reason) ? { reason } : {}) },
+    });
+  }
+  if (code === 1008) {
+    return new PermissionDeniedError("The Router refused the connection: " + (reason || "policy violation"), {
+      details: { source: "router", reason: "policy_violation" },
+    });
+  }
+  return undefined;
+}
+
+/** @internal The error an HTTP status refusing a WebSocket upgrade stands for. */
+export function handshakeError(status: number, body = ""): MeshCallError | undefined {
+  const text = " (HTTP " + String(status) + ")" + (body.trim() === "" ? "" : ": " + body.trim());
+  const details = { source: "router" };
+  if (status === 401) return new UnauthenticatedError("The Router refused the credentials" + text, { details });
+  if (status === 403) return new PermissionDeniedError("The Router refused the connection" + text, { details });
+  if (status === 429) return new ResourceExhaustedError("The Router refused the connection" + text, { retryable: true, details });
+  return undefined;
+}

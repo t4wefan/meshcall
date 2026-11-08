@@ -3,12 +3,14 @@ import test from "node:test";
 
 import {
   findRouterBinary,
+  InvalidArgumentError,
   LocalRouter,
   Mesh,
   method,
   PermissionDeniedError,
   Router,
   service,
+  UnauthenticatedError,
   z,
   type DuplexChannel,
   type RpcContext,
@@ -99,8 +101,22 @@ test("a tunnel scopes a Mesh to one instance", { timeout: 15000, skip: routerMis
   await call.closeSend();
   assert.deepEqual(await call.next(), { done: true, value: undefined });
 
+  // The Router checks open; reserved metadata keys are refused in any case.
+  const badTtl = await rejection(issuer.tunnels.open({ instance: "box-a", scopes: ["test.v1.Workspace"], principal: "p", ttlSeconds: 0 }));
+  assert.ok(badTtl instanceof InvalidArgumentError, String(badTtl));
+  const reserved = await rejection(client.unary("test.v1.Workspace", "whoami", {}, { instance: "box-a", metadata: { "MeshCall-Tunnel-Principal": "x" } }));
+  assert.ok(reserved instanceof InvalidArgumentError && reserved.reason === "reserved_metadata", String(reserved));
+
   assert.deepEqual((await issuer.tunnels.list()).map((t) => t.tunnel_id), [opened.tunnel_id]);
+  const held = client.duplex<object, { text: string }, { text: string }>("test.v1.Workspace", "terminal", {}, { instance: "box-a" });
+  await held.send({ text: "x" });
+  await held.next();
   assert.equal(await issuer.tunnels.revoke(opened.tunnel_id), true);
+  // A call in flight learns why; the next one is refused at connect (HTTP 401).
+  const revoked = await rejection(held.next());
+  assert.ok(revoked instanceof UnauthenticatedError && revoked.reason === "tunnel_revoked", String(revoked));
+  const again = await rejection(client.unary("test.v1.Workspace", "whoami", {}, { instance: "box-a" }));
+  assert.ok(again instanceof UnauthenticatedError, String(again));
   for (let i = 0; i < 100 && closed.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(closed, [{ tunnelId: opened.tunnel_id, principal: "user:alice", reason: "revoked" }]);
 });

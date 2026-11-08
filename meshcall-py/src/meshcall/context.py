@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+from meshcall.errors import InvalidArgumentError
 from meshcall.logging import RpcLogger
 
 if TYPE_CHECKING:
@@ -65,14 +66,26 @@ DEFAULT_RECONNECT = ReconnectPolicy()
 NO_RECONNECT = ReconnectPolicy(enabled=False)
 
 
+def is_reserved_key(key: str) -> bool:
+    """``meshcall-…`` in any letter case: set only by the runtime and the Router."""
+    return key[: len(RESERVED_METADATA_PREFIX)].lower() == RESERVED_METADATA_PREFIX
+
+
 def validate_metadata(metadata: Mapping[str, str] | None) -> dict[str, str] | None:
+    """Check caller-supplied request metadata (docs/protocol.md → Metadata)."""
     if metadata is None:
         return None
     for key, value in metadata.items():
         if not isinstance(key, str) or key == "":
-            raise ValueError("metadata keys must be non-empty strings")
-        if key.startswith(RESERVED_METADATA_PREFIX):
-            raise ValueError(f"metadata key {key!r} uses the reserved prefix")
+            raise InvalidArgumentError(
+                "metadata keys must be non-empty strings",
+                details={"source": "client", "reason": "invalid_metadata"},
+            )
+        if is_reserved_key(key):
+            raise InvalidArgumentError(
+                f"metadata key {key!r} uses the reserved prefix 'meshcall-'",
+                details={"source": "client", "reason": "reserved_metadata"},
+            )
         if not isinstance(value, str):
             raise TypeError(f"metadata value for {key!r} must be a string")
     return dict(metadata)
@@ -191,7 +204,10 @@ class RpcContext:
         return max(0.0, self._deadline - time.monotonic())
 
     def set_trailer(self, key: str, value: str) -> None:
-        validate_metadata({key: value})
+        if not key or is_reserved_key(key):
+            raise ValueError(f"trailer key {key!r} is empty or reserved ('meshcall-')")
+        if not isinstance(value, str):
+            raise TypeError(f"trailer value for {key!r} must be a string")
         self._trailers[key] = value
 
     @property

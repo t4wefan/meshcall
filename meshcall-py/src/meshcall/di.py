@@ -8,7 +8,7 @@ from typing import Annotated, Any, Self, get_args, get_origin, get_type_hints
 
 from pydantic import TypeAdapter, ValidationError
 
-from meshcall.context import RpcContext
+from meshcall.context import RESERVED_METADATA_PREFIX, RpcContext
 from meshcall.errors import ContractError, InvalidArgumentError, invalid_argument
 from meshcall.logging import RpcLogger
 
@@ -78,13 +78,18 @@ class MetaPlan:
     default_value: Any
 
     def resolve(self, context: RpcContext) -> Any:
-        raw = context.metadata.get(self.key)
-        if raw is None:
-            lowered = self.key.lower()
-            for k, v in context.metadata.items():
-                if k.lower() == lowered:
-                    raw = v
-                    break
+        lowered = self.key.lower()
+        if lowered.startswith(RESERVED_METADATA_PREFIX):
+            # Reserved keys are set lower-case by the runtime or the Router; a
+            # case-insensitive match would let a caller's "MESHCALL-…" stand in.
+            raw = context.metadata.get(lowered)
+        else:
+            raw = context.metadata.get(self.key)
+            if raw is None:
+                for k, v in context.metadata.items():
+                    if k.lower() == lowered:
+                        raw = v
+                        break
         if raw is None:
             if self.has_default:
                 return self.default_value

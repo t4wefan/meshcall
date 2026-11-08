@@ -31,6 +31,13 @@ func TestTunnelsThroughALocalRouter(t *testing.T) {
 			}
 			return c, nil
 		}, meshcall.Doc("Report the instance and the tunnel."), meshcall.ReadOnly())
+		meshcall.HandleUnary(svc, "hold", func(ctx *meshcall.Context, _ Empty) (Empty, error) {
+			select {
+			case <-time.After(5 * time.Second):
+			case <-ctx.Done():
+			}
+			return Empty{}, nil
+		}, meshcall.Doc("Answer after five seconds."), meshcall.ReadOnly())
 		return svc
 	}
 	admin := meshcall.NewService("test.v1.Admin", meshcall.Describe("Never reachable through a tunnel."))
@@ -119,8 +126,28 @@ func TestTunnelsThroughALocalRouter(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].TunnelID != opened.TunnelID {
 		t.Fatalf("list: %v %+v", err, listed)
 	}
+	if _, err := issuer.Tunnels().Open(ctx, meshcall.OpenTunnelRequest{
+		Instance: "box-a", Scopes: []meshcall.TunnelScope{{Service: "test.v1.Workspace"}}, Principal: "p", TTLSeconds: 90000,
+	}); !meshcall.IsCode(err, meshcall.CodeInvalidArgument) {
+		t.Fatalf("the Router checks the TTL: %v", err)
+	}
+	held := make(chan error, 1)
+	go func() {
+		_, err := meshcall.Unary[Empty, Empty](ctx, client, "test.v1.Workspace", "hold", Empty{}, meshcall.WithInstance("box-a"))
+		held <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
 	if revoked, err := issuer.Tunnels().Revoke(ctx, opened.TunnelID); err != nil || !revoked {
 		t.Fatalf("revoke: %v %v", revoked, err)
+	}
+	// A call in flight learns why; the next one is refused at connect.
+	if err := <-held; !meshcall.IsCode(err, meshcall.CodeUnauthenticated) {
+		t.Fatalf("a call in flight on a revoked tunnel: %v", err)
+	} else if e, _ := meshcall.AsError(err); e.Reason() != "tunnel_revoked" {
+		t.Fatalf("revoke reason: %v", err)
+	}
+	if _, err := meshcall.Unary[Empty, Caller](ctx, client, "test.v1.Workspace", "whoami", Empty{}, meshcall.WithInstance("box-a")); !meshcall.IsCode(err, meshcall.CodeUnauthenticated) {
+		t.Fatalf("reconnecting with a revoked credential: %v", err)
 	}
 	select {
 	case c := <-closed:

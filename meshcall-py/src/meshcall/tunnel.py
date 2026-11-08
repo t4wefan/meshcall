@@ -122,11 +122,12 @@ class _Empty(BaseModel):
 
 
 class _OpenRequest(BaseModel):
+    # The Router checks the bounds (invalid_argument), so every runtime fails alike.
     instance_id: str
     scopes: list[TunnelScope]
-    principal: str = Field(min_length=1, max_length=512)
-    ttl_seconds: int = Field(ge=1, le=86400)
-    max_connections: int | None = Field(default=None, ge=0)
+    principal: str
+    ttl_seconds: int
+    max_connections: int | None = None
 
 
 class _RevokeRequest(BaseModel):

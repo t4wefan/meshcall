@@ -33,6 +33,39 @@ func (o Options) dial(ctx context.Context) (*wire.Conn, error) {
 	return wire.Dial(ctx, o.Router, wire.Options{Authorization: o.Authorization, PeerID: "meshcall-cli", Timeout: o.Timeout})
 }
 
+// tunnel reports whether the connection uses a tunnel credential.
+func (o Options) tunnel() bool { return strings.HasPrefix(o.Authorization, "Bearer mtun_") }
+
+func codeOf(err error) string {
+	var failure *Failure
+	if errors.As(err, &failure) {
+		return failure.Code
+	}
+	return ""
+}
+
+// tunnelVerdict asks the Router about a method outside the tunnel's Registry
+// view: its answer (tunnel_scope, naming the tunnel's instance) says more
+// than "not found", and it is the same whether or not the method exists.
+func tunnelVerdict(conn *wire.Conn, c CallOptions) error {
+	extra := wire.Frame{}
+	if c.Instance != "" {
+		extra["instance_id"] = c.Instance
+	}
+	payload := c.Payload
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	f, err := conn.Unary(c.Service, c.Method, payload, extra)
+	if err != nil {
+		return err
+	}
+	if f["kind"] == "call.error" {
+		return emitTerminal(f, c, io.Discard, callHints{})
+	}
+	return &Failure{Code: "method_not_found", Message: fmt.Sprintf("%s has no method %q in this tunnel's view", c.Service, c.Method)}
+}
+
 // Failure is a call-level error with a machine-readable code and a hint.
 type Failure struct {
 	Code      string         `json:"code"`
@@ -267,6 +300,9 @@ func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
 	defer conn.Close()
 	described, err := registry(conn, c.Service)
 	if err != nil {
+		if opts.tunnel() && codeOf(err) == "method_not_found" {
+			return tunnelVerdict(conn, c)
+		}
 		return err
 	}
 	var method map[string]any
@@ -277,6 +313,9 @@ func Call(ctx context.Context, opts Options, c CallOptions, w io.Writer) error {
 		if m["name"] == c.Method {
 			method = m
 		}
+	}
+	if method == nil && opts.tunnel() {
+		return tunnelVerdict(conn, c)
 	}
 	if method == nil {
 		sort.Strings(names)

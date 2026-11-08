@@ -4,7 +4,10 @@ import WebSocket, { type RawData } from "ws";
 
 import type { JsonSchema } from "./contract.js";
 import { closeSocket, createSocket, type WebSocketEndpoint } from "./endpoint.js";
-import { CallCancelledError, DeadlineExceededError, MeshCallError, ProtocolError, UnavailableError } from "./errors.js";
+import {
+  CallCancelledError, closeError, DeadlineExceededError, handshakeError, MeshCallError, PermissionDeniedError, ProtocolError,
+  UnauthenticatedError, UnavailableError,
+} from "./errors.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import {
   clientDeadlineGraceMs,
@@ -300,6 +303,8 @@ export class MeshCallClient implements MeshCallRpc {
         this.everConnected = true;
         return;
       } catch (error) {
+        // Refused credentials fail the same way again: report them at once.
+        if (error instanceof UnauthenticatedError || error instanceof PermissionDeniedError) throw error;
         const next = delays?.next();
         if (next === undefined || next.done === true || this.closed) {
           throw error instanceof MeshCallError ? error
@@ -757,11 +762,23 @@ export class MeshCallClient implements MeshCallRpc {
             fail(error);
           }
         });
-        socket.on("close", () => {
+        socket.on("unexpected-response", (request, response) => {
+          // The Router refused the upgrade (401, 403, 429): say why.
+          let body = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk: string) => { body += chunk; });
+          response.on("end", () => {
+            const status = response.statusCode ?? 0;
+            fail(handshakeError(status, body) ?? new UnavailableError("Unexpected server response: " + String(status), { retryable: true }));
+          });
+          response.on("error", () => undefined);
+          request.on("error", () => undefined);
+        });
+        socket.on("close", (code: number, reason: Buffer) => {
           clearTimeout(timer);
           liveness.stop();
           writer.close();
-          const error = new UnavailableError("Connection was lost", { retryable: true });
+          const error = closeError(code, reason.toString()) ?? new UnavailableError("Connection was lost", { retryable: true });
           if (this.socket === socket) {
             this.socket = undefined;
             this.writer = undefined;

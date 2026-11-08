@@ -9,7 +9,13 @@ from typing import Literal, Protocol
 
 from websockets.exceptions import ConnectionClosed
 
-from meshcall.errors import ResourceExhaustedError
+from meshcall.errors import (
+    MeshCallError,
+    PermissionDeniedError,
+    ResourceExhaustedError,
+    UnauthenticatedError,
+    UnavailableError,
+)
 from meshcall.protocol import (
     CallCancelFrame,
     Frame,
@@ -32,6 +38,81 @@ def is_frame_too_large(error: BaseException) -> bool:
         isinstance(error, ResourceExhaustedError)
         and (error.details or {}).get("reason") == "frame_too_large"
     )
+
+
+#: WebSocket close status for credentials that are not (or no longer) valid.
+CLOSE_UNAUTHENTICATED = 4401
+#: Close reasons that name an error reason (docs/protocol.md → Tunnels).
+_CLOSE_REASONS = frozenset({"tunnel_revoked", "tunnel_closed"})
+
+
+class PeerClosedError(ConnectionError):
+    """The peer closed the connection with a status that says why.
+
+    ``error`` is the MeshCall error calls on the connection fail with.
+    """
+
+    def __init__(self, error: MeshCallError) -> None:
+        super().__init__(error.message)
+        self.error = error
+
+
+def close_error(code: int | None, reason: str) -> MeshCallError | None:
+    """The error a Router close status stands for, or ``None`` for a plain loss.
+
+    4401: the credentials are not, or are no longer, valid (a revoked
+    tunnel says ``tunnel_revoked``); 1008: the Router refused the
+    connection's request (a registration, a role) and says why.
+    """
+    if code == CLOSE_UNAUTHENTICATED:
+        details: dict[str, object] = {"source": "router"}
+        if reason in _CLOSE_REASONS:
+            details["reason"] = reason
+        return UnauthenticatedError(
+            f"The Router closed the connection: {reason or 'unauthenticated'}",
+            details=details,
+        )
+    if code == 1008:
+        return PermissionDeniedError(
+            f"The Router refused the connection: {reason or 'policy violation'}",
+            details={"source": "router", "reason": "policy_violation"},
+        )
+    return None
+
+
+def handshake_error(status: int, body: str = "") -> MeshCallError | None:
+    """The error an HTTP status refusing a WebSocket upgrade stands for."""
+    text = f" (HTTP {status})" + (f": {body.strip()}" if body.strip() else "")
+    if status == 401:
+        return UnauthenticatedError(
+            f"The Router refused the credentials{text}", details={"source": "router"}
+        )
+    if status == 403:
+        return PermissionDeniedError(
+            f"The Router refused the connection{text}", details={"source": "router"}
+        )
+    if status == 429:
+        return ResourceExhaustedError(
+            f"The Router refused the connection{text}",
+            retryable=True,
+            details={"source": "router"},
+        )
+    return None
+
+
+def _closed_by(exc: ConnectionClosed) -> ConnectionError:
+    received = exc.rcvd
+    error = close_error(received.code, received.reason) if received else None
+    if error is not None:
+        return PeerClosedError(error)
+    return ConnectionError("WebSocket connection is closed")
+
+
+def connection_lost(error: BaseException) -> MeshCallError:
+    """The error calls fail with when their connection goes away."""
+    if isinstance(error, PeerClosedError):
+        return error.error
+    return UnavailableError("Connection was lost", retryable=True)
 
 
 class WebSocketLike(Protocol):
@@ -126,6 +207,8 @@ class FrameConnection:
                     async with asyncio.timeout(self._idle_timeout):
                         data = await self._websocket.recv()
             except ConnectionClosed as exc:
+                if self._closed is None:
+                    self._mark_failed(_closed_by(exc))
                 raise self._mark_closed("WebSocket connection is closed") from exc
             except TimeoutError as exc:
                 error = self._mark_closed("Peer was idle for too long")
@@ -184,11 +267,15 @@ class FrameConnection:
 
     def _mark_closed(self, message: str) -> BaseException:
         if self._closed is None:
-            self._closed = ConnectionError(message)
-            self._fail_pending(self._closed)
-            if self._drain_ack is not None and not self._drain_ack.done():
-                self._drain_ack.set_exception(self._closed)
+            self._mark_failed(ConnectionError(message))
+        assert self._closed is not None
         return self._closed
+
+    def _mark_failed(self, error: BaseException) -> None:
+        self._closed = error
+        self._fail_pending(error)
+        if self._drain_ack is not None and not self._drain_ack.done():
+            self._drain_ack.set_exception(error)
 
     async def _keepalive_loop(self) -> None:
         assert self._ping_interval is not None
@@ -224,8 +311,8 @@ class FrameConnection:
                 continue
             try:
                 await self._websocket.send(pending.encoded)
-            except ConnectionClosed:
-                error = ConnectionError("WebSocket connection is closed")
+            except ConnectionClosed as exc:
+                error = self._closed or _closed_by(exc)
                 self._closed = error
                 if not pending.future.done():
                     pending.future.set_exception(error)

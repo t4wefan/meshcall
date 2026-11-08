@@ -355,15 +355,19 @@ func TestTunnelCallAndInspect(t *testing.T) {
 	if !strings.Contains(out.String(), "meshcall-tunnel-principal") {
 		t.Fatalf("tunnel call: %s", out.String())
 	}
-	// The tunnel's Registry view already hides other methods; another instance
-	// is refused by the Router, with a hint naming the tunnel's own.
-	err = Call(ctx, tunnel, CallOptions{Service: "demo.v1.Greeter", Method: "count", Payload: map[string]any{"n": 1}, Timeout: 5 * time.Second}, &out)
-	if err == nil || !strings.Contains(err.Error(), "methods: greet") {
-		t.Fatalf("method outside the scope: %v", err)
-	}
-	err = Call(ctx, tunnel, CallOptions{Service: "demo.v1.Greeter", Method: "greet", Payload: map[string]any{"name": "x"}, Instance: "other", Timeout: 5 * time.Second}, &out)
-	var failure *Failure
-	if !errors.As(err, &failure) || failure.Details["reason"] != "tunnel_scope" || !strings.Contains(failure.Hint, "instance fake") {
-		t.Fatalf("outside the scope: %v", err)
+	// Outside the tunnel's view — another method, another service, another
+	// instance — the Router's own tunnel_scope answer is reported, with a hint
+	// naming the tunnel's instance.
+	for _, c := range []CallOptions{
+		{Service: "demo.v1.Greeter", Method: "count", Payload: map[string]any{"n": 1}},
+		{Service: "other.v1.Other", Method: "ping"},
+		{Service: "demo.v1.Greeter", Method: "greet", Payload: map[string]any{"name": "x"}, Instance: "other"},
+	} {
+		c.Timeout = 5 * time.Second
+		err = Call(ctx, tunnel, c, &out)
+		var failure *Failure
+		if !errors.As(err, &failure) || failure.Details["reason"] != "tunnel_scope" || !strings.Contains(failure.Hint, "instance fake") {
+			t.Fatalf("%s.%s outside the scope: %v", c.Service, c.Method, err)
+		}
 	}
 }

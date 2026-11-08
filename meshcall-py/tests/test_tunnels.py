@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
+from loguru import logger
 from pydantic import BaseModel
-from websockets.exceptions import InvalidStatus
+from router_fixtures import PASSWORD, password_hash
 
 from meshcall import (
     LocalRouter,
     Mesh,
     Router,
+    RouterCredentials,
     RpcContext,
     TunnelClosed,
     TunnelOffer,
@@ -21,7 +24,14 @@ from meshcall import (
     method,
     service,
 )
-from meshcall.errors import ContractError, MeshCallError, PermissionDeniedError
+from meshcall.context import CallOptions
+from meshcall.di import MetaPlan
+from meshcall.errors import (
+    ContractError,
+    InvalidArgumentError,
+    PermissionDeniedError,
+    UnauthenticatedError,
+)
 
 
 class Empty(BaseModel):
@@ -47,6 +57,17 @@ class Workspace:
             tunnel_id=tunnel.id if tunnel else None,
             principal=tunnel.principal if tunnel else None,
         )
+
+
+@service(name="test.v1.Slow", targeted=True)
+class Slow:
+    """Holds a call open."""
+
+    @method(read_only=True)
+    async def hold(self) -> Empty:
+        """Answer after five seconds."""
+        await asyncio.sleep(5)
+        return Empty()
 
 
 @service(name="test.v1.Admin")
@@ -146,8 +167,9 @@ async def test_tunnel_lifecycle_through_a_router() -> None:
                 assert closed == [
                     TunnelClosed(opened.tunnel_id, "user:alice", "revoked")
                 ]
-                # Closed at once; reconnecting is refused (HTTP 401).
-                with pytest.raises((MeshCallError, InvalidStatus)):
+                # Closed at once (4401 tunnel_revoked); reconnecting is refused
+                # (HTTP 401). Either way the caller sees unauthenticated.
+                with pytest.raises(UnauthenticatedError):
                     await whoami(client, "test.v1.Workspace", instance="box-a")
             assert not await issuer.tunnels.revoke(opened.tunnel_id)
 
@@ -198,3 +220,90 @@ async def test_generated_targeted_client_over_a_tunnel(meshcall_cli, tmp_path) -
                     await client.whoami(instance="box-b")
                 assert wrong.value.reason == "tunnel_scope"
                 assert (wrong.value.details or {}).get("instance_id") == "box-a"
+
+
+def test_reserved_metadata_keys_ignore_letter_case() -> None:
+    """A caller's "MESHCALL-…" key is refused, and meta() never reads one."""
+    for key in ("meshcall-x", "MeshCall-Tunnel-Principal"):
+        with pytest.raises(InvalidArgumentError) as refused:
+            CallOptions(metadata={key: "user:mallory"})
+        assert refused.value.reason == "reserved_metadata"
+    ctx = RpcContext(
+        call_id="c",
+        service="s",
+        method="m",
+        metadata={"MESHCALL-TUNNEL-PRINCIPAL": "user:mallory", "X-User": "bob"},
+        logger=logger,
+    )
+    reserved = MetaPlan("meshcall-tunnel-principal", str, True, None)
+    assert reserved.resolve(ctx) is None
+    assert MetaPlan("x-user", str, True, None).resolve(ctx) == "bob"
+    set_by_router = RpcContext(
+        call_id="c",
+        service="s",
+        method="m",
+        metadata={"meshcall-tunnel-principal": "user:alice"},
+        logger=logger,
+    )
+    assert MetaPlan("MeshCall-Tunnel-Principal", str, True, None).resolve(
+        set_by_router
+    ) == ("user:alice")
+
+
+async def test_tunnel_errors_say_why() -> None:
+    """open is checked by the Router; revoking fails calls in flight with
+    unauthenticated / tunnel_revoked, not a bare connection loss."""
+    async with LocalRouter(port=0) as router:
+        box = Mesh(router).mount(Slow(), instance_id="box-a", accept_tunnels=True)
+        async with box.serve(access_log=False), Mesh(router) as issuer:
+            with pytest.raises(InvalidArgumentError) as bad_ttl:
+                await issuer.tunnels.open(
+                    instance="box-a",
+                    scopes=["test.v1.Slow"],
+                    principal="p",
+                    ttl_seconds=0,
+                )
+            assert "ttl_seconds" in bad_ttl.value.message
+            opened = await issuer.tunnels.open(
+                instance="box-a", scopes=["test.v1.Slow"], principal="user:alice"
+            )
+            async with Mesh(Router(router.url), tunnel=opened.credential) as mesh:
+                held = asyncio.create_task(
+                    mesh.with_options(instance="box-a").call_unary(
+                        "test.v1.Slow", "hold", Empty(), Empty
+                    )
+                )
+                await asyncio.sleep(0.2)
+                assert await issuer.tunnels.revoke(opened.tunnel_id)
+                with pytest.raises(UnauthenticatedError) as revoked:
+                    await held
+                assert revoked.value.reason == "tunnel_revoked"
+                with pytest.raises(UnauthenticatedError):  # HTTP 401 on reconnect
+                    await mesh.with_options(instance="box-a").call_unary(
+                        "test.v1.Slow", "hold", Empty(), Empty
+                    )
+
+
+async def test_a_refused_registration_says_why(tmp_path: Path) -> None:
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "users": [
+                    {
+                        "username": "box",
+                        "password_hash": password_hash(),
+                        "roles": ["server"],
+                        "register": ["test.v1.Slow"],
+                        "instance_ids": ["box-a"],
+                    }
+                ]
+            }
+        )
+    )
+    credentials = RouterCredentials.basic("box", PASSWORD)
+    async with LocalRouter(port=0, auth_file=auth_file) as router:
+        mesh = Mesh(router, credentials=credentials).mount(Slow(), instance_id="box-b")
+        with pytest.raises(PermissionDeniedError, match="instance_id not allowed"):
+            async with mesh.serve(access_log=False):
+                pass

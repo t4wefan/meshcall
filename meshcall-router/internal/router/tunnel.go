@@ -445,9 +445,19 @@ func (r *Router) closeTunnel(t *tunnel, reason string) {
 			o.instance.send(frame{Kind: "call.cancel", CallID: o.callID, Reason: "tunnel_closed"})
 		}
 	}
+	// Close with 4401 and an error reason, so clients can tell a revoked
+	// tunnel from a network loss and do not reconnect (docs/protocol.md →
+	// Tunnels). Close waits for the handshake, hence outside r.mu.
+	closing := "tunnel_closed"
+	if reason == "revoked" {
+		closing = "tunnel_revoked"
+	}
 	for candidate := range r.peers {
 		if candidate.user != nil && candidate.user.tunnel == t {
-			candidate.cancel()
+			go func(p *peer) {
+				_ = p.conn.Close(StatusUnauthenticated, closing)
+				p.cancel()
+			}(candidate)
 		}
 	}
 	if t.host != nil {
@@ -531,6 +541,13 @@ func tunnelScopeError(callID string, t *tunnel) frame {
 
 // stripTunnelMetadata removes meshcall-tunnel-* keys a caller sent on an
 // ordinary connection: only the Router may set them.
+// reservedTunnelKey matches meshcall-tunnel-* in any letter case: metadata
+// lookups (meta() in the runtimes) may ignore case, so a mixed-case key must
+// not survive to forge what only the Router sets.
+func reservedTunnelKey(key string) bool {
+	return len(key) >= len(tunnelMetaPrefix) && strings.EqualFold(key[:len(tunnelMetaPrefix)], tunnelMetaPrefix)
+}
+
 func stripTunnelMetadata(f frame) frame {
 	if f.Metadata == nil {
 		return f
@@ -540,7 +557,7 @@ func stripTunnelMetadata(f frame) frame {
 		return f
 	}
 	for key := range metadata {
-		if strings.HasPrefix(key, tunnelMetaPrefix) {
+		if reservedTunnelKey(key) {
 			if rewritten, err := rewriteCallOpen(f, nil); err == nil {
 				return rewritten
 			}
@@ -568,7 +585,7 @@ func rewriteCallOpen(f frame, t *tunnel) (frame, error) {
 		metadata = map[string]string{}
 	}
 	for key := range metadata {
-		if strings.HasPrefix(key, tunnelMetaPrefix) {
+		if reservedTunnelKey(key) {
 			delete(metadata, key)
 		}
 	}

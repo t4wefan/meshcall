@@ -200,6 +200,9 @@ func (s *Server) register(ctx context.Context, link *routerLink) error {
 		return fail(err)
 	}
 	ack, err := c.receive()
+	if e, ok := AsError(err); ok {
+		return fail(e) // the Router closed with a status that says why
+	}
 	if err != nil || ack.Kind != "hello.ack" || ack.Protocol != Protocol {
 		return fail(fmt.Errorf("meshcall: expected a compatible hello.ack from the Router: %v", err))
 	}
