@@ -111,6 +111,27 @@ def submit_to_loop(
         raise
 
 
+async def cancel_and_wait(
+    task: asyncio.Future[Any], *also_ignore: type[BaseException]
+) -> None:
+    """Cancel ``task`` and wait until it has finished.
+
+    The task's own cancellation is expected and ignored, but a cancellation of
+    the *caller* while it waits is re-raised: ``suppress(CancelledError)``
+    around the await would swallow it, and a supervisor cancelled at that
+    moment would keep running and hang whoever is waiting for it.
+    """
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+    except also_ignore:
+        pass
+
+
 def _resolve_ready(
     future: asyncio.Future[None],
     error: BaseException | None,

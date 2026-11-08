@@ -64,6 +64,7 @@ from meshcall.tunnel import (
     TunnelsClient,
     check_tunnel_credential,
 )
+from meshcall.worker import cancel_and_wait
 
 if TYPE_CHECKING:
     import httpx
@@ -651,9 +652,7 @@ class _ServeHandle:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                await cancel_and_wait(task)
         finally:
             await srv.stop(drain=True, drain_timeout=self._drain_timeout)
             if self._mesh._owns_local_router:
