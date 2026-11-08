@@ -1011,6 +1011,25 @@ On a tunnel connection only the scoped methods of that instance exist: other ins
 
 Generated clients of `targeted` services keep `instance` required on tunnels too: pass the tunnel's `instance_id`. The Router checks it (`permission_denied` / `tunnel_scope`, naming the right one), and every ordinary `Mesh` keeps the compile-time check. TypeScript uses `{ tunnel }` / `acceptTunnels` / `onTunnelClosed`, Go `meshcall.WithTunnel(cred)` / `meshcall.WithAcceptTunnels(decide)` / `meshcall.WithTunnelClosed(fn)` and `ctx.Tunnel`. From the CLI: `meshcall --tunnel mtun_… call dev.v1.Workspace.whoami '{}'`; `meshcall router inspect` lists the tunnels you opened, never their credentials.
 
+#### End-to-end sealed tunnels
+
+When the Router must not read what flows through a tunnel (a relay run by someone else, a person's terminal session), open it with `e2e_key`: every payload, metadata entry and error message is then sealed between the client and the instance (`Noise_NK_25519_AESGCM_SHA256`). The Router still routes, checks scopes and deadlines, and sees service, method, sizes, timing and error codes. The issuer pins the instance's public key, which it knows because it provisioned the instance, and hands it to the client with the credential; the client never takes it from the Router, so a man in the middle cannot complete the handshake and there is no plaintext fallback.
+
+```python
+keys = generate_e2e_key()            # once, at provisioning: keep private_key with the instance
+mesh.mount(Workspace(), instance_id="box-a", accept_tunnels=allow, e2e_private_key=keys.private_key)
+
+opened = await control.tunnels.open(instance="box-a", scopes=["dev.v1.Workspace"],
+                                    principal="user:alice", e2e_key=keys.public_key)
+# Hand opened.credential and keys.public_key to the client.
+```
+
+```typescript
+const mesh = new Mesh(new Router("wss://relay.example"), { tunnel: credential, e2eKey: publicKey });
+```
+
+Calls through it look like any other; `ctx.tunnel.sealed` (Go `ctx.Tunnel.Sealed`) tells the service. On an E2E tunnel the Router refuses plain calls and every HTTP call (`permission_denied` / `tunnel_e2e_required`), an instance refuses an offer pinning a key it does not hold (`tunnel_rejected`), and a client pinning the wrong key fails to connect (`unauthenticated` / `e2e_handshake_failed`). After the instance reconnects it has lost its sessions: the client handshakes again and retries a unary call once (`e2e_session_unknown`). Python needs the `meshcall[e2e]` extra (`cryptography`); TypeScript uses WebCrypto in Node and browsers (a secure context); Go uses the standard library: `meshcall.GenerateE2EKey()`, `meshcall.WithE2EPrivateKey(priv)` when serving, `meshcall.WithE2EKey(pub)` next to `WithTunnel`, and `OpenTunnelRequest.E2EKey`. The `meshcall` CLI does not seal calls, so it cannot call through an E2E tunnel.
+
 ---
 
 ## 9. Interceptors, Metadata & Structured Errors

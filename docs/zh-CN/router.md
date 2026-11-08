@@ -292,6 +292,8 @@ await issuerMesh.auth.revokeToken(issued.token_id);
 
 `open {instance_id, scopes, principal, ttl_seconds, max_connections?}` 把隧道 offer 给实例；实例必须已选择加入（Python `mesh.mount(svc, accept_tunnels=True)`，TypeScript `{ acceptTunnels: true }`，Go `mesh.Mount(svc, meshcall.WithAcceptTunnels(decide))`），接受后才返回 `mtun_…` 凭据。用它连接的客户端只能看到该实例在 scope 内的方法，调用时无需指定实例，也无法伪造 Router 在每次调用上设置的 `meshcall-tunnel-id` / `meshcall-tunnel-principal` 元数据。凭据的 TTL（1–86400 秒）只限制新连接；`revoke` 立即关闭隧道的所有连接。隧道与 Token 一样保存在内存中：Router 重启会丢失它们，实例重连时会再次收到其隧道的 offer。开发模式下任何人都可以开启隧道。
 
+`open` 时带上 `e2e_key`（实例的 X25519 公钥，签发方在部署实例时就已知道）即开启端到端隧道：实例必须持有对应的私钥（Python `mount(..., e2e_private_key=…)`，TypeScript `{ e2ePrivateKey }`，Go `meshcall.WithE2EPrivateKey(priv)`），否则拒绝 offer；客户端固定同一个公钥（`e2e_key=` / `{ e2eKey }` / `meshcall.WithE2EKey(pub)`）。此后 Router 转发的是它读不了的密封 payload、元数据与错误消息；它仍负责路由、校验 scope、超时与流控，能看到方法、大小、时间与错误码。在这类隧道上 Router 拒绝未密封的调用（包括所有 HTTP 调用，`permission_denied` / `tunnel_e2e_required`），把 `meshcall.router.v1.TunnelHost/handshake` 路由到目标实例，且从不对密封调用去重。`list` 与 `whoami` 会显示固定的 `e2e_key`。详见[协议规范](protocol.md#端到端加密)。
+
 ---
 
 ## 10. 连接服务
