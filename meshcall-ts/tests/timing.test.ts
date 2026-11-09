@@ -136,6 +136,53 @@ test("the client deadline fires locally when the peer never answers", { timeout:
   await assert.rejects(stream.next(), isError("deadline_exceeded", { source: "client" }));
 });
 
+test("a call that ends while its open frame is still being written leaves no unhandled rejection", { timeout: 5000 }, async (t) => {
+  const fake = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(fake, "listening");
+  t.after(() => new Promise<void>((resolve) => {
+    for (const socket of fake.clients) socket.terminate();
+    fake.close(() => resolve());
+  }));
+  fake.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      if (decodeFrame(data).kind === "hello") {
+        socket.send(encodeFrame({ kind: "hello.ack", protocol: PROTOCOL_VERSION, connection_id: "fake" }));
+      }
+    });
+  });
+  const address = fake.address();
+  assert.ok(typeof address === "object" && address !== null);
+  const client = new MeshCallClient("ws://127.0.0.1:" + address.port, undefined, { deadlineGraceMs: 0, retry: false });
+  t.after(() => client.close());
+  // A call.open frame queued behind a socket the peer is slow to read.
+  const internals = client as unknown as { send(frame: { kind: string }): Promise<void> };
+  const send = internals.send.bind(client);
+  internals.send = async (frame) => {
+    if (frame.kind === "call.open") await delay(100);
+    return send(frame);
+  };
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => { process.off("unhandledRejection", onUnhandled); });
+
+  const aborted = new AbortController();
+  const cancelled = client.unary(NAME, "echo", { value: 1 }, { signal: aborted.signal });
+  await delay(20);
+  aborted.abort();
+  await assert.rejects(cancelled, isError("cancelled"));
+  await assert.rejects(
+    client.unary(NAME, "echo", { value: 1 }, { timeoutMs: 20 }),
+    isError("deadline_exceeded", { source: "client" }),
+  );
+  await assert.rejects(
+    client.clientStream(NAME, "collect", { value: 0 }, (async function* () { yield { value: 1 }; })(), { timeoutMs: 20 }),
+    isError("deadline_exceeded", { source: "client" }),
+  );
+  await delay(150);
+  assert.deepEqual(unhandled, []);
+});
+
 test("a direct server drops silent clients while pinging clients stay connected", { timeout: 8000 }, async (t) => {
   const app = await running({ idleTimeoutMs: 1000 }, { pingIntervalMs: null });
   t.after(app.close);

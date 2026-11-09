@@ -651,6 +651,12 @@ export class MeshCallClient implements MeshCallRpc {
       resolveResult = resolve;
       rejectResult = reject;
     });
+    // The caller awaits `result` only after the call.open frame is written,
+    // which waits for the socket. A deadline or abort in that window rejects
+    // it with nobody holding it yet; Node would report an unhandled rejection
+    // and hosts that exit on those would go down. The caller still receives
+    // the same error from the same promise.
+    result.catch(() => undefined);
     const pending: PendingCall = {
       resolve: (value) => resolveResult(value as Response),
       reject: rejectResult,

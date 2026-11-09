@@ -163,6 +163,10 @@ matching `meshcall-go/vX.Y.Z` tag.
   "Connection was lost".
 - `meshcall --tunnel … call` reports the Router's `tunnel_scope` for a method
   outside the tunnel instead of its own `method_not_found`.
+- TypeScript: a unary or client-stream call whose signal aborted or whose
+  local deadline passed while its `call.open` frame was still being written
+  (a busy socket) left an unhandled promise rejection, which takes down
+  processes that exit on those. The caller still receives the same error.
 
 ## [0.3.0] - 2026-10-18
 
