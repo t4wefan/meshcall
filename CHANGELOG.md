@@ -12,6 +12,23 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ### Added
 
+- **Swift client runtime** (`meshcall-swift/`, a Swift package for iOS 16 and
+  macOS 13). `Mesh(Router(…))` or `Mesh(tunnel: grant)` calls services through
+  the Router in every shape: `unary`, `serverStream` (an `AsyncSequence` whose
+  credit follows consumption), `clientStream` and `duplex`, with timeouts,
+  cancellation, metadata, retries, interceptors, reconnects and end-to-end
+  sealed tunnels (`TunnelGrant` with `e2e_key`). `checkConnection(timeout:)`
+  drops a connection the system cut while the app was suspended. Client only.
+- **`meshcall generate --language swift`**: one file of `Codable` types and an
+  async client. The single-file generators now share a target registry and a
+  language-neutral client model (`internal/codegen`), so the next language
+  (Kotlin) adds one file.
+- **Client conformance** (`meshcall-conformance env`,
+  `meshcall-router/conformance/CLIENTS.md`): a Router, a proxy that can stall
+  or cut connections, and any runtime's fixture, driven over stdin, plus 34
+  client scenarios each client runtime must cover or skip with a reason.
+- `demo/ts2swift`: a TypeScript service called through a generated Swift client.
+
 - **Tunnels: instance-scoped connections through the Router** (#63). A trusted
   issuer (an account or API key with `meshcall.router.v1.TunnelService/*`)
   opens a tunnel for one instance with `mesh.tunnels.open(instance=…,
