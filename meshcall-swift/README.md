@@ -102,7 +102,11 @@ do {
 ```
 
 A response that does not decode into this client's types is
-`protocol_error` with `reason: "invalid_response"` (version skew). Revoked or
+`protocol_error` with `reason: "invalid_response"` (version skew). Only what
+`Codable` checks is checked: types, required fields and nulls. Unlike the
+TypeScript client, which validates what it receives against the full JSON
+Schema, constraints such as `minimum`, `pattern` or an enum's values are not
+(enums decode open: an unknown value is kept). Revoked or
 refused credentials are kept: later calls fail at once with the same error
 instead of reconnecting.
 
