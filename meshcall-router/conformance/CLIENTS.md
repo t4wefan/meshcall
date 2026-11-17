@@ -33,11 +33,12 @@ and `conformance.v1.Vault` as FIXTURE.md describes.
 
 Then each stdin line is a command object, answered by one stdout line,
 `{"ok":true}` or `{"ok":false,"error":"…"}`, once the command is done. The
-environment stops when stdin ends.
+environment stops, fixture included (its whole process group), when stdin
+ends or on an interrupt.
 
 | Command | Effect |
 | --- | --- |
-| `restart_router` | the Router stops at once (no drain: calls in flight end as on a crash, tunnels and tokens are lost) and a new one starts on the same port; answered once the fixture has registered again |
+| `restart_router` | the Router crashes and a new one starts on the same port: client connections are cut without a call error or close frame (the client must notice the loss itself), connections are refused until the new Router listens, tunnels and tokens are lost; answered once the fixture has registered again |
 | `pause_router` | every client connection through the proxy stalls: open, but no byte moves either way (what an app finds after the system suspended it) |
 | `resume_router` | bytes move again |
 | `restart_fixture` | the fixture is stopped and started again: it re-registers and has lost its end-to-end sessions; answered once it has registered |

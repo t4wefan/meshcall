@@ -109,7 +109,9 @@ func (e *Env) startFixture() error {
 		"MESHCALL_E2E_PRIVATE_KEY="+b64.EncodeToString(e.key.Bytes()),
 	)
 	cmd.Stdout, cmd.Stderr = e.opts.Log, e.opts.Log
-	// A launcher (uv run, npx) may leave a child holding the output pipes.
+	// A launcher (uv run, npx) runs the fixture as its child: signal the
+	// whole group, and do not wait forever on a child holding the pipes.
+	ownGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start fixture: %w", err)
@@ -119,13 +121,20 @@ func (e *Env) startFixture() error {
 	return e.waitRegistered()
 }
 
+func (e *Env) registered() bool {
+	for _, id := range e.router.Snapshot().Instances[Service] {
+		if id == InstanceID {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Env) waitRegistered() error {
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		for _, id := range e.router.Snapshot().Instances[Service] {
-			if id == InstanceID {
-				return nil
-			}
+		if e.registered() {
+			return nil
 		}
 		select {
 		case <-e.exited:
@@ -136,15 +145,30 @@ func (e *Env) waitRegistered() error {
 	return errors.New("the fixture did not register")
 }
 
+func (e *Env) waitUnregistered() error {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		if !e.registered() {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return errors.New("the stopped fixture is still registered")
+}
+
 // Do runs one command (CLIENTS.md → Commands).
 func (e *Env) Do(command string) error {
 	switch command {
 	case "restart_router":
-		// No drain: in-flight calls end as on a crash. Tunnels and tokens are
-		// lost with it; the fixture re-registers on the same port.
-		e.router.Close()
+		// As on a crash: client connections are cut before the Router could
+		// say goodbye (no call.error, no close frame), and none connects
+		// until the new Router listens, so clients find the loss themselves.
+		// Tunnels and tokens are lost with it; the fixture re-registers.
+		e.proxy.setDown(true)
 		e.proxy.dropAll()
-		if err := e.startRouter(); err != nil {
+		e.router.Close()
+		err := e.startRouter()
+		e.proxy.setDown(false)
+		if err != nil {
 			return err
 		}
 		return e.waitRegistered()
@@ -156,26 +180,33 @@ func (e *Env) Do(command string) error {
 		return nil
 	case "restart_fixture":
 		// Stopped, not drained: it re-registers and has lost its E2E sessions.
+		// The old registration must be gone first, or the wait below would
+		// see it and answer before the new fixture is there.
 		e.stopFixture()
+		if err := e.waitUnregistered(); err != nil {
+			return err
+		}
 		return e.startFixture()
 	}
 	return fmt.Errorf("unknown command %q", command)
 }
 
-// stopFixture interrupts the fixture, which a launcher such as uv passes on
-// to the program it runs, and kills it if it is still there after a moment.
+// stopFixture interrupts the fixture's process group, and kills the group if
+// the fixture is still there after a moment.
 func (e *Env) stopFixture() {
 	if e.fixture == nil || e.fixture.Process == nil {
 		return
 	}
-	if err := e.fixture.Process.Signal(os.Interrupt); err == nil {
+	if err := signalGroup(e.fixture.Process, os.Interrupt); err == nil {
 		select {
 		case <-e.exited:
+			// Its children may outlive it; they go with the group.
+			_ = signalGroup(e.fixture.Process, os.Kill)
 			return
 		case <-time.After(3 * time.Second):
 		}
 	}
-	_ = e.fixture.Process.Kill()
+	_ = signalGroup(e.fixture.Process, os.Kill)
 	<-e.exited
 }
 
@@ -191,7 +222,8 @@ func (e *Env) Close() {
 
 // Serve runs a client environment over a line protocol: the ready line on
 // out, then one command object per line on in, each answered with
-// {"ok":true} or {"ok":false,"error":…}. It returns when in ends or says stop.
+// {"ok":true} or {"ok":false,"error":…}. It returns when in ends, a command
+// says stop, or ctx ends (an interrupt), stopping the fixture first.
 func Serve(ctx context.Context, opts EnvOptions, in io.Reader, out io.Writer) error {
 	env, err := StartEnv(ctx, opts)
 	if err != nil {
@@ -202,12 +234,28 @@ func Serve(ctx context.Context, opts EnvOptions, in io.Reader, out io.Writer) er
 	if err := encoder.Encode(env.Ready()); err != nil {
 		return err
 	}
-	scanner := bufio.NewScanner(in)
-	for scanner.Scan() {
+	lines := make(chan []byte)
+	scanErr := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(in)
+		for scanner.Scan() {
+			lines <- append([]byte(nil), scanner.Bytes()...)
+		}
+		scanErr <- scanner.Err()
+	}()
+	for {
+		var line []byte
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-scanErr:
+			return err
+		case line = <-lines:
+		}
 		var request struct {
 			Command string `json:"command"`
 		}
-		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
+		if err := json.Unmarshal(line, &request); err != nil {
 			_ = encoder.Encode(map[string]any{"ok": false, "error": "not a command object"})
 			continue
 		}
@@ -221,7 +269,6 @@ func Serve(ctx context.Context, opts EnvOptions, in io.Reader, out io.Writer) er
 			_ = encoder.Encode(map[string]any{"ok": true})
 		}
 	}
-	return scanner.Err()
 }
 
 // pausingProxy forwards TCP connections to the Router. Paused, it stops
@@ -232,6 +279,7 @@ type pausingProxy struct {
 	target   func() string
 	mu       sync.Mutex
 	paused   bool
+	down     bool // the Router is restarting: connections are refused
 	resumed  chan struct{}
 	conns    map[net.Conn]bool
 }
@@ -260,6 +308,12 @@ func (p *pausingProxy) accept() {
 }
 
 func (p *pausingProxy) forward(client net.Conn) {
+	if p.mu.Lock(); p.down {
+		p.mu.Unlock()
+		_ = client.Close()
+		return
+	}
+	p.mu.Unlock()
 	upstream, err := net.Dial("tcp", p.target())
 	if err != nil {
 		_ = client.Close()
@@ -327,6 +381,12 @@ func (p *pausingProxy) setPaused(paused bool) {
 	} else {
 		close(p.resumed)
 	}
+}
+
+func (p *pausingProxy) setDown(down bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.down = down
 }
 
 // dropAll closes every proxied connection, as a Router that went away would.
