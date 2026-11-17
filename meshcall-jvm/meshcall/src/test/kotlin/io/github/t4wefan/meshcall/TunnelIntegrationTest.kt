@@ -2,6 +2,9 @@ package io.github.t4wefan.meshcall
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -98,6 +101,32 @@ class TunnelIntegrationTest {
             assertEquals("v", md.jsonObject["metadata"]!!.jsonObject["k"]!!.jsonPrimitive.content)
             // The Router's own services stay clear on an E2E connection.
             assertTrue(mesh.registry.list().any { it.name == FIXTURE })
+        }
+    }
+
+    @Test
+    fun concurrentDuplexSendsOnAnE2ETunnelStayInSequence() = test {
+        // Sealing widens the gap between claiming a sequence and queuing the frame;
+        // both happen under the call's lock, so the server sees no gap or reordering.
+        val tunnel = open(e2eKey = env.e2eKey)
+        env.mesh(MeshOptions(tunnel = tunnel.credential, e2eKey = env.e2eKey)).use { mesh ->
+            mesh.duplex(FIXTURE, "chat", buildJsonObject { put("prefix", "") }).use { call ->
+                val out = async { call.output.toList().map { it.str("text") } }
+                coroutineScope {
+                    repeat(8) { sender ->
+                        launch(Dispatchers.Default) {
+                            repeat(50) { i -> call.send(buildJsonObject { put("text", "$sender:$i") }) }
+                        }
+                    }
+                }
+                call.closeSend()
+                val got = out.await()
+                assertEquals(401, got.size)
+                assertEquals("done:400", got.last())
+                repeat(8) { sender ->
+                    assertEquals((0 until 50).map { "$sender:$it" }, got.filter { it.startsWith("$sender:") })
+                }
+            }
         }
     }
 

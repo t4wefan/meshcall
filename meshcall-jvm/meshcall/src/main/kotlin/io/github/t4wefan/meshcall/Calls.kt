@@ -323,11 +323,16 @@ internal class ActiveCall(
         val window = input ?: throw ProtocolErrorException("Call has no input stream")
         if (synchronized(this) { inputClosed }) throw ProtocolErrorException("Input stream is closed")
         window.acquire()
-        if (terminal.get()) throw CallCancelledException("Call is closed")
-        // Claim the sequence before suspending so concurrent sends stay in order.
-        val sequence = synchronized(this) { inputSequence++ }
+        // Claim the sequence and queue the frame under one lock (enqueue does not
+        // suspend): the call's frames then leave in sequence order whatever thread
+        // sends them, and closeInput's stream.end never overtakes an item.
+        val sent = synchronized(this) {
+            if (terminal.get()) throw CallCancelledException("Call is closed")
+            if (inputClosed) throw ProtocolErrorException("Input stream is closed")
+            client.enqueue(this, Frame.StreamItem(callId, Direction.CLIENT, inputSequence++, item))
+        }
         try {
-            client.enqueue(this, Frame.StreamItem(callId, Direction.CLIENT, sequence, item)).await()
+            sent.await()
         } catch (error: Throwable) {
             if (isFrameTooLarge(error)) abort(error, "frame_too_large") // the call is open at the peer
             throw error
@@ -337,13 +342,13 @@ internal class ActiveCall(
     /** Half-closes the input; the server's iteration of it then ends. */
     suspend fun closeInput() {
         if (input == null) throw ProtocolErrorException("Call has no input stream")
-        val send = synchronized(this) {
-            if (inputClosed || terminal.get()) false else {
+        val sent = synchronized(this) {
+            if (inputClosed || terminal.get()) null else {
                 inputClosed = true
-                true
+                client.enqueue(this, Frame.StreamEnd(callId, Direction.CLIENT))
             }
         }
-        if (send) client.enqueue(this, Frame.StreamEnd(callId, Direction.CLIENT)).await()
+        sent?.await()
     }
 }
 
@@ -387,6 +392,10 @@ public class DuplexCall<Input, Output> internal constructor(
     /** Suspends until the call has ended; throws its failure. */
     public suspend fun await() {
         call.result.await()
+    }
+
+    internal fun onEnded(action: () -> Unit) {
+        call.result.invokeOnCompletion { action() }
     }
 
     internal fun <I, O> retyped(encode: (I) -> JsonElement, decode: (JsonElement) -> O): DuplexCall<I, O> {

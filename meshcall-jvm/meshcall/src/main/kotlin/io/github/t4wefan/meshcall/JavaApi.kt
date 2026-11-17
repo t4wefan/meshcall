@@ -2,11 +2,15 @@ package io.github.t4wefan.meshcall
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.future.future
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,13 +47,54 @@ public fun <T> MeshCallRpc.observe(flow: Flow<T>, observer: StreamObserver<T>): 
 /** The input of a client stream from Java: iterated on an I/O thread, so a blocking iterator is fine. */
 public fun <T> javaItems(items: Iterable<T>): Flow<T> = items.asFlow().flowOn(Dispatchers.IO)
 
-/** A duplex call driven from Java; the output goes to the observer given when it was opened. */
+/**
+ * A duplex call driven from Java; the output goes to the observer given when
+ * it was opened. [send] and [closeSend] run one at a time in the order they
+ * were called, from any thread: `send(a); send(b); closeSend()` puts a, b and
+ * then the end of input on the wire without waiting for the futures.
+ */
 public class JavaDuplexCall<Input, Output> internal constructor(
-    private val rpc: MeshCallRpc,
+    rpc: MeshCallRpc,
     private val call: DuplexCall<Input, Output>,
 ) : AutoCloseable {
-    public fun send(item: Input): CompletableFuture<Void?> = rpc.future { call.send(item); null }
-    public fun closeSend(): CompletableFuture<Void?> = rpc.future { call.closeSend(); null }
+    private class Op(val run: suspend () -> Unit, val done: CompletableFuture<Void?>)
+
+    private val ops = Channel<Op>(Channel.UNLIMITED)
+
+    init {
+        rpc.scope.launch {
+            for (op in ops) {
+                if (op.done.isDone) continue // cancelled by the caller before it ran
+                try {
+                    coroutineScope {
+                        val running = async { op.run() }
+                        op.done.whenComplete { _, _ -> if (op.done.isCancelled) running.cancel() }
+                        running.await()
+                    }
+                    op.done.complete(null)
+                } catch (cancelled: CancellationException) {
+                    if (!currentCoroutineContext().isActive) {
+                        op.done.cancel(false)
+                        throw cancelled
+                    }
+                    // Only this operation's future was cancelled: run the next one.
+                } catch (error: Throwable) {
+                    op.done.completeExceptionally(error)
+                }
+            }
+        }
+        // Operations queued after the call ended still run, and fail as closed.
+        call.onEnded { ops.close() }
+    }
+
+    private fun submit(run: suspend () -> Unit): CompletableFuture<Void?> {
+        val done = CompletableFuture<Void?>()
+        if (ops.trySend(Op(run, done)).isFailure) done.completeExceptionally(CallCancelledException("Call is closed"))
+        return done
+    }
+
+    public fun send(item: Input): CompletableFuture<Void?> = submit { call.send(item) }
+    public fun closeSend(): CompletableFuture<Void?> = submit { call.closeSend() }
     public val trailers: Map<String, String> get() = call.trailers
     public fun cancel() {
         call.cancel()

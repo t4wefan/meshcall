@@ -123,15 +123,26 @@ internal class Connection(
             )
             return pending.done
         }
+        // Futures complete outside the lock: their handlers may take a call's
+        // lock, and callers enqueue while holding one.
+        var refused: MeshCallException? = null
+        var dropped: List<PendingFrame> = emptyList()
+        var unopened = false
         synchronized(lock) {
-            closed?.let {
-                pending.done.completeExceptionally(it)
-                return pending.done
-            }
             val callId = frame.callId
-            if (frame is Frame.CallCancel && cancelQueuedCall(frame.callId)) {
-                pending.done.complete(Unit)
-                return pending.done
+            refused = closed
+            if (refused != null) return@synchronized
+            if (frame is Frame.CallCancel) {
+                calls[frame.callId]?.let { queue ->
+                    // Queued frames of a cancelled call never leave; when even its
+                    // call.open has not, the cancel is not sent either (a priority
+                    // cancel cannot precede an unsent open).
+                    unopened = queue.any { it.frame is Frame.CallOpen }
+                    calls.remove(frame.callId)
+                    order.remove(frame.callId)
+                    dropped = queue.toList()
+                }
+                if (unopened) return@synchronized
             }
             if (callId == null || frame.isControl) {
                 controls.addLast(pending)
@@ -143,22 +154,20 @@ internal class Connection(
                 queue.addLast(pending)
             }
         }
+        refused?.let {
+            pending.done.completeExceptionally(it)
+            return pending.done
+        }
+        if (dropped.isNotEmpty()) {
+            val error = CallCancelledException("Call was cancelled before sending")
+            for (each in dropped) each.done.completeExceptionally(error)
+        }
+        if (unopened) {
+            pending.done.complete(Unit)
+            return pending.done
+        }
         wake.trySend(Unit)
         return pending.done
-    }
-
-    /**
-     * A cancel for a call whose `call.open` never left: drop the whole call
-     * instead (a priority cancel cannot precede an unsent open).
-     */
-    private fun cancelQueuedCall(callId: String): Boolean {
-        val queue = calls[callId] ?: return false
-        val unopened = queue.any { it.frame is Frame.CallOpen }
-        calls.remove(callId)
-        order.remove(callId)
-        val error = CallCancelledException("Call was cancelled before sending")
-        for (pending in queue) pending.done.completeExceptionally(error)
-        return unopened
     }
 
     private fun next(): PendingFrame? = synchronized(lock) {
