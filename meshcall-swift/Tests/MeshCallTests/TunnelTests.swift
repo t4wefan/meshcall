@@ -72,7 +72,7 @@
             XCTAssertEqual(total.total, 211)
 
             let chat = try await tunnel.duplex(fixture, "chat", ChatRequest(prefix: ">"), input: Text.self, output: Text.self)
-            var output = chat.makeAsyncIterator()
+            let output = chat.makeAsyncIterator()
             try await chat.send(Text(text: "x"))
             let reply = try await output.next()
             XCTAssertEqual(reply?.text, ">x")
@@ -136,7 +136,7 @@
             let tunnel = try Mesh(tunnel: grant)
             defer { Task { await tunnel.close() } }
             let stream = try await tunnel.serverStream(fixture, "count", Count(n: 1000, gap_ms: 20), of: Index.self)
-            var iterator = stream.makeAsyncIterator()
+            let iterator = stream.makeAsyncIterator()
             _ = try await iterator.next()
 
             let revoked = try await mesh.tunnels.revoke(grant.tunnelID!)
@@ -159,7 +159,7 @@
         func testCallsAfterARouterRestartReconnect() async throws {
             _ = try await mesh.unary(fixture, "echo", Echo(value: 1, text: "before"), as: Echo.self)
             let stream = try await mesh.serverStream(fixture, "count", Count(n: 1000, gap_ms: 20), of: Index.self)
-            var iterator = stream.makeAsyncIterator()
+            let iterator = stream.makeAsyncIterator()
             _ = try await iterator.next()
 
             try live.restartRouter()
@@ -181,7 +181,7 @@
             XCTAssertTrue(alive)
 
             let stream = try await mesh.serverStream(fixture, "count", Count(n: 1000, gap_ms: 20), of: Index.self)
-            var iterator = stream.makeAsyncIterator()
+            let iterator = stream.makeAsyncIterator()
             _ = try await iterator.next()
             // What an app finds after the system suspended it: a socket nobody answers.
             live.pauseRouter()

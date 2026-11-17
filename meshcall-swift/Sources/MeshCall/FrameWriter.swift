@@ -4,13 +4,20 @@ import Foundation
 /// then one frame per call in turn, so a large stream cannot starve the
 /// others. `enqueue` is synchronous: frames leave in the order the client
 /// produced them, which keeps a call's sequence numbers in order.
+///
+/// `ordered` (end-to-end connections) sends call frames strictly in the order
+/// they were queued instead: each was sealed with the session's next counter
+/// when queued, and a frame overtaken by more than the replay window would be
+/// refused as too old (as TypeScript, which serializes its outbound chain).
 final class FrameWriter: @unchecked Sendable {
     private let socket: WebSocketConnection
     private let maxFrameSize: Int
+    private let ordered: Bool
     private let lock = NSLock()
     private var controls: [Pending] = []
     private var calls: [String: [Pending]] = [:]
     private var order: [String] = []
+    private var sequence: UInt64 = 0
     private var draining = false
     private var closed: MeshCallError?
 
@@ -18,6 +25,7 @@ final class FrameWriter: @unchecked Sendable {
         let kind: String
         let text: String
         let ticket: Ticket
+        var seq: UInt64 = 0
     }
 
     /// Settles when the frame was handed to the socket, or failed.
@@ -59,9 +67,10 @@ final class FrameWriter: @unchecked Sendable {
         }
     }
 
-    init(socket: WebSocketConnection, maxFrameSize: Int) {
+    init(socket: WebSocketConnection, maxFrameSize: Int, ordered: Bool = false) {
         self.socket = socket
         self.maxFrameSize = maxFrameSize
+        self.ordered = ordered
     }
 
     func send(_ frame: Frame) async throws {
@@ -85,10 +94,12 @@ final class FrameWriter: @unchecked Sendable {
                 .resourceExhausted, "Not sent: \(frame.kind) is \(size) bytes, limit \(maxFrameSize)",
                 source: "client", reason: "frame_too_large")
         }
-        let pending = Pending(kind: frame.kind, text: text, ticket: Ticket())
+        var pending = Pending(kind: frame.kind, text: text, ticket: Ticket())
         // A control frame of a call whose frames are still queued (its
         // call.open, say) must not overtake them: the peer would not know the call.
         if let callID = frame.callID, !frame.isControl || calls[callID] != nil {
+            sequence += 1
+            pending.seq = sequence
             if calls[callID] == nil {
                 calls[callID] = []
                 order.append(callID)
@@ -142,7 +153,14 @@ final class FrameWriter: @unchecked Sendable {
             draining = false
             return nil
         }
-        let callID = order.removeFirst()
+        var position = 0
+        if ordered {
+            // The call whose next frame was queued first.
+            for (index, callID) in order.enumerated() where calls[callID]![0].seq < calls[order[position]]![0].seq {
+                position = index
+            }
+        }
+        let callID = order.remove(at: position)
         var queue = calls[callID]!
         let pending = queue.removeFirst()
         if queue.isEmpty {

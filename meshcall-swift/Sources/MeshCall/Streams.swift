@@ -8,10 +8,14 @@ public class ServerStream<Item: Decodable & Sendable>: AsyncSequence, @unchecked
 
     let core: ClientCore
     let state: StreamState
+    /// Keeps the connection open while the stream is in use, even if the
+    /// Mesh that opened it was released.
+    let lifetime: CoreLifetime?
 
-    init(core: ClientCore, state: StreamState) {
+    init(core: ClientCore, state: StreamState, lifetime: CoreLifetime? = nil) {
         self.core = core
         self.state = state
+        self.lifetime = lifetime
     }
 
     deinit {
@@ -20,10 +24,22 @@ public class ServerStream<Item: Decodable & Sendable>: AsyncSequence, @unchecked
         Task { await core.cancel(state, reason: "iterator_closed") }
     }
 
-    public struct AsyncIterator: AsyncIteratorProtocol {
+    /// A class so that leaving a `for try await` loop, which releases the
+    /// iterator, cancels the call even while the stream itself is kept (as
+    /// TypeScript's iterator `return()` does). After the stream ended the
+    /// cancel is a no-op.
+    public final class AsyncIterator: AsyncIteratorProtocol {
         let stream: ServerStream<Item>
 
-        public mutating func next() async throws -> Item? {
+        init(stream: ServerStream<Item>) { self.stream = stream }
+
+        deinit {
+            let core = stream.core
+            let state = stream.state
+            Task { await core.cancel(state, reason: "iterator_closed") }
+        }
+
+        public func next() async throws -> Item? {
             let core = stream.core
             let state = stream.state
             let value = try await withTaskCancellationHandler {

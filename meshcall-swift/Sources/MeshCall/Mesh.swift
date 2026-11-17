@@ -109,14 +109,16 @@ public protocol MeshCallRPC: Sendable {
 ///     let sessions = SessionsClient(mesh)          // generated
 ///     for try await event in try await sessions.watch(id: "s1") { … }
 public final class Mesh: MeshCallRPC, @unchecked Sendable {
-    let core: ClientCore
+    let lifetime: CoreLifetime
+    var core: ClientCore { lifetime.core }
     private let defaults: CallOptions
     private let owner: Bool
 
     public init(_ router: Router, options: MeshOptions = MeshOptions()) throws {
-        core = try ClientCore(endpoints: router.urls, options: options) { url, options in
+        let core = try ClientCore(endpoints: router.urls, options: options) { url, options in
             URLSessionWebSocket(url: url, maxFrameSize: options.maxFrameSize, handshakeTimeout: options.handshakeTimeout)
         }
+        lifetime = CoreLifetime(core)
         defaults = options.callOptions
         owner = true
     }
@@ -133,21 +135,21 @@ public final class Mesh: MeshCallRPC, @unchecked Sendable {
         try self.init(Router(grant.routerURL), options: options)
     }
 
-    init(core: ClientCore, defaults: CallOptions, owner: Bool) {
-        self.core = core
+    init(lifetime: CoreLifetime, defaults: CallOptions, owner: Bool) {
+        self.lifetime = lifetime
         self.defaults = defaults
         self.owner = owner
     }
 
     init(core: ClientCore) {
-        self.core = core
+        self.lifetime = CoreLifetime(core)
         self.defaults = core.options.callOptions
         self.owner = true
     }
 
     /// A view sharing this connection with `options` applied to every call.
     public func withOptions(_ options: CallOptions) -> Mesh {
-        Mesh(core: core, defaults: defaults.merged(with: options), owner: false)
+        Mesh(lifetime: lifetime, defaults: defaults.merged(with: options), owner: false)
     }
 
     public func withCallOptions(_ options: CallOptions) -> any MeshCallRPC { withOptions(options) }
@@ -206,7 +208,7 @@ public final class Mesh: MeshCallRPC, @unchecked Sendable {
             }
             box.value = try decodeReceived(value, as: Response.self, reason: "invalid_response")
         }
-        return box.value!
+        return try box.take(info)
     }
 
     private static func unaryAttempt(_ core: ClientCore, _ info: ClientCallInfo, _ payload: JSONValue) async throws
@@ -236,12 +238,12 @@ public final class Mesh: MeshCallRPC, @unchecked Sendable {
         let payload = try JSONValue(encoding: request)
         let info = ClientCallInfo(service: service, method: method, shape: .serverStream, options: merged)
         let box = Box<ServerStream<Item>>()
-        try await runChain(info) { [core] info in
+        try await runChain(info) { [core, lifetime] info in
             let state = try await core.openStream(
                 service: info.service, method: info.method, request: payload, options: info.options, duplex: false)
-            box.value = ServerStream(core: core, state: state)
+            box.value = ServerStream(core: core, state: state, lifetime: lifetime)
         }
-        return box.value!
+        return try box.take(info)
     }
 
     public func clientStream<
@@ -275,7 +277,7 @@ public final class Mesh: MeshCallRPC, @unchecked Sendable {
             let value = try await Self.awaitResult(core, pending)
             box.value = try decodeReceived(value, as: Response.self, reason: "invalid_response")
         }
-        return box.value!
+        return try box.take(info)
     }
 
     public func duplex<Request: Encodable & Sendable, Input: Encodable & Sendable, Output: Decodable & Sendable>(
@@ -290,12 +292,12 @@ public final class Mesh: MeshCallRPC, @unchecked Sendable {
         let payload = try JSONValue(encoding: request)
         let info = ClientCallInfo(service: service, method: method, shape: .duplex, options: merged)
         let box = Box<DuplexCall<Input, Output>>()
-        try await runChain(info) { [core] info in
+        try await runChain(info) { [core, lifetime] info in
             let state = try await core.openStream(
                 service: info.service, method: info.method, request: payload, options: info.options, duplex: true)
-            box.value = DuplexCall(core: core, state: state)
+            box.value = DuplexCall(core: core, state: state, lifetime: lifetime)
         }
-        return box.value!
+        return try box.take(info)
     }
 
     /// The interceptor chain, first interceptor outermost; the retry policy
@@ -315,12 +317,39 @@ public final class Mesh: MeshCallRPC, @unchecked Sendable {
     }
 }
 
+/// Closes the connection once the last `Mesh` sharing it (the owner and its
+/// `withOptions` views) and the last stream opened through them are released,
+/// so a reconnect attempt in progress does not go on retrying forever.
+final class CoreLifetime: Sendable {
+    let core: ClientCore
+
+    init(_ core: ClientCore) { self.core = core }
+
+    deinit {
+        let core = core
+        Task { await core.close() }
+    }
+}
+
 private final class Box<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var _value: Value?
     var value: Value? {
         get { lock.withLock { _value } }
         set { lock.withLock { _value = newValue } }
+    }
+
+    /// The call's result; none means an interceptor returned without calling
+    /// next, which a Void interceptor cannot answer for.
+    func take(_ info: ClientCallInfo) throws -> Value {
+        guard let value else {
+            throw MeshCallError.detailed(
+                .internal,
+                "An interceptor returned without calling next for \(info.service)/\(info.method): "
+                    + "call next, or throw to end the call",
+                source: "client", reason: "interceptor_skipped_next")
+        }
+        return value
     }
 }
 

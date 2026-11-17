@@ -282,7 +282,9 @@ actor ClientCore {
         }
     }
 
-    /// One pass over the endpoints, starting from the last good one.
+    /// One pass over the endpoints, starting from the last good one. A
+    /// refusal from one Router does not stop the pass: the credentials may be
+    /// good on the next (openWithRetry stops on a refusal after the pass).
     private func openAnyEndpoint() async throws {
         var last: MeshCallError = .lost("Could not connect")
         for offset in 0..<endpoints.count {
@@ -293,7 +295,6 @@ actor ClientCore {
                 return
             } catch let error as MeshCallError {
                 last = error
-                if error.code == .unauthenticated || error.code == .permissionDenied { throw error }
             }
         }
         throw last
@@ -301,7 +302,7 @@ actor ClientCore {
 
     private func open(_ url: URL) async throws {
         let socket = socketFactory(url, options)
-        let writer = FrameWriter(socket: socket, maxFrameSize: options.maxFrameSize)
+        let writer = FrameWriter(socket: socket, maxFrameSize: options.maxFrameSize, ordered: options.e2eKey != nil)
         let timedOut = Flag()
         let timeout = options.handshakeTimeout
         let watchdog = Task {
@@ -727,6 +728,8 @@ actor ClientCore {
     func openCall(
         service: String, method: String, request: JSONValue, options: CallOptions, input: Bool
     ) async throws -> PendingCall {
+        // Again here: interceptors may have added metadata after Mesh validated it.
+        try validateMetadata(options.metadata)
         let start = ContinuousClock.now
         try await connect(within: localBudget(options, since: start))
         if Task.isCancelled { throw MeshCallError.callCancelled() }
@@ -812,6 +815,7 @@ actor ClientCore {
     func openStream(
         service: String, method: String, request: JSONValue, options: CallOptions, duplex: Bool
     ) async throws -> StreamState {
+        try validateMetadata(options.metadata)
         let start = ContinuousClock.now
         try await connect(within: localBudget(options, since: start))
         if Task.isCancelled { throw MeshCallError.callCancelled() }

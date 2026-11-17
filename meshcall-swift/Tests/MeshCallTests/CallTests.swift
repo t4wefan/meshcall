@@ -202,7 +202,8 @@
                 if seen == 3 { break }
             }
             XCTAssertEqual(seen, 3)
-            // The connection is still good.
+            // The cancel reached the server, and the connection is still good.
+            try await waitForNoCallsInFlight()
             let echo = try await mesh.unary(fixture, "echo", Echo(value: 2, text: "after"), as: Echo.self)
             XCTAssertEqual(echo.value, 2)
         }
@@ -279,7 +280,7 @@
         // conformance-scenario: duplex.interleaved
         func testDuplexInterleavesAndHalfCloses() async throws {
             let chat = try await mesh.duplex(fixture, "chat", ChatRequest(prefix: "~"), input: Text.self, output: Text.self)
-            var output = chat.makeAsyncIterator()
+            let output = chat.makeAsyncIterator()
             try await chat.send(Text(text: "a"))
             let first = try await output.next()
             XCTAssertEqual(first?.text, "~a")
@@ -296,7 +297,7 @@
         // conformance-scenario: duplex.server_half_close
         func testDuplexOutputEndsWhileInputStaysOpen() async throws {
             let call = try await mesh.duplex(fixture, "announce", Empty(), input: Text.self, output: Text.self)
-            var output = call.makeAsyncIterator()
+            let output = call.makeAsyncIterator()
             let hello = try await output.next()
             XCTAssertEqual(hello?.text, "hello")
             try await call.send(Text(text: "still listening"))
