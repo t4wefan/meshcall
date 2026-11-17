@@ -97,8 +97,9 @@ public protocol MeshCallRPC: Sendable {
         _ service: String, _ method: String, _ request: Request, input: Input.Type, output: Output.Type,
         options: DuplexCallOptions
     ) async throws -> DuplexCall<Input, Output>
-    /// A view sharing this connection with `options` applied to every call.
-    func withOptions(_ options: CallOptions) -> Self
+    /// A view sharing this connection with `options` applied to every call;
+    /// generated clients' `withOptions` use it.
+    func withCallOptions(_ options: CallOptions) -> any MeshCallRPC
 }
 
 /// A MeshCall client connected to a Router. One `Mesh` holds one WebSocket,
@@ -144,9 +145,12 @@ public final class Mesh: MeshCallRPC, @unchecked Sendable {
         self.owner = true
     }
 
-    public func withOptions(_ options: CallOptions) -> Self {
-        Self(core: core, defaults: defaults.merged(with: options), owner: false)
+    /// A view sharing this connection with `options` applied to every call.
+    public func withOptions(_ options: CallOptions) -> Mesh {
+        Mesh(core: core, defaults: defaults.merged(with: options), owner: false)
     }
+
+    public func withCallOptions(_ options: CallOptions) -> any MeshCallRPC { withOptions(options) }
 
     /// The Router's `TunnelService`: open, revoke and list tunnels.
     public var tunnels: TunnelsClient { TunnelsClient(self) }

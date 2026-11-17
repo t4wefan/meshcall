@@ -57,6 +57,7 @@ func TestGeneratorsMatchGolden(t *testing.T) {
 				}
 			}
 			expect("client.go", RenderGoClient(service, GoOptions{}))
+			expect("client.swift", RenderSwiftClient(service, SwiftOptions{}))
 			expect("single.py", RenderPythonClient(service, PythonOptions{}))
 			expect("models.py", RenderPythonModels(service))
 			expect("client.py", RenderPythonClientModule(service, PythonOptions{}))

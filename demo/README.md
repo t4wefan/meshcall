@@ -20,6 +20,8 @@ Every demo is Router-first: services mount onto a `Mesh` connected to a `Router`
 - `router/` — a standalone Router process (`LocalRouter`), a service registered
   with it, and a client that inspects `mesh.registry` and calls the service.
 - `ts2py/` — a TypeScript service and a generated Python uv client package.
+- `ts2swift/` — the same TypeScript service called from a generated Swift
+  client (a Swift package, `swift run`, macOS).
 
 Duplex is a restricted shape of last resort (see
 [Duplex calls](../docs/protocol.md#duplex-calls)); it is covered by the
