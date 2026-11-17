@@ -10,6 +10,16 @@ import (
 	"github.com/t4wefan/meshcall/meshcall-router/internal/contract"
 )
 
+func init() {
+	registerTarget(Target{
+		Language: "go", Extension: ".go", Golden: "client.go",
+		FileName: func(*contract.Service, TargetOptions) string { return "client.go" },
+		Render: func(service *contract.Service, opts TargetOptions) string {
+			return RenderGoClient(service, GoOptions{PackageName: opts.PackageName, RuntimeImport: opts.RuntimeImport})
+		},
+	})
+}
+
 // GoOptions configures the Go client generator.
 type GoOptions struct {
 	// PackageName is the generated file's package (default: the service's

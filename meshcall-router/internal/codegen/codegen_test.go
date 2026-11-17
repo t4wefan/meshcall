@@ -56,8 +56,9 @@ func TestGeneratorsMatchGolden(t *testing.T) {
 					t.Errorf("%s differs:\n%s", name, firstDiff(string(want), got))
 				}
 			}
-			expect("client.go", RenderGoClient(service, GoOptions{}))
-			expect("client.swift", RenderSwiftClient(service, SwiftOptions{}))
+			for _, target := range Targets() {
+				expect(target.Golden, target.Render(service, TargetOptions{}))
+			}
 			expect("single.py", RenderPythonClient(service, PythonOptions{}))
 			expect("models.py", RenderPythonModels(service))
 			expect("client.py", RenderPythonClientModule(service, PythonOptions{}))

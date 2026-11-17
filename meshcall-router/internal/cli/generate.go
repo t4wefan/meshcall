@@ -19,7 +19,7 @@ type GenerateOptions struct {
 	// in module:Class form, which is exported through the Python SDK first.
 	Source   string
 	Service  string // selects one service of a multi-service document
-	Language string // python | typescript | go | swift
+	Language string // python | typescript | a single-file target (go, swift, …)
 	Output   string // directory, or a file path with SingleFile
 
 	SingleFile          bool
@@ -36,12 +36,12 @@ func Generate(ctx context.Context, opts GenerateOptions) ([]string, error) {
 	if opts.Output == "" {
 		return nil, errors.New("--output is required")
 	}
-	switch opts.Language {
-	case "", "python":
+	if opts.Language == "" {
 		opts.Language = "python"
-	case "typescript", "go", "swift":
-	default:
-		return nil, fmt.Errorf("unknown language %q (python | typescript | go | swift)", opts.Language)
+	}
+	target, single := codegen.LookupTarget(opts.Language)
+	if !single && opts.Language != "python" && opts.Language != "typescript" {
+		return nil, fmt.Errorf("unknown language %q (%s)", opts.Language, strings.Join(Languages(), " | "))
 	}
 	service, err := loadService(ctx, opts.Source, opts.Service)
 	if err != nil {
@@ -58,30 +58,13 @@ func Generate(ctx context.Context, opts GenerateOptions) ([]string, error) {
 			panic(r)
 		}
 	}()
-	if opts.Language == "go" {
-		// One file: <output> if it names a .go file, else <output>/client.go.
-		path := opts.Output
-		if !strings.HasSuffix(path, ".go") {
-			path = filepath.Join(path, "client.go")
+	if single {
+		// One file per service: <output> if it names one, else a file in <output>.
+		targetOpts := codegen.TargetOptions{
+			ClassName: opts.ClassName, PackageName: opts.PackageName, RuntimeImport: opts.RuntimeImport,
 		}
-		content := codegen.RenderGoClient(service, codegen.GoOptions{PackageName: opts.PackageName, RuntimeImport: opts.RuntimeImport})
-		if err := codegen.WriteFile(path, content); err != nil {
-			return nil, err
-		}
-		return []string{path}, nil
-	}
-	if opts.Language == "swift" {
-		// One file: <output> if it names a .swift file, else <output>/<Client>.swift.
-		swiftOpts := codegen.SwiftOptions{ClassName: opts.ClassName, RuntimeImport: opts.RuntimeImport}
-		path := opts.Output
-		if !strings.HasSuffix(path, ".swift") {
-			name := opts.ClassName
-			if name == "" {
-				name = codegen.SwiftClientName(service)
-			}
-			path = filepath.Join(path, name+".swift")
-		}
-		if err := codegen.WriteFile(path, codegen.RenderSwiftClient(service, swiftOpts)); err != nil {
+		path := codegen.TargetPath(target, service, opts.Output, targetOpts)
+		if err := codegen.WriteFile(path, target.Render(service, targetOpts)); err != nil {
 			return nil, err
 		}
 		return []string{path}, nil
@@ -119,6 +102,16 @@ func Generate(ctx context.Context, opts GenerateOptions) ([]string, error) {
 		written = append(written, filepath.Join(opts.Output, filepath.FromSlash(rel)))
 	}
 	return written, err
+}
+
+// Languages lists every --language value: the package generators, then
+// the single-file targets.
+func Languages() []string {
+	out := []string{"python", "typescript"}
+	for _, t := range codegen.Targets() {
+		out = append(out, t.Language)
+	}
+	return out
 }
 
 // Export writes the contract document for a Python service (module:Class).
