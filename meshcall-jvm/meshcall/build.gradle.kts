@@ -15,6 +15,10 @@ kotlin {
     compilerOptions {
         // Java 11 bytecode: every current Android toolchain (D8/R8) accepts it.
         jvmTarget.set(JvmTarget.JVM_11)
+        // Metadata an app compiled with Kotlin 2.1 or later can read (a compiler
+        // reads one version ahead), whatever compiler builds the runtime.
+        apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_2)
+        languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_2)
         jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.ENABLE)
     }
 }

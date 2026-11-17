@@ -1,7 +1,9 @@
 [versions]
 kotlin = "2.4.21"
-coroutines = "1.11.0"
-serialization = "1.13.0"
+# The lowest releases built with Kotlin 2.1, so an app on Kotlin 2.1 or later can
+# use the runtime; apps that depend on newer ones get those (Gradle takes the highest).
+coroutines = "1.10.2"
+serialization = "1.8.1"
 okhttp = "5.5.1"
 bouncycastle = "1.87"
 junit = "5.14.4"

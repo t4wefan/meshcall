@@ -30,6 +30,19 @@ dependencies { implementation("io.github.t4wefan:meshcall:0.3.0") }
 plugins { kotlin("plugin.serialization") } // 生成的客户端使用 kotlinx.serialization
 ```
 
+对应用的要求：Kotlin 2.1 或更高，并使用同版本的 Kotlin serialization 插件。运行时依赖
+kotlinx-coroutines 1.10.2 和 kotlinx-serialization-json 1.8.1 或更高版本（应用里有更新的
+版本时，Gradle 会用更新的）。这两个是用 Kotlin 2.1 构建的最早版本；运行时的元数据固定为
+Kotlin 2.2，Kotlin 2.1 的编译器仍能读取。已用 Kotlin 2.1.21 编译生成的客户端验证过。
+
+**R8 / ProGuard。** 除了 kotlinx.serialization、coroutines 和 OkHttp 自带的规则，不需要
+额外规则：运行时不用反射。缩减后，BouncyCastle 的类除了被 X25519 内联的部分都会被移除，
+但它的 jar 里多版本（multi-release）资源（约 100 KiB）会原样保留，Android 应用可以排除：
+
+```kotlin
+android { packaging { resources.excludes += "META-INF/versions/*/org/bouncycastle/**" } }
+```
+
 ## 生成的客户端
 
 可以从任意服务的契约生成类型化客户端：Python 的 `module:Class`，或者 TypeScript、Go
@@ -120,6 +133,8 @@ X25519 用的是 BouncyCastle 的纯 Java RFC 7748 实现，直接调用，不�
 因此不会和 Android 自带的那份冲突。JCA 的 `XDH` 要到 Android API 33 才有。AES-256-GCM、
 SHA-256 和 HMAC 来自 JCA，所有 Android 版本都可用。实现已经用一致性测试工具同一份
 公开的 Noise 测试向量验证过。
+之所以保留 BouncyCastle、不自己实现 RFC 7748：它的域运算是常数时间的，并且有人维护；
+jar 里的其余部分会被 R8 移除（见上文）。
 
 ## 调用、错误与超时
 

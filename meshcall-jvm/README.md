@@ -33,6 +33,24 @@ dependencies { implementation("io.github.t4wefan:meshcall:0.3.0") }
 plugins { kotlin("plugin.serialization") } // generated clients use kotlinx.serialization
 ```
 
+Requirements for the app: Kotlin 2.1 or later, with the Kotlin
+serialization plugin of the same version; the runtime asks for
+kotlinx-coroutines 1.10.2 and kotlinx-serialization-json 1.8.1 or later
+(Gradle uses newer ones if the app has them). These are the oldest releases
+built with Kotlin 2.1, and the runtime's metadata is pinned to Kotlin 2.2,
+which a Kotlin 2.1 compiler still reads. A generated client compiled with
+Kotlin 2.1.21 confirms it.
+
+**R8 / ProGuard.** No rules are needed beyond those kotlinx.serialization,
+coroutines and OkHttp ship: the runtime uses no reflection. Shrinking keeps
+none of BouncyCastle's classes beyond what X25519 inlines, but its jar's
+multi-release resources (about 100 KiB) are copied as-is; an Android app can
+drop them:
+
+```kotlin
+android { packaging { resources.excludes += "META-INF/versions/*/org/bouncycastle/**" } }
+```
+
 ## A generated client
 
 Generate a typed client from any service's contract: a Python
@@ -133,6 +151,8 @@ X25519 comes from BouncyCastle's pure-Java RFC 7748 code, called directly
 copy). JCA's `XDH` needs Android API 33. AES-256-GCM, SHA-256 and HMAC come
 from JCA, available on every Android level. The implementation is checked
 against the same published Noise test vector as the conformance harness.
+BouncyCastle is kept instead of a hand-written RFC 7748: its field arithmetic
+is constant-time and maintained, and R8 removes the rest of the jar (above).
 
 ## Calls, errors, deadlines
 
