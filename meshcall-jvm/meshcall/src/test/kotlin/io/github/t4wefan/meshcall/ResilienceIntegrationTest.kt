@@ -48,7 +48,10 @@ class ResilienceIntegrationTest {
             val inFlight = async { assertFailsWith<UnavailableException> { mesh.unary(FIXTURE, "slow", buildJsonObject { put("ms", 20_000) }) } }
             delay(200)
             env.command("restart_router") // answered once the fixture has registered again
-            assertTrue(inFlight.await().retryable)
+            // A crash: no close frame and no call.error, so the client found the loss itself.
+            val lost = inFlight.await()
+            assertTrue(lost.retryable, lost.toString())
+            assertTrue(lost.message!!.startsWith("Connection was lost"), lost.toString())
             assertEquals(1, mesh.unary(FIXTURE, "echo", echo, within).jsonObject["value"]!!.jsonPrimitive.int)
         }
     }
