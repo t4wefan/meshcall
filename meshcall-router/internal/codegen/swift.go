@@ -85,6 +85,16 @@ func swiftEscape(name string) string {
 	return name
 }
 
+// swiftLabel spells an argument label at a call site, where Swift accepts
+// every keyword but inout, var and let as it is (and warns about backquotes).
+func swiftLabel(name string) string {
+	switch name {
+	case "inout", "var", "let":
+		return "`" + name + "`"
+	}
+	return name
+}
+
 // swiftType spells a type: local inside the declaration enclosing a nested
 // type, qualified (Request.Diff) anywhere else.
 func swiftType(e TypeExpr, qualified bool) string {
@@ -343,7 +353,7 @@ func writeSwiftMethod(b *strings.Builder, model *ClientModel, m ClientMethod) {
 		}
 		var args []string
 		for _, p := range m.RequestArgs {
-			args = append(args, swiftEscape(p.Field.Name)+": "+swiftEscape(p.Label))
+			args = append(args, swiftLabel(p.Field.Name)+": "+swiftEscape(p.Label))
 		}
 		request = m.Request + "(" + strings.Join(args, ", ") + ")"
 	}

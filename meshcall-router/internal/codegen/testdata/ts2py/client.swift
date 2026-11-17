@@ -87,6 +87,6 @@ public struct TypeScriptGreetingServiceClient: Sendable {
 
     /// Greet name repeat times and say which runtime answered.
     public func greet(name: String, `repeat`: Int, options: CallOptions = CallOptions()) async throws -> GreetingResult {
-        try await rpc.unary(Self.serviceName, "greet", GreetingRequest(name: name, `repeat`: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
+        try await rpc.unary(Self.serviceName, "greet", GreetingRequest(name: name, repeat: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
     }
 }

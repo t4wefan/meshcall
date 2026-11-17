@@ -110,7 +110,7 @@ public struct ShowcaseServiceClient: Sendable {
 
     /// Parameters are the request: ``name`` and ``repeat`` are its fields.
     public func greet(name: String, `repeat`: Int = 1, options: CallOptions = CallOptions()) async throws -> GreetingResult {
-        try await rpc.unary(Self.serviceName, "greet", ShowcaseServiceGreetRequest(name: name, `repeat`: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
+        try await rpc.unary(Self.serviceName, "greet", ShowcaseServiceGreetRequest(name: name, repeat: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
     }
 
     /// A model-typed parameter is just one field of the request.
