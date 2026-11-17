@@ -101,7 +101,14 @@ internal class MeshCallClient(
                 started.invokeOnCompletion { synchronized(lock) { if (connecting === started) connecting = null } }
             }
         }
-        return attempt.await()
+        return try {
+            attempt.await()
+        } catch (cancelled: CancellationException) {
+            // The caller itself was cancelled: let that through.
+            currentCoroutineContext().ensureActive()
+            // close() cancelled the shared attempt: fail like the calls it ended.
+            throw UnavailableException("Client is closed")
+        }
     }
 
     /** Pings over the current connection; false when there is none or it did not answer in time. */

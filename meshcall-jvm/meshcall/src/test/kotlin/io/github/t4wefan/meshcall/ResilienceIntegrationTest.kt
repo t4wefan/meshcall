@@ -144,6 +144,24 @@ class ResilienceIntegrationTest {
         }
     }
 
+    @Test
+    fun closeWhileConnectingFailsTheCallAsUnavailable() = test {
+        // A listener that accepts and never answers: the WebSocket upgrade hangs.
+        java.net.ServerSocket(0).use { silent ->
+            val accepted = mutableListOf<java.net.Socket>()
+            val acceptor = Thread { runCatching { while (true) accepted += silent.accept() } }.apply { isDaemon = true; start() }
+            val mesh = Mesh(Router("ws://127.0.0.1:${silent.localPort}"))
+            val pending = async { runCatching { mesh.unary(FIXTURE, "echo", echo) }.exceptionOrNull() }
+            delay(300)
+            mesh.close()
+            val error = withTimeout(2_000) { pending.await() }
+            assertTrue(error is UnavailableException, "got $error")
+            assertEquals("Client is closed", error.message)
+            accepted.forEach { it.close() }
+            acceptor.interrupt()
+        }
+    }
+
     // conformance-scenario: reconnect.failover
     @Test
     fun endpointsFailOver() = test {
