@@ -36,6 +36,6 @@ public struct CounterServiceClient: Sendable {
 
     /// Stream the integers from 0 up to, but not including, ``stop``.
     public func count(stop: Int, options: CallOptions = CallOptions()) async throws -> ServerStream<CountItem> {
-        try await rpc.serverStream(Self.serviceName, "count", CounterServiceCountRequest(stop: stop), of: CountItem.self, options: options)
+        return try await rpc.serverStream(Self.serviceName, "count", CounterServiceCountRequest(stop: stop), of: CountItem.self, options: options)
     }
 }

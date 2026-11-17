@@ -110,21 +110,21 @@ public struct ShowcaseServiceClient: Sendable {
 
     /// Parameters are the request: ``name`` and ``repeat`` are its fields.
     public func greet(name: String, `repeat`: Int = 1, options: CallOptions = CallOptions()) async throws -> GreetingResult {
-        try await rpc.unary(Self.serviceName, "greet", ShowcaseServiceGreetRequest(name: name, repeat: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
+        return try await rpc.unary(Self.serviceName, "greet", ShowcaseServiceGreetRequest(name: name, repeat: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
     }
 
     /// A model-typed parameter is just one field of the request.
     public func welcome(profile: WelcomeRequest, options: CallOptions = CallOptions()) async throws -> WelcomeResult {
-        try await rpc.unary(Self.serviceName, "welcome", ShowcaseServiceWelcomeRequest(profile: profile), as: WelcomeResult.self, options: CallOptions(idempotent: true).merged(with: options))
+        return try await rpc.unary(Self.serviceName, "welcome", ShowcaseServiceWelcomeRequest(profile: profile), as: WelcomeResult.self, options: CallOptions(idempotent: true).merged(with: options))
     }
 
     /// Server stream: the client receives typed items asynchronously.
     public func count(start: Int, stop: Int, options: CallOptions = CallOptions()) async throws -> ServerStream<CountItem> {
-        try await rpc.serverStream(Self.serviceName, "count", ShowcaseServiceCountRequest(start: start, stop: stop), of: CountItem.self, options: options)
+        return try await rpc.serverStream(Self.serviceName, "count", ShowcaseServiceCountRequest(start: start, stop: stop), of: CountItem.self, options: options)
     }
 
     /// Client stream: the service consumes a typed inbound stream.
     public func sumValues<Items: AsyncSequence & Sendable>(offset: Int, items: Items, options: CallOptions = CallOptions()) async throws -> TotalResult where Items.Element == NumberItem {
-        try await rpc.clientStream(Self.serviceName, "sum_values", ShowcaseServiceSumValuesRequest(offset: offset), items: items, as: TotalResult.self, options: options)
+        return try await rpc.clientStream(Self.serviceName, "sum_values", ShowcaseServiceSumValuesRequest(offset: offset), items: items, as: TotalResult.self, options: options)
     }
 }

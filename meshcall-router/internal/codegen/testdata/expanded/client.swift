@@ -36,6 +36,6 @@ public struct ExpandedServiceClient: Sendable {
     }
 
     public func add(left: Int, right: Int = 1, options: CallOptions = CallOptions()) async throws -> ExpandedResult {
-        try await rpc.unary(Self.serviceName, "add", ExpandedServiceAddRequest(left: left, right: right), as: ExpandedResult.self, options: options)
+        return try await rpc.unary(Self.serviceName, "add", ExpandedServiceAddRequest(left: left, right: right), as: ExpandedResult.self, options: options)
     }
 }

@@ -139,26 +139,26 @@ public struct LlmServiceClient: Sendable {
 
     /// Create a session and return it; each call creates a new one.
     public func newSession(title: String = "New session", options: CallOptions = CallOptions()) async throws -> NewSessionResponse {
-        try await rpc.unary(Self.serviceName, "new_session", LlmServiceNewSessionRequest(title: title), as: NewSessionResponse.self, options: options)
+        return try await rpc.unary(Self.serviceName, "new_session", LlmServiceNewSessionRequest(title: title), as: NewSessionResponse.self, options: options)
     }
 
     /// List the sessions held in this process.
     public func listSessions(options: CallOptions = CallOptions()) async throws -> ListSessionsResponse {
-        try await rpc.unary(Self.serviceName, "list_sessions", LlmServiceListSessionsRequest(), as: ListSessionsResponse.self, options: CallOptions(idempotent: true).merged(with: options))
+        return try await rpc.unary(Self.serviceName, "list_sessions", LlmServiceListSessionsRequest(), as: ListSessionsResponse.self, options: CallOptions(idempotent: true).merged(with: options))
     }
 
     /// Count simple lexical tokens; this deliberately is not a model tokenizer.
     public func countTokens(text: String, options: CallOptions = CallOptions()) async throws -> TokenCountResponse {
-        try await rpc.unary(Self.serviceName, "count_tokens", LlmServiceCountTokensRequest(text: text), as: TokenCountResponse.self, options: CallOptions(idempotent: true).merged(with: options))
+        return try await rpc.unary(Self.serviceName, "count_tokens", LlmServiceCountTokensRequest(text: text), as: TokenCountResponse.self, options: CallOptions(idempotent: true).merged(with: options))
     }
 
     /// Collect prompt chunks to demonstrate client-to-server backpressure.
     public func assemblePrompt<Items: AsyncSequence & Sendable>(items: Items, options: CallOptions = CallOptions()) async throws -> PromptAssembly where Items.Element == PromptChunk {
-        try await rpc.clientStream(Self.serviceName, "assemble_prompt", LlmServiceAssemblePromptRequest(), items: items, as: PromptAssembly.self, options: options)
+        return try await rpc.clientStream(Self.serviceName, "assemble_prompt", LlmServiceAssemblePromptRequest(), items: items, as: PromptAssembly.self, options: options)
     }
 
     /// Stream a deterministic reply for ``prompt`` into ``session_id``.
     public func streamChat(sessionID: String, prompt: String, maxTokens: Int = 64, options: CallOptions = CallOptions()) async throws -> ServerStream<ChatChunk> {
-        try await rpc.serverStream(Self.serviceName, "stream_chat", LlmServiceStreamChatRequest(sessionID: sessionID, prompt: prompt, maxTokens: maxTokens), of: ChatChunk.self, options: options)
+        return try await rpc.serverStream(Self.serviceName, "stream_chat", LlmServiceStreamChatRequest(sessionID: sessionID, prompt: prompt, maxTokens: maxTokens), of: ChatChunk.self, options: options)
     }
 }

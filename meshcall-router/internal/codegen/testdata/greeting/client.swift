@@ -46,6 +46,6 @@ public struct GreetingServiceClient: Sendable {
     }
 
     public func greet(request: GreetingRequest, options: CallOptions = CallOptions()) async throws -> GreetingResult {
-        try await rpc.unary(Self.serviceName, "greet", GreetingServiceGreetRequest(request: request), as: GreetingResult.self, options: options)
+        return try await rpc.unary(Self.serviceName, "greet", GreetingServiceGreetRequest(request: request), as: GreetingResult.self, options: options)
     }
 }

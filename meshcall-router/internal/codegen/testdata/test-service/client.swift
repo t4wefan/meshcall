@@ -74,18 +74,18 @@ public struct TestServiceClient: Sendable {
     }
 
     public func unary(request: Request, options: CallOptions = CallOptions()) async throws -> Result {
-        try await rpc.unary(Self.serviceName, "unary", TestServiceUnaryRequest(request: request), as: Result.self, options: options)
+        return try await rpc.unary(Self.serviceName, "unary", TestServiceUnaryRequest(request: request), as: Result.self, options: options)
     }
 
     public func download(request: Request, options: CallOptions = CallOptions()) async throws -> ServerStream<Item> {
-        try await rpc.serverStream(Self.serviceName, "download", TestServiceDownloadRequest(request: request), of: Item.self, options: options)
+        return try await rpc.serverStream(Self.serviceName, "download", TestServiceDownloadRequest(request: request), of: Item.self, options: options)
     }
 
     public func upload<Items: AsyncSequence & Sendable>(request: Request, items: Items, options: CallOptions = CallOptions()) async throws -> Result where Items.Element == Item {
-        try await rpc.clientStream(Self.serviceName, "upload", TestServiceUploadRequest(request: request), items: items, as: Result.self, options: options)
+        return try await rpc.clientStream(Self.serviceName, "upload", TestServiceUploadRequest(request: request), items: items, as: Result.self, options: options)
     }
 
     public func duplex(request: Request, options: DuplexCallOptions = DuplexCallOptions()) async throws -> DuplexCall<Item, Item> {
-        try await rpc.duplex(Self.serviceName, "duplex", TestServiceDuplexRequest(request: request), input: Item.self, output: Item.self, options: options)
+        return try await rpc.duplex(Self.serviceName, "duplex", TestServiceDuplexRequest(request: request), input: Item.self, output: Item.self, options: options)
     }
 }

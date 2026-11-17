@@ -22,6 +22,15 @@ type Naming struct {
 	// ReservedParams are parameter names generated methods add themselves
 	// (options, instance, items, …); a field with one of them gets a "Value" suffix.
 	ReservedParams map[string]bool
+	// ReservedTypes are type names the generated file uses besides its own:
+	// the language's (String, Int), the runtime's (CallOptions, Flow) and its
+	// own helpers (CodingKeys). A payload type, definition or nested type
+	// spelled like one gets a "Value" suffix.
+	ReservedTypes map[string]bool
+	// ReservedMembers are member names the generated code uses itself (self,
+	// init, rawValue, withOptions, serializer, …). A field, enum constant or
+	// method spelled like one gets a "Value" suffix.
+	ReservedMembers map[string]bool
 }
 
 // ExprKind is the kind of a field or alias type.
@@ -135,20 +144,29 @@ type ClientModel struct {
 // BuildClientModel reads a service with a target's naming.
 func BuildClientModel(service *contract.Service, naming Naming, clientName string) *ClientModel {
 	registry := newTypeRegistry(service, naming.TypeName)
-	b := &modelBuilder{naming: naming, taken: map[string]bool{clientName: true}}
+	b := &modelBuilder{naming: naming, taken: map[string]bool{clientName: true}, renamed: map[string]string{}}
 	for _, name := range registry.names {
 		b.taken[name] = true
 	}
 	for _, def := range registry.definitions {
 		b.taken[def.name] = true
 	}
+	// The registry's names are shared with the Python and TypeScript
+	// generators; a target's reserved type names are avoided here.
+	for _, name := range append(registry.TypeNames(), definitionNames(registry)...) {
+		if naming.ReservedTypes[name] && b.renamed[name] == "" {
+			b.renamed[name] = b.unique(name, func(n string) bool { return b.taken[n] || naming.ReservedTypes[n] })
+			b.taken[b.renamed[name]] = true
+		}
+	}
 	model := &ClientModel{
 		Service: service, ClientName: clientName, Description: derefOr(service.Description), Targeted: service.Targeted,
 	}
 	roots := map[string]*TypeDecl{}
 	rendered := map[string]bool{}
+	methodNames := map[string]bool{}
 	for _, ref := range registry.refs {
-		names := registry.DefinitionNames(ref)
+		names := b.definitionNames(registry, ref)
 		if defs := ref.Schema.Obj("$defs"); defs != nil {
 			for _, key := range defs.Keys {
 				if rendered[names[key]] {
@@ -158,7 +176,7 @@ func BuildClientModel(service *contract.Service, naming Naming, clientName strin
 				model.Types = append(model.Types, b.typeDecl(names[key], defs.Obj(key), names))
 			}
 		}
-		name := registry.Name(ref)
+		name := b.typeName(registry.Name(ref))
 		if !rendered[name] {
 			rendered[name] = true
 			decl := b.typeDecl(name, ref.Schema, names)
@@ -167,14 +185,86 @@ func BuildClientModel(service *contract.Service, naming Naming, clientName strin
 		}
 	}
 	for _, m := range service.Methods {
-		model.Methods = append(model.Methods, b.method(m, registry, roots))
+		model.Methods = append(model.Methods, b.method(m, registry, roots, methodNames))
 	}
 	return model
 }
 
 type modelBuilder struct {
-	naming Naming
-	taken  map[string]bool // root, definition and client type names
+	naming  Naming
+	taken   map[string]bool   // root, definition, client and top-level nested type names
+	renamed map[string]string // registry name → name, for reserved type names
+}
+
+func definitionNames(registry *typeRegistry) []string {
+	out := make([]string, 0, len(registry.definitions))
+	for _, def := range registry.definitions {
+		out = append(out, def.name)
+	}
+	return out
+}
+
+// typeName is a registry name as this target spells it.
+func (b *modelBuilder) typeName(name string) string {
+	if renamed := b.renamed[name]; renamed != "" {
+		return renamed
+	}
+	return name
+}
+
+func (b *modelBuilder) definitionNames(registry *typeRegistry, ref *contract.TypeRef) map[string]string {
+	names := map[string]string{}
+	for key, name := range registry.DefinitionNames(ref) {
+		names[key] = b.typeName(name)
+	}
+	return names
+}
+
+// unique is name, or name with a "Value" suffix (numbered from 2) when name clashes.
+func (b *modelBuilder) unique(name string, clash func(string) bool) string {
+	if !clash(name) {
+		return name
+	}
+	candidate := name + "Value"
+	for i := 2; clash(candidate); i++ {
+		candidate = name + "Value" + itoa(i)
+	}
+	return candidate
+}
+
+// memberName spells a field, enum constant or method, avoiding reserved members.
+func (b *modelBuilder) memberName(value, fallback string) string {
+	name := b.naming.MemberName(value, fallback)
+	if b.naming.ReservedMembers[name] {
+		name += "Value"
+	}
+	return name
+}
+
+// nestedName names the struct for an inline object, unique in the scope it
+// is declared in: its siblings, the types enclosing it, every top-level type
+// and the target's reserved type names.
+func (b *modelBuilder) nestedName(hint string, owner []string, siblings []*TypeDecl) string {
+	name := b.unique(b.naming.TypeName(hint, "Value"), func(n string) bool {
+		if b.taken[n] || b.naming.ReservedTypes[n] {
+			return true
+		}
+		for _, enclosing := range owner {
+			if enclosing == n {
+				return true
+			}
+		}
+		for _, sibling := range siblings {
+			if sibling.Name == n {
+				return true
+			}
+		}
+		return false
+	})
+	if len(owner) == 0 {
+		b.taken[name] = true // declared at top level, next to an alias
+	}
+	return name
 }
 
 func (b *modelBuilder) typeDecl(name string, schema *contract.Object, defNames map[string]string) *TypeDecl {
@@ -182,7 +272,7 @@ func (b *modelBuilder) typeDecl(name string, schema *contract.Object, defNames m
 		decl := &TypeDecl{Name: name, Kind: DeclEnum, Description: schema.Str("description")}
 		used := map[string]bool{}
 		for _, v := range enum {
-			member := b.naming.MemberName(v.(string), "value")
+			member := b.memberName(v.(string), "value")
 			if used[member] {
 				continue
 			}
@@ -221,7 +311,7 @@ func (b *modelBuilder) fields(schema *contract.Object, defNames map[string]strin
 	var out []Field
 	for _, key := range props.Keys {
 		prop := props.Obj(key)
-		name := b.naming.MemberName(key, "field")
+		name := b.memberName(key, "field")
 		if used[name]++; used[name] > 1 {
 			name += itoa(used[name])
 		}
@@ -248,7 +338,7 @@ func (b *modelBuilder) expr(schema *contract.Object, defNames map[string]string,
 		if name, ok := defNames[key]; ok {
 			return TypeExpr{Kind: ExprNamed, Path: []string{name}}, false
 		}
-		return TypeExpr{Kind: ExprNamed, Path: []string{b.naming.TypeName(key, "Value")}}, false
+		return TypeExpr{Kind: ExprNamed, Path: []string{b.typeName(b.naming.TypeName(key, "Value"))}}, false
 	}
 	for _, keyword := range []string{"anyOf", "oneOf"} {
 		if variants, ok := schema.Values[keyword].([]any); ok && len(variants) > 0 {
@@ -322,10 +412,7 @@ func (b *modelBuilder) expr(schema *contract.Object, defNames map[string]string,
 				return TypeExpr{Kind: ExprMap, Elem: &value}, false
 			}
 			if props := schema.Obj("properties"); props != nil && len(props.Keys) > 0 {
-				name := b.naming.TypeName(hint, "Value")
-				if b.taken[name] {
-					name += "Value"
-				}
+				name := b.nestedName(hint, owner, *nested)
 				path := append(append([]string{}, owner...), name)
 				*nested = append(*nested, b.structDecl(name, schema, defNames, path))
 				return TypeExpr{Kind: ExprNamed, Path: path}, false
@@ -360,23 +447,31 @@ func derefOr(text *string) string {
 	return *text
 }
 
-func (b *modelBuilder) method(m *contract.Method, registry *typeRegistry, roots map[string]*TypeDecl) ClientMethod {
+func (b *modelBuilder) method(m *contract.Method, registry *typeRegistry, roots map[string]*TypeDecl, methodNames map[string]bool) ClientMethod {
+	// get_user and getUser are both getUser: the second becomes getUser2.
+	base := b.memberName(m.Name, "call")
+	name := base
+	for i := 2; methodNames[name]; i++ {
+		name = base + itoa(i)
+	}
+	methodNames[name] = true
+	typeName := func(ref *contract.TypeRef) string { return b.typeName(registry.Name(ref)) }
 	out := ClientMethod{
-		Wire: m.Name, Name: b.naming.MemberName(m.Name, "call"), Description: derefOr(m.Description),
-		Deprecated: m.Deprecated, Shape: m.Stream, Request: registry.Name(m.Request),
+		Wire: m.Name, Name: name, Description: derefOr(m.Description),
+		Deprecated: m.Deprecated, Shape: m.Stream, Request: typeName(m.Request),
 		Idempotent: m.Annotations.Idempotent && m.Stream == "unary",
 	}
 	switch m.Stream {
 	case "unary":
-		out.Response = registry.Name(requiredRef(m.Response, m.Name+" response"))
+		out.Response = typeName(requiredRef(m.Response, m.Name+" response"))
 	case "server_stream":
-		out.Output = registry.Name(requiredRef(m.OutputItem, m.Name+" output item"))
+		out.Output = typeName(requiredRef(m.OutputItem, m.Name+" output item"))
 	case "client_stream":
-		out.Input = registry.Name(requiredRef(m.InputItem, m.Name+" input item"))
-		out.Response = registry.Name(requiredRef(m.Response, m.Name+" response"))
+		out.Input = typeName(requiredRef(m.InputItem, m.Name+" input item"))
+		out.Response = typeName(requiredRef(m.Response, m.Name+" response"))
 	case "duplex":
-		out.Input = registry.Name(requiredRef(m.InputItem, m.Name+" input item"))
-		out.Output = registry.Name(requiredRef(m.OutputItem, m.Name+" output item"))
+		out.Input = typeName(requiredRef(m.InputItem, m.Name+" input item"))
+		out.Output = typeName(requiredRef(m.OutputItem, m.Name+" output item"))
 	}
 	var fields []Field
 	if decl := roots[out.Request]; decl != nil && decl.Kind == DeclStruct {

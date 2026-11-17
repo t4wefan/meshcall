@@ -64,6 +64,25 @@ var swiftNaming = Naming{
 	TypeName: swiftTypeName, MemberName: swiftMemberName,
 	// Names a generated method may not take as parameters: the ones it adds.
 	ReservedParams: map[string]bool{"options": true, "instance": true, "items": true, "rpc": true},
+	// Swift's, Foundation's and MeshCall's types the file names, the CodingKeys
+	// every struct may declare, and Items, a client-stream method's generic.
+	ReservedTypes: map[string]bool{
+		"Any": true, "AnyObject": true, "Array": true, "AsyncSequence": true, "Bool": true, "Codable": true,
+		"CodingKey": true, "CodingKeys": true, "Data": true, "Decoder": true, "Dictionary": true, "Double": true,
+		"Encoder": true, "Error": true, "ExpressibleByStringLiteral": true, "Hashable": true, "Int": true,
+		"Int64": true, "Never": true, "Optional": true, "Protocol": true, "RawRepresentable": true, "Self": true,
+		"Sendable": true, "String": true, "Type": true,
+		"CallOptions": true, "DuplexCall": true, "DuplexCallOptions": true, "Empty": true, "JSONValue": true,
+		"Mesh": true, "MeshCall": true, "MeshCallError": true, "MeshCallRPC": true, "ServerStream": true,
+		"Items": true,
+	},
+	// self and init clash with a struct's initializer, rawValue with an enum's
+	// storage, Self, Type and Protocol with member lookup; the client declares
+	// rpc, serviceName and withOptions.
+	ReservedMembers: map[string]bool{
+		"self": true, "init": true, "Self": true, "Type": true, "Protocol": true, "rawValue": true,
+		"rpc": true, "serviceName": true, "withOptions": true,
+	},
 }
 
 var swiftKeywords = map[string]bool{
@@ -398,5 +417,6 @@ func writeSwiftMethod(b *strings.Builder, model *ClientModel, m ClientMethod) {
 	for _, line := range setup {
 		b.WriteString("        " + line + "\n")
 	}
-	b.WriteString("        " + call + "\n    }\n")
+	// Always return: a targeted duplex method has statements before the call.
+	b.WriteString("        return " + call + "\n    }\n")
 }

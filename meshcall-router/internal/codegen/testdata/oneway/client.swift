@@ -50,10 +50,10 @@ public struct OneWayStreamServiceClient: Sendable {
     }
 
     public func download(start: Int, options: CallOptions = CallOptions()) async throws -> ServerStream<StreamItem> {
-        try await rpc.serverStream(Self.serviceName, "download", OneWayStreamServiceDownloadRequest(start: start), of: StreamItem.self, options: options)
+        return try await rpc.serverStream(Self.serviceName, "download", OneWayStreamServiceDownloadRequest(start: start), of: StreamItem.self, options: options)
     }
 
     public func upload<Items: AsyncSequence & Sendable>(offset: Int, items: Items, options: CallOptions = CallOptions()) async throws -> StreamResult where Items.Element == StreamItem {
-        try await rpc.clientStream(Self.serviceName, "upload", OneWayStreamServiceUploadRequest(offset: offset), items: items, as: StreamResult.self, options: options)
+        return try await rpc.clientStream(Self.serviceName, "upload", OneWayStreamServiceUploadRequest(offset: offset), items: items, as: StreamResult.self, options: options)
     }
 }

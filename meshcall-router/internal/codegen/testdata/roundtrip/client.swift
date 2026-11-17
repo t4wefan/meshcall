@@ -97,14 +97,14 @@ public struct ContractRoundTripClient: Sendable {
     }
 
     public func echo(request: AliasRequest, options: CallOptions = CallOptions()) async throws -> AliasResult {
-        try await rpc.unary(Self.serviceName, "echo", ContractRoundTripEchoRequest(request: request), as: AliasResult.self, options: options)
+        return try await rpc.unary(Self.serviceName, "echo", ContractRoundTripEchoRequest(request: request), as: AliasResult.self, options: options)
     }
 
     public func download(request: AliasRequest, options: CallOptions = CallOptions()) async throws -> ServerStream<AliasItem> {
-        try await rpc.serverStream(Self.serviceName, "download", ContractRoundTripDownloadRequest(request: request), of: AliasItem.self, options: options)
+        return try await rpc.serverStream(Self.serviceName, "download", ContractRoundTripDownloadRequest(request: request), of: AliasItem.self, options: options)
     }
 
     public func upload<Items: AsyncSequence & Sendable>(request: AliasRequest, items: Items, options: CallOptions = CallOptions()) async throws -> AliasResult where Items.Element == AliasItem {
-        try await rpc.clientStream(Self.serviceName, "upload", ContractRoundTripUploadRequest(request: request), items: items, as: AliasResult.self, options: options)
+        return try await rpc.clientStream(Self.serviceName, "upload", ContractRoundTripUploadRequest(request: request), items: items, as: AliasResult.self, options: options)
     }
 }

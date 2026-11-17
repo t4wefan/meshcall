@@ -77,16 +77,16 @@ public struct TypeScriptGreetingServiceClient: Sendable {
 
     /// Stream the integers from 0 up to, but not including, count.
     public func count(count: Int, options: CallOptions = CallOptions()) async throws -> ServerStream<NumberItem> {
-        try await rpc.serverStream(Self.serviceName, "count", CountRequest(count: count), of: NumberItem.self, options: options)
+        return try await rpc.serverStream(Self.serviceName, "count", CountRequest(count: count), of: NumberItem.self, options: options)
     }
 
     /// Add every streamed value to offset and return the total.
     public func sum<Items: AsyncSequence & Sendable>(offset: Int = 0, items: Items, options: CallOptions = CallOptions()) async throws -> SumResult where Items.Element == NumberItem {
-        try await rpc.clientStream(Self.serviceName, "sum", SumRequest(offset: offset), items: items, as: SumResult.self, options: options)
+        return try await rpc.clientStream(Self.serviceName, "sum", SumRequest(offset: offset), items: items, as: SumResult.self, options: options)
     }
 
     /// Greet name repeat times and say which runtime answered.
     public func greet(name: String, `repeat`: Int, options: CallOptions = CallOptions()) async throws -> GreetingResult {
-        try await rpc.unary(Self.serviceName, "greet", GreetingRequest(name: name, repeat: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
+        return try await rpc.unary(Self.serviceName, "greet", GreetingRequest(name: name, repeat: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
     }
 }

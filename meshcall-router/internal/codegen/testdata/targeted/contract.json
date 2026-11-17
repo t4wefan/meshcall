@@ -1,0 +1,301 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.Sessions",
+      "version": "1",
+      "source_module": "codegen_cases",
+      "source_qualname": "Sessions",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "Every call names the instance it is for.",
+      "targeted": true,
+      "methods": [
+        {
+          "name": "status",
+          "stream": "unary",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "SessionsStatusRequest",
+            "schema": {
+              "title": "SessionsStatusRequest",
+              "type": "object",
+              "properties": {},
+              "required": []
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "codegen_cases",
+            "qualname": "Text",
+            "schema": {
+              "title": "Text",
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Unary, no parameters.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null
+        },
+        {
+          "name": "rename",
+          "stream": "unary",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "SessionsRenameRequest",
+            "schema": {
+              "title": "SessionsRenameRequest",
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title"
+              ]
+            }
+          },
+          "parameters": [
+            "title"
+          ],
+          "response": {
+            "module": "codegen_cases",
+            "qualname": "Text",
+            "schema": {
+              "title": "Text",
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Unary with a parameter.",
+          "annotations": {
+            "idempotent": true,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null
+        },
+        {
+          "name": "watch",
+          "stream": "server_stream",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "SessionsWatchRequest",
+            "schema": {
+              "title": "SessionsWatchRequest",
+              "type": "object",
+              "properties": {
+                "since": {
+                  "type": "integer",
+                  "default": 0
+                }
+              },
+              "required": []
+            }
+          },
+          "parameters": [
+            "since"
+          ],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "codegen_cases",
+            "qualname": "Text",
+            "schema": {
+              "title": "Text",
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Server stream.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": true,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null
+        },
+        {
+          "name": "upload",
+          "stream": "client_stream",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "SessionsUploadRequest",
+            "schema": {
+              "title": "SessionsUploadRequest",
+              "type": "object",
+              "properties": {},
+              "required": []
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "codegen_cases",
+            "qualname": "Total",
+            "schema": {
+              "title": "Total",
+              "type": "object",
+              "properties": {
+                "total": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ]
+            }
+          },
+          "input_item": {
+            "module": "codegen_cases",
+            "qualname": "Text",
+            "schema": {
+              "title": "Text",
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Client stream.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null
+        },
+        {
+          "name": "chat",
+          "stream": "duplex",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "SessionsChatRequest",
+            "schema": {
+              "title": "SessionsChatRequest",
+              "type": "object",
+              "properties": {
+                "prefix": {
+                  "type": "string",
+                  "default": ""
+                }
+              },
+              "required": []
+            }
+          },
+          "parameters": [
+            "prefix"
+          ],
+          "response": null,
+          "input_item": {
+            "module": "codegen_cases",
+            "qualname": "Text",
+            "schema": {
+              "title": "Text",
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          "output_item": {
+            "module": "codegen_cases",
+            "qualname": "Text",
+            "schema": {
+              "title": "Text",
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Duplex.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": "answers interleave with input"
+        }
+      ]
+    }
+  ]
+}

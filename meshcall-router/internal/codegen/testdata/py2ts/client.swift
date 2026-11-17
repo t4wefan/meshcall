@@ -45,6 +45,6 @@ public struct PythonGreetingServiceClient: Sendable {
 
     /// Greet ``name`` ``repeat`` times and say which runtime answered.
     public func greet(name: String, `repeat`: Int = 1, options: CallOptions = CallOptions()) async throws -> GreetingResult {
-        try await rpc.unary(Self.serviceName, "greet", PythonGreetingServiceGreetRequest(name: name, repeat: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
+        return try await rpc.unary(Self.serviceName, "greet", PythonGreetingServiceGreetRequest(name: name, repeat: `repeat`), as: GreetingResult.self, options: CallOptions(idempotent: true).merged(with: options))
     }
 }
