@@ -28,6 +28,17 @@ matching `meshcall-go/vX.Y.Z` tag.
   or cut connections, and any runtime's fixture, driven over stdin, plus 34
   client scenarios each client runtime must cover or skip with a reason.
 - `demo/ts2swift`: a TypeScript service called through a generated Swift client.
+- **JVM client runtime** (`meshcall-jvm/`, Kotlin, callable from Java; Android
+  API 24+ and any JVM, Java 11 bytecode). `Mesh(Router(…))` calls services in
+  every shape: `suspend` unary and client-stream calls, cold `Flow` server
+  streams whose credit follows collection, and `DuplexCall`, with the same
+  timeouts, cancellation, metadata, retries, interceptors, reconnects,
+  `checkConnection()` for apps returning to the foreground, and end-to-end
+  sealed tunnels. Java callers get `CompletableFuture`s and `StreamObserver`s.
+  Apps need Kotlin 2.1 or later; no R8 rules are needed. Client only.
+- **`meshcall generate --language kotlin`**: one file of kotlinx.serialization
+  classes and a client with suspend / `Flow` methods plus `…Async` variants for
+  Java. The client conformance suite covers the JVM runtime (34 of 34).
 
 - **Tunnels: instance-scoped connections through the Router** (#63). A trusted
   issuer (an account or API key with `meshcall.router.v1.TunnelService/*`)
