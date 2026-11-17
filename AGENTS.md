@@ -7,8 +7,10 @@ Read this before changing anything. It is short on purpose; follow the links.
 A typed, streaming RPC framework whose runtimes must behave identically:
 `meshcall-py/` (Python), `meshcall-ts/` (TypeScript) and `meshcall-go/` (Go),
 plus `meshcall-router/` (Go; the standalone Router that all peers connect
-to, the `meshcall` CLI, the client generators and the conformance suite)
-and `meshcall-swift/` (Swift; a client-only runtime for iOS and macOS apps).
+to, the `meshcall` CLI, the client generators and the conformance suite),
+`meshcall-swift/` (Swift; a client-only runtime for iOS and macOS apps)
+and `meshcall-jvm/` (Kotlin, callable from Java; a client-only runtime for
+Android and the JVM).
 `docs/protocol.md` is the contract between them; `docs/architecture.md`
 explains the runtime design; `docs/router.md` the Router;
 `docs/client-runtimes.md` what a new client runtime (such as the JVM) needs.
@@ -146,7 +148,7 @@ Tests: `meshcall-py/tests/test_*.py` (one topic per file; `test_timing.py`,
   `<type>/<domain>/<topic>`. `type` matches the commit type (`feat`, `fix`,
   `docs`, `test`, `build`, `refactor`, `chore`); `domain` is where the change
   lives: `go` (`meshcall-router/`: Router, CLI, codegen, conformance), `py`
-  (`meshcall-py/`), `ts` (`meshcall-ts/`), `gort` (`meshcall-go/`), `swift` (`meshcall-swift/`), `docs`, `ci` (workflows,
+  (`meshcall-py/`), `ts` (`meshcall-ts/`), `gort` (`meshcall-go/`), `swift` (`meshcall-swift/`), `jvm` (`meshcall-jvm/`), `docs`, `ci` (workflows,
   `scripts/`, release), `demo` (`demo/`, `best-practice/`), `skill`; join
   several with `+`. Examples: `feat/go+py+ts/windows-pipes`,
   `fix/ts/reconnect-race`, `docs/docs/http-calls`.
