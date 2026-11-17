@@ -289,14 +289,17 @@ internal class MeshCallClient(
                 return
             }
         }
-        call.receive(opened)
-        if (sealed != null && opened is Frame.CallError &&
+        val sessionLost = sealed != null && opened is Frame.CallError &&
             (opened.error.details?.get("reason") as? JsonPrimitive)?.content == "e2e_session_unknown"
-        ) {
+        if (sessionLost) {
             // The instance lost the session: whatever the call shape, the next
-            // call handshakes again on a new connection.
-            resetConnection(link)
+            // call handshakes again on a new connection. Stop handing this one
+            // out before the caller sees the error, or a retry could start on it
+            // and fail with the reset below.
+            synchronized(lock) { if (current === link) current = null }
         }
+        call.receive(opened)
+        if (sessionLost) resetConnection(link)
     }
 
     private fun badFrame(link: Link, error: FrameDecodeException) {

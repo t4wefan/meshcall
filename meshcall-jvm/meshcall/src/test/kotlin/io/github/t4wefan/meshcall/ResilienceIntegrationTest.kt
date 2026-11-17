@@ -187,7 +187,7 @@ class ResilienceIntegrationTest {
                     try {
                         result = mesh.unary(FIXTURE, "echo", echo)
                     } catch (error: UnavailableException) {
-                        assertEquals("instance_offline", error.reason) // the re-offer may still be on its way
+                        assertEquals("instance_offline", error.reason, error.toString()) // the re-offer may still be on its way
                         delay(100)
                     }
                 }
