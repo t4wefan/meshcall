@@ -34,6 +34,7 @@ internal const val DEFAULT_PING_TIMEOUT_MS: Long = 10_000
 internal fun isFrameTooLarge(error: Throwable): Boolean =
     error is ResourceExhaustedException && error.reason == "frame_too_large"
 
+/** [size]: the frame's UTF-8 length, or an upper bound on it well below the limit. */
 private class PendingFrame(val frame: Frame, val encoded: String, val size: Long) {
     val done = CompletableDeferred<Unit>()
 }
@@ -107,10 +108,14 @@ internal class Connection(
     /** Queues [frame] without waiting; the result completes when it was handed to OkHttp. */
     fun enqueue(frame: Frame): CompletableDeferred<Unit> {
         val encoded = frame.encode()
-        // UTF-8 is at most 3 bytes per UTF-16 unit; count exactly only near the limit.
-        val size = if (encoded.length.toLong() * 3 <= maxFrameSize) encoded.length.toLong() else utf8Length(encoded)
-        val pending = PendingFrame(frame, encoded, size)
+        // OkHttp closes the whole connection (1001) for a message over its
+        // limit, so check against the limit in force, in UTF-8 bytes. UTF-8 is at
+        // most 3 bytes per UTF-16 unit: count exactly only when that could matter.
+        // `size` is then an upper bound, which is what the writer's queue check needs.
         val limit = minOf(maxFrameSize.toLong(), OKHTTP_MAX_MESSAGE)
+        val atMost = encoded.length.toLong() * 3
+        val size = if (atMost <= limit) atMost else utf8Length(encoded)
+        val pending = PendingFrame(frame, encoded, size)
         if (size > limit) {
             // The peer would close the connection on receiving it; only this
             // frame's call fails (docs/protocol.md → Frame size).

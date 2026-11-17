@@ -69,6 +69,8 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 
 发送方在发送前检查每一帧编码后的大小，超过上限的帧不会发出。只有这一帧所属的调用失败，错误为不可重试的 `resource_exhausted`（`reason: "frame_too_large"`），连接保持不变：客户端在本地让调用失败（`source: "client"`），如果超限的是输入流条目，调用已在对端打开，还会发送 `call.cancel`；服务端的响应、输出流条目或错误超限时，改为发送这个错误作为该调用的 `call.error`（`source: "server"`，不带 trailers），并停止处理函数。
 
+如果发送方的传输层发不出与配置上限一样大的帧，就按两者中较小的那个检查，并且按帧的 UTF-8 字节数计算。JVM 客户端（`meshcall-jvm`，基于 OkHttp）每帧最多只能发送 16 MiB，与 `maxFrameSize` 的设置无关；更大的待发帧按上述方式失败，收到的帧仍然最大接受到 `maxFrameSize`。
+
 收到超过自身上限的帧的一方会关闭连接（WebSocket 关闭码 1009），因此互相通信的各方（包括 Router）应使用相同的上限。Router 为每个对端排队的帧最多 `--outbox-size` 字节（默认 256 MiB，且不小于最大帧大小）；对端停止读取且欠它的数据超过该值时会被断开。
 
 ### 元数据（Metadata 与 Trailers）

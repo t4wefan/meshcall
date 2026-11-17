@@ -285,6 +285,20 @@ class ClientIntegrationTest {
     }
 
     @Test
+    fun multibyteTextIsMeasuredInBytesAgainstOkHttpsLimit() = test {
+        // 6 M characters, 18 MB of UTF-8: under the 64 MiB frame limit by characters,
+        // over OkHttp's 16 MiB message limit in bytes, which would close the socket.
+        val other = async { mesh.serverStream(FIXTURE, "count", obj("n" to 20, "gap_ms" to 20)).toList() }
+        delay(50)
+        val error = assertFailsWith<ResourceExhaustedException> {
+            mesh.unary(FIXTURE, "echo", obj("value" to 1, "text" to "中".repeat(6_000_000)))
+        }
+        assertEquals("frame_too_large", error.reason)
+        // Only that call failed: the stream on the same connection runs to its end.
+        assertEquals(20, other.await().size)
+    }
+
+    @Test
     fun largeFramesWithinTheLimit() = test {
         val big = mesh.unary(FIXTURE, "big", obj("bytes" to 4_000_000))
         assertEquals(4_000_000, big.str("text").length)

@@ -89,6 +89,12 @@ stays open:
   that error as the call's `call.error` instead (`source: "server"`),
   without trailers, and stops the handler.
 
+A sender whose transport cannot send a frame as large as its configured
+limit checks against the lower of the two, counting the frame's UTF-8 bytes.
+The JVM client (`meshcall-jvm`, OkHttp) can send at most 16 MiB per frame,
+whatever `maxFrameSize` says; larger outgoing frames fail as above, and
+received frames are still accepted up to `maxFrameSize`.
+
 A peer that receives a frame over its own limit closes the connection
 (WebSocket close 1009), so peers that talk to each other, the Router
 included, should use the same limit.
