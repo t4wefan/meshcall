@@ -408,13 +408,15 @@ comma-separated) writes the named agents' files instead: `claude`
 Re-running is idempotent; an edited skill file is kept unless `--force`.
 
 `meshcall generate <contract.json | module:Class> --output PATH
-[--language python|typescript|go|swift] [--single-file] [--service NAME]
+[--language python|typescript|go|swift|kotlin] [--single-file] [--service NAME]
 [--package-name N] [--package-version V] [--class-name N]
 [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]`
 writes a typed client package (or one file). Go output is always one file,
 `PATH` if it ends in `.go`, else `PATH/client.go`, in package
 `--package-name` (default: the last name segment, lower-cased, plus
-`client`: `demo.v1.Greeting` → `greetingclient`);
+`client`: `demo.v1.Greeting` → `greetingclient`). Kotlin output (for
+`meshcall-jvm`) is one file too, `PATH` if it ends in `.kt`, else
+`PATH/<Client>.kt`, in package `--package-name` (same default);
 `meshcall export module:Class --output contract.json` writes a Python
 service's contract (Go services write theirs with `meshcall.WriteContract`,
 TypeScript ones with `writeContract`). A `module:Class` source is exported through the interpreter in `MESHCALL_PYTHON`, which

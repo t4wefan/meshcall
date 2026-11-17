@@ -561,9 +561,15 @@ meshcall generate contract.meshcall.json \
   --language go \
   --package-name textclient \
   --output internal/textclient
+
+# Kotlin client for meshcall-jvm (Android, JVM): one file, <output>/<Client>.kt
+meshcall generate contract.meshcall.json \
+  --language kotlin \
+  --package-name com.example.text \
+  --output app/src/main/kotlin/com/example/text
 ```
 
-Generated clients wrap a `Mesh` (`TextProcessorClient(mesh)` in Python, `new TextProcessorClient(mesh)` in TypeScript, `textclient.NewTextProcessorClient(mesh)` in Go). Multiple generated clients passed the same `Mesh` share its single multiplexed connection.
+Generated clients wrap a `Mesh` (`TextProcessorClient(mesh)` in Python, `new TextProcessorClient(mesh)` in TypeScript, `textclient.NewTextProcessorClient(mesh)` in Go, `TextProcessorClient(mesh)` in Kotlin and Java). Multiple generated clients passed the same `Mesh` share its single multiplexed connection.
 
 ```python
 from meshcall import Mesh, Router
