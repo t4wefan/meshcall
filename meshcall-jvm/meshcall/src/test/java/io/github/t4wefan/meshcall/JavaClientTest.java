@@ -57,7 +57,7 @@ class JavaClientTest {
             assertEquals("app.java", error.getCode());
 
             ExecutionException late = assertThrows(ExecutionException.class,
-                () -> client.slowAsync(5_000, null, CallOptions.DEFAULT.withTimeoutMs(200L)).get(10, TimeUnit.SECONDS));
+                () -> client.slowAsync(5_000, "", CallOptions.DEFAULT.withTimeoutMs(200L)).get(10, TimeUnit.SECONDS));
             assertInstanceOf(DeadlineExceededException.class, late.getCause());
         }
     }

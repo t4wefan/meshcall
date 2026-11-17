@@ -41,7 +41,7 @@ uv run meshcall generate my_app.service:Chat --language kotlin \
 meshcall generate chat.meshcall.json --language kotlin --package-name com.example.chat --output Chat.kt
 ```
 
-生成结果是单个文件 `<Qualname>Client.kt`：每个载荷类型是一个 `@Serializable` 类，
+生成结果是单个文件 `<Name>Client.kt`（`demo.v1.Chat` → `ChatClient`）：每个载荷类型是一个 `@Serializable` 类，
 客户端类的方法和服务端的业务参数一一对应：
 
 ```kotlin
@@ -62,9 +62,9 @@ mesh.close()
 | --- | --- |
 | `integer` / `number` / `string` / `boolean` | `Long` / `Double` / `String` / `Boolean` |
 | 数组、带 `additionalProperties` 的对象 | `List<T>`、`Map<String, T>` |
-| 带属性的对象 | `data class`（内联的嵌套对象各自生成一个类） |
-| 字符串 `enum` | `String`（新版本服务端可能增加取值） |
-| 非必填，或允许 `null` | `T? = null`；不传的字段由服务端默认值生效 |
+| 带属性的对象 | `data class`；内联对象生成嵌套类（`Request.Diff`） |
+| 字符串 `enum` | `String` 的 `typealias`，外加列出已知取值的 `…Values` 对象（新版本服务端可能增加取值） |
+| 非必填，或允许 `null` | `T? = null`；不传的字段由服务端默认值生效。带 schema 默认值的参数以它作为 Kotlin 默认值 |
 | 多种类型的联合 | `JsonElement` |
 
 **定向（targeted）服务**的方法第一个参数是 `instance: String`，由编译器保证不会漏传。

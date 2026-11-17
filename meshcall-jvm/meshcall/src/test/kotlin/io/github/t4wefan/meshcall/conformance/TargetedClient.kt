@@ -13,7 +13,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.serializer
 
 @Serializable
-public object TargetedWhoamiRequest
+public class TargetedWhoamiRequest()
 
 @Serializable
 public data class Instance(
@@ -27,7 +27,7 @@ public class TargetedClient(private val rpc: MeshCallRpc) {
 
     /** Return the id of the instance that served the call. */
     public suspend fun whoami(instance: String, options: CallOptions = CallOptions.DEFAULT): Instance =
-        rpc.unary(SERVICE_NAME, "whoami", TargetedWhoamiRequest, serializer<TargetedWhoamiRequest>(), serializer<Instance>(), options.withInstance(instance).withIdempotent(true))
+        rpc.unary(SERVICE_NAME, "whoami", TargetedWhoamiRequest(), serializer<TargetedWhoamiRequest>(), serializer<Instance>(), options.withInstance(instance).withIdempotent(true))
 
     /** [whoami] for Java. */
     @JvmOverloads

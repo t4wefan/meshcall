@@ -341,6 +341,10 @@ Go services and clients use the Go runtime, [`meshcall-go`](meshcall-go/README.m
 
 iOS and macOS apps call the mesh with [`meshcall-swift`](meshcall-swift/README.md), a client runtime (no Swift services yet) with the same calls, errors, deadlines, streams, reconnects, tunnels and end-to-end encryption. `meshcall generate service.meshcall.json --language swift --output Sources/App/Generated` writes `Codable` types and an `async` client for a service in any language, and `Mesh(tunnel: grant)` takes an issuer's tunnel answer as is.
 
+## Kotlin, Java and Android (JVM clients)
+
+Android apps and JVM programs call the mesh with [`meshcall-jvm`](meshcall-jvm/README.md), a Kotlin client runtime (no JVM services yet) with the same calls, errors, deadlines, streams, reconnects, tunnels and end-to-end encryption; Java callers get `CompletableFuture`s and observers. `meshcall generate service.meshcall.json --language kotlin --package-name com.example.chat --output app/src/main/kotlin/chat` writes kotlinx.serialization classes and a suspend / `Flow` client for a service in any language.
+
 ---
 
 ## Run Repository Examples
@@ -373,6 +377,7 @@ When you are ready to explore production capabilities, follow the guides below:
 | **[TypeScript SDK](meshcall-ts/README.md)** | Install and use the TypeScript package API | [TypeScript SDK 指南](meshcall-ts/README.zh-CN.md) |
 | **[Go SDK](meshcall-go/README.md)** | Use the Go runtime and generated Go clients | — |
 | **[Swift SDK](meshcall-swift/README.md)** | Call the mesh from iOS and macOS apps with generated Swift clients | [简体中文](meshcall-swift/README.zh-CN.md) |
+| **[JVM SDK](meshcall-jvm/README.md)** | Call the mesh from Kotlin, Java and Android with generated Kotlin clients | [简体中文](meshcall-jvm/README.zh-CN.md) |
 | **[Router & CLI](meshcall-router/README.md)** | Deploy the standalone Router binary, configure CLI flags, and run with Docker | [Router 与 CLI 部署指南](meshcall-router/README.zh-CN.md) |
 | **[Router & Auth Guide](docs/router.md)** | Configure multi-instance routing, accounts, and access tokens | [Router 架构与鉴权](docs/zh-CN/router.md) |
 | **[Runtime Architecture](docs/architecture.md)** | Understand the internal design of the client and server runtimes | [运行时架构设计](docs/zh-CN/architecture.md) |

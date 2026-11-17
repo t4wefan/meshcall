@@ -25,8 +25,12 @@ java {
 
 tasks.withType<JavaCompile>().configureEach { options.release.set(11) }
 
-// Every Kotlin golden of the code generator compiles against this runtime.
-sourceSets["test"].kotlin.srcDir(rootDir.parentFile.resolve("meshcall-router/internal/codegen/testdata"))
+// Every Kotlin golden of the code generator compiles against this runtime
+// (router/ and quickstart/ pin the same contract, so one of them suffices).
+sourceSets["test"].kotlin {
+    srcDir(rootDir.parentFile.resolve("meshcall-router/internal/codegen/testdata"))
+    exclude("router/**")
+}
 
 dependencies {
     api(libs.coroutines.core)

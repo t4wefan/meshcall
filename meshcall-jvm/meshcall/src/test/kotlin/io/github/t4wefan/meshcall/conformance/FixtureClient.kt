@@ -25,7 +25,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.serializer
 
 @Serializable
-public object FixtureTunnelInfoRequest
+public class FixtureTunnelInfoRequest()
 
 @Serializable
 public data class TunnelSeen(
@@ -35,7 +35,7 @@ public data class TunnelSeen(
 )
 
 @Serializable
-public object FixtureClosedTunnelsRequest
+public class FixtureClosedTunnelsRequest()
 
 @Serializable
 public data class ClosedTunnel(
@@ -73,7 +73,7 @@ public data class Ok(
 )
 
 @Serializable
-public object FixtureBadResponseRequest
+public class FixtureBadResponseRequest()
 
 @Serializable
 public data class FixtureSlowRequest(
@@ -87,7 +87,7 @@ public data class Tag(
 )
 
 @Serializable
-public object FixtureCancelledTagsRequest
+public class FixtureCancelledTagsRequest()
 
 @Serializable
 public data class Tags(
@@ -95,7 +95,7 @@ public data class Tags(
 )
 
 @Serializable
-public object FixtureInvokedTagsRequest
+public class FixtureInvokedTagsRequest()
 
 @Serializable
 public data class FixtureCountRequest(
@@ -124,7 +124,7 @@ public data class Value(
 )
 
 @Serializable
-public object FixtureMetadataEchoRequest
+public class FixtureMetadataEchoRequest()
 
 @Serializable
 public data class Metadata(
@@ -152,7 +152,7 @@ public data class FixtureChatRequest(
 )
 
 @Serializable
-public object FixtureAnnounceRequest
+public class FixtureAnnounceRequest()
 
 @Serializable
 public data class FixtureDrainSelfRequest(
@@ -166,7 +166,7 @@ public class FixtureClient(private val rpc: MeshCallRpc) {
 
     /** The tunnel this call arrived through (ctx.tunnel), or nulls. */
     public suspend fun tunnelInfo(options: CallOptions = CallOptions.DEFAULT): TunnelSeen =
-        rpc.unary(SERVICE_NAME, "tunnel_info", FixtureTunnelInfoRequest, serializer<FixtureTunnelInfoRequest>(), serializer<TunnelSeen>(), options.withIdempotent(true))
+        rpc.unary(SERVICE_NAME, "tunnel_info", FixtureTunnelInfoRequest(), serializer<FixtureTunnelInfoRequest>(), serializer<TunnelSeen>(), options.withIdempotent(true))
 
     /** [tunnelInfo] for Java. */
     @JvmOverloads
@@ -175,7 +175,7 @@ public class FixtureClient(private val rpc: MeshCallRpc) {
 
     /** Tunnels this instance was told have closed, in order. */
     public suspend fun closedTunnels(options: CallOptions = CallOptions.DEFAULT): ClosedTunnels =
-        rpc.unary(SERVICE_NAME, "closed_tunnels", FixtureClosedTunnelsRequest, serializer<FixtureClosedTunnelsRequest>(), serializer<ClosedTunnels>(), options.withIdempotent(true))
+        rpc.unary(SERVICE_NAME, "closed_tunnels", FixtureClosedTunnelsRequest(), serializer<FixtureClosedTunnelsRequest>(), serializer<ClosedTunnels>(), options.withIdempotent(true))
 
     /** [closedTunnels] for Java. */
     @JvmOverloads
@@ -192,17 +192,17 @@ public class FixtureClient(private val rpc: MeshCallRpc) {
         rpc.future { echo(value, text, options) }
 
     /** Raise an application error with the given code. */
-    public suspend fun fail(code: String, message: String, retryable: Boolean? = null, options: CallOptions = CallOptions.DEFAULT): Ok =
+    public suspend fun fail(code: String, message: String, retryable: Boolean = false, options: CallOptions = CallOptions.DEFAULT): Ok =
         rpc.unary(SERVICE_NAME, "fail", FixtureFailRequest(code = code, message = message, retryable = retryable), serializer<FixtureFailRequest>(), serializer<Ok>(), options.withIdempotent(true))
 
     /** [fail] for Java. */
     @JvmOverloads
-    public fun failAsync(code: String, message: String, retryable: Boolean? = null, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Ok> =
+    public fun failAsync(code: String, message: String, retryable: Boolean = false, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Ok> =
         rpc.future { fail(code, message, retryable, options) }
 
     /** Return a response that breaks this method's own contract. */
     public suspend fun badResponse(options: CallOptions = CallOptions.DEFAULT): Ok =
-        rpc.unary(SERVICE_NAME, "bad_response", FixtureBadResponseRequest, serializer<FixtureBadResponseRequest>(), serializer<Ok>(), options.withIdempotent(true))
+        rpc.unary(SERVICE_NAME, "bad_response", FixtureBadResponseRequest(), serializer<FixtureBadResponseRequest>(), serializer<Ok>(), options.withIdempotent(true))
 
     /** [badResponse] for Java. */
     @JvmOverloads
@@ -210,17 +210,17 @@ public class FixtureClient(private val rpc: MeshCallRpc) {
         rpc.future { badResponse(options) }
 
     /** Sleep ``ms`` milliseconds; record ``tag`` if cancelled meanwhile. */
-    public suspend fun slow(ms: Long, tag: String? = null, options: CallOptions = CallOptions.DEFAULT): Tag =
+    public suspend fun slow(ms: Long, tag: String = "", options: CallOptions = CallOptions.DEFAULT): Tag =
         rpc.unary(SERVICE_NAME, "slow", FixtureSlowRequest(ms = ms, tag = tag), serializer<FixtureSlowRequest>(), serializer<Tag>(), options.withIdempotent(true))
 
     /** [slow] for Java. */
     @JvmOverloads
-    public fun slowAsync(ms: Long, tag: String? = null, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Tag> =
+    public fun slowAsync(ms: Long, tag: String = "", options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Tag> =
         rpc.future { slow(ms, tag, options) }
 
     /** Tags of slow calls that observed cancellation. */
     public suspend fun cancelledTags(options: CallOptions = CallOptions.DEFAULT): Tags =
-        rpc.unary(SERVICE_NAME, "cancelled_tags", FixtureCancelledTagsRequest, serializer<FixtureCancelledTagsRequest>(), serializer<Tags>(), options.withIdempotent(true))
+        rpc.unary(SERVICE_NAME, "cancelled_tags", FixtureCancelledTagsRequest(), serializer<FixtureCancelledTagsRequest>(), serializer<Tags>(), options.withIdempotent(true))
 
     /** [cancelledTags] for Java. */
     @JvmOverloads
@@ -229,7 +229,7 @@ public class FixtureClient(private val rpc: MeshCallRpc) {
 
     /** Tags of every slow call that started, in order. */
     public suspend fun invokedTags(options: CallOptions = CallOptions.DEFAULT): Tags =
-        rpc.unary(SERVICE_NAME, "invoked_tags", FixtureInvokedTagsRequest, serializer<FixtureInvokedTagsRequest>(), serializer<Tags>(), options.withIdempotent(true))
+        rpc.unary(SERVICE_NAME, "invoked_tags", FixtureInvokedTagsRequest(), serializer<FixtureInvokedTagsRequest>(), serializer<Tags>(), options.withIdempotent(true))
 
     /** [invokedTags] for Java. */
     @JvmOverloads
@@ -237,26 +237,26 @@ public class FixtureClient(private val rpc: MeshCallRpc) {
         rpc.future { invokedTags(options) }
 
     /** Yield 0..n-1 with ``gap_ms`` between items. */
-    public fun count(n: Long, gapMs: Long? = null, options: CallOptions = CallOptions.DEFAULT): Flow<Index> =
+    public fun count(n: Long, gapMs: Long = 0, options: CallOptions = CallOptions.DEFAULT): Flow<Index> =
         rpc.serverStream(SERVICE_NAME, "count", FixtureCountRequest(n = n, gapMs = gapMs), serializer<FixtureCountRequest>(), serializer<Index>(), options)
 
     /** [count] for Java: items go to [observer]. */
     @JvmOverloads
-    public fun countAsync(n: Long, gapMs: Long? = null, observer: StreamObserver<Index>, options: CallOptions = CallOptions.DEFAULT): CallHandle =
+    public fun countAsync(n: Long, gapMs: Long = 0, observer: StreamObserver<Index>, options: CallOptions = CallOptions.DEFAULT): CallHandle =
         rpc.observe(count(n, gapMs, options), observer)
 
     /** Add every streamed value to ``offset``. */
-    public suspend fun sum(offset: Long? = null, items: Flow<Value>, options: CallOptions = CallOptions.DEFAULT): Total =
+    public suspend fun sum(offset: Long = 0, items: Flow<Value>, options: CallOptions = CallOptions.DEFAULT): Total =
         rpc.clientStream(SERVICE_NAME, "sum", FixtureSumRequest(offset = offset), items, serializer<FixtureSumRequest>(), serializer<Value>(), serializer<Total>(), options)
 
     /** [sum] for Java. */
     @JvmOverloads
-    public fun sumAsync(offset: Long? = null, items: Iterable<Value>, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Total> =
+    public fun sumAsync(offset: Long = 0, items: Iterable<Value>, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Total> =
         rpc.future { sum(offset, javaItems(items), options) }
 
     /** Return the call metadata and set trailers describing it. */
     public suspend fun metadataEcho(options: CallOptions = CallOptions.DEFAULT): Metadata =
-        rpc.unary(SERVICE_NAME, "metadata_echo", FixtureMetadataEchoRequest, serializer<FixtureMetadataEchoRequest>(), serializer<Metadata>(), options.withIdempotent(true))
+        rpc.unary(SERVICE_NAME, "metadata_echo", FixtureMetadataEchoRequest(), serializer<FixtureMetadataEchoRequest>(), serializer<Metadata>(), options.withIdempotent(true))
 
     /** [metadataEcho] for Java. */
     @JvmOverloads
@@ -282,17 +282,17 @@ public class FixtureClient(private val rpc: MeshCallRpc) {
         rpc.observe(bigItems(bytes, options), observer)
 
     /** Echo each input with ``prefix``; send ``done:<inputs>`` when input ends. */
-    public suspend fun chat(prefix: String? = null, options: CallOptions = CallOptions.DEFAULT): DuplexCall<Text, Text> =
+    public suspend fun chat(prefix: String = "", options: CallOptions = CallOptions.DEFAULT): DuplexCall<Text, Text> =
         rpc.duplex(SERVICE_NAME, "chat", FixtureChatRequest(prefix = prefix), serializer<FixtureChatRequest>(), serializer<Text>(), serializer<Text>(), options)
 
     /** [chat] for Java: output goes to [observer]. */
     @JvmOverloads
-    public fun chatAsync(prefix: String? = null, observer: StreamObserver<Text>, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<JavaDuplexCall<Text, Text>> =
+    public fun chatAsync(prefix: String = "", observer: StreamObserver<Text>, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<JavaDuplexCall<Text, Text>> =
         rpc.duplexAsync({ chat(prefix, options) }, observer)
 
     /** Send ``hello``, close the output, then read the input to its end. */
     public suspend fun announce(options: CallOptions = CallOptions.DEFAULT): DuplexCall<Text, Text> =
-        rpc.duplex(SERVICE_NAME, "announce", FixtureAnnounceRequest, serializer<FixtureAnnounceRequest>(), serializer<Text>(), serializer<Text>(), options)
+        rpc.duplex(SERVICE_NAME, "announce", FixtureAnnounceRequest(), serializer<FixtureAnnounceRequest>(), serializer<Text>(), serializer<Text>(), options)
 
     /** [announce] for Java: output goes to [observer]. */
     @JvmOverloads
@@ -300,12 +300,12 @@ public class FixtureClient(private val rpc: MeshCallRpc) {
         rpc.duplexAsync({ announce(options) }, observer)
 
     /** Drain and stop this instance after ``delay_ms``. */
-    public suspend fun drainSelf(delayMs: Long? = null, options: CallOptions = CallOptions.DEFAULT): Ok =
+    public suspend fun drainSelf(delayMs: Long = 0, options: CallOptions = CallOptions.DEFAULT): Ok =
         rpc.unary(SERVICE_NAME, "drain_self", FixtureDrainSelfRequest(delayMs = delayMs), serializer<FixtureDrainSelfRequest>(), serializer<Ok>(), options)
 
     /** [drainSelf] for Java. */
     @JvmOverloads
-    public fun drainSelfAsync(delayMs: Long? = null, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Ok> =
+    public fun drainSelfAsync(delayMs: Long = 0, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Ok> =
         rpc.future { drainSelf(delayMs, options) }
 
     public companion object {

@@ -341,6 +341,10 @@ Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)�
 
 iOS 和 macOS 应用使用 [`meshcall-swift`](meshcall-swift/README.zh-CN.md) 调用服务。它是客户端运行时（暂不支持用 Swift 写服务），调用、错误、超时、流、重连、隧道和端到端加密都与其他运行时一致。`meshcall generate service.meshcall.json --language swift --output Sources/App/Generated` 可为任一语言编写的服务生成 `Codable` 类型和 `async` 客户端，`Mesh(tunnel: grant)` 直接接受签发方返回的隧道信息。
 
+## Kotlin、Java 与 Android（JVM 客户端）
+
+Android 应用和 JVM 程序使用 [`meshcall-jvm`](meshcall-jvm/README.zh-CN.md) 调用服务。它是 Kotlin 编写的客户端运行时（暂不支持在 JVM 上写服务），调用、错误、超时、流、重连、隧道和端到端加密都与其他运行时一致；Java 调用方使用 `CompletableFuture` 和观察者。`meshcall generate service.meshcall.json --language kotlin --package-name com.example.chat --output app/src/main/kotlin/chat` 可为任一语言编写的服务生成 kotlinx.serialization 数据类和 suspend / `Flow` 客户端。
+
 ---
 
 ## 运行仓库示例
@@ -373,6 +377,7 @@ uv run --project best-practice demo     # 依赖注入、TypeScript CLI 与 Go �
 | **[TypeScript SDK 指南](meshcall-ts/README.zh-CN.md)** | 查阅 TypeScript 包安装与 API 用法 | [TypeScript SDK](meshcall-ts/README.md) |
 | **Go SDK**（暂无中文版） | 使用 Go 运行时与生成的 Go 客户端 | [Go SDK](meshcall-go/README.md) |
 | **[Swift SDK 指南](meshcall-swift/README.zh-CN.md)** | 在 iOS 与 macOS 应用中用生成的 Swift 客户端调用服务 | [Swift SDK](meshcall-swift/README.md) |
+| **[JVM SDK 指南](meshcall-jvm/README.zh-CN.md)** | 在 Kotlin、Java 与 Android 中用生成的 Kotlin 客户端调用服务 | [JVM SDK](meshcall-jvm/README.md) |
 | **[Router 与 CLI 部署指南](meshcall-router/README.zh-CN.md)** | 独立部署 Router 进程、配置命令行参数与 Docker 运行 | [Router & CLI](meshcall-router/README.md) |
 | **[Router 架构与鉴权](docs/zh-CN/router.md)** | 配置多实例路由、账号权限与访问令牌 | [Router & Auth Guide](docs/router.md) |
 | **[运行时架构设计](docs/zh-CN/architecture.md)** | 了解客户端与服务端运行时的内部设计 | [Runtime Architecture](docs/architecture.md) |

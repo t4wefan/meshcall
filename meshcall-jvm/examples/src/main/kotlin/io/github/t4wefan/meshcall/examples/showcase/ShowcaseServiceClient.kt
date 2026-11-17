@@ -95,12 +95,12 @@ public class ShowcaseServiceClient(private val rpc: MeshCallRpc) {
      *
      * ``@query`` marks a pure read (read-only and idempotent).
      */
-    public suspend fun greet(name: String, repeat: Long? = null, options: CallOptions = CallOptions.DEFAULT): GreetingResult =
+    public suspend fun greet(name: String, repeat: Long = 1, options: CallOptions = CallOptions.DEFAULT): GreetingResult =
         rpc.unary(SERVICE_NAME, "greet", ShowcaseServiceGreetRequest(name = name, repeat = repeat), serializer<ShowcaseServiceGreetRequest>(), serializer<GreetingResult>(), options.withIdempotent(true))
 
     /** [greet] for Java. */
     @JvmOverloads
-    public fun greetAsync(name: String, repeat: Long? = null, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<GreetingResult> =
+    public fun greetAsync(name: String, repeat: Long = 1, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<GreetingResult> =
         rpc.future { greet(name, repeat, options) }
 
     /** A model-typed parameter is one field of the request, kept whole. */

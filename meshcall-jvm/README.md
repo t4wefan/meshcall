@@ -45,7 +45,7 @@ uv run meshcall generate my_app.service:Chat --language kotlin \
 meshcall generate chat.meshcall.json --language kotlin --package-name com.example.chat --output Chat.kt
 ```
 
-The result is one file, `<Qualname>Client.kt`, with every payload type as a
+The result is one file, `<Name>Client.kt` (`demo.v1.Chat` → `ChatClient`), with every payload type as a
 `@Serializable` class and a client class whose methods mirror the server's
 business parameters 1:1:
 
@@ -67,9 +67,9 @@ mesh.close()
 | --- | --- |
 | `integer` / `number` / `string` / `boolean` | `Long` / `Double` / `String` / `Boolean` |
 | array, object with `additionalProperties` | `List<T>`, `Map<String, T>` |
-| object with properties | `data class` (nested inline objects get a class of their own) |
-| string `enum` | `String` (a newer server may add values) |
-| not required, or `null` allowed | `T? = null`; an omitted field lets the server's default apply |
+| object with properties | `data class`; an inline object becomes a nested class (`Request.Diff`) |
+| string `enum` | `typealias` of `String` plus an `…Values` object of known constants (a newer server may add values) |
+| not required, or `null` allowed | `T? = null`; an omitted field lets the server's default apply. A parameter with a schema default takes it as its Kotlin default |
 | unions of several types | `JsonElement` |
 
 Methods of a **targeted** service take `instance: String` first, so the
