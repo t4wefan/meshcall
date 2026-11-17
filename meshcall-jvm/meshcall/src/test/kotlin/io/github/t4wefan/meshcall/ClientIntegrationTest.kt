@@ -103,6 +103,7 @@ class ClientIntegrationTest {
     fun invalidResponseIsTheServersFault() = test {
         val error = assertFailsWith<InternalException> { mesh.unary(FIXTURE, "bad_response", JsonObject(emptyMap())) }
         assertEquals("invalid_response", error.reason)
+        settleBreaker()
     }
 
     // conformance-scenario: router.method_not_found
@@ -299,9 +300,7 @@ class ClientIntegrationTest {
             )
         }
         assertEquals(3, error.attempts)
-        // `unavailable` answers count towards the Router's circuit breaker (5 in a
-        // row open it): a success in between keeps the instance in the pool.
-        mesh.unary(FIXTURE, "echo", obj("value" to 1, "text" to ""))
+        settleBreaker()
         // A method the contract declares idempotent retries without a key.
         Mesh(Router(env.url), MeshOptions(retry = RetryPolicy(maxAttempts = 2))).use { twice ->
             val declared = assertFailsWith<UnavailableException> {
@@ -311,12 +310,25 @@ class ClientIntegrationTest {
                 )
             }
             assertEquals(2, declared.attempts)
-            twice.unary(FIXTURE, "echo", obj("value" to 1, "text" to ""))
+            settleBreaker()
         }
         val once = assertFailsWith<UnavailableException> {
             mesh.unary(FIXTURE, "fail", obj("code" to "unavailable", "message" to "flaky", "retryable" to true))
         }
         assertEquals(null, once.attempts) // not idempotent, no key: never re-sent
+        settleBreaker()
+    }
+
+    /**
+     * The Router's circuit breaker opens an instance after 5 consecutive
+     * `internal` / `unavailable` answers or Router-fired deadlines
+     * (conformance/CLIENTS.md), and the environment has one instance. A test that
+     * ends on such an answer makes one successful call so the count is back at 0
+     * whatever test runs next. (Deadline tests do not count: the Router adds
+     * DeadlineGrace, so the server's own `deadline_exceeded` answer wins.)
+     */
+    private suspend fun settleBreaker() {
+        mesh.unary(FIXTURE, "echo", obj("value" to 1, "text" to ""))
     }
 
     @Test
