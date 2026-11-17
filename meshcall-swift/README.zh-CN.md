@@ -141,7 +141,18 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 scripts/check.sh swift   # 另外还有：iOS 构建、生成代码的类型检查、demo/ts2swift
 ```
 
-测试会启动真实的 Router 和 Go 的一致性测试 fixture（`meshcall-go/conformance/fixture`，
-缺少时自动 `go build`），并覆盖一致性场景中客户端这一半：所有调用形态、额度、超时、取消、
-元数据、帧大小、隧道、端到端加密、吊销、Router 重启和回到前台时的检查。Noise 握手用与 Go、
-TypeScript 相同的测试向量验证。
+测试运行在共享的客户端环境 `meshcall-conformance env` 上（见
+[`conformance/CLIENTS.md`](../meshcall-router/conformance/CLIENTS.md)）：真实的 Router、
+一个能让连接停住的代理和一个一致性 fixture。测试覆盖一致性套件的全部客户端场景，每个测试都标有
+`// conformance-scenario: <id>`：所有调用形态、额度、超时、取消、元数据、帧大小、隧道、
+端到端加密、吊销、Router 重启和回到前台时的检查。Noise 握手用与 Go、TypeScript 相同的测试向量验证。
+
+默认用 Go 的 fixture（没有设置 `MESHCALL_FIXTURE_BINARY` 时自动 `go build`）；用
+`MESHCALL_FIXTURE` 可以让同一套测试跑在其他运行时的服务端上：
+
+```bash
+MESHCALL_FIXTURE="node meshcall-ts/dist/conformance/fixture.js" swift test
+MESHCALL_FIXTURE="uv run --project meshcall-py --locked python meshcall-py/conformance/fixture.py" swift test
+```
+
+（命令在仓库根目录下执行。）

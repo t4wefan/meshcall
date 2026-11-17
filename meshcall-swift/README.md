@@ -159,9 +159,23 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 scripts/check.sh swift   # also: iOS build, generated clients type-check, demo/ts2swift
 ```
 
-The tests start a real Router and the Go conformance fixture
-(`meshcall-go/conformance/fixture`, built with `go build` when missing) and
-play the client half of the conformance scenarios: every call shape, credit,
-deadlines, cancellation, metadata, frame size, tunnels, end-to-end sealing,
-revocation, Router restarts and the foreground check. The Noise handshake is
-checked against the same test vector as Go and TypeScript.
+The tests run against the shared client environment,
+`meshcall-conformance env` (see
+[`conformance/CLIENTS.md`](../meshcall-router/conformance/CLIENTS.md)): a real
+Router, a proxy that can stall connections, and a conformance fixture. They
+cover every client scenario of the suite, each test marked
+`// conformance-scenario: <id>`: every call shape, credit, deadlines,
+cancellation, metadata, frame size, tunnels, end-to-end sealing, revocation,
+Router restarts and the foreground check. The Noise handshake is checked
+against the same test vector as Go and TypeScript.
+
+The fixture is Go's by default (built with `go build` when
+`MESHCALL_FIXTURE_BINARY` is unset); `MESHCALL_FIXTURE` runs the same tests
+against another runtime's server:
+
+```bash
+MESHCALL_FIXTURE="node meshcall-ts/dist/conformance/fixture.js" swift test
+MESHCALL_FIXTURE="uv run --project meshcall-py --locked python meshcall-py/conformance/fixture.py" swift test
+```
+
+(The command runs from the repository root.)

@@ -36,8 +36,11 @@ swift_checks() {
   step "swift build + tests (client against the Go fixture), generated Swift type-checks"
   # CryptoKit and URLSessionWebSocketTask: the runtime targets Apple platforms.
   if [ "$(uname)" != Darwin ] || ! command -v swift >/dev/null; then echo "needs macOS and Swift: skipped"; return 0; fi
+  # The client environment (conformance/CLIENTS.md) with the Go fixture.
+  (cd meshcall-router && go build -o bin/meshcall-conformance ./cmd/meshcall-conformance)
   (cd meshcall-go && go build -o bin/conformance-fixture ./conformance/fixture)
-  (cd meshcall-swift && export MESHCALL_FIXTURE_BINARY="$PWD/../meshcall-go/bin/conformance-fixture" && swift build && swift test)
+  (cd meshcall-swift && export MESHCALL_CONFORMANCE_BINARY="$PWD/../meshcall-router/bin/meshcall-conformance" \
+    MESHCALL_FIXTURE_BINARY="$PWD/../meshcall-go/bin/conformance-fixture" && swift build && swift test)
   # The runtime's first users are iOS apps: it must build for iOS too.
   (cd meshcall-swift && swift build --scratch-path .build/ios --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
     --triple arm64-apple-ios16.0-simulator)

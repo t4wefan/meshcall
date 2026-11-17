@@ -21,6 +21,7 @@ private func unhex(_ text: String) -> Data {
 
 final class E2ETests: XCTestCase {
     /// The cacophony test vector the Go and TypeScript runtimes check too.
+    // conformance-scenario: e2e.test_vector
     func testNoiseNKMatchesTheTestVector() throws {
         struct Vector: Decodable {
             struct Message: Decodable {

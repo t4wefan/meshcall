@@ -65,7 +65,6 @@
                 live = existing
             } else {
                 live = try LiveMesh()
-                try await live.waitForFixture()
                 Self.lock.withLock { Self.shared[key] = live }
             }
             mesh = try live.mesh()
@@ -82,12 +81,14 @@
     }
 
     final class CallTests: LiveTestCase {
+        // conformance-scenario: unary.round_trip
         func testUnaryRoundTrip() async throws {
             let echo = Echo(value: 7, text: "héllo 😀")
             let result = try await mesh.unary(fixture, "echo", echo, as: Echo.self)
             XCTAssertEqual(result, echo)
         }
 
+        // conformance-scenario: unary.invalid_request
         func testAnInvalidRequestFailsOnlyThatCall() async throws {
             let error = await meshError {
                 _ = try await self.mesh.unary(fixture, "echo", WrongEcho(value: "x", text: "y"), as: Echo.self)
@@ -100,12 +101,14 @@
             XCTAssertEqual(again.value, 1)
         }
 
+        // conformance-scenario: unary.invalid_response
         func testAnInvalidResponseIsTheServersFault() async throws {
             let error = await meshError { _ = try await self.mesh.unary(fixture, "bad_response", Empty(), as: Ok.self) }
             XCTAssertEqual(error?.code, .internal)
             XCTAssertEqual(error?.reason, "invalid_response")
         }
 
+        // conformance-scenario: unary.undecodable_response
         func testAResponseThisClientCannotDecodeIsAProtocolError() async throws {
             let error = await meshError {
                 _ = try await self.mesh.unary(fixture, "echo", Echo(value: 1, text: "x"), as: WrongEcho.self)
@@ -116,6 +119,7 @@
             XCTAssertEqual(error?.violations.first?.path, "value")
         }
 
+        // conformance-scenario: unary.application_error
         func testApplicationErrorsPassThrough() async throws {
             let error = await meshError {
                 _ = try await self.mesh.unary(
@@ -129,6 +133,7 @@
             XCTAssertNil(error?.attempts, "a call without an idempotency key is not retried")
         }
 
+        // conformance-scenario: unary.retry
         func testRetryableErrorsAreRetriedWithAnIdempotencyKey() async throws {
             let error = await meshError {
                 _ = try await self.mesh.unary(
@@ -139,6 +144,7 @@
             XCTAssertEqual(error?.attempts, 3)
         }
 
+        // conformance-scenario: targeted.instance
         func testTargetedCalls() async throws {
             let missing = await meshError { _ = try await self.mesh.unary(targeted, "whoami", Empty(), as: WhoAmI.self) }
             XCTAssertEqual(missing?.code, .invalidArgument)
@@ -154,11 +160,13 @@
             XCTAssertEqual(unknown?.reason, "instance_unknown")
         }
 
+        // conformance-scenario: router.method_not_found
         func testUnknownMethod() async throws {
             let error = await meshError { _ = try await self.mesh.unary(fixture, "nope", Empty(), as: Empty.self) }
             XCTAssertEqual(error?.code, .methodNotFound)
         }
 
+        // conformance-scenario: stream.server_credit
         func testServerStreamBeyondTheInitialCredit() async throws {
             var seen: [Int] = []
             for try await item in try await mesh.serverStream(fixture, "count", Count(n: 40), of: Index.self) {
@@ -167,6 +175,7 @@
             XCTAssertEqual(seen, Array(0..<40))
         }
 
+        // conformance-scenario: stream.concurrent
         func testConcurrentStreamsKeepTheirOwnCredit() async throws {
             let mesh = self.mesh!
             try await withThrowingTaskGroup(of: Int.self) { group in
@@ -185,6 +194,7 @@
             }
         }
 
+        // conformance-scenario: stream.early_exit
         func testLeavingAStreamEarlyCancelsIt() async throws {
             var seen = 0
             for try await _ in try await mesh.serverStream(fixture, "count", Count(n: 1000, gap_ms: 5), of: Index.self) {
@@ -197,6 +207,7 @@
             XCTAssertEqual(echo.value, 2)
         }
 
+        // conformance-scenario: stream.client_stream
         func testClientStream() async throws {
             let values = (1...40).map { Value(value: $0) }
             let total = try await mesh.clientStream(
@@ -204,6 +215,7 @@
             XCTAssertEqual(total.total, 10 + 820)
         }
 
+        // conformance-scenario: deadline.server
         func testTheServerEnforcesTheTimeout() async throws {
             let error = await meshError {
                 _ = try await self.mesh.unary(
@@ -214,6 +226,7 @@
             XCTAssertEqual(error?.retryable, false)
         }
 
+        // conformance-scenario: deadline.idle
         func testTheClientEnforcesTheOutputIdleTimeout() async throws {
             let error = await meshError {
                 for try await _ in try await self.mesh.serverStream(
@@ -226,6 +239,7 @@
             XCTAssertEqual(error?.reason, "idle")
         }
 
+        // conformance-scenario: cancel.caller
         func testCancellingTheTaskCancelsTheCall() async throws {
             let tag = "cancel-" + newID()
             let mesh = self.mesh!
@@ -242,6 +256,7 @@
             XCTFail("the handler never saw the cancel")
         }
 
+        // conformance-scenario: metadata.round_trip
         func testMetadataAndTrailers() async throws {
             let seen = TrailerLog()
             let mesh = try live.mesh(
@@ -261,6 +276,7 @@
             XCTAssertEqual(seen.last?["count"], "2")
         }
 
+        // conformance-scenario: duplex.interleaved
         func testDuplexInterleavesAndHalfCloses() async throws {
             let chat = try await mesh.duplex(fixture, "chat", ChatRequest(prefix: "~"), input: Text.self, output: Text.self)
             var output = chat.makeAsyncIterator()
@@ -277,6 +293,7 @@
             XCTAssertNil(end)
         }
 
+        // conformance-scenario: duplex.server_half_close
         func testDuplexOutputEndsWhileInputStaysOpen() async throws {
             let call = try await mesh.duplex(fixture, "announce", Empty(), input: Text.self, output: Text.self)
             var output = call.makeAsyncIterator()
@@ -288,6 +305,7 @@
             XCTAssertNil(end)
         }
 
+        // conformance-scenario: frame_size.request
         func testAnOversizedRequestFailsOnlyItsCall() async throws {
             let mesh = try live.mesh(MeshOptions(maxFrameSize: 4096))
             defer { Task { await mesh.close() } }
@@ -302,6 +320,7 @@
             XCTAssertEqual(small.value, 3)
         }
 
+        // conformance-scenario: metadata.reserved
         func testReservedMetadataIsRefusedBeforeSending() async throws {
             let error = await meshError {
                 _ = try await self.mesh.unary(

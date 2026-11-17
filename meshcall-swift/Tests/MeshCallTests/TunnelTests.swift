@@ -12,10 +12,11 @@
             let opened = try await mesh.tunnels.open(
                 OpenTunnelRequest(
                     instance: LiveMesh.instance, scopes: services.map { TunnelScope(service: $0) },
-                    principal: principal, ttlSeconds: 600, e2eKey: e2e ? live.e2eKey.publicKey : nil))
+                    principal: principal, ttlSeconds: 600, e2eKey: e2e ? live.e2eKey : nil))
             return opened.grant(routerURL: live.routerURL)
         }
 
+        // conformance-scenario: tunnel.scope
         func testATunnelReachesOnlyItsInstanceAndCarriesItsIdentity() async throws {
             let grant = try await open()
             XCTAssertTrue(grant.credential.hasPrefix("mtun_"))
@@ -44,10 +45,11 @@
             XCTAssertEqual(identity.tunnel?.tunnelID, grant.tunnelID)
         }
 
+        // conformance-scenario: e2e.all_shapes
         func testEveryShapeIsSealedEndToEnd() async throws {
             let grant = try await open([fixture, vault], e2e: true)
             XCTAssertTrue(grant.credential.hasPrefix("mtun_e2e."))
-            XCTAssertEqual(grant.e2eKey, live.e2eKey.publicKey)
+            XCTAssertEqual(grant.e2eKey, live.e2eKey)
             let tunnel = try Mesh(tunnel: grant)
             defer { Task { await tunnel.close() } }
 
@@ -88,6 +90,7 @@
             XCTAssertEqual(failure?.details["from"], "fixture")
         }
 
+        // conformance-scenario: e2e.wrong_key
         func testAWrongPinnedKeyNeverSendsACall() async throws {
             var grant = try await open(e2e: true)
             grant.e2eKey = E2EKeyPair.generate().publicKey
@@ -98,18 +101,21 @@
             XCTAssertEqual(error?.reason, "e2e_handshake_failed")
         }
 
+        // conformance-scenario: e2e.required
         func testAPlainTunnelRequiredToBeSealedIsRefusedAtOpen() async throws {
             let error = await meshError { _ = try await self.open([vault]) }
             XCTAssertEqual(error?.code, .permissionDenied)
             XCTAssertEqual(error?.reason, "tunnel_rejected")
         }
 
+        // conformance-scenario: e2e.agreement
         func testAnEndToEndCredentialWithoutItsKeyIsRefusedBeforeConnecting() async throws {
             var grant = try await open(e2e: true)
             grant.e2eKey = nil
             XCTAssertThrowsError(try Mesh(tunnel: grant)) { XCTAssertTrue($0 is ConfigurationError) }
         }
 
+        // conformance-scenario: e2e.session_lost
         func testAnInstanceThatLostTheSessionGetsANewHandshake() async throws {
             let grant = try await open(e2e: true)
             let tunnel = try Mesh(tunnel: grant)
@@ -117,7 +123,6 @@
             _ = try await tunnel.unary(fixture, "echo", Echo(value: 1, text: "first"), as: Echo.self)
 
             try live.restartFixture()
-            try await live.waitForFixture()
             // The tunnel resumes; the instance answers e2e_session_unknown, and the
             // client handshakes again on a new connection and retries once.
             let echo = try await tunnel.unary(
@@ -125,6 +130,7 @@
             XCTAssertEqual(echo.value, 2)
         }
 
+        // conformance-scenario: tunnel.revoked
         func testRevokingEndsCallsAndLaterCallsKeepTheAnswer() async throws {
             let grant = try await open(e2e: true)
             let tunnel = try Mesh(tunnel: grant)
@@ -149,6 +155,7 @@
     // Connection loss, reconnect and the foreground check, against Routers
     // that stop and restart under the client.
     final class ReconnectTests: LiveTestCase {
+        // conformance-scenario: reconnect.router_restart
         func testCallsAfterARouterRestartReconnect() async throws {
             _ = try await mesh.unary(fixture, "echo", Echo(value: 1, text: "before"), as: Echo.self)
             let stream = try await mesh.serverStream(fixture, "count", Count(n: 1000, gap_ms: 20), of: Index.self)
@@ -161,13 +168,13 @@
             XCTAssertEqual(lost?.code, .unavailable)
             XCTAssertEqual(lost?.retryable, true)
 
-            try await live.waitForFixture()
             // The next call reconnects (with backoff) within its own timeout.
             let echo = try await mesh.unary(
                 fixture, "echo", Echo(value: 2, text: "after"), as: Echo.self, options: CallOptions(timeout: .seconds(10)))
             XCTAssertEqual(echo.value, 2)
         }
 
+        // conformance-scenario: reconnect.dead_socket
         func testCheckConnectionDropsAConnectionThatStoppedAnswering() async throws {
             _ = try await mesh.unary(fixture, "echo", Echo(value: 1, text: "x"), as: Echo.self)
             let alive = await mesh.checkConnection(timeout: .seconds(2))
@@ -196,6 +203,7 @@
             XCTAssertFalse(connected)
         }
 
+        // conformance-scenario: deadline.handshake
         func testTheClientDeadlineCoversAHandshakeNobodyAnswers() async throws {
             let fresh = try live.mesh(MeshOptions(retry: .disabled))
             live.pauseRouter()
@@ -211,6 +219,7 @@
             XCTAssertLessThan(ContinuousClock.now - started, .seconds(3), "timeout + grace (1 s), not the handshake timeout")
         }
 
+        // conformance-scenario: deadline.connect
         func testTheClientDeadlineCoversConnecting() async throws {
             // Nothing listens on this port: connecting fails fast and retryably.
             let nowhere = try Mesh(Router("ws://127.0.0.1:1"), options: MeshOptions(retry: .disabled))
@@ -221,6 +230,7 @@
             XCTAssertEqual(error?.retryable, true)
         }
 
+        // conformance-scenario: reconnect.failover
         func testFailoverToTheNextEndpoint() async throws {
             let mesh = try Mesh(Router(urls: ["ws://127.0.0.1:1", live.routerURL]))
             defer { Task { await mesh.close() } }
