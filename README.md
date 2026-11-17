@@ -337,6 +337,10 @@ Unary calls and server streams work fully, client streams take an NDJSON body, a
 
 Go services and clients use the Go runtime, [`meshcall-go`](meshcall-go/README.md): the same calls, errors, deadlines, streams and Router features, checked by the same conformance suite. `meshcall generate service.meshcall.json --language go --output internal/chatclient` writes a typed Go client for a service written in any of the three languages, and `meshcall.WriteContract` exports a Go service's contract for Python and TypeScript clients.
 
+## Swift (iOS and macOS clients)
+
+iOS and macOS apps call the mesh with [`meshcall-swift`](meshcall-swift/README.md), a client runtime (no Swift services yet) with the same calls, errors, deadlines, streams, reconnects, tunnels and end-to-end encryption. `meshcall generate service.meshcall.json --language swift --output Sources/App/Generated` writes `Codable` types and an `async` client for a service in any language, and `Mesh(tunnel: grant)` takes an issuer's tunnel answer as is.
+
 ---
 
 ## Run Repository Examples
@@ -352,6 +356,7 @@ uv run --project demo/showcase demo     # @query / @mutates / @stream, metadata,
 uv run --project demo/router demo       # Standalone Router process and registry
 uv run --project demo/py2ts demo        # Python service -> TypeScript client
 uv run --project demo/ts2py demo        # TypeScript service -> Python client
+(cd demo/ts2swift && swift run)        # TypeScript service -> Swift client (macOS)
 uv run --project best-practice demo     # DI, TypeScript CLI and Go client
 ```
 
@@ -367,6 +372,7 @@ When you are ready to explore production capabilities, follow the guides below:
 | **[Python SDK](meshcall-py/README.md)** | Install and use the Python package API | [Python SDK 指南](meshcall-py/README.zh-CN.md) |
 | **[TypeScript SDK](meshcall-ts/README.md)** | Install and use the TypeScript package API | [TypeScript SDK 指南](meshcall-ts/README.zh-CN.md) |
 | **[Go SDK](meshcall-go/README.md)** | Use the Go runtime and generated Go clients | — |
+| **[Swift SDK](meshcall-swift/README.md)** | Call the mesh from iOS and macOS apps with generated Swift clients | [简体中文](meshcall-swift/README.zh-CN.md) |
 | **[Router & CLI](meshcall-router/README.md)** | Deploy the standalone Router binary, configure CLI flags, and run with Docker | [Router 与 CLI 部署指南](meshcall-router/README.zh-CN.md) |
 | **[Router & Auth Guide](docs/router.md)** | Configure multi-instance routing, accounts, and access tokens | [Router 架构与鉴权](docs/zh-CN/router.md) |
 | **[Runtime Architecture](docs/architecture.md)** | Understand the internal design of the client and server runtimes | [运行时架构设计](docs/zh-CN/architecture.md) |

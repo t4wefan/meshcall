@@ -225,7 +225,7 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 
 `meshcall init [dir] [--force]`（也可用 `uv run meshcall init`、`npx meshcall init`）默认安装 `.agents/skills/meshcall/SKILL.md` 与 `AGENTS.md` 中带标记的 MeshCall 段落，让该项目中的编码 Agent 使用上述命令；`--agent claude|cursor|copilot|windsurf|all` 改为写入对应工具的位置（见[实战指南第 10 节](guide.md#10-ai-编程助手集成meshcall-init)）。重复执行是幂等的；被修改过的技能文件会保留，除非加 `--force`。
 
-`meshcall generate <contract.json | module:Class> --output PATH [--language python|typescript|go] [--single-file] [--service NAME] [--package-name N] [--package-version V] [--class-name N] [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]` 生成类型化的客户端包（或单个文件）；`meshcall export module:Class --output contract.json` 导出 Python 服务的契约。`module:Class` 形式的来源通过 `MESHCALL_PYTHON` 指定的解释器导出，`uv run meshcall` 会自动将其设为项目自身的解释器。Go 服务用 `meshcall.WriteContract` 导出契约，TypeScript 服务用 `writeContract`。
+`meshcall generate <contract.json | module:Class> --output PATH [--language python|typescript|go|swift] [--single-file] [--service NAME] [--package-name N] [--package-version V] [--class-name N] [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]` 生成类型化的客户端包（或单个文件）；`meshcall export module:Class --output contract.json` 导出 Python 服务的契约。`module:Class` 形式的来源通过 `MESHCALL_PYTHON` 指定的解释器导出，`uv run meshcall` 会自动将其设为项目自身的解释器。Go 服务用 `meshcall.WriteContract` 导出契约，TypeScript 服务用 `writeContract`。
 
 ---
 
