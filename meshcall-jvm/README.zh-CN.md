@@ -198,8 +198,13 @@ cd meshcall-jvm
 ./gradlew :examples:run   # showcase 示例的 Kotlin 客户端（读取 MESHCALL_ROUTER_URL）
 ```
 
-集成测试先用 `go build` 构建 `meshcall-router` 和 Go 一致性测试 fixture，再针对它们跑
-一致性场景中客户端可观察的那一侧。没有 Go 时会跳过。`examples` 模块包含生成的
+集成测试运行在共享的客户端一致性环境中：Gradle 用 `go build` 构建 `meshcall-conformance`
+和 Go 一致性测试 fixture，测试再启动 `meshcall-conformance env --fixture …`，由它运行
+Router 和 fixture，并接受 `restart_router` / `pause_router` / `restart_fixture` 等命令。
+每个场景都标有 `// conformance-scenario: <id>`，`meshcall-router` 中的
+`go test ./conformance/...` 会检查每个客户端场景都被覆盖。把 `MESHCALL_FIXTURE` 设为一条
+命令即可换用其他 fixture（例如 Python 版），`MESHCALL_CONFORMANCE_BINARY` 可指定预先构建的
+二进制。没有 Go 时会跳过。`examples` 模块包含生成的
 showcase 客户端（由 `scripts/regenerate.sh kotlin` 生成，CI 做漂移检查），以及一个
 Kotlin 调用方和一个 Java 调用方。`:meshcall` 的测试还会编译
 `meshcall-router/internal/codegen/testdata` 下的所有 Kotlin golden 文件。

@@ -33,6 +33,9 @@ import kotlin.test.assertTrue
  * The client side of the conformance scenarios (meshcall-router/conformance),
  * played by the JVM client against a real Router and the Go fixture.
  */
+@kotlinx.serialization.Serializable
+data class OnlyValue(val value: Long)
+
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ClientIntegrationTest {
     private lateinit var env: Env
@@ -64,13 +67,18 @@ class ClientIntegrationTest {
     private fun JsonElement.int(key: String) = jsonObject[key]!!.jsonPrimitive.int
     private fun JsonElement.str(key: String) = jsonObject[key]!!.jsonPrimitive.content
 
+    // conformance-scenario: unary.round_trip
     @Test
     fun unaryEcho() = test {
         val result = mesh.unary(FIXTURE, "echo", obj("value" to 7, "text" to "héllo"))
         assertEquals(7, result.int("value"))
         assertEquals("héllo", result.str("text"))
+        // A client whose type knows fewer fields than the server sends ignores the rest.
+        val narrow = mesh.unary(FIXTURE, "echo", obj("value" to 8, "text" to "x"), JsonObject.serializer(), OnlyValue.serializer())
+        assertEquals(OnlyValue(8), narrow)
     }
 
+    // conformance-scenario: unary.application_error
     @Test
     fun applicationErrorKeepsCodeAndDetails() = test {
         val error = assertFailsWith<MeshCallException> {
@@ -81,6 +89,7 @@ class ClientIntegrationTest {
         assertEquals("fixture", error.details?.get("from")?.jsonPrimitive?.content)
     }
 
+    // conformance-scenario: unary.invalid_request
     @Test
     fun invalidArgumentCarriesViolations() = test {
         val error = assertFailsWith<InvalidArgumentException> { mesh.unary(FIXTURE, "echo", obj("value" to "x", "text" to "t")) }
@@ -89,17 +98,20 @@ class ClientIntegrationTest {
         assertTrue(error.violations.any { it.path == "value" }, error.violations.toString())
     }
 
+    // conformance-scenario: unary.invalid_response
     @Test
     fun invalidResponseIsTheServersFault() = test {
         val error = assertFailsWith<InternalException> { mesh.unary(FIXTURE, "bad_response", JsonObject(emptyMap())) }
         assertEquals("invalid_response", error.reason)
     }
 
+    // conformance-scenario: router.method_not_found
     @Test
     fun unknownMethod() = test {
         assertFailsWith<MethodNotFoundException> { mesh.unary(FIXTURE, "nope", JsonObject(emptyMap())) }
     }
 
+    // conformance-scenario: targeted.instance
     @Test
     fun targetedCallsNameTheirInstance() = test {
         val required = assertFailsWith<InvalidArgumentException> { mesh.unary(TARGETED, "whoami", JsonObject(emptyMap())) }
@@ -113,6 +125,7 @@ class ClientIntegrationTest {
         assertEquals(false, unknown.retryable)
     }
 
+    // conformance-scenario: stream.server_credit
     @Test
     fun serverStreamReplenishesCredit() = test {
         // More items than the initial window of 16: each taken item grants one more.
@@ -120,6 +133,7 @@ class ClientIntegrationTest {
         assertEquals((0 until 40).toList(), items.map { it.int("index") })
     }
 
+    // conformance-scenario: stream.early_exit
     @Test
     fun leavingAStreamEarlyCancelsIt() = test {
         val items = mesh.serverStream(FIXTURE, "count", obj("n" to 1000, "gap_ms" to 5)).take(3).toList()
@@ -128,12 +142,14 @@ class ClientIntegrationTest {
         assertEquals(1, mesh.unary(FIXTURE, "echo", obj("value" to 1, "text" to "")).int("value"))
     }
 
+    // conformance-scenario: stream.concurrent
     @Test
     fun concurrentStreamsShareTheConnection() = test {
         val streams = (1..4).map { n -> async { mesh.serverStream(FIXTURE, "count", obj("n" to 30 + n)).toList().size } }
         assertEquals(listOf(31, 32, 33, 34), streams.map { it.await() })
     }
 
+    // conformance-scenario: stream.client_stream
     @Test
     fun clientStreamSums() = test {
         val items = (1..40).map { obj("value" to it) }.asFlow()
@@ -151,6 +167,7 @@ class ClientIntegrationTest {
         assertEquals("producer broke", error.message)
     }
 
+    // conformance-scenario: deadline.server
     @Test
     fun serverDeadlineWins() = test {
         val tag = "deadline-" + newCallId()
@@ -162,13 +179,21 @@ class ClientIntegrationTest {
         assertEquals("server", error.source)
     }
 
+    // conformance-scenario: cancel.caller
     @Test
     fun cancellingTheCoroutineCancelsTheCall() = test {
         val tag = "cancel-" + newCallId()
         val job = launch { mesh.unary(FIXTURE, "slow", obj("ms" to 10_000, "tag" to tag)) }
         eventually { mesh.unary(FIXTURE, "invoked_tags", JsonObject(emptyMap())).tags().contains(tag) }
         job.cancelAndJoin()
+        assertTrue(job.isCancelled)
         eventually { mesh.unary(FIXTURE, "cancelled_tags", JsonObject(emptyMap())).tags().contains(tag) }
+        // From Java, cancelling the future ends the call the same way.
+        val javaTag = "cancel-java-" + newCallId()
+        val future = mesh.future { mesh.unary(FIXTURE, "slow", obj("ms" to 10_000, "tag" to javaTag)) }
+        eventually { mesh.unary(FIXTURE, "invoked_tags", JsonObject(emptyMap())).tags().contains(javaTag) }
+        future.cancel(true)
+        eventually { mesh.unary(FIXTURE, "cancelled_tags", JsonObject(emptyMap())).tags().contains(javaTag) }
     }
 
     private fun JsonElement.tags() = (jsonObject["tags"] as JsonArray).map { it.jsonPrimitive.content }
@@ -179,6 +204,7 @@ class ClientIntegrationTest {
         }
     }
 
+    // conformance-scenario: deadline.idle
     @Test
     fun idleTimeoutIsEnforcedByTheClient() = test {
         val error = assertFailsWith<DeadlineExceededException> {
@@ -188,6 +214,8 @@ class ClientIntegrationTest {
         assertEquals("idle", error.reason)
     }
 
+    // conformance-scenario: metadata.round_trip
+    // conformance-scenario: metadata.reserved
     @Test
     fun metadataAndTrailers() = test {
         var trailers: Map<String, String> = emptyMap()
@@ -211,6 +239,7 @@ class ClientIntegrationTest {
         assertEquals(emptyMap(), trailers)
     }
 
+    // conformance-scenario: duplex.interleaved
     @Test
     fun duplexInterleaves() = test {
         mesh.duplex(FIXTURE, "chat", obj("prefix" to "> ")).use { call ->
@@ -221,6 +250,7 @@ class ClientIntegrationTest {
         }
     }
 
+    // conformance-scenario: duplex.server_half_close
     @Test
     fun duplexServerHalfClose() = test {
         val call = mesh.duplex(FIXTURE, "announce", JsonObject(emptyMap()))
@@ -231,6 +261,7 @@ class ClientIntegrationTest {
         call.await()
     }
 
+    // conformance-scenario: duplex.no_idempotency_key
     @Test
     fun duplexRefusesAnIdempotencyKey() = test {
         val call = mesh.duplex(FIXTURE, "chat", JsonObject(emptyMap()), CallOptions.DEFAULT.withIdempotencyKey("k1"))
@@ -238,6 +269,7 @@ class ClientIntegrationTest {
         assertEquals("idempotency_key_on_duplex", error.reason)
     }
 
+    // conformance-scenario: frame_size.request
     @Test
     fun frameTooLargeFailsOnlyThatCall() = test {
         Mesh(Router(env.url), MeshOptions(maxFrameSize = 64 * 1024)).use { small ->
@@ -257,15 +289,30 @@ class ClientIntegrationTest {
         assertEquals(4_000_000, big.str("text").length)
     }
 
+    // conformance-scenario: unary.retry
     @Test
     fun retryPolicyRetriesIdempotentUnaryCalls() = test {
         val error = assertFailsWith<UnavailableException> {
             mesh.unary(
                 FIXTURE, "fail", obj("code" to "unavailable", "message" to "flaky", "retryable" to true),
-                CallOptions.DEFAULT.withIdempotent(true),
+                CallOptions.DEFAULT.withIdempotencyKey("retry-" + newCallId()),
             )
         }
         assertEquals(3, error.attempts)
+        // `unavailable` answers count towards the Router's circuit breaker (5 in a
+        // row open it): a success in between keeps the instance in the pool.
+        mesh.unary(FIXTURE, "echo", obj("value" to 1, "text" to ""))
+        // A method the contract declares idempotent retries without a key.
+        Mesh(Router(env.url), MeshOptions(retry = RetryPolicy(maxAttempts = 2))).use { twice ->
+            val declared = assertFailsWith<UnavailableException> {
+                twice.unary(
+                    FIXTURE, "fail", obj("code" to "unavailable", "message" to "flaky", "retryable" to true),
+                    CallOptions.DEFAULT.withIdempotent(true),
+                )
+            }
+            assertEquals(2, declared.attempts)
+            twice.unary(FIXTURE, "echo", obj("value" to 1, "text" to ""))
+        }
         val once = assertFailsWith<UnavailableException> {
             mesh.unary(FIXTURE, "fail", obj("code" to "unavailable", "message" to "flaky", "retryable" to true))
         }

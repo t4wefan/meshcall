@@ -12,65 +12,98 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/** Connection loss, keepalive and reconnection (docs/protocol.md → Liveness; architecture → Failure boundaries). */
+/**
+ * Connection loss, keepalive and reconnection (docs/protocol.md → Liveness;
+ * architecture → Failure boundaries), driven by the environment's
+ * restart_router / pause_router / restart_fixture commands. Every test leaves
+ * the environment running and resumed.
+ */
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ResilienceIntegrationTest {
+    private lateinit var env: Env
+
+    @BeforeAll
+    fun setUp() {
+        env = Env.shared
+    }
+
     private fun test(block: suspend CoroutineScope.() -> Unit) = runBlocking { withTimeout(60_000) { block() } }
 
     private val echo = buildJsonObject { put("value", 1); put("text", "") }
     private val empty = JsonObject(emptyMap())
+    private val within = CallOptions.DEFAULT.withTimeoutMs(10_000)
 
+    // conformance-scenario: reconnect.router_restart
     @Test
     fun routerRestartFailsInFlightCallsAndTheNextCallReconnects() = test {
-        val env = Env.start(instance = "restart-1")
-        try {
-            val port = env.router.port
-            val mesh = env.mesh()
+        env.mesh().use { mesh ->
             mesh.unary(FIXTURE, "echo", echo)
             val inFlight = async { assertFailsWith<UnavailableException> { mesh.unary(FIXTURE, "slow", buildJsonObject { put("ms", 20_000) }) } }
             delay(200)
-            env.router.close()
-            val lost = inFlight.await()
-            assertTrue(lost.retryable)
-            // The same address comes back; the fixture re-registers there by itself.
-            val restarted = RouterProcess.start(port = port)
-            try {
-                env.awaitRegistered()
-                assertEquals(1, mesh.unary(FIXTURE, "echo", echo, CallOptions.DEFAULT.withTimeoutMs(10_000)).jsonObject["value"]!!.jsonPrimitive.int)
-            } finally {
-                mesh.close()
-                restarted.close()
-            }
-        } finally {
-            env.close()
+            env.command("restart_router") // answered once the fixture has registered again
+            assertTrue(inFlight.await().retryable)
+            assertEquals(1, mesh.unary(FIXTURE, "echo", echo, within).jsonObject["value"]!!.jsonPrimitive.int)
         }
     }
 
+    // conformance-scenario: reconnect.dead_socket
     @Test
-    fun keepaliveDetectsASilentPeerAndTheNextCallReconnects() = test {
-        val env = Env.shared
-        FreezableProxy(env.router.port).use { proxy ->
-            Mesh(Router(proxy.url), MeshOptions(pingIntervalMs = 200, pingTimeoutMs = 300)).use { mesh ->
-                mesh.unary(FIXTURE, "echo", echo)
-                val inFlight = async { assertFailsWith<UnavailableException> { mesh.unary(FIXTURE, "slow", buildJsonObject { put("ms", 20_000) }) } }
-                delay(100)
-                proxy.frozen = true
+    fun keepaliveDropsASilentConnectionAndTheNextCallReconnects() = test {
+        env.mesh(MeshOptions(pingIntervalMs = 200, pingTimeoutMs = 300)).use { mesh ->
+            mesh.unary(FIXTURE, "echo", echo)
+            val inFlight = async { assertFailsWith<UnavailableException> { mesh.unary(FIXTURE, "slow", buildJsonObject { put("ms", 20_000) }) } }
+            delay(100)
+            env.command("pause_router")
+            try {
                 val lost = withTimeout(5_000) { inFlight.await() }
                 assertTrue(lost.retryable, lost.toString())
-                proxy.reset()
-                assertEquals(1, mesh.unary(FIXTURE, "echo", echo, CallOptions.DEFAULT.withTimeoutMs(10_000)).jsonObject["value"]!!.jsonPrimitive.int)
+            } finally {
+                env.command("resume_router")
             }
+            assertEquals(1, mesh.unary(FIXTURE, "echo", echo, within).jsonObject["value"]!!.jsonPrimitive.int)
+        }
+    }
+
+    // conformance-scenario: deadline.handshake
+    @Test
+    fun theBudgetCoversAHandshakeNobodyAnswers() = test {
+        env.command("pause_router")
+        try {
+            env.mesh().use { mesh ->
+                val started = System.nanoTime()
+                val error = assertFailsWith<DeadlineExceededException> {
+                    mesh.unary(FIXTURE, "echo", echo, CallOptions.DEFAULT.withTimeoutMs(300))
+                }
+                val elapsedMs = (System.nanoTime() - started) / 1_000_000
+                assertEquals("client", error.source)
+                // timeout plus the client grace (max(1 s, 10 %)), with slack for scheduling
+                assertTrue(elapsedMs < 300 + 1000 + 500, "took $elapsedMs ms")
+            }
+        } finally {
+            env.command("resume_router")
+        }
+    }
+
+    // conformance-scenario: deadline.connect
+    @Test
+    fun theBudgetCoversConnectingToNothing() = test {
+        Mesh(Router("ws://127.0.0.1:1")).use { mesh ->
+            val error = assertFailsWith<UnavailableException> { mesh.unary(FIXTURE, "echo", echo, CallOptions.DEFAULT.withTimeoutMs(2_000)) }
+            assertTrue(error.retryable)
         }
     }
 
     @Test
     fun closeReleasesTheConnectionAndALaterCallReconnects() = test {
         // What an Android app does in onStop / onStart.
-        val mesh = Env.shared.mesh()
+        val mesh = env.mesh()
         val watching = async {
             assertFailsWith<UnavailableException> {
                 mesh.serverStream(FIXTURE, "count", buildJsonObject { put("n", 1000); put("gap_ms", 50) }).toList()
@@ -84,69 +117,39 @@ class ResilienceIntegrationTest {
         mesh.close()
     }
 
+    // conformance-scenario: reconnect.failover
     @Test
     fun endpointsFailOver() = test {
-        val dead = "ws://127.0.0.1:1"
-        Mesh(Router(listOf(dead, Env.shared.url))).use { mesh ->
+        Mesh(Router(listOf("ws://127.0.0.1:1", env.url))).use { mesh ->
             assertEquals(1, mesh.unary(FIXTURE, "echo", echo).jsonObject["value"]!!.jsonPrimitive.int)
-            assertEquals(Env.shared.url, mesh.endpoint)
+            assertEquals(env.url, mesh.endpoint)
         }
     }
 
+    // conformance-scenario: e2e.session_lost
     @Test
-    fun firstConnectFailureIsReportedAtOnce() = test {
-        Mesh(Router("ws://127.0.0.1:1")).use { mesh ->
-            val error = assertFailsWith<UnavailableException> { mesh.unary(FIXTURE, "echo", echo) }
-            assertTrue(error.retryable)
-        }
-    }
-
-    @Test
-    fun instanceOfflineThenResumedRenegotiatesTheE2ESession() = test {
-        val env = Env.start(instance = "offline-1")
-        try {
-            val tunnel = env.mesh().use { it.tunnels.open("offline-1", listOf(TunnelScope(FIXTURE)), "user:bob", e2eKey = Env.E2E_PUBLIC) }
-            env.mesh(MeshOptions(tunnel = tunnel.credential, e2eKey = Env.E2E_PUBLIC)).use { mesh ->
-                assertEquals(1, mesh.unary(FIXTURE, "echo", echo).jsonObject["value"]!!.jsonPrimitive.int)
-                env.fixture.destroyForcibly().waitFor()
-                val offline = assertFailsWith<UnavailableException> { awaitOffline(mesh) }
-                assertEquals("instance_offline", offline.reason)
-                assertTrue(offline.retryable)
-                // Same identity and key: the Router offers the tunnel again (resumed).
-                env.startFixture()
-                env.awaitRegistered()
-                // The restarted instance has no sessions: e2e_session_unknown, a new
-                // handshake on a new connection, and the unary call is retried once.
-                val back = withTimeout(10_000) {
-                    while (true) {
-                        try {
-                            return@withTimeout mesh.unary(FIXTURE, "echo", echo)
-                        } catch (error: UnavailableException) {
-                            delay(100) // the re-offer may still be on its way
-                        }
+    fun aRestartedInstanceMakesTheClientHandshakeAgain() = test {
+        val tunnel = env.mesh().use { it.tunnels.open(env.instance, listOf(TunnelScope(FIXTURE)), "user:bob", e2eKey = env.e2eKey) }
+        env.mesh(MeshOptions(tunnel = tunnel.credential, e2eKey = env.e2eKey)).use { mesh ->
+            assertEquals(1, mesh.unary(FIXTURE, "echo", echo).jsonObject["value"]!!.jsonPrimitive.int)
+            // Same identity and key: the Router offers the tunnel again (resumed).
+            env.command("restart_fixture")
+            // The new process has no sessions: e2e_session_unknown, a new handshake
+            // on a new connection, and the unary call is retried once, unseen.
+            val back = withTimeout(10_000) {
+                var result: kotlinx.serialization.json.JsonElement? = null
+                while (result == null) {
+                    try {
+                        result = mesh.unary(FIXTURE, "echo", echo)
+                    } catch (error: UnavailableException) {
+                        assertEquals("instance_offline", error.reason) // the re-offer may still be on its way
+                        delay(100)
                     }
-                    @Suppress("UNREACHABLE_CODE") error("unreachable")
                 }
-                assertEquals(1, back.jsonObject["value"]!!.jsonPrimitive.int)
-                assertEquals(true, mesh.unary(FIXTURE, "tunnel_info", empty).jsonObject["sealed"]!!.jsonPrimitive.content.toBoolean())
+                result
             }
-        } finally {
-            env.close()
+            assertEquals(1, back.jsonObject["value"]!!.jsonPrimitive.int)
+            assertEquals(true, mesh.unary(FIXTURE, "tunnel_info", empty).jsonObject["sealed"]!!.jsonPrimitive.content.toBoolean())
         }
-    }
-
-    private suspend fun awaitOffline(mesh: Mesh): Nothing {
-        withTimeout(10_000) {
-            while (true) {
-                try {
-                    mesh.unary(FIXTURE, "echo", echo)
-                    delay(50)
-                } catch (error: UnavailableException) {
-                    if (error.reason == "instance_offline") throw error
-                    delay(50)
-                }
-            }
-        }
-        error("unreachable")
     }
 }

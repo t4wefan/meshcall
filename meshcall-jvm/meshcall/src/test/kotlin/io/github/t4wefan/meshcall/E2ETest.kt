@@ -20,6 +20,7 @@ class E2ETest {
     private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     /** The same published vector the conformance harness checks itself against. */
+    // conformance-scenario: e2e.test_vector
     @Test
     fun noiseMatchesTheCacophonyVector() {
         val root = System.getProperty("meshcall.repoRoot") ?: "../.."

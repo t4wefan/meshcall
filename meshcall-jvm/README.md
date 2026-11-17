@@ -220,9 +220,16 @@ cd meshcall-jvm
 ./gradlew :examples:run   # the showcase demo's Kotlin client (MESHCALL_ROUTER_URL)
 ```
 
-The integration tests build `meshcall-router` and the Go conformance fixture
-with `go build`, then run the client side of the conformance scenarios
-against them. Without Go they are skipped. The `examples` module holds the
+The integration tests run in the shared client conformance environment:
+Gradle builds `meshcall-conformance` and the Go conformance fixture with
+`go build`, and the tests start `meshcall-conformance env --fixture …`, which
+runs a Router plus fixture and takes `restart_router` / `pause_router` /
+`restart_fixture` commands. Each scenario is marked
+`// conformance-scenario: <id>`, and `go test ./conformance/...` in
+`meshcall-router` checks that every client scenario is covered. Set
+`MESHCALL_FIXTURE` to a command to run against another fixture (for example
+the Python one) and `MESHCALL_CONFORMANCE_BINARY` to use a prebuilt binary.
+Without Go they are skipped. The `examples` module holds the
 generated showcase client (`scripts/regenerate.sh kotlin`, drift-checked in
 CI) with a Kotlin and a Java caller. The `:meshcall` tests also compile every
 Kotlin golden under `meshcall-router/internal/codegen/testdata`.

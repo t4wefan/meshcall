@@ -55,13 +55,15 @@ class GeneratedClientIntegrationTest {
         assertEquals(INSTANCE, TargetedClient(mesh).whoami(INSTANCE).instance)
     }
 
+    // conformance-scenario: unary.undecodable_response
     @Test
     fun aResponseThatBreaksTheClientsContractIsAProtocolError() = test {
-        // The server catches its own bad response first (internal); the
-        // client-side check fires when a contract drifts. Decode a mismatched
-        // value directly to exercise it.
+        // echo answers {value, text}; a client whose type wants `tag` cannot decode it.
         val error = assertFailsWith<ProtocolErrorException> {
-            decodeReceived(Value.serializer(), kotlinx.serialization.json.JsonPrimitive("nope"), "invalid_response")
+            mesh.unary(
+                FIXTURE, "echo", io.github.t4wefan.meshcall.conformance.Echo(1, "x"),
+                io.github.t4wefan.meshcall.conformance.Echo.serializer(), io.github.t4wefan.meshcall.conformance.Tag.serializer(),
+            )
         }
         assertEquals("client", error.source)
         assertEquals("invalid_response", error.reason)

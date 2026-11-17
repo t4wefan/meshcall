@@ -42,9 +42,11 @@ class TunnelIntegrationTest {
         principal: String = "user:alice/device:phone",
         scopes: List<TunnelScope> = listOf(TunnelScope(FIXTURE)),
     ): OpenedTunnel = env.mesh().use { issuer ->
-        issuer.tunnels.open(INSTANCE, scopes, principal, ttlSeconds = 600, e2eKey = e2eKey)
+        issuer.tunnels.open(env.instance, scopes, principal, ttlSeconds = 600, e2eKey = e2eKey)
     }
 
+    // conformance-scenario: tunnel.scope
+    // conformance-scenario: e2e.required
     @Test
     fun plainTunnelReachesOnlyItsInstance() = test {
         val tunnel = open()
@@ -61,11 +63,12 @@ class TunnelIntegrationTest {
         assertEquals("tunnel_rejected", vault.reason)
     }
 
+    // conformance-scenario: e2e.all_shapes
     @Test
     fun e2eTunnelSealsEveryShape() = test {
-        val tunnel = open(e2eKey = Env.E2E_PUBLIC, scopes = listOf(TunnelScope(FIXTURE), TunnelScope(VAULT)))
+        val tunnel = open(e2eKey = env.e2eKey, scopes = listOf(TunnelScope(FIXTURE), TunnelScope(VAULT)))
         assertTrue(tunnel.credential.startsWith("mtun_e2e."))
-        env.mesh(MeshOptions(tunnel = tunnel.credential, e2eKey = Env.E2E_PUBLIC)).use { mesh ->
+        env.mesh(MeshOptions(tunnel = tunnel.credential, e2eKey = env.e2eKey)).use { mesh ->
             val seen = mesh.unary(FIXTURE, "tunnel_info", empty).jsonObject
             assertEquals(true, seen["sealed"]!!.jsonPrimitive.boolean)
             assertEquals(true, mesh.unary(VAULT, "peek", empty).jsonObject["sealed"]!!.jsonPrimitive.boolean)
@@ -98,9 +101,10 @@ class TunnelIntegrationTest {
         }
     }
 
+    // conformance-scenario: e2e.wrong_key
     @Test
     fun aWrongPinnedKeyNeverFallsBackToPlaintext() = test {
-        val tunnel = open(e2eKey = Env.E2E_PUBLIC)
+        val tunnel = open(e2eKey = env.e2eKey)
         val impostorKey = b64encode(x25519Public(ByteArray(32) { 9 }))
         env.mesh(MeshOptions(tunnel = tunnel.credential, e2eKey = impostorKey)).use { mesh ->
             val error = assertFailsWith<UnauthenticatedException> { mesh.unary(FIXTURE, "echo", empty) }
@@ -109,14 +113,16 @@ class TunnelIntegrationTest {
         }
     }
 
+    // conformance-scenario: e2e.agreement
     @Test
     fun credentialsAndKeysAreCheckedBeforeConnecting() {
         assertFailsWith<IllegalArgumentException> { env.mesh(MeshOptions(tunnel = "mtun_e2e.abc")) }
-        assertFailsWith<IllegalArgumentException> { env.mesh(MeshOptions(tunnel = "mtun_abc", e2eKey = Env.E2E_PUBLIC)) }
+        assertFailsWith<IllegalArgumentException> { env.mesh(MeshOptions(tunnel = "mtun_abc", e2eKey = env.e2eKey)) }
         assertFailsWith<IllegalArgumentException> { env.mesh(MeshOptions(token = "mtun_abc")) }
-        assertFailsWith<IllegalArgumentException> { env.mesh(MeshOptions(e2eKey = Env.E2E_PUBLIC)) }
+        assertFailsWith<IllegalArgumentException> { env.mesh(MeshOptions(e2eKey = env.e2eKey)) }
     }
 
+    // conformance-scenario: tunnel.revoked
     @Test
     fun revokedTunnelFailsAtOnceAndStaysFailed() = test {
         val tunnel = open()
