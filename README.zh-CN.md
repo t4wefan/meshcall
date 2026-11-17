@@ -377,6 +377,7 @@ uv run --project best-practice demo     # 依赖注入、TypeScript CLI 与 Go �
 | **[Router 架构与鉴权](docs/zh-CN/router.md)** | 配置多实例路由、账号权限与访问令牌 | [Router & Auth Guide](docs/router.md) |
 | **[运行时架构设计](docs/zh-CN/architecture.md)** | 了解客户端与服务端运行时的内部设计 | [Runtime Architecture](docs/architecture.md) |
 | **[协议规范 (`meshcall/1`)](docs/zh-CN/protocol.md)** | 了解底层通信协议、超时计算与错误码定义 | [Protocol Specification](docs/protocol.md) |
+| **[新增客户端运行时](docs/zh-CN/client-runtimes.md)** | 为另一种语言添加客户端 SDK：运行时、代码生成目标、一致性测试 | [Adding a Client Runtime](docs/client-runtimes.md) |
 | **[贡献指南](CONTRIBUTING.zh-CN.md)** | 参与项目开发、运行测试与发布流程 | [Contributing](CONTRIBUTING.md) |
 
 ---

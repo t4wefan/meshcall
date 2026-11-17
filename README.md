@@ -377,6 +377,7 @@ When you are ready to explore production capabilities, follow the guides below:
 | **[Router & Auth Guide](docs/router.md)** | Configure multi-instance routing, accounts, and access tokens | [Router 架构与鉴权](docs/zh-CN/router.md) |
 | **[Runtime Architecture](docs/architecture.md)** | Understand the internal design of the client and server runtimes | [运行时架构设计](docs/zh-CN/architecture.md) |
 | **[Protocol Specification](docs/protocol.md)** | Read the `meshcall/1` wire protocol, timeout calculation, and error codes | [协议规范 (`meshcall/1`)](docs/zh-CN/protocol.md) |
+| **[Adding a Client Runtime](docs/client-runtimes.md)** | Add a client SDK in another language: runtime, codegen target, conformance | [新增客户端运行时](docs/zh-CN/client-runtimes.md) |
 | **[Contributing](CONTRIBUTING.md)** | Run local checks, conformance tests, and release workflows | [贡献指南](CONTRIBUTING.zh-CN.md) |
 
 ---

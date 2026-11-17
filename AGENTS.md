@@ -10,7 +10,8 @@ plus `meshcall-router/` (Go; the standalone Router that all peers connect
 to, the `meshcall` CLI, the client generators and the conformance suite)
 and `meshcall-swift/` (Swift; a client-only runtime for iOS and macOS apps).
 `docs/protocol.md` is the contract between them; `docs/architecture.md`
-explains the runtime design; `docs/router.md` the Router.
+explains the runtime design; `docs/router.md` the Router;
+`docs/client-runtimes.md` what a new client runtime (such as the JVM) needs.
 
 ## Invariants
 
