@@ -52,52 +52,8 @@ func kotlinMemberName(value, fallback string) string {
 	return camelCase(value, fallback, false, nil)
 }
 
-// kotlinReservedTypes are the simple names a generated file uses unqualified:
-// its imports and the kotlin.* types it spells. A payload type of the same name
-// in the file's package would shadow them, so it gets a "Value" suffix.
-var kotlinReservedTypes = map[string]bool{
-	"CallHandle": true, "CallOptions": true, "CompletableFuture": true, "DuplexCall": true, "Flow": true,
-	"JavaDuplexCall": true, "JsonElement": true, "JsonObject": true, "MeshCallRpc": true, "SerialName": true,
-	"Serializable": true, "StreamObserver": true,
-	"Any": true, "Boolean": true, "Deprecated": true, "Double": true, "Iterable": true, "JvmOverloads": true,
-	"List": true, "Long": true, "Map": true, "Nothing": true, "String": true, "Suppress": true, "Unit": true,
-}
-
-func kotlinDeclName(value, fallback string) string {
-	name := kotlinTypeName(value, fallback)
-	if kotlinReservedTypes[name] {
-		name += "Value"
-	}
-	return name
-}
-
-// kotlinReservedMethods are members a generated client defines or calls
-// unqualified; a contract method of that name gets a "Call" suffix.
-var kotlinReservedMethods = map[string]bool{"withOptions": true, "serializer": true, "javaItems": true}
-
-// kotlinMethodNames gives each method a name that clashes neither with the
-// client's own members nor with another method's Java (…Async) variant.
-func kotlinMethodNames(methods []ClientMethod) []string {
-	wire := map[string]bool{}
-	for _, m := range methods {
-		wire[m.Name] = true
-	}
-	taken := map[string]bool{}
-	names := make([]string, len(methods))
-	for i, m := range methods {
-		name := m.Name
-		for kotlinReservedMethods[name] || taken[name] || taken[name+"Async"] ||
-			(strings.HasSuffix(name, "Async") && wire[strings.TrimSuffix(name, "Async")]) {
-			name += "Call"
-		}
-		taken[name], taken[name+"Async"] = true, true
-		names[i] = name
-	}
-	return names
-}
-
 var kotlinNaming = Naming{
-	TypeName: kotlinDeclName, MemberName: kotlinMemberName,
+	TypeName: kotlinTypeName, MemberName: kotlinMemberName,
 	// Names a generated method may not take as parameters: the ones it adds.
 	ReservedParams: map[string]bool{"options": true, "instance": true, "items": true, "rpc": true, "observer": true},
 }
@@ -386,9 +342,7 @@ func writeKotlinClient(b *strings.Builder, model *ClientModel, className string,
 	b.WriteString("public class " + className + "(private val rpc: MeshCallRpc) {\n")
 	b.WriteString("    /** A view of this client with [options] applied to every call. */\n")
 	b.WriteString("    public fun withOptions(options: CallOptions): " + className + " = " + className + "(rpc.withOptions(options))\n")
-	for i, name := range kotlinMethodNames(model.Methods) {
-		m := model.Methods[i]
-		m.Name = name
+	for _, m := range model.Methods {
 		writeKotlinMethod(b, model, m, uses)
 	}
 	b.WriteString("\n    public companion object {\n")
