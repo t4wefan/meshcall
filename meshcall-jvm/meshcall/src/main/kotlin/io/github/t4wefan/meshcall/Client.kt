@@ -322,9 +322,8 @@ internal class MeshCallClient(
         }
     }
 
-    /** Drops the connection (its end-to-end session is stale); the next call reconnects. */
-    private fun resetConnection(link: Link? = current) {
-        if (link == null) return
+    /** Drops [link] (its end-to-end session is stale); the next call reconnects. */
+    private fun resetConnection(link: Link) {
         detach(link, UnavailableException("End-to-end session reset", retryable = true))
         link.connection.closeSocket(1000, "e2e session reset")
     }
@@ -426,8 +425,9 @@ internal class MeshCallClient(
             } catch (error: UnauthenticatedException) {
                 if (error.reason != "e2e_session_unknown") throw error
                 // The instance lost the session (it reconnected): the call never ran.
-                // Handshake again on a new connection and retry once.
-                resetConnection()
+                // route() has already dropped the connection the error came on (and
+                // only that one: a concurrent call may have replaced it); handshake
+                // again on a new connection and retry once.
                 unaryAttempt(attemptInfo, request)
             }
         } as JsonElement
