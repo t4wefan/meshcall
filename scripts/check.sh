@@ -65,7 +65,8 @@ swift_checks() {
 }
 jvm_checks() {
   step "jvm (meshcall-jvm): build, tests against the Router and the Go fixture, every golden Kotlin client compiled"
-  if ! command -v java >/dev/null && [ -z "${JAVA_HOME:-}" ]; then echo "needs a JDK (17): skipped"; return 0; fi
+  # Run it: macOS ships a /usr/bin/java stub that exists without any JDK.
+  if ! "${JAVA_HOME:+$JAVA_HOME/bin/}java" -version >/dev/null 2>&1; then echo "needs a JDK (17): skipped"; return 0; fi
   (cd meshcall-jvm && ./gradlew --no-daemon --quiet build)
 }
 demos() {
