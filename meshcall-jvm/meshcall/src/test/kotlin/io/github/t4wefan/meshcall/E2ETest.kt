@@ -73,12 +73,13 @@ class E2ETest {
         val (client, instance) = pair()
         val c = SealedCall(client, "svc.v1", "m")
         val i = SealedCall(instance, "svc.v1", "m")
-        val open = Frame.CallOpen("c1", "svc.v1", "m", buildJsonObject { put("secret", JsonPrimitive("s3")) }, metadata = mapOf("k" to "v"))
+        val open = Frame.CallOpen("c1", "svc.v1", "m", buildJsonObject { put("secret", JsonPrimitive(SECRET)) }, metadata = mapOf("k" to "v"))
         val sealed = c.seal(open) as Frame.CallOpen
         assertEquals(JsonNull, sealed.payload)
         assertNull(sealed.metadata)
         assertEquals(client.id, sealed.e2eSession)
-        assert(!sealed.encode().contains("s3"))
+        // Base64 ciphertext can contain any short string by chance; a long one it cannot.
+        assert(!sealed.encode().contains(SECRET) && !sealed.encode().contains("secret"))
         val restored = i.open(sealed) as Frame.CallOpen
         assertEquals(open.payload, restored.payload)
         assertEquals(mapOf("k" to "v"), restored.metadata)
@@ -122,5 +123,9 @@ class E2ETest {
         assertFailsWith<IllegalArgumentException> { checkE2EKey("short") }
         assertContentEquals(ByteArray(32) { 7 }, b64decode(b64encode(ByteArray(32) { 7 })))
         assertEquals(43, key.length) // base64url without padding
+    }
+
+    private companion object {
+        const val SECRET = "plaintext-that-must-not-leak"
     }
 }
