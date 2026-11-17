@@ -36,19 +36,30 @@ swift_checks() {
   step "swift build + tests (client against the Go fixture), generated Swift type-checks"
   # CryptoKit and URLSessionWebSocketTask: the runtime targets Apple platforms.
   if [ "$(uname)" != Darwin ] || ! command -v swift >/dev/null; then echo "needs macOS and Swift: skipped"; return 0; fi
-  # The client environment (conformance/CLIENTS.md) with the Go fixture.
-  (cd meshcall-router && go build -o bin/meshcall-conformance ./cmd/meshcall-conformance)
-  (cd meshcall-go && go build -o bin/conformance-fixture ./conformance/fixture)
-  (cd meshcall-swift && export MESHCALL_CONFORMANCE_BINARY="$PWD/../meshcall-router/bin/meshcall-conformance" \
-    MESHCALL_FIXTURE_BINARY="$PWD/../meshcall-go/bin/conformance-fixture" && swift build && swift test)
-  # The runtime's first users are iOS apps: it must build for iOS too.
-  (cd meshcall-swift && swift build --scratch-path .build/ios --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
-    --triple arm64-apple-ios16.0-simulator)
+  # XCTest and the iOS SDK come with Xcode, not the Command Line Tools.
+  local xcode=1
+  if ! xcrun --find xctest >/dev/null 2>&1; then
+    xcode=0
+    echo "no Xcode (XCTest, iOS SDK): tests and the iOS build skipped;" \
+      "set DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer to run them"
+  fi
+  (cd meshcall-swift && swift build)
+  if [ "$xcode" = 1 ]; then
+    # The client environment (conformance/CLIENTS.md) with the Go fixture.
+    (cd meshcall-router && go build -o bin/meshcall-conformance ./cmd/meshcall-conformance)
+    (cd meshcall-go && go build -o bin/conformance-fixture ./conformance/fixture)
+    (cd meshcall-swift && export MESHCALL_CONFORMANCE_BINARY="$PWD/../meshcall-router/bin/meshcall-conformance" \
+      MESHCALL_FIXTURE_BINARY="$PWD/../meshcall-go/bin/conformance-fixture" && swift test)
+    # The runtime's first users are iOS apps: it must build for iOS too.
+    (cd meshcall-swift && swift build --scratch-path .build/ios --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+      --triple arm64-apple-ios16.0-simulator)
+  fi
   # Every golden Swift client the generator pins must compile against the runtime.
+  # The module sits in the bin path (swiftbuild) or in its Modules/ (native build system).
   local modules
   modules=$(cd meshcall-swift && swift build --show-bin-path)
   for f in meshcall-router/internal/codegen/testdata/*/client.swift; do
-    swiftc -typecheck -swift-version 6 -I "$modules" "$f" || { echo "does not compile: $f"; return 1; }
+    swiftc -typecheck -swift-version 6 -I "$modules" -I "$modules/Modules" "$f" || { echo "does not compile: $f"; return 1; }
   done
   (cd demo/ts2swift && swift run TS2SwiftDemo >/dev/null)
 }
