@@ -56,6 +56,18 @@ var kotlinNaming = Naming{
 	TypeName: kotlinTypeName, MemberName: kotlinMemberName,
 	// Names a generated method may not take as parameters: the ones it adds.
 	ReservedParams: map[string]bool{"options": true, "instance": true, "items": true, "rpc": true, "observer": true},
+	// What the file imports, and the kotlin.* types it spells: a payload type of
+	// the same name in the file's package would shadow them.
+	ReservedTypes: map[string]bool{
+		"CallHandle": true, "CallOptions": true, "CompletableFuture": true, "DuplexCall": true, "Flow": true,
+		"JavaDuplexCall": true, "JsonElement": true, "JsonObject": true, "MeshCallRpc": true, "SerialName": true,
+		"Serializable": true, "StreamObserver": true,
+		"Any": true, "Boolean": true, "Deprecated": true, "Double": true, "Iterable": true, "JvmOverloads": true,
+		"List": true, "Long": true, "Map": true, "Nothing": true, "String": true, "Suppress": true, "Unit": true,
+	},
+	// The client declares withOptions and calls serializer and javaItems
+	// unqualified. Helpers called on rpc (future, observe, unary, …) cannot clash.
+	ReservedMembers: map[string]bool{"withOptions": true, "serializer": true, "javaItems": true},
 }
 
 var kotlinKeywords = map[string]bool{
@@ -342,8 +354,9 @@ func writeKotlinClient(b *strings.Builder, model *ClientModel, className string,
 	b.WriteString("public class " + className + "(private val rpc: MeshCallRpc) {\n")
 	b.WriteString("    /** A view of this client with [options] applied to every call. */\n")
 	b.WriteString("    public fun withOptions(options: CallOptions): " + className + " = " + className + "(rpc.withOptions(options))\n")
-	for _, m := range model.Methods {
-		writeKotlinMethod(b, model, m, uses)
+	javaNames := kotlinJavaNames(model.Methods)
+	for i, m := range model.Methods {
+		writeKotlinMethod(b, model, m, javaNames[i], uses)
 	}
 	b.WriteString("\n    public companion object {\n")
 	b.WriteString("        /** The service these calls address. */\n")
@@ -351,9 +364,27 @@ func writeKotlinClient(b *strings.Builder, model *ClientModel, className string,
 	b.WriteString("    }\n}\n")
 }
 
-func writeKotlinMethod(b *strings.Builder, model *ClientModel, m ClientMethod, uses map[string]bool) {
+// kotlinJavaNames names each method's Java variant: name + "Async", numbered
+// when a contract method already has that name (chat_async next to chat).
+func kotlinJavaNames(methods []ClientMethod) []string {
+	taken := map[string]bool{}
+	for _, m := range methods {
+		taken[m.Name] = true
+	}
+	names := make([]string, len(methods))
+	for i, m := range methods {
+		name := m.Name + "Async"
+		for n := 2; taken[name]; n++ {
+			name = m.Name + "Async" + strconv.Itoa(n)
+		}
+		taken[name] = true
+		names[i] = name
+	}
+	return names
+}
+
+func writeKotlinMethod(b *strings.Builder, model *ClientModel, m ClientMethod, asyncName string, uses map[string]bool) {
 	name := kotlinEscape(m.Name)
-	asyncName := m.Name + "Async"
 	var params, args []string
 	if model.Targeted {
 		// Required on tunnel connections too, so the compiler enforces it.
