@@ -82,3 +82,12 @@ therefore fails every runtime until each covers or skips it.
 
 3. Implement and mark every scenario, then add the run to `scripts/check.sh`
    and CI.
+
+Tests sharing one environment share the Router's circuit breaker
+(`internal/router/breaker.go`): five consecutive failures from the fixture
+instance, that is `internal` or `unavailable` answers or the Router's own
+deadline firing, exclude it from routing for 10 seconds, so every test after
+them fails with it. End a test that fails on purpose (the attempts of
+`unary.retry`, `deadline.server`) with a successful call, which resets the
+count, or keep its failures under five; `restart_fixture` and
+`restart_router` reset it too.
