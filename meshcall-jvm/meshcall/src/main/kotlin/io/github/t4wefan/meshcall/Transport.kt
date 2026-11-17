@@ -1,10 +1,13 @@
 package io.github.t4wefan.meshcall
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Response
@@ -71,7 +74,7 @@ internal class Connection(
     private var closed: MeshCallException? = null
     private var writerJob: Job? = null
     private var pingJob: Job? = null
-    private var pendingPong: Pair<String, CompletableDeferred<Unit>>? = null
+    private val pendingPongs = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Unit>>()
     private val goneSignal = CompletableDeferred<MeshCallException>()
 
     /** Completes with the reason once the socket has closed or failed. */
@@ -212,7 +215,8 @@ internal class Connection(
         }
         for (pending in failed) pending.done.completeExceptionally(error)
         pingJob?.cancel()
-        pendingPong?.second?.cancel()
+        pendingPongs.values.forEach { it.cancel() }
+        pendingPongs.clear()
         wake.trySend(Unit)
     }
 
@@ -225,15 +229,36 @@ internal class Connection(
         pingJob = scope.launch {
             while (true) {
                 delay(interval)
-                val nonce = UUID.randomUUID().toString()
-                val pong = CompletableDeferred<Unit>()
-                pendingPong = nonce to pong
-                enqueue(Frame.Ping(nonce)).invokeOnCompletion { if (it != null) fail("keepalive send failed") }
-                if (withTimeoutOrNull(pingTimeoutMs) { pong.await() } == null) {
-                    fail("keepalive timeout")
-                    return@launch
+                if (!probe(pingTimeoutMs)) return@launch
+            }
+        }
+    }
+
+    /**
+     * Pings the peer and waits at most [timeoutMs] for the pong. A peer that
+     * does not answer fails the connection, so its calls end with a retryable
+     * `unavailable` now rather than at the next keepalive timeout.
+     */
+    suspend fun probe(timeoutMs: Long): Boolean {
+        if (!isOpen) return false
+        val nonce = UUID.randomUUID().toString()
+        val pong = CompletableDeferred<Unit>()
+        pendingPongs[nonce] = pong
+        try {
+            enqueue(Frame.Ping(nonce)).invokeOnCompletion { if (it != null) fail("keepalive send failed") }
+            val answered = withTimeoutOrNull(timeoutMs) {
+                try {
+                    pong.await()
+                    true
+                } catch (gone: CancellationException) {
+                    if (!currentCoroutineContext().isActive) throw gone
+                    false // the connection closed while waiting
                 }
             }
+            if (answered == null) fail("keepalive timeout")
+            return answered == true
+        } finally {
+            pendingPongs.remove(nonce)
         }
     }
 
@@ -271,11 +296,7 @@ internal class Connection(
                 return
             }
             is Frame.Pong -> {
-                val pending = pendingPong
-                if (pending != null && pending.first == frame.nonce) {
-                    pendingPong = null
-                    pending.second.complete(Unit)
-                }
+                pendingPongs.remove(frame.nonce)?.complete(Unit)
                 return
             }
             else -> events.onFrame(this, frame)

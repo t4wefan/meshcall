@@ -201,6 +201,21 @@ process without closing the socket, keepalive notices within
 `pingIntervalMs + pingTimeoutMs`. Calling `close()` in the background avoids
 that wait.
 
+An app that keeps its streams open while briefly in the background calls
+`checkConnection()` when it returns (`onResume`, or `checkConnectionAsync()`
+from Java) instead. It pings the Router and waits at most `timeoutMs`
+(default 3 s, capped at `pingTimeoutMs`). A connection the system cut while the
+app was suspended is dropped at once, so its streams fail with a retryable
+`unavailable` and the `retryWhen` above re-subscribes. It returns whether a live
+connection answered, and never connects by itself.
+
+```kotlin
+override fun onResume() {
+    super.onResume()
+    lifecycleScope.launch { mesh.checkConnection() }
+}
+```
+
 ## What differs from the other runtimes
 
 - Client only: no `mount` / `serve`.

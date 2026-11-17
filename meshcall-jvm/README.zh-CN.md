@@ -180,6 +180,19 @@ class SessionsViewModel(private val mesh: Mesh) : ViewModel() {
 如果系统冻结了进程却没有关闭 socket，存活检测会在 `pingIntervalMs + pingTimeoutMs`
 之内发现。在后台时调用 `close()` 可以免去这段等待。
 
+如果 App 在短暂切到后台时想让流保持打开，可以改为在回到前台时（`onResume`）调用
+`checkConnection()`，Java 中用 `checkConnectionAsync()`。它会 ping 一次 Router，最多等
+`timeoutMs`（默认 3 秒，不超过 `pingTimeoutMs`）。如果连接在挂起期间已被系统切断，就立即
+断开，其上的流以可重试的 `unavailable` 失败，上面的 `retryWhen` 会重新订阅。返回值表示
+是否有一条存活的连接作出了应答；它本身从不建立连接。
+
+```kotlin
+override fun onResume() {
+    super.onResume()
+    lifecycleScope.launch { mesh.checkConnection() }
+}
+```
+
 ## 与其他运行时的差别
 
 - 只有客户端，没有 `mount` / `serve`。

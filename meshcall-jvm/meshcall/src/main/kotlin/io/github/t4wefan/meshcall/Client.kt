@@ -104,6 +104,12 @@ internal class MeshCallClient(
         return attempt.await()
     }
 
+    /** Pings over the current connection; false when there is none or it did not answer in time. */
+    suspend fun checkConnection(timeoutMs: Long): Boolean {
+        val link = current?.takeIf { it.connection.isOpen } ?: return false
+        return link.connection.probe(minOf(timeoutMs, options.pingTimeoutMs))
+    }
+
     private suspend fun openWithRetry(): Link {
         refused?.let { throw it }
         val retry = options.reconnect.enabled && everConnected

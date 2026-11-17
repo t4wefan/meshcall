@@ -228,6 +228,23 @@ public class Mesh private constructor(
     public fun connectAsync(): CompletableFuture<Mesh> = future { connect() }
 
     /**
+     * Pings the Router now and waits at most [timeoutMs] for the answer. Call it
+     * when the app returns to the foreground (Android: `onResume` / `onStart`):
+     * a connection the system cut while the app was in the background is dropped
+     * at once, so its calls fail with a retryable `unavailable` and watchers
+     * re-subscribe, instead of after the next keepalive timeout. Returns whether a
+     * live connection answered; it never connects (the next call does).
+     */
+    public suspend fun checkConnection(timeoutMs: Long = 3_000): Boolean {
+        require(timeoutMs > 0) { "timeoutMs must be positive" }
+        return client.checkConnection(timeoutMs)
+    }
+
+    /** [checkConnection] for Java. */
+    @JvmOverloads
+    public fun checkConnectionAsync(timeoutMs: Long = 3_000): CompletableFuture<Boolean> = future { checkConnection(timeoutMs) }
+
+    /**
      * Drops the connection; calls in flight fail with `unavailable`. The Mesh
      * stays usable: the next call connects again.
      */

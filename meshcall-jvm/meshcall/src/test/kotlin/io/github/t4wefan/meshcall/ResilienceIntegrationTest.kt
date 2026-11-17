@@ -117,6 +117,33 @@ class ResilienceIntegrationTest {
         mesh.close()
     }
 
+    @Test
+    fun checkConnectionDropsAConnectionThatStoppedAnswering() = test {
+        // What an Android app does in onResume. Keepalive is off, so only the check can notice.
+        env.mesh(MeshOptions(pingIntervalMs = null)).use { mesh ->
+            assertEquals(false, mesh.checkConnection(), "no connection yet")
+            mesh.unary(FIXTURE, "echo", echo)
+            assertEquals(true, mesh.checkConnection())
+            val watching = async {
+                assertFailsWith<UnavailableException> {
+                    mesh.serverStream(FIXTURE, "count", buildJsonObject { put("n", 1000); put("gap_ms", 50) }).toList()
+                }
+            }
+            delay(200)
+            env.command("pause_router")
+            try {
+                val started = System.nanoTime()
+                assertEquals(false, mesh.checkConnection(500))
+                assertTrue((System.nanoTime() - started) / 1_000_000 < 1_500)
+                assertTrue(withTimeout(2_000) { watching.await() }.retryable)
+            } finally {
+                env.command("resume_router")
+            }
+            assertEquals(1, mesh.unary(FIXTURE, "echo", echo, within).jsonObject["value"]!!.jsonPrimitive.int)
+            assertEquals(true, mesh.checkConnectionAsync().get())
+        }
+    }
+
     // conformance-scenario: reconnect.failover
     @Test
     fun endpointsFailOver() = test {
