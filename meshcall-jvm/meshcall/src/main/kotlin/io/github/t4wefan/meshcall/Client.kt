@@ -1,11 +1,11 @@
 package io.github.t4wefan.meshcall
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -462,15 +462,16 @@ internal class MeshCallClient(
             val call = register(link, attemptInfo, startedAt)
             sendOpen(call, request, attemptInfo.options)
             if (call.isTerminal) return@runChain awaitResult(call, attemptInfo)
-            coroutineScope {
-                val pump = launch { pumpInput(call, items) }
-                try {
-                    awaitResult(call, attemptInfo)
-                } finally {
-                    // The server normally answers after stream.end; if it fails
-                    // early, the producer stops.
-                    pump.cancel()
-                }
+            // Not a child of the caller: a producer blocked in a Java iterator's
+            // next() would otherwise hold the result (and an error or deadline)
+            // until its next item. It keeps the caller's dispatcher and context.
+            val pump = scope.launch(currentCoroutineContext().minusKey(Job)) { pumpInput(call, items) }
+            try {
+                awaitResult(call, attemptInfo)
+            } finally {
+                // The server normally answers after stream.end; if it fails
+                // early, the producer stops.
+                pump.cancel()
             }
         } as JsonElement
     }

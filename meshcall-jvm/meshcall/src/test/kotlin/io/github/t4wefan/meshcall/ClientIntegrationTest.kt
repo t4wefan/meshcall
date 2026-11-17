@@ -168,6 +168,32 @@ class ClientIntegrationTest {
         assertEquals("producer broke", error.message)
     }
 
+    @Test
+    fun aBlockedJavaIteratorDoesNotHoldUpTheResult() = test {
+        val release = java.util.concurrent.CountDownLatch(1)
+        val stuck = object : Iterable<JsonElement> {
+            override fun iterator() = object : Iterator<JsonElement> {
+                var first = true
+                override fun hasNext(): Boolean {
+                    if (!first) release.await() // a blocking source with nothing more yet
+                    return first
+                }
+                override fun next(): JsonElement = obj("value" to 1).also { first = false }
+            }
+        }
+        try {
+            val started = System.nanoTime()
+            val error = assertFailsWith<DeadlineExceededException> {
+                mesh.clientStream(FIXTURE, "sum", JsonObject(emptyMap()), javaItems(stuck), CallOptions.DEFAULT.withTimeoutMs(500))
+            }
+            assertEquals("server", error.source)
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            assertTrue(elapsedMs < 2_000, "took $elapsedMs ms")
+        } finally {
+            release.countDown()
+        }
+    }
+
     // conformance-scenario: deadline.server
     @Test
     fun serverDeadlineWins() = test {
