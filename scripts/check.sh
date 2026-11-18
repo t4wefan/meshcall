@@ -2,7 +2,7 @@
 # The one command that verifies the whole repository. CI runs the same steps.
 #
 #   scripts/check.sh                  everything
-#   scripts/check.sh py demos drift   some parts: go | py | ts | swift | demos | drift | conformance
+#   scripts/check.sh py demos drift   some parts: go | py | ts | swift | jvm | demos | drift | conformance
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MESHCALL_ROUTER_BINARY="$PWD/meshcall-router/bin/meshcall-router"
@@ -63,6 +63,12 @@ swift_checks() {
   done
   (cd demo/ts2swift && swift run TS2SwiftDemo >/dev/null)
 }
+jvm_checks() {
+  step "jvm (meshcall-jvm): build, tests against the Router and the Go fixture, every golden Kotlin client compiled"
+  # Run it: macOS ships a /usr/bin/java stub that exists without any JDK.
+  if ! "${JAVA_HOME:+$JAVA_HOME/bin/}java" -version >/dev/null 2>&1; then echo "needs a JDK (17): skipped"; return 0; fi
+  (cd meshcall-jvm && ./gradlew --no-daemon --quiet build)
+}
 demos() {
   step "demos end to end (MESHCALL_STRICT=1: contract warnings fail)"
   export MESHCALL_STRICT=1
@@ -116,15 +122,16 @@ parts=${*:-all}
 router
 for part in $parts; do
   case $part in
-    all)   go_checks; py_checks; ts_checks; swift_checks; demos; drift; conformance ;;
+    all)   go_checks; py_checks; ts_checks; swift_checks; jvm_checks; demos; drift; conformance ;;
     go)    go_checks ;;
     py)    py_checks ;;
     ts)    ts_checks ;;
     swift) swift_checks ;;
+    jvm)   jvm_checks ;;
     demos) demos ;;
     drift) drift ;;
     conformance) conformance ;;
-    *) echo "usage: scripts/check.sh [go|py|ts|swift|demos|drift|conformance]..." >&2; exit 2 ;;
+    *) echo "usage: scripts/check.sh [go|py|ts|swift|jvm|demos|drift|conformance]..." >&2; exit 2 ;;
   esac
 done
 printf '\nall checks passed\n'

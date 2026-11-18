@@ -563,9 +563,15 @@ meshcall generate contract.meshcall.json \
   --language go \
   --package-name textclient \
   --output internal/textclient
+
+# 6. 为 meshcall-jvm（Android、JVM）生成 Kotlin 客户端：单个文件 <output>/<Client>.kt
+meshcall generate contract.meshcall.json \
+  --language kotlin \
+  --package-name com.example.text \
+  --output app/src/main/kotlin/com/example/text
 ```
 
-生成的客户端包装一个 `Mesh` 对象（Python 中为 `TextProcessorClient(mesh)`，TypeScript 中为 `new TextProcessorClient(mesh)`，Go 中为 `textclient.NewTextProcessorClient(mesh)`）。传入同一个 `Mesh` 的多个生成客户端共享同一条多路复用连接。
+生成的客户端包装一个 `Mesh` 对象（Python 中为 `TextProcessorClient(mesh)`，TypeScript 中为 `new TextProcessorClient(mesh)`，Go 中为 `textclient.NewTextProcessorClient(mesh)`，Kotlin 与 Java 中为 `TextProcessorClient(mesh)`）。传入同一个 `Mesh` 的多个生成客户端共享同一条多路复用连接。
 
 ```python
 from meshcall import Mesh, Router

@@ -1,0 +1,309 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "edge.v1.KotlinNames",
+      "version": "1",
+      "source_module": "edge_names",
+      "source_qualname": "Names",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "Names that clash with what the generated Kotlin uses.\n\nSee src/*.py /* and **/*.kt.",
+      "targeted": false,
+      "methods": [
+        {
+          "name": "with_options",
+          "stream": "unary",
+          "request": {
+            "module": "edge_names",
+            "qualname": "NamesWithOptionsRequest",
+            "schema": {
+              "properties": {
+                "value": {
+                  "title": "Value",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "title": "NamesWithOptionsRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [
+            "value"
+          ],
+          "response": {
+            "module": "edge_names",
+            "qualname": "CallOptions",
+            "schema": {
+              "properties": {
+                "retries": {
+                  "title": "Retries",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "retries"
+              ],
+              "title": "CallOptions",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "description": "Clashes with the client's own withOptions. Matches /*.json",
+          "idempotent": false,
+          "deprecated": null
+        },
+        {
+          "name": "serializer",
+          "stream": "unary",
+          "request": {
+            "module": "edge_names",
+            "qualname": "NamesSerializerRequest",
+            "schema": {
+              "properties": {},
+              "required": [],
+              "title": "NamesSerializerRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "edge_names",
+            "qualname": "Serializable",
+            "schema": {
+              "properties": {
+                "ok": {
+                  "title": "Ok",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ],
+              "title": "Serializable",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "description": null,
+          "idempotent": false,
+          "deprecated": null
+        },
+        {
+          "name": "chat",
+          "stream": "duplex",
+          "request": {
+            "module": "edge_names",
+            "qualname": "NamesChatRequest",
+            "schema": {
+              "properties": {},
+              "required": [],
+              "title": "NamesChatRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [],
+          "response": null,
+          "input_item": {
+            "module": "edge_names",
+            "qualname": "JsonElement",
+            "schema": {
+              "properties": {
+                "text": {
+                  "title": "Text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "title": "JsonElement",
+              "type": "object"
+            }
+          },
+          "output_item": {
+            "module": "edge_names",
+            "qualname": "DuplexCall",
+            "schema": {
+              "properties": {
+                "text": {
+                  "title": "Text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "title": "DuplexCall",
+              "type": "object"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "description": null,
+          "idempotent": false,
+          "deprecated": null,
+          "duplex_reason": "interleaved chat"
+        },
+        {
+          "name": "chat_async",
+          "stream": "unary",
+          "request": {
+            "module": "edge_names",
+            "qualname": "NamesChatAsyncRequest",
+            "schema": {
+              "properties": {},
+              "required": [],
+              "title": "NamesChatAsyncRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "edge_names",
+            "qualname": "List",
+            "schema": {
+              "properties": {
+                "size": {
+                  "title": "Size",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "size"
+              ],
+              "title": "List",
+              "type": "object"
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "description": null,
+          "idempotent": false,
+          "deprecated": null
+        },
+        {
+          "name": "watch",
+          "stream": "server_stream",
+          "request": {
+            "module": "edge_names",
+            "qualname": "NamesWatchRequest",
+            "schema": {
+              "properties": {},
+              "required": [],
+              "title": "NamesWatchRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [],
+          "response": null,
+          "input_item": null,
+          "output_item": {
+            "module": "edge_names",
+            "qualname": "Flow",
+            "schema": {
+              "properties": {
+                "text": {
+                  "title": "Text",
+                  "type": "string",
+                  "description": "Paths like src/*.py, and a /* that never closes."
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "title": "Flow",
+              "type": "object",
+              "description": "Named like kotlinx.coroutines.flow.Flow. Globs: lib/**/*.kt"
+            }
+          },
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "description": null,
+          "idempotent": false,
+          "deprecated": null
+        },
+        {
+          "name": "java_items",
+          "stream": "client_stream",
+          "request": {
+            "module": "edge_names",
+            "qualname": "NamesJavaItemsRequest",
+            "schema": {
+              "properties": {},
+              "required": [],
+              "title": "NamesJavaItemsRequest",
+              "type": "object"
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "edge_names",
+            "qualname": "Serializable",
+            "schema": {
+              "properties": {
+                "ok": {
+                  "title": "Ok",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ],
+              "title": "Serializable",
+              "type": "object"
+            }
+          },
+          "input_item": {
+            "module": "edge_names",
+            "qualname": "JsonElement",
+            "schema": {
+              "properties": {
+                "text": {
+                  "title": "Text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "title": "JsonElement",
+              "type": "object"
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "description": null,
+          "idempotent": false,
+          "deprecated": null
+        }
+      ]
+    }
+  ]
+}

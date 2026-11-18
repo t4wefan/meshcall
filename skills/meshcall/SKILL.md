@@ -259,12 +259,18 @@ uv run meshcall generate my_app.service:Chat --output generated/chat-client
 uv run meshcall generate my_app.service:Chat --language typescript --output generated/chat-ts
 meshcall generate service.meshcall.json --language go --output generated/chatgo
 meshcall generate service.meshcall.json --language swift --output Sources/App/Generated
+meshcall generate service.meshcall.json --language kotlin --package-name com.example.chat --output app/src/main/kotlin/chat
 ```
 
 Swift clients (`meshcall-swift`, iOS and macOS, client side only) are one file
 of `Codable` types plus an `async` client: `ChatClient(mesh).send(...)`, server
 streams are `for try await` sequences, and `Mesh(tunnel: grant)` takes the
 issuer's tunnel answer (`router_url`, `credential`, `instance_id`, `e2e_key`) as is.
+
+Kotlin clients (`meshcall-jvm`, Android and the JVM, client side only) are one
+file of kotlinx.serialization classes plus a client: suspend functions,
+server streams as cold `Flow`s, and `…Async` methods (CompletableFuture,
+StreamObserver) for Java; `Mesh(Router(url), MeshOptions(tunnel = credential, e2eKey = key))`.
 
 Pass `--single-file --output chat_client.py` (Python) when you want a single module instead of an installable package directory. In TypeScript or Go projects without Python, pass a `.ts` service file (`npx meshcall generate src/service.ts:Chat ...`) or a contract JSON file (`meshcall.WriteContract` in Go).
 
