@@ -17,6 +17,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "env" {
+		envMain(os.Args[2:])
+		return
+	}
 	var fixture, only string
 	var verbose, asJSON bool
 	var timeout time.Duration

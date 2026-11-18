@@ -1,0 +1,330 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.Names",
+      "version": "1",
+      "source_module": "codegen_cases",
+      "source_qualname": "Names",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "Names that collide with the language, the runtime or each other.",
+      "targeted": false,
+      "methods": [
+        {
+          "name": "get_user",
+          "stream": "unary",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "GetUserRequest",
+            "schema": {
+              "title": "GetUserRequest",
+              "type": "object",
+              "properties": {
+                "self": {
+                  "type": "string"
+                },
+                "init": {
+                  "type": "string"
+                },
+                "rawValue": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "x"
+                  ]
+                },
+                "protocol": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "x"
+                  ]
+                },
+                "Self": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "x"
+                  ]
+                },
+                "string": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "x"
+                  ]
+                },
+                "diff": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "x"
+                  ]
+                },
+                "diffs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "x": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "x"
+                    ]
+                  }
+                },
+                "options": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "self",
+                "init",
+                "type"
+              ]
+            }
+          },
+          "parameters": [
+            "self",
+            "init",
+            "rawValue",
+            "type",
+            "protocol",
+            "Self",
+            "string",
+            "diff",
+            "diffs",
+            "options"
+          ],
+          "response": {
+            "module": "codegen_cases",
+            "qualname": "String",
+            "schema": {
+              "title": "String",
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/$defs/Kind"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "$defs": {
+                "Kind": {
+                  "enum": [
+                    "self",
+                    "init",
+                    "raw_value",
+                    "plain"
+                  ],
+                  "type": "string",
+                  "title": "Kind"
+                }
+              }
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Fields named after keywords, members and standard types.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null
+        },
+        {
+          "name": "getUser",
+          "stream": "unary",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "GetUserCamelRequest",
+            "schema": {
+              "title": "GetUserCamelRequest",
+              "type": "object",
+              "properties": {},
+              "required": []
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "codegen_cases",
+            "qualname": "Error",
+            "schema": {
+              "title": "Error",
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code"
+              ]
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "Spelled like get_user once camel-cased.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null
+        },
+        {
+          "name": "send",
+          "stream": "client_stream",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "SendRequest",
+            "schema": {
+              "title": "SendRequest",
+              "type": "object",
+              "properties": {},
+              "required": []
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "codegen_cases",
+            "qualname": "Total",
+            "schema": {
+              "title": "Total",
+              "type": "object",
+              "properties": {
+                "total": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ]
+            }
+          },
+          "input_item": {
+            "module": "codegen_cases",
+            "qualname": "Items",
+            "schema": {
+              "title": "Items",
+              "type": "object",
+              "properties": {
+                "n": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "n"
+              ]
+            }
+          },
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "An input item type named Items.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null
+        },
+        {
+          "name": "with_options",
+          "stream": "unary",
+          "request": {
+            "module": "codegen_cases",
+            "qualname": "WithOptionsRequest",
+            "schema": {
+              "title": "WithOptionsRequest",
+              "type": "object",
+              "properties": {},
+              "required": []
+            }
+          },
+          "parameters": [],
+          "response": {
+            "module": "codegen_cases",
+            "qualname": "Total",
+            "schema": {
+              "title": "Total",
+              "type": "object",
+              "properties": {
+                "total": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ]
+            }
+          },
+          "input_item": null,
+          "output_item": null,
+          "balance": {
+            "kind": "round_robin",
+            "key": null
+          },
+          "binding": "instance",
+          "description": "A method spelled like the client's withOptions.",
+          "annotations": {
+            "idempotent": false,
+            "read_only": false,
+            "destructive": false
+          },
+          "deprecated": null,
+          "duplex_reason": null
+        }
+      ]
+    }
+  ]
+}

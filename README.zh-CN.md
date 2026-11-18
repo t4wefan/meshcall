@@ -337,6 +337,10 @@ greeter := greeterclient.NewGreeterClient(mesh)
 
 Go 服务与客户端使用 Go 运行时 [`meshcall-go`](meshcall-go/README.md)：同样的调用、错误、超时、流与 Router 特性，并通过同一套一致性测试（conformance suite）验证。`meshcall generate service.meshcall.json --language go --output internal/chatclient` 可为任一语言编写的服务生成类型化的 Go 客户端，`meshcall.WriteContract` 则导出 Go 服务的契约，供 Python 与 TypeScript 客户端使用。
 
+## Swift（iOS 与 macOS 客户端）
+
+iOS 和 macOS 应用使用 [`meshcall-swift`](meshcall-swift/README.zh-CN.md) 调用服务。它是客户端运行时（暂不支持用 Swift 写服务），调用、错误、超时、流、重连、隧道和端到端加密都与其他运行时一致。`meshcall generate service.meshcall.json --language swift --output Sources/App/Generated` 可为任一语言编写的服务生成 `Codable` 类型和 `async` 客户端，`Mesh(tunnel: grant)` 直接接受签发方返回的隧道信息。
+
 ---
 
 ## 运行仓库示例
@@ -352,6 +356,7 @@ uv run --project demo/showcase demo     # @query / @mutates / @stream、元数�
 uv run --project demo/router demo       # 独立 Router 进程与注册表
 uv run --project demo/py2ts demo        # Python 服务 -> TypeScript 客户端
 uv run --project demo/ts2py demo        # TypeScript 服务 -> Python 客户端
+(cd demo/ts2swift && swift run)        # TypeScript 服务 -> Swift 客户端（macOS）
 uv run --project best-practice demo     # 依赖注入、TypeScript CLI 与 Go 客户端
 ```
 
@@ -367,10 +372,12 @@ uv run --project best-practice demo     # 依赖注入、TypeScript CLI 与 Go �
 | **[Python SDK 指南](meshcall-py/README.zh-CN.md)** | 查阅 Python 包安装与 API 用法 | [Python SDK](meshcall-py/README.md) |
 | **[TypeScript SDK 指南](meshcall-ts/README.zh-CN.md)** | 查阅 TypeScript 包安装与 API 用法 | [TypeScript SDK](meshcall-ts/README.md) |
 | **Go SDK**（暂无中文版） | 使用 Go 运行时与生成的 Go 客户端 | [Go SDK](meshcall-go/README.md) |
+| **[Swift SDK 指南](meshcall-swift/README.zh-CN.md)** | 在 iOS 与 macOS 应用中用生成的 Swift 客户端调用服务 | [Swift SDK](meshcall-swift/README.md) |
 | **[Router 与 CLI 部署指南](meshcall-router/README.zh-CN.md)** | 独立部署 Router 进程、配置命令行参数与 Docker 运行 | [Router & CLI](meshcall-router/README.md) |
 | **[Router 架构与鉴权](docs/zh-CN/router.md)** | 配置多实例路由、账号权限与访问令牌 | [Router & Auth Guide](docs/router.md) |
 | **[运行时架构设计](docs/zh-CN/architecture.md)** | 了解客户端与服务端运行时的内部设计 | [Runtime Architecture](docs/architecture.md) |
 | **[协议规范 (`meshcall/1`)](docs/zh-CN/protocol.md)** | 了解底层通信协议、超时计算与错误码定义 | [Protocol Specification](docs/protocol.md) |
+| **[新增客户端运行时](docs/zh-CN/client-runtimes.md)** | 为另一种语言添加客户端 SDK：运行时、代码生成目标、一致性测试 | [Adding a Client Runtime](docs/client-runtimes.md) |
 | **[贡献指南](CONTRIBUTING.zh-CN.md)** | 参与项目开发、运行测试与发布流程 | [Contributing](CONTRIBUTING.md) |
 
 ---

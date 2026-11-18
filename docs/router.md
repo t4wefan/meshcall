@@ -408,7 +408,7 @@ comma-separated) writes the named agents' files instead: `claude`
 Re-running is idempotent; an edited skill file is kept unless `--force`.
 
 `meshcall generate <contract.json | module:Class> --output PATH
-[--language python|typescript|go] [--single-file] [--service NAME]
+[--language python|typescript|go|swift] [--single-file] [--service NAME]
 [--package-name N] [--package-version V] [--class-name N]
 [--runtime-import M] [--runtime-version V] [--meshcall-requirement R]`
 writes a typed client package (or one file). Go output is always one file,
