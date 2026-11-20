@@ -401,8 +401,11 @@ instance**: it starts the handshake with the pinned key, so only the holder of
 the matching private key can complete it, and a handshake that fails is a
 non-retryable `unauthenticated` with `reason: "e2e_handshake_failed"` and
 never falls back to plaintext. This is what defeats a man in the middle, the
-Router included. The Router still decides who may connect: it sees the
-credential, and the client has no static key (Noise `NK`).
+Router included. By default the client has no static key (Noise `NK`), so
+the Router alone decides who may connect: it sees the credential. A client
+that has a static key of its own authenticates itself to the instance too
+(see [Client authentication](#client-authentication)), and the instance then
+decides with the Router who may connect.
 
 **Credentials say what they are.** The credential of an end-to-end tunnel
 starts with `mtun_e2e.` (a plain one never contains `.`). A runtime given an
@@ -425,9 +428,12 @@ reason `key_changed` (its connections close with that reason too).
 
 **Handshake.** Once per client connection, before its first sealed call, the
 client calls `meshcall.router.v1.TunnelHost/handshake` (unary)
-`{message}` → `{message}`: the two messages of
-`Noise_NK_25519_AESGCM_SHA256` with empty payloads, base64url without
-padding. The prologue is `meshcall-e2e/1|<credential_digest>`, where
+`{message, protocol?, pairing_id?}` → `{message}`: the two messages of a
+Noise handshake with empty payloads, base64url without padding. `protocol`
+names the handshake (`Noise_NK_25519_AESGCM_SHA256` when omitted; the others
+are in [Client authentication](#client-authentication)); an instance answers
+a name it does not know with `e2e_handshake_failed`. The NK prologue is
+`meshcall-e2e/1|<credential_digest>`, where
 `credential_digest` is the lowercase hex SHA-256 of the tunnel credential
 (its UTF-8 bytes). The client hashes its own credential; the Router puts the
 digest (never the credential) in the offer of an end-to-end tunnel as
@@ -499,6 +505,85 @@ tunnels that pinned its old one (`e2e_key_mismatch`), which closes them with
 the reason `key_changed`; their clients' calls fail with `unauthenticated` /
 `key_changed` and they ask the issuer again. The first version has no
 overlap window.
+
+#### Client authentication
+
+A client may have a static X25519 key pair of its own (generated and kept by
+the client app, never sent anywhere but in the handshake) and then
+authenticates itself as well, so an instance can refuse every client it does
+not know even when the Router lets it through. Two more handshakes do this:
+
+| `protocol` | Pattern | When |
+| --- | --- | --- |
+| `Noise_IK_25519_AESGCM_SHA256` | `<- s` · `-> e, es, s, ss` · `<- e, ee, se` | a client the instance already knows |
+| `Noise_IKpsk2_25519_AESGCM_SHA256` | the same with `psk` at the end of message 2 | pairing: the client is not known yet and proves it holds a pairing secret |
+
+Message 1 carries the client's static public key encrypted to the
+instance's key (96 bytes with the empty payload); message 2 is 48 bytes. The
+prologue of both is `meshcall-e2e/1|<credential_digest>|<instance_id>`, with
+the target's instance id: the client takes it from the same place as the
+instance's key, and the instance uses its own, so a handshake made for
+another instance does not open even with the same key. The session id, keys,
+sealed frames and limits are the same as with NK.
+
+**Known clients (IK).** The instance reads message 1 and, before answering,
+asks the application whether it accepts the client's public key on this
+tunnel (`authorize_e2e_peer`; see the guide for each runtime). A refusal, a
+hook that fails or does not answer, and every other failure are the same
+`unauthenticated` / `e2e_handshake_failed` with a message that does not say
+which: a client cannot probe which keys an instance knows. An instance
+without such a hook accepts any client key (handlers still see it).
+
+**Pairing (IKpsk2).** The instance's owner hands the client, out of band and
+never through the Router (for example in a QR code shown on the instance's
+device), the instance's id and public key, a `pairing_id` and a 32-byte
+pre-shared key (PSK, base64url without padding), usable once and briefly. The
+handshake request carries `pairing_id` in clear (1 to 128 bytes; it is not a
+secret, it tells the instance which PSK to use); the instance looks the PSK up
+(`e2e_pairing_psk`), refusing an unknown or used `pairing_id` with
+`e2e_handshake_failed`, and answers message 2 with the PSK mixed in. Since
+the PSK enters only at the end of message 2, message 1 does not prove the
+client knows it: anyone who saw a `pairing_id` can send a message 1 with
+their own key. So a pairing session is **pending**: calls naming it are
+refused like an unknown session (`e2e_session_unknown`) until the client
+confirms it with a second call of the same method,
+`{session, confirm}` → `{}`, where `session` is the session id and `confirm`
+is a sealed field (as in sealed frames: the first counter of
+the client's direction) of the JSON object `{}` with the associated data
+`meshcall-e2e/1|confirm|<session>`. Only when `confirm` opens does the
+instance ask the application with the client's key **and the `pairing_id`**;
+an application records the client (and spends the pairing) only then, never
+on message 1. Accepted, the session becomes an ordinary one and the call
+answers `{}`; refused, or `confirm` not opening, or no pending session of
+that id on this tunnel, the pending session is dropped and the call answers
+`e2e_handshake_failed`. A confirmation may wait for a person on the device:
+clients give it a timeout of 120 s. A client that completed a pairing uses
+IK, with the same key, for every later handshake (a reconnect, a second
+connection); a pairing that was never confirmed is retried with IKpsk2 until
+the instance refuses it.
+
+**What handlers see.** Every call in a sealed session exposes the session
+to its handler (`ctx.e2e`): the `protocol`, the `session` id and, for IK and
+IKpsk2, the client's public key (`peer_key`) and the `pairing_id` the session
+was paired with. The principal from the Router stays what the issuer chose;
+only `peer_key` comes from the client.
+
+**Requiring an authenticated client.** An instance may require it for the
+services of a mount (`require_e2e_peer`, which implies `require_e2e` and needs
+the hook above). The instance then serves those services only inside a
+session whose client it authenticated; it refuses every other call before any
+handler runs — through a plain tunnel, through an NK session, and every call
+that comes without a tunnel at all (an account's targeted call, a direct
+connection) — with `permission_denied`, `reason: "e2e_peer_required"`. This
+is checked by the instance, whatever the Router allows.
+
+**Clients.** A client configured with its static key and the instance's id
+uses IK; configured with a pairing too, it pairs with IKpsk2 and confirms
+before its first call. It never falls back from IK or IKpsk2 to NK, and it
+may take the instance's key from where it pinned it rather than from the
+issuer: the issuer still passes the key to `TunnelService/open`, where the
+instance refuses it if it is not its own, but a client that pinned the key
+itself does not need to trust the issuer's copy.
 
 ### Instance-bound registration
 
@@ -754,7 +839,9 @@ tunnel's target is not connected), `tunnel_rejected` (a `permission_denied`
 from `TunnelService/open`: the instance refused or does not accept tunnels),
 `tunnel_scope` (a `permission_denied` on a tunnel connection: the call is
 outside the tunnel's view), `tunnel_e2e_required` (a `permission_denied`: a
-plain call on an end-to-end tunnel), `e2e_handshake_failed` /
+plain call on an end-to-end tunnel), `e2e_peer_required` (a
+`permission_denied` from an instance: the service needs an authenticated
+end-to-end client), `e2e_handshake_failed` /
 `e2e_session_unknown` / `e2e_frame_rejected` (an `unauthenticated` from the client or the instance,
 see [End-to-end encryption](#end-to-end-encryption)), `tunnel_revoked` / `tunnel_closed` /
 `key_changed` (an `unauthenticated` for calls on a tunnel connection the Router
