@@ -1,0 +1,61 @@
+{
+ "description": "MeshCall end-to-end handshakes (docs/protocol.md -> End-to-end encryption, Client authentication): the TunnelHost/handshake request and answer for each protocol, with fixed ephemeral keys, and the pairing confirmation. Keys are base64url without padding; private keys are raw X25519 scalars. Generated from meshcall-py; checked by every runtime.",
+ "credential": "mtun_e2e.conformance-vector-credential",
+ "credential_digest": "65a2a0710aadd037dd93c1b8e62f7bbe41c134789a887befa95d5c58a1d36802",
+ "instance_id": "fixture-1",
+ "instance_private_key": "f2Q4dPsSJ8EiBhFdvbnRyYR-anDlT9DQs8CH4I0hLws",
+ "instance_public_key": "3K1uDyFSsjCPBtPBWEKr0iBVNIW09L6uWvzrc_QcZkU",
+ "client_private_key": "cMNhPie5IxG7f1dsK7llWEnlHTIGvTIASY-nBV_K0po",
+ "client_public_key": "MRJyDK8_WHhkbf66vIDbrTma_-dPXKAMhsz4kAaBjDQ",
+ "instance_ephemeral": "_7pc1H-dgoIFNEXV8renc0jrrkOkEjKibJQYT3k6LH0",
+ "client_ephemeral": "G6VLsMQswBg1-Gcx0bU5UZWxWOHrAx5BftQr89zQK8s",
+ "pairing": {
+  "id": "pair-vector",
+  "psk": "z9rxSEue1OeVDLC2fWYqyu-mRCng57wVWWoJcQZ-_jg"
+ },
+ "cases": [
+  {
+   "protocol": "Noise_NK_25519_AESGCM_SHA256",
+   "prologue": "meshcall-e2e/1|65a2a0710aadd037dd93c1b8e62f7bbe41c134789a887befa95d5c58a1d36802",
+   "request": {
+    "message": "FB8LXRSz981VRAXp7FJKFwmoRuIV3cQ6cmLgD58Otm8yv2c73jT585MMwAOOgWd8"
+   },
+   "answer": {
+    "message": "KoZcjkIHzOAKNiXQs3pJA00Rsdurk-Tpvb7KgbyLHDVdbstSL7pgT2cKx78SpAFU"
+   },
+   "handshake_hash": "58cd9a2da0d6fb7a28f3238a037955cfce981edecf77fde1c1c28baa9c88d654",
+   "session": "58cd9a2da0d6fb7a28f3238a037955cf"
+  },
+  {
+   "protocol": "Noise_IK_25519_AESGCM_SHA256",
+   "prologue": "meshcall-e2e/1|65a2a0710aadd037dd93c1b8e62f7bbe41c134789a887befa95d5c58a1d36802|fixture-1",
+   "request": {
+    "message": "FB8LXRSz981VRAXp7FJKFwmoRuIV3cQ6cmLgD58Otm9GWD6MnjFxp-uNxqsFlQsPRli6ul5NekFkWfZG8gWiYffm6Yq9biwtw9Sjm1juN6YKtZMgap-H22DM0GjPlNcH",
+    "protocol": "Noise_IK_25519_AESGCM_SHA256"
+   },
+   "answer": {
+    "message": "KoZcjkIHzOAKNiXQs3pJA00Rsdurk-Tpvb7KgbyLHDVhKIx2MU55LpeAE5NblnVH"
+   },
+   "handshake_hash": "49a2edae576f86e8c74be0334cdbf208e7b447e312521f64ad931e8a008828df",
+   "session": "49a2edae576f86e8c74be0334cdbf208"
+  },
+  {
+   "protocol": "Noise_IKpsk2_25519_AESGCM_SHA256",
+   "prologue": "meshcall-e2e/1|65a2a0710aadd037dd93c1b8e62f7bbe41c134789a887befa95d5c58a1d36802|fixture-1",
+   "request": {
+    "message": "FB8LXRSz981VRAXp7FJKFwmoRuIV3cQ6cmLgD58Otm8nH5VHmIVtUtzLolgK5QSxmORg2SDpCBw1Vc6VRB4tKWYaDl0ZtnLu7ByU8myQ8pJPqCEu1sO4mezs_KCqfhob",
+    "protocol": "Noise_IKpsk2_25519_AESGCM_SHA256",
+    "pairing_id": "pair-vector"
+   },
+   "answer": {
+    "message": "KoZcjkIHzOAKNiXQs3pJA00Rsdurk-Tpvb7KgbyLHDUkqG3r-x30rOcMUt-qdHbp"
+   },
+   "handshake_hash": "23f489ee16839c6ac627b03317514719ea0884eb96efbdddeccc00682ff0599b",
+   "session": "23f489ee16839c6ac627b03317514719",
+   "confirm_request": {
+    "session": "23f489ee16839c6ac627b03317514719",
+    "confirm": "AAAAAAAAAACGcrm1RNeAxN2OeLORg5s1f-k"
+   }
+  }
+ ]
+}

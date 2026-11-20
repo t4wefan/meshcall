@@ -130,6 +130,9 @@ type harness struct {
 	exited  chan struct{}
 	// The fixture's end-to-end key pair (MESHCALL_E2E_PRIVATE_KEY).
 	e2e *ecdh.PrivateKey
+	// The client key and pairings the fixture accepts (MESHCALL_E2E_PEERS,
+	// MESHCALL_E2E_PAIRINGS).
+	peers e2ePeers
 }
 
 func newHarness(ctx context.Context, opts Options) (*harness, error) {
@@ -140,7 +143,11 @@ func newHarness(ctx context.Context, opts Options) (*harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &harness{ctx: ctx, opts: opts, e2e: key}
+	peers, err := newE2EPeers(4)
+	if err != nil {
+		return nil, err
+	}
+	h := &harness{ctx: ctx, opts: opts, e2e: key, peers: peers}
 	// Short Router idle timeout so the keepalive scenario is observable.
 	if err := h.startRouter(); err != nil {
 		return nil, err
@@ -219,6 +226,7 @@ func (h *harness) startFixture() error {
 		"MESHCALL_STRICT=1",
 		"MESHCALL_E2E_PRIVATE_KEY="+b64.EncodeToString(h.e2e.Bytes()),
 	)
+	cmd.Env = append(cmd.Env, h.peers.env()...)
 	cmd.Stdout = &lockedWriter{h: h}
 	cmd.Stderr = &lockedWriter{h: h}
 	if err := cmd.Start(); err != nil {

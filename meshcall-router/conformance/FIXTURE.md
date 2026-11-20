@@ -44,6 +44,21 @@ but only end-to-end ones (`require_e2e` / `requireE2E` / `RequireE2E`), with
 one method, `peek` (unary, read-only, no parameters), returning
 `{sealed: <ctx.tunnel is sealed>}`.
 
+And it registers `conformance.v1.Paired`, accepting tunnels like the others
+but serving only clients that authenticated themselves end to end
+(`require_e2e_peer` / `requireE2EPeer` / `RequireE2EPeer`), with one method,
+`peer` (unary, read-only, no parameters), returning
+`{protocol, peer_key, pairing_id}` from the call's `ctx.e2e` (`null` for what
+is absent). The program's client authorization (`authorize_e2e_peer` /
+`authorizeE2EPeer` / `AuthorizeE2EPeer`) accepts the client public keys
+listed, comma-separated, in `MESHCALL_E2E_PEERS` (may be empty or unset), and
+pairs clients with the one-time pairings in `MESHCALL_E2E_PAIRINGS`,
+comma-separated `<pairing_id>:<psk>` (base64url PSK; may be empty or unset):
+its pairing lookup (`e2e_pairing_psk` / `e2ePairingPsk` / `E2EPairingPSK`)
+returns the PSK of a pairing not yet spent, and asked about a pairing client
+it spends that pairing and accepts the key from then on, or refuses if the
+pairing is already spent. State is kept in memory only.
+
 The suite expects the Python-style snake_case method names above in the
 registration (`echo`, `cancelled_tags`, `metadata_echo`, `drain_self`).
 Reference fixtures: `meshcall-py/conformance/fixture.py`,

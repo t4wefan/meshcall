@@ -41,12 +41,17 @@ type EnvReady struct {
 	InstanceID string `json:"instance_id"`
 	// E2EKey is the fixture's public key (base64url), for end-to-end tunnels.
 	E2EKey string `json:"e2e_key"`
+	// E2EClientKey is a client private key (base64url) the fixture accepts.
+	E2EClientKey string `json:"e2e_client_key"`
+	// E2EPairings are one-time pairings for clients pairing with IKpsk2.
+	E2EPairings []E2EPairing `json:"e2e_pairings"`
 }
 
 // Env is a running client environment.
 type Env struct {
 	opts    EnvOptions
 	key     *ecdh.PrivateKey
+	peers   e2ePeers
 	port    int // the Router's own port (the fixture connects to it directly)
 	router  *router.Router
 	proxy   *pausingProxy
@@ -68,7 +73,11 @@ func StartEnv(ctx context.Context, opts EnvOptions) (*Env, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Env{opts: opts, key: key, ctx: ctx}
+	peers, err := newE2EPeers(4)
+	if err != nil {
+		return nil, err
+	}
+	e := &Env{opts: opts, key: key, peers: peers, ctx: ctx}
 	if err := e.startRouter(); err != nil {
 		return nil, err
 	}
@@ -86,7 +95,9 @@ func StartEnv(ctx context.Context, opts EnvOptions) (*Env, error) {
 func (e *Env) Ready() EnvReady {
 	return EnvReady{
 		Kind: "env.ready", RouterURL: "ws://" + e.proxy.addr(), InstanceID: InstanceID,
-		E2EKey: b64.EncodeToString(e.key.PublicKey().Bytes()),
+		E2EKey:       b64.EncodeToString(e.key.PublicKey().Bytes()),
+		E2EClientKey: b64.EncodeToString(e.peers.client.Bytes()),
+		E2EPairings:  e.peers.pairings,
 	}
 }
 
@@ -108,6 +119,7 @@ func (e *Env) startFixture() error {
 		"MESHCALL_STRICT=1",
 		"MESHCALL_E2E_PRIVATE_KEY="+b64.EncodeToString(e.key.Bytes()),
 	)
+	cmd.Env = append(cmd.Env, e.peers.env()...)
 	cmd.Stdout, cmd.Stderr = e.opts.Log, e.opts.Log
 	// A launcher (uv run, npx) runs the fixture as its child: signal the
 	// whole group, and do not wait forever on a child holding the pipes.
