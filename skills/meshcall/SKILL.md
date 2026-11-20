@@ -92,8 +92,8 @@ Every error has `code`, `message`, `details.source` (`client` | `router` |
 | `resource_exhausted` | Router, connection or every instance at capacity (`overloaded`); a tunnel at its `max_connections` (HTTP 429 / close 4429); a request, response or stream item over the frame limit (`frame_too_large`, not retryable) | back off and retry; split oversized data into stream items |
 | `protocol_error` | a stream item beyond the consumer's credit (`flow_control_violation`) or another frame that broke the protocol | fix the producer; regenerate a hand-patched client |
 | `deadline_exceeded` | `timeout_ms` elapsed (source says who noticed) | raise the timeout or make the handler faster |
-| `permission_denied` | the caller (possibly the anonymous user: no credentials sent) may not make this call; the same error whether or not the method exists. `reason: tunnel_scope`: on a tunnel connection, outside the tunnel (`details.instance_id` is its instance); `tunnel_rejected`: the instance refused `tunnels.open` (or does not hold the pinned `e2e_key`); `tunnel_e2e_required`: a plain or HTTP call on an end-to-end tunnel; `policy_violation`: the Router closed the connection (1008) and the message says why, e.g. an `instance_id` outside the credential's `instance_ids` | send credentials, or add `service/method` to the account, key or token; on a tunnel pass its instance or ask the issuer for wider scopes |
-| `unauthenticated` | the credentials are wrong, expired or revoked (HTTP 401 at connect, or close 4401); `reason: tunnel_revoked` / `tunnel_closed` / `key_changed`: the tunnel ended (later calls on the same Mesh keep that answer); `token_revoked`: the temporary token was revoked; an instance stops re-registering once refused, and `run` / `serve` ends with this error when every Router refused it; `e2e_handshake_failed`: the instance does not hold the key the client pinned (never retried, never falls back to plaintext); `e2e_session_unknown`: the instance lost its end-to-end session (the runtime handshakes again on the next call and retries a unary call once); `e2e_frame_rejected`: a sealed frame was altered on the way (only that call ends) | get a new credential (on a tunnel: ask the issuer again); retrying with the same one fails the same way; for `e2e_handshake_failed` check the pinned key with the issuer |
+| `permission_denied` | the caller (possibly the anonymous user: no credentials sent) may not make this call; the same error whether or not the method exists. `reason: tunnel_scope`: on a tunnel connection, outside the tunnel (`details.instance_id` is its instance); `tunnel_rejected`: the instance refused `tunnels.open` (or does not hold the pinned `e2e_key`); `tunnel_e2e_required`: a plain or HTTP call on an end-to-end tunnel; `e2e_peer_required`: the instance serves this service only to clients that authenticated with a key of their own (configure an `E2EIdentity`); `policy_violation`: the Router closed the connection (1008) and the message says why, e.g. an `instance_id` outside the credential's `instance_ids` | send credentials, or add `service/method` to the account, key or token; on a tunnel pass its instance or ask the issuer for wider scopes |
+| `unauthenticated` | the credentials are wrong, expired or revoked (HTTP 401 at connect, or close 4401); `reason: tunnel_revoked` / `tunnel_closed` / `key_changed`: the tunnel ended (later calls on the same Mesh keep that answer); `token_revoked`: the temporary token was revoked; an instance stops re-registering once refused, and `run` / `serve` ends with this error when every Router refused it; `e2e_handshake_failed`: the instance does not hold the key the client pinned, or refused the client's own key or pairing (never retried, never falls back to plaintext or to a weaker handshake); `e2e_session_unknown`: the instance lost its end-to-end session (the runtime handshakes again on the next call and retries a unary call once); `e2e_frame_rejected`: a sealed frame was altered on the way (only that call ends) | get a new credential (on a tunnel: ask the issuer again); retrying with the same one fails the same way; for `e2e_handshake_failed` check the pinned key with the issuer, or pair the client again |
 | `internal` | the service failed; `reason: invalid_response` means its own handler broke its contract | read the service's log, fix the service |
 
 Never guess at parameters when `invalid_argument` tells you the path.
@@ -451,7 +451,17 @@ my_app/
   with `mtun_e2e.` and need the key (a Mesh refuses one without it); add
   `require_e2e=True` (`requireE2E` / `WithRequireE2E()`) at mount so plain
   tunnels to those services are refused. Python needs `meshcall[e2e]`;
-  `ctx.tunnel.sealed` tells the service.
+  `ctx.tunnel.sealed` tells the service. When the instance itself must decide
+  who connects (a device serving only clients its owner paired), give each
+  client its own key: `Mesh(..., e2e_identity=E2EIdentity(private_key,
+  instance_id, pairing=E2EPairing(id, psk)))` (`{ e2eIdentity }` /
+  `WithE2EIdentity`); the device shows the pairing id and a one-time PSK
+  (`generate_e2e_psk()`) out of band, never through the Router. Mount with
+  `authorize_e2e_peer=` (accept known keys; spend the pairing only when
+  `peer.pairing_id` is set), `e2e_pairing_psk=` and `require_e2e_peer=True`
+  (`requireE2EPeer` / `WithRequireE2EPeer()`), which refuses every call
+  outside an authenticated session, tunnelled or not
+  (`permission_denied` / `e2e_peer_required`); handlers read `ctx.e2e.peer_key`.
 - Configure the Router with flags or `MESHCALL_ROUTER_<FLAG>` variables
   (`MESHCALL_ROUTER_PORT`, `MESHCALL_ROUTER_IDLE_TIMEOUT`, …); put accounts in
   `MESHCALL_ROUTER_AUTH` (the auth JSON itself) or `MESHCALL_ROUTER_AUTH_FILE`.

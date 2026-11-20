@@ -580,6 +580,10 @@ end-to-end reason (`e2e_key_mismatch`, or `e2e_required` from an instance
 mounted with `require_e2e`), the issuer's `tunnel_rejected` message says so,
 and a refused re-offer after a key change closes the tunnel as `key_changed`.
 `list` and `whoami` show the pinned `e2e_key`.
+The Router plays no part in client authentication (clients with keys of
+their own, pairing): it relays those handshakes like any other, and the
+instance decides, so a Router cannot admit a client the instance does not
+know.
 See [the protocol](protocol.md#end-to-end-encryption).
 
 ## Connecting services

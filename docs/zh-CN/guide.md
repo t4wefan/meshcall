@@ -1043,6 +1043,41 @@ const mesh = new Mesh(new Router("wss://relay.example"), { tunnel: credential, e
 
 通过它的调用与普通调用写法相同；服务可从 `ctx.tunnel.sealed`（Go `ctx.Tunnel.Sealed`）得知。端到端隧道的凭据以 `mtun_e2e.` 开头：给 `Mesh` 这样的凭据却不给 `e2e_key`（或给了公钥却配普通凭据），它会在连接之前就拒绝，因此不会因配置疏忽把明文发出去。每个会话都绑定到客户端所持凭据对应的隧道，持有另一个凭据的中继无法让这些调用以别的 principal 执行。对 Router 自身服务的调用（`mesh.auth`、`mesh.registry`）保持明文。在端到端隧道上，Router 拒绝明文调用和所有 HTTP 调用（`permission_denied` / `tunnel_e2e_required`）；实例拒绝固定了它不持有的公钥的 offer，开启 `require_e2e` 时还拒绝所有明文 offer（`tunnel_rejected`，消息中说明原因）；固定了错误公钥的客户端无法连接（`unauthenticated` / `e2e_handshake_failed`）。实例重连后会丢失会话：无论调用形状，客户端只会收到一次 `e2e_session_unknown`，在下一次调用前重新握手，一元调用会自动重试一次。途中被篡改的帧只结束它所属的调用（`e2e_frame_rejected`）。Python 需要 `meshcall[e2e]` 扩展（`cryptography`）；TypeScript 在 Node 与浏览器（安全上下文）中使用 WebCrypto；Go 只用标准库：`meshcall.GenerateE2EKey()`，服务端用 `meshcall.WithE2EPrivateKey(priv)`，客户端在 `WithTunnel` 旁加 `meshcall.WithE2EKey(pub)`，挂载时用 `meshcall.WithRequireE2E()`，签发用 `OpenTunnelRequest.E2EKey`。TypeScript 挂载时用 `{ e2ePrivateKey, requireE2E: true }`。`meshcall` CLI 不会密封调用，因此不能通过端到端隧道调用。
 
+#### 自证身份的客户端
+
+默认情况下，实例只能从 Router 得知调用方是谁（`ctx.tunnel.principal`，由签发方填写）。如果实例必须自己判断——例如一台设备只为主人配对过的手机服务，即使运行 Router 的服务端变得不可信也一样——就给每个客户端一对自己的密钥。客户端随后在握手里证明自己的身份（`Noise_IK_25519_AESGCM_SHA256`），实例调用你的钩子判断是否认识这把公钥，处理器通过 `ctx.e2e.peer_key` 看到它。Router 仍然检查凭据：两边都同意，连接才成立。
+
+新客户端通过**配对**加入：设备在自己的屏幕上（不经过 Router，例如二维码）展示实例 id、公钥、`pairing_id` 和一次性的配对秘密（`generate_e2e_psk()`）。客户端第一次握手把这个秘密混入密钥（`Noise_IKpsk2_25519_AESGCM_SHA256`），随后再证明自己持有它；只有到这一步，实例才会带着 `peer.pairing_id` 询问你的钩子，所以要在那里记下客户端并作废这次配对。只在网络上看到 `pairing_id` 的人既不能完成配对，也不能把它用掉。同一个 `Mesh` 之后的连接（包括重连）自动改用 IK；第一次调用成功后，请保存「已配对」，App 下次启动时不再传 `pairing`（这次配对已经用掉）。
+
+```python
+paired: set[str] = load_paired_keys()
+pairings: dict[str, str] = {}          # pairing_id -> psk，以二维码展示，很快过期
+
+async def authorize(peer: E2EPeer) -> bool:
+    if peer.pairing_id is not None:    # 客户端已证明持有这次配对的 PSK
+        if pairings.pop(peer.pairing_id, None) is None:
+            return False               # 未知、已过期或已用过
+        paired.add(peer.peer_key)
+        return True
+    return peer.peer_key in paired
+
+mesh.mount(Device(), instance_id="laptop-1", accept_tunnels=allow,
+           e2e_private_key=device_key, require_e2e_peer=True,
+           authorize_e2e_peer=authorize, e2e_pairing_psk=pairings.get)
+```
+
+```python
+# 客户端：自己的密钥由 App 保存；设备的 id、公钥和配对信息来自二维码。
+me = load_or_generate_client_key()     # 每次安装调用一次 generate_e2e_key()
+mesh = Mesh(Router("wss://relay.example"), tunnel=credential, e2e_key=qr.public_key,
+            e2e_identity=E2EIdentity(me.private_key, qr.instance_id,
+                                     pairing=E2EPairing(qr.pairing_id, qr.psk)))
+```
+
+设备公钥要从拿到它的地方固定——二维码——而不是从签发凭据的一方取：签发方仍要把它传给 `tunnels.open(e2e_key=…)`，但实例会拒绝不是自己公钥的 offer，而自己固定了公钥的客户端从不依赖签发方给的副本。实例 id 也绑定在握手里，为某个实例固定的公钥不能和另一个实例建立会话。
+
+`require_e2e_peer=True`（隐含 `require_e2e`）让实例只把这些服务提供给钩子接受的客户端：普通隧道、没有自己密钥的客户端的会话（NK）、账号自己的定向调用和直连都会在任何处理器运行之前被拒绝（`permission_denied` / `e2e_peer_required`）。这由实例自己检查，与 Router 允许什么无关；它要求配置钩子。被拒绝的握手是 `unauthenticated` / `e2e_handshake_failed`，不说明原因（未知公钥、已用过的配对、错误的实例 id 看起来都一样）。配置了身份的客户端绝不会退回到更弱的握手。TypeScript：`{ e2eIdentity: { privateKey, instanceId, pairing: { id, psk } } }`，挂载选项 `{ requireE2EPeer, authorizeE2EPeer, e2ePairingPsk }`，`ctx.e2e.peerKey`，`generateE2EPsk()`。Go：`meshcall.WithE2EIdentity(meshcall.E2EIdentity{…})`、`meshcall.WithAuthorizeE2EPeer(fn)`、`meshcall.WithE2EPairingPSK(fn)`、`meshcall.WithRequireE2EPeer()`、`meshcall.GenerateE2EPSK()`，处理器里用 `ctx.E2E.PeerKey`（NK 时为空字符串）。Swift 和 JVM 在隧道授权旁接收一个 `E2EIdentity`（见各自的 README）。
+
 ---
 
 ## 9. 拦截器（Interceptors）、元数据（Metadata）与结构化错误处理

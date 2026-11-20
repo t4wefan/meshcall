@@ -35,7 +35,15 @@ TypeScript client (`meshcall-ts/src/client.ts`) or the Swift one
   `meshcall-e2e/1|<sha256 hex of the credential>`; check your handshake
   against `meshcall-router/conformance/testdata/noise_nk_25519_aesgcm_sha256.json`
   first. On `e2e_session_unknown`, reset the connection and retry a unary call
-  once.
+  once. A client with a key of its own (`E2EIdentity`: its private key, the
+  instance id, optionally a pairing id and PSK) uses
+  `Noise_IK_25519_AESGCM_SHA256`, or `Noise_IKpsk2_25519_AESGCM_SHA256` plus
+  the `{session, confirm}` call while pairing, with the prologue
+  `meshcall-e2e/1|<sha256 hex>|<instance_id>`; after a confirmed pairing every
+  later handshake is IK, and it never falls back to NK. Check it against the
+  IK and IKpsk2 vectors next to the NK one and against
+  `testdata/e2e_handshakes.json` (requests, answers, session ids, the
+  confirmation), and cover the `e2e.ik` / `e2e.pairing…` client scenarios.
 - **Errors** keep the shared codes and `details` keys (`source`, `reason`,
   `instance_id`, `attempts`, `violations`).
 

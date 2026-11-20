@@ -1039,6 +1039,41 @@ const mesh = new Mesh(new Router("wss://relay.example"), { tunnel: credential, e
 
 Calls through it look like any other; `ctx.tunnel.sealed` (Go `ctx.Tunnel.Sealed`) tells the service. The credential of an E2E tunnel starts with `mtun_e2e.`: a `Mesh` given one without `e2e_key` (or a key with a plain credential) refuses before connecting, so nothing leaves unsealed by mistake. Each session is bound to the tunnel whose credential the client holds, so a relay holding another credential cannot run the calls under another principal. Calls to the Router's own services (`mesh.auth`, `mesh.registry`) stay clear. On an E2E tunnel the Router refuses plain calls and every HTTP call (`permission_denied` / `tunnel_e2e_required`); an instance refuses an offer pinning a key it does not hold, and with `require_e2e` any plain offer (`tunnel_rejected`, the message says why); a client pinning the wrong key fails to connect (`unauthenticated` / `e2e_handshake_failed`). After the instance reconnects it has lost its sessions: whatever the call shape, the client is told once (`e2e_session_unknown`), handshakes again before its next call and retries a unary call itself. A frame altered on the way ends only its call (`e2e_frame_rejected`). Python needs the `meshcall[e2e]` extra (`cryptography`); TypeScript uses WebCrypto in Node and browsers (a secure context); Go uses the standard library: `meshcall.GenerateE2EKey()`, `meshcall.WithE2EPrivateKey(priv)` when serving, `meshcall.WithE2EKey(pub)` next to `WithTunnel`, `meshcall.WithRequireE2E()` at mount, and `OpenTunnelRequest.E2EKey`. TypeScript mounts with `{ e2ePrivateKey, requireE2E: true }`. The `meshcall` CLI does not seal calls, so it cannot call through an E2E tunnel.
 
+#### Clients that authenticate themselves
+
+By default the instance learns who calls only from the Router (`ctx.tunnel.principal`, set by the issuer). When the instance must decide for itself — a device that serves only the phones its owner paired with it, even if the service running the Router turned hostile — give each client a key of its own. The client then authenticates itself in the handshake (`Noise_IK_25519_AESGCM_SHA256`), the instance asks your hook whether it knows that key, and the handler sees it as `ctx.e2e.peer_key`. The Router still checks the credential: a connection needs both.
+
+A new client is introduced by **pairing**: the device shows, on its own screen and never through the Router (a QR code), its instance id, its public key, a `pairing_id` and a one-time secret (`generate_e2e_psk()`). The client's first handshake mixes that secret in (`Noise_IKpsk2_25519_AESGCM_SHA256`) and then proves it; only then is your hook asked, with `peer.pairing_id` set, so record the client and spend the pairing there. Someone who only saw the `pairing_id` on the wire cannot pair, and cannot spend it either. Later connections of the same `Mesh`, reconnects included, use IK by themselves; once the first call succeeded, store that the client is paired and leave `pairing` out the next time the app starts (the pairing is spent).
+
+```python
+paired: set[str] = load_paired_keys()
+pairings: dict[str, str] = {}          # pairing_id -> psk, shown as a QR code, expiring soon
+
+async def authorize(peer: E2EPeer) -> bool:
+    if peer.pairing_id is not None:    # the client proved it holds this pairing's PSK
+        if pairings.pop(peer.pairing_id, None) is None:
+            return False               # unknown, expired or already used
+        paired.add(peer.peer_key)
+        return True
+    return peer.peer_key in paired
+
+mesh.mount(Device(), instance_id="laptop-1", accept_tunnels=allow,
+           e2e_private_key=device_key, require_e2e_peer=True,
+           authorize_e2e_peer=authorize, e2e_pairing_psk=pairings.get)
+```
+
+```python
+# The client: its own key, kept by the app; the device's id, key and pairing from the QR code.
+me = load_or_generate_client_key()     # generate_e2e_key() once per install
+mesh = Mesh(Router("wss://relay.example"), tunnel=credential, e2e_key=qr.public_key,
+            e2e_identity=E2EIdentity(me.private_key, qr.instance_id,
+                                     pairing=E2EPairing(qr.pairing_id, qr.psk)))
+```
+
+Pin the device's key where you got it from — the QR code — not from whoever issued the credential: the issuer must still pass it to `tunnels.open(e2e_key=…)`, but the instance refuses an offer with a key that is not its own, and a client with its own pin never relies on the issuer's copy. The instance id is bound in the handshake too, so a key pinned for one instance does not open a session with another.
+
+`require_e2e_peer=True` (which implies `require_e2e`) makes the instance serve those services only to clients your hook accepted: a plain tunnel, a session of a client without a key (NK), an account's own targeted call and a direct connection are all refused before any handler runs (`permission_denied` / `e2e_peer_required`). The instance checks this itself, whatever the Router allows; it needs the hook. A refused handshake is `unauthenticated` / `e2e_handshake_failed` and never says why (an unknown key, a spent pairing, a wrong instance id all read alike). A client given an identity never falls back to a weaker handshake. TypeScript: `{ e2eIdentity: { privateKey, instanceId, pairing: { id, psk } } }`, mount options `{ requireE2EPeer, authorizeE2EPeer, e2ePairingPsk }`, `ctx.e2e.peerKey`, `generateE2EPsk()`. Go: `meshcall.WithE2EIdentity(meshcall.E2EIdentity{…})`, `meshcall.WithAuthorizeE2EPeer(fn)`, `meshcall.WithE2EPairingPSK(fn)`, `meshcall.WithRequireE2EPeer()`, `meshcall.GenerateE2EPSK()`, and `ctx.E2E.PeerKey` in handlers (empty for NK). Swift and the JVM take an `E2EIdentity` next to the tunnel grant (see their READMEs).
+
 ---
 
 ## 9. Interceptors, Metadata & Structured Errors
