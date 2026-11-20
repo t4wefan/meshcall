@@ -83,7 +83,8 @@ public data class MeshOptions @JvmOverloads constructor(
     /**
      * The instance public key the issuer pinned for this tunnel: every call is
      * then sealed end to end, and the connection fails unless the instance
-     * proves it holds the matching private key. Take it from the issuer, never
+     * proves it holds the matching private key. Take it from the issuer (or
+     * from where the app pinned it itself, such as a pairing QR code), never
      * from the Router.
      */
     val e2eKey: String? = null,
@@ -101,11 +102,19 @@ public data class MeshOptions @JvmOverloads constructor(
     val interceptors: List<ClientInterceptor> = emptyList(),
     /** A shared OkHttp client (its dispatcher and connection pool are reused). */
     val httpClient: OkHttpClient? = null,
+    /**
+     * This client's own key on an end-to-end tunnel (needs [e2eKey]): the
+     * client then authenticates itself to the instance (Noise IK), or pairs
+     * with it first (IKpsk2) when the identity carries a pairing. Never falls
+     * back to an unauthenticated handshake.
+     */
+    val e2eIdentity: E2EIdentity? = null,
 ) {
     public fun withToken(value: String?): MeshOptions = copy(token = value)
     public fun withCredentials(value: RouterCredentials?): MeshOptions = copy(credentials = value)
     public fun withTunnel(value: String?): MeshOptions = copy(tunnel = value)
     public fun withE2eKey(value: String?): MeshOptions = copy(e2eKey = value)
+    public fun withE2eIdentity(value: E2EIdentity?): MeshOptions = copy(e2eIdentity = value)
     public fun withPeerId(value: String?): MeshOptions = copy(peerId = value)
     public fun withPingIntervalMs(value: Long?): MeshOptions = copy(pingIntervalMs = value)
     public fun withPingTimeoutMs(value: Long): MeshOptions = copy(pingTimeoutMs = value)
@@ -118,7 +127,7 @@ public data class MeshOptions @JvmOverloads constructor(
     public fun withHttpClient(value: OkHttpClient?): MeshOptions = copy(httpClient = value)
 
     override fun toString(): String =
-        "MeshOptions(token=${token?.let { "***" }}, tunnel=${tunnel?.let { "***" }}, e2eKey=$e2eKey, peerId=$peerId)"
+        "MeshOptions(token=${token?.let { "***" }}, tunnel=${tunnel?.let { "***" }}, e2eKey=$e2eKey, e2eIdentity=$e2eIdentity, peerId=$peerId)"
 
     public companion object {
         @JvmField public val DEFAULT: MeshOptions = MeshOptions()
@@ -303,6 +312,9 @@ public class Mesh private constructor(
                 checkE2EAgreement(options.tunnel, options.e2eKey)
             }
             options.e2eKey?.let { checkE2EKey(it) }
+            require(options.e2eIdentity == null || options.e2eKey != null) {
+                "e2eIdentity authenticates this client to the instance whose e2eKey you pinned: pass e2eKey too"
+            }
             options.tunnel?.let {
                 require(it.startsWith(TUNNEL_CREDENTIAL_PREFIX) && it.none(Char::isWhitespace)) {
                     "A tunnel credential starts with 'mtun_'; it is the `credential` returned by TunnelService/open"
@@ -330,6 +342,7 @@ public class Mesh private constructor(
                     retry = options.retry,
                     interceptors = options.interceptors.toList(),
                     e2eKey = options.e2eKey,
+                    e2eIdentity = options.e2eIdentity,
                     httpClient = options.httpClient ?: sharedHttpClient,
                 ),
                 scope,

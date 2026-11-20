@@ -13,7 +13,7 @@ Router 调用 Python、TypeScript 或 Go 编写的服务，通过 WebSocket 讲 
 | | |
 | --- | --- |
 | 调用 | unary、server stream、client stream、duplex；按实例定向调用（`instance`） |
-| Router 功能 | 隧道（`mtun_…`）、端到端加密隧道（Noise NK，固定实例公钥）、令牌、Registry、AuthService、TunnelService |
+| Router 功能 | 隧道（`mtun_…`）、端到端加密隧道（Noise NK，固定实例公钥；客户端认证自己并配对时用 IK / IKpsk2）、令牌、Registry、AuthService、TunnelService |
 | 传输 | `ws://`、`wss://`（OkHttp），可给多个 Router 做故障切换 |
 | 代码生成 | `meshcall generate … --language kotlin`：kotlinx.serialization 数据类，suspend / `Flow` 方法，以及给 Java 用的 `…Async` 方法 |
 | 依赖 | kotlinx-coroutines、kotlinx-serialization-json、OkHttp、BouncyCastle（只用 X25519） |
@@ -121,7 +121,7 @@ val mesh = Mesh(
 val sessions = SessionsClient(mesh)                // instance_id 由 Router 补上
 ```
 
-客户端始终朝固定（pinned）的公钥发起 `Noise_NK_25519_AESGCM_SHA256` 握手，从不使用
+客户端始终朝固定（pinned）的公钥发起握手（默认 `Noise_NK_25519_AESGCM_SHA256`，客户端认证自己时见下文），从不使用
 Router 提供的公钥。公钥不对时，调用以不可重试的 `UnauthenticatedException`
 （`reason = "e2e_handshake_failed"`）失败，绝不会退回明文。端到端凭据没配 `e2eKey`，
 或者普通凭据配了 `e2eKey`，在构造 `Mesh` 时就会被拒绝。实例重启丢失会话后
@@ -129,10 +129,52 @@ Router 提供的公钥。公钥不对时，调用以不可重试的 `Unauthentic
 隧道被吊销后，进行中的调用以 `UnauthenticatedException`（`reason = "tunnel_revoked"`）
 失败，之后的调用也会立即以同样的错误失败。
 
+### 客户端认证与配对
+
+默认情况下客户端没有自己的密钥，能否连接只由 Router 决定。持有自己 X25519 密钥对的
+客户端还会向实例证明自己的身份（`Noise_IK_25519_AESGCM_SHA256`），实例因此可以拒绝
+所有它不认识的客户端；要求认证的服务（`require_e2e_peer`）只回应这类客户端，其他
+客户端收到 `PermissionDeniedException`（`reason = "e2e_peer_required"`）。
+
+```kotlin
+val key = E2EKeyPair.generate()                // 只生成一次，key.privateKey 存进应用自己的安全存储
+val mesh = Mesh(
+    Router("wss://router.example.com"),
+    MeshOptions(
+        tunnel = credential,
+        e2eKey = instancePublicKey,            // 签发方给的，或应用自己固定的
+        e2eIdentity = E2EIdentity(key.privateKey, instanceId),
+    ),
+)
+```
+
+第一次要被实例接受，客户端需要配对：实例的所有者通过带外方式（绝不经过 Router，
+例如实例设备上显示的二维码）把实例 id、实例公钥、配对 id 和一次性的 32 字节 PSK
+交给客户端。应用可以用这里的实例 id 和公钥代替签发方给的；签发方开隧道时仍会固定公钥。
+
+```kotlin
+val identity = E2EIdentity(key.privateKey, qr.instanceId, E2EPairing(qr.pairingId, qr.psk))
+val mesh = Mesh(router, MeshOptions(tunnel = credential, e2eKey = qr.instanceKey, e2eIdentity = identity))
+mesh.connect()                                 // 完成配对，否则抛出异常
+```
+
+Java 写法：`new E2EIdentity(privateKey, instanceId).withPairing(new E2EPairing(id, psk))`，
+以及 `MeshOptions.DEFAULT.withTunnel(…).withE2eKey(…).withE2eIdentity(identity)`。
+
+第一个连接用 `Noise_IKpsk2_25519_AESGCM_SHA256` 握手，并在任何调用之前确认配对；实例
+可能要等人在设备上同意，所以确认最多等 120 秒（握手本身仍用 `handshakeTimeoutMs`）。
+确认之后，同一个 `Mesh` 之后的每次握手（包括重连）都用同一把密钥走 IK。配对随即作废：
+应用应记下这把密钥已配对，之后构造 `Mesh` 时不再带配对。从未确认的配对会在下次连接时
+再试，直到实例拒绝。密钥未知、配对已用过或 PSK 不对，都以不可重试的
+`UnauthenticatedException`（`reason = "e2e_handshake_failed"`，实例不说明具体原因）失败。
+客户端绝不会退回 NK。`e2eIdentity` 没配 `e2eKey`、私钥或 PSK 不是 32 字节的 base64url、
+实例 id 为空、配对 id 不在 1 到 128 字节之间，都会在连接之前被拒绝。
+
 X25519 用的是 BouncyCastle 的纯 Java RFC 7748 实现，直接调用，不注册 JCA Provider，
 因此不会和 Android 自带的那份冲突。JCA 的 `XDH` 要到 Android API 33 才有。AES-256-GCM、
-SHA-256 和 HMAC 来自 JCA，所有 Android 版本都可用。实现已经用一致性测试工具同一份
-公开的 Noise 测试向量验证过。
+SHA-256 和 HMAC 来自 JCA，所有 Android 版本都可用。NK、IK、IKpsk2 三种握手已经用一致性测试工具
+同一批公开的 Noise 测试向量验证过，MeshCall 的握手请求、会话 id 和配对确认也用它的
+`e2e_handshakes.json` 逐字节核对过。
 之所以保留 BouncyCastle、不自己实现 RFC 7748：它的域运算是常数时间的，并且有人维护；
 jar 里的其余部分会被 R8 移除（见上文）。
 
