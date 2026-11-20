@@ -225,6 +225,9 @@ actor ClientCore {
     private var calls: [String: PendingCall] = [:]
     private var streams: [String: StreamState] = [:]
     private var sealedCalls: [String: SealedCall] = [:]
+    /// Set once the instance confirmed this client's pairing: every later
+    /// handshake (reconnects, new connections) uses IK with the same key.
+    private var paired = false
 
     init(endpoints: [URL], options: MeshOptions, socketFactory: @escaping SocketFactory) throws {
         guard !endpoints.isEmpty else { throw ConfigurationError("At least one endpoint is required") }
@@ -304,13 +307,16 @@ actor ClientCore {
         let socket = socketFactory(url, options)
         let writer = FrameWriter(socket: socket, maxFrameSize: options.maxFrameSize, ordered: options.e2eKey != nil)
         let timedOut = Flag()
-        let timeout = options.handshakeTimeout
-        let watchdog = Task {
-            try? await Task.sleep(for: timeout)
-            if Task.isCancelled { return }
-            timedOut.set()
-            socket.close(code: 1000, reason: "handshake timed out")
+        func arm(_ timeout: Duration) -> Task<Void, Never> {
+            Task {
+                try? await Task.sleep(for: timeout)
+                if Task.isCancelled { return }
+                timedOut.set()
+                socket.close(code: 1000, reason: "handshake timed out")
+            }
         }
+        var watchdog = arm(options.handshakeTimeout)
+        var confirming = false
         defer { watchdog.cancel() }
         do {
             try await socket.open()
@@ -331,20 +337,45 @@ actor ClientCore {
                 // towards the pinned key before any call is made.
                 let callID = newID()
                 let handshake = try ClientHandshake(
-                    pinnedKey: key, callID: callID, credential: options.credentials?.token ?? "")
+                    pinnedKey: key, callID: callID, credential: options.credentials?.token ?? "",
+                    identity: options.e2eIdentity, paired: paired)
                 try await writer.send(handshake.frame)
-                var reply: Frame
-                repeat { reply = try await Self.receiveHandshakeFrame(socket, writer) } while reply.callID != callID
-                session = try handshake.finish(reply)
+                let established = try handshake.finish(try await Self.receiveAnswer(callID, socket, writer))
+                if handshake.pairing != nil {
+                    // Prove the PSK; the instance accepts this client only then,
+                    // possibly after asking a person: a longer timeout.
+                    watchdog.cancel()
+                    confirming = true
+                    watchdog = arm(e2eConfirmTimeout)
+                    let confirmID = newID()
+                    try await writer.send(try ClientHandshake.confirmFrame(session: established, callID: confirmID))
+                    try ClientHandshake.finishConfirm(try await Self.receiveAnswer(confirmID, socket, writer))
+                    paired = true
+                }
+                session = established
             }
             if closed { throw MeshCallError(.unavailable, "Client is closed") }
             install(Connection(socket: socket, writer: writer, e2e: session))
         } catch {
             let failure =
-                timedOut.isSet ? MeshCallError(.deadlineExceeded, "MeshCall handshake timed out") : Self.connectFailure(error)
+                timedOut.isSet
+                ? MeshCallError(
+                    .deadlineExceeded,
+                    confirming ? "End-to-end pairing confirmation timed out" : "MeshCall handshake timed out")
+                : Self.connectFailure(error)
             writer.close(failure)
             socket.close(code: 1000, reason: "")
             throw failure
+        }
+    }
+
+    /// The answer to the `TunnelHost/handshake` call `callID`.
+    private static func receiveAnswer(_ callID: String, _ socket: WebSocketConnection, _ writer: FrameWriter)
+        async throws -> Frame
+    {
+        while true {
+            let frame = try await receiveHandshakeFrame(socket, writer)
+            if frame.callID == callID { return frame }
         }
     }
 

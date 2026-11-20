@@ -78,13 +78,58 @@ let sessions = SessionsClient(mesh)
 ```
 
 On a tunnel connection only that instance's scoped services exist and the
-instance is implied. With `e2e_key`, every call is sealed with
-`Noise_NK_25519_AESGCM_SHA256` towards that pinned key: the Router routes
+instance is implied. With `e2e_key`, every call is sealed towards that
+pinned key (`Noise_NK_25519_AESGCM_SHA256`, or IK with a client identity,
+below): the Router routes
 and enforces scopes but sees no payloads, metadata or error messages. The
 client never takes the key from the Router; a handshake that fails is
 `unauthenticated` / `e2e_handshake_failed` and never falls back to clear.
 An end-to-end credential (`mtun_e2e.…`) without its key, or a key with a
 plain credential, is refused before connecting.
+
+### Client authentication
+
+By default the client has no key of its own (NK), so the Router alone
+decides who may connect. A client with its own X25519 key authenticates
+itself to the instance too, which can then refuse clients it does not know
+(`Noise_IK_25519_AESGCM_SHA256`). Generate the key once and keep it (in the
+Keychain, say); only its public key ever leaves the device, in the handshake:
+
+```swift
+let key = E2EKeyPair.generate()          // store key.privateKey
+let mesh = try Mesh(tunnel: grant, identity: E2EIdentity(privateKey: key.privateKey, instanceID: grant.instanceID))
+```
+
+To pair with an instance that does not know the key yet, add the one-time
+pairing its owner shows out of band (a QR code on the instance's device,
+never through the Router): its id and 32-byte PSK. The first handshake is
+then `Noise_IKpsk2_25519_AESGCM_SHA256`, confirmed before the first call
+(the instance may ask a person, so the confirmation waits up to 120 s); once
+the instance accepted it, every later handshake of that `Mesh` (reconnects
+included) uses IK. A new `Mesh` for a client that already paired passes the
+identity without `pairing`.
+
+```swift
+var grant = try JSONDecoder().decode(TunnelGrant.self, from: body)
+grant.e2eKey = qr.instanceKey            // pinned from the QR code, not the issuer's copy
+let mesh = try Mesh(
+    tunnel: grant,
+    identity: E2EIdentity(
+        privateKey: key.privateKey, instanceID: qr.instanceID,
+        pairing: E2EPairing(id: qr.pairingID, psk: qr.psk)))
+```
+
+As the example shows, an app that pinned the instance's key and id itself
+does not need the issuer's copies: it sets `grant.e2eKey` and the identity's
+`instanceID` to its own values (the issuer still pins its key at
+`tunnels.open`, where the instance refuses a key that is not its own). The
+client never falls back from IK or IKpsk2 to NK. An unknown key, a spent
+pairing or a wrong PSK fail with `unauthenticated` / `e2e_handshake_failed`
+(the same answer for each: an instance does not say which keys it knows),
+and an identity without `e2eKey`, or with a malformed key, PSK, empty
+`instanceID` or a pairing id outside 1–128 bytes, is refused before
+connecting. `E2EIdentity` and `E2EPairing` keep their secrets out of
+`description`.
 
 ## Errors
 
@@ -140,7 +185,7 @@ then `try event.jsonData()`.
 ## Options
 
 `MeshOptions`: `credentials` (`.bearer` for API keys, tokens and tunnel
-credentials, `.basic` for accounts), `e2eKey`, `maxFrameSize` (64 MiB),
+credentials, `.basic` for accounts), `e2eKey`, `e2eIdentity`, `maxFrameSize` (64 MiB),
 `handshakeTimeout` (10 s), `deadlineGrace` (`max(1 s, 10 %)`),
 `pingInterval` / `pingTimeout` (15 s / 10 s), `reconnect`, `retry`,
 `interceptors` (see each attempt; unary trailers are on `info.trailers`) and
@@ -170,8 +215,10 @@ Router, a proxy that can stall connections, and a conformance fixture. They
 cover every client scenario of the suite, each test marked
 `// conformance-scenario: <id>`: every call shape, credit, deadlines,
 cancellation, metadata, frame size, tunnels, end-to-end sealing, revocation,
-Router restarts and the foreground check. The Noise handshake is checked
-against the same test vector as Go and TypeScript.
+client authentication and pairing, Router restarts and the foreground check.
+The NK, IK and IKpsk2 handshakes are checked against the same test vectors
+as every other runtime (the cacophony vectors and
+`conformance/testdata/e2e_handshakes.json`).
 
 The fixture is Go's by default (built with `go build` when
 `MESHCALL_FIXTURE_BINARY` is unset); `MESHCALL_FIXTURE` runs the same tests

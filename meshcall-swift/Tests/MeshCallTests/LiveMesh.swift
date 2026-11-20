@@ -12,6 +12,10 @@
         let routerURL: String
         /// The fixture's end-to-end public key.
         let e2eKey: String
+        /// A client private key the fixture accepts (IK).
+        let e2eClientKey: String
+        /// One-time pairings the fixture accepts (IKpsk2); each test uses its own.
+        let e2ePairings: [E2EPairing]
         private let process: Process
         private let commands: FileHandle
         private let answers: FileHandle
@@ -50,6 +54,11 @@
             }
             routerURL = url
             e2eKey = key
+            e2eClientKey = ready["e2e_client_key"]?.stringValue ?? ""
+            e2ePairings = (ready["e2e_pairings"]?.arrayValue ?? []).compactMap { pairing in
+                guard let id = pairing["id"]?.stringValue, let psk = pairing["psk"]?.stringValue else { return nil }
+                return E2EPairing(id: id, psk: psk)
+            }
         }
 
         deinit { stop() }
