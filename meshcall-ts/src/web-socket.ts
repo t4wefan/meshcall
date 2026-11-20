@@ -4,7 +4,10 @@
 // credentials travel in the `hello` frame's `authorization` field.
 
 import type { CallOptions, DuplexCallOptions } from "./client.js";
-import { checkE2EAgreement, clientHandshake, ROUTER_SERVICE_PREFIX, SealedCall, type E2ESession } from "./e2e.js";
+import {
+  checkE2EAgreement, checkE2EIdentity, E2EClient, ROUTER_SERVICE_PREFIX, SealedCall,
+  type ClientHandshake, type E2EIdentity, type E2ESession,
+} from "./e2e.js";
 import {
   CallCancelledError, closeError, DeadlineExceededError, MeshCallError, ProtocolError, ResourceExhaustedError,
   UnauthenticatedError, UnavailableError,
@@ -35,6 +38,8 @@ export interface WebSocketTransportOptions {
   readonly WebSocket?: typeof WebSocket;
   /** Seal every call end to end towards the instance holding this pinned public key. */
   readonly e2eKey?: string;
+  /** This client's own key: it authenticates itself to the instance (IK / IKpsk2). Needs `e2eKey`. */
+  readonly e2eIdentity?: E2EIdentity;
 }
 
 type Frame = Record<string, unknown> & { kind: string; call_id?: string };
@@ -66,19 +71,22 @@ class Connection {
   // Sealing and opening are async: call frames go through these in order.
   private outbound: Promise<void> = Promise.resolve();
   private inbound: Promise<void> = Promise.resolve();
-  private handshake: { readonly id: string; finish?: (reply: WireFrame) => Promise<E2ESession> } | undefined;
+  private handshaking = false;
+  private handshake: ClientHandshake | undefined;
 
   public constructor(
     url: string, private readonly options: WebSocketTransportOptions, private readonly onGone: (error: MeshCallError) => void,
+    e2eClient?: E2EClient,
   ) {
     const Socket = options.WebSocket ?? globalThis.WebSocket;
     if (Socket === undefined) throw new UnavailableError("No WebSocket implementation is available", { retryable: false });
     this.socket = new Socket(url);
     this.ready = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const expire = () => {
         reject(new DeadlineExceededError("Router handshake timed out", { details: { source: "client" } }));
         this.close();
-      }, options.handshakeTimeoutMs ?? 10_000);
+      };
+      let timer = setTimeout(expire, options.handshakeTimeoutMs ?? 10_000);
       this.socket.onopen = () => {
         this.send({
           kind: "hello", protocol: PROTOCOL, role: "client", peer_id: randomId(),
@@ -104,14 +112,23 @@ class Connection {
           reject(error);
           this.close();
         };
-        if (this.handshake !== undefined) {
-          if (frame.call_id !== this.handshake.id || this.handshake.finish === undefined) return;
-          const finish = this.handshake.finish;
+        if (this.handshaking) {
+          const current = this.handshake;
+          if (current === undefined || frame.call_id !== current.callId) return;
           this.handshake = undefined;
-          finish(frame as unknown as WireFrame).then((session) => {
-            this.e2e = session;
-            ready();
-          }, refuse);
+          current.receive(frame as unknown as WireFrame, randomId()).then((session) => {
+            if (session !== undefined) {
+              this.handshaking = false;
+              this.e2e = session;
+              ready();
+              return;
+            }
+            // A pairing's confirmation may wait for a person at the instance.
+            clearTimeout(timer);
+            timer = setTimeout(expire, current.timeoutMs);
+            this.handshake = current;
+            this.send(current.frame as unknown as Frame);
+          }).catch(refuse);
           return;
         }
         if (frame.kind === "hello.ack") {
@@ -119,16 +136,15 @@ class Connection {
             refuse(new ProtocolError("Unsupported protocol " + String(frame.protocol)));
             return;
           }
-          if (options.e2eKey === undefined) {
+          if (e2eClient === undefined) {
             ready();
             return;
           }
           // The instance must answer the handshake towards the pinned key
           // before any call is made.
-          const handshake: { id: string; finish?: (reply: WireFrame) => Promise<E2ESession> } = { id: randomId() };
-          this.handshake = handshake;
-          clientHandshake(options.e2eKey, handshake.id, (options.authorization ?? "").replace(/^Bearer /u, "")).then((started) => {
-            handshake.finish = started.finish;
+          this.handshaking = true;
+          e2eClient.start(randomId()).then((started) => {
+            this.handshake = started;
             this.send(started.frame as unknown as Frame);
           }).catch(refuse);
           return;
@@ -449,10 +465,20 @@ export class WebSocketTransport implements MeshCallRpc {
   // gets (only a 1006 close), so the Router's 4401 answer is kept and given
   // to every later call.
   private refused: UnauthenticatedError | undefined;
+  /** Handshakes every connection (`e2eKey` set) and remembers a confirmed pairing. */
+  private readonly e2eClient: E2EClient | undefined;
 
   public constructor(private readonly urls: ReadonlyArray<string>, private readonly options: WebSocketTransportOptions = {}) {
     if (urls.length === 0) throw new RangeError("WebSocketTransport needs at least one URL");
-    checkE2EAgreement(options.authorization?.replace(/^Bearer /u, ""), options.e2eKey);
+    const credential = options.authorization?.replace(/^Bearer /u, "");
+    checkE2EAgreement(credential, options.e2eKey);
+    if (options.e2eIdentity !== undefined) {
+      if (options.e2eKey === undefined) {
+        throw new TypeError("e2eIdentity authenticates this client to the instance whose key you pinned: pass e2eKey too");
+      }
+      checkE2EIdentity(options.e2eIdentity);
+    }
+    if (options.e2eKey !== undefined) this.e2eClient = new E2EClient(options.e2eKey, credential ?? "", options.e2eIdentity);
   }
 
   public withOptions(options: CallOptions): this {
@@ -569,7 +595,7 @@ export class WebSocketTransport implements MeshCallRpc {
       const connection = new Connection(this.urls[index]!, this.options, (error) => {
         if (this.connection === connection) this.connection = undefined;
         if (error instanceof UnauthenticatedError) this.refused = error;
-      });
+      }, this.e2eClient);
       try {
         await connection.ready;
         this.cursor = index;

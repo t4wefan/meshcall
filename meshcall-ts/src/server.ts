@@ -22,7 +22,7 @@ import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import { methodValidators } from "./validation.js";
 
 import type { RouterCredentials } from "./router-auth.js";
-import { TUNNEL_CAPABILITY, TunnelHost, type TunnelPolicy } from "./tunnel.js";
+import { TUNNEL_CAPABILITY, TunnelHost, type E2EPairingPskHook, type E2EPeerHook, type TunnelPolicy } from "./tunnel.js";
 
 export type { RpcContext, ServerCallNext, ServerInterceptor, DuplexChannel } from "./service.js";
 
@@ -87,6 +87,14 @@ export interface MeshCallServerOptions {
   readonly tunnelPolicies?: ReadonlyMap<string, TunnelPolicy>;
   /** Router mode: this instance's E2E private key, for end-to-end sealed tunnels. */
   readonly e2ePrivateKey?: string;
+  /**
+   * Router mode: which client keys this instance accepts on end-to-end
+   * tunnels (IK, and IKpsk2 once a pairing client proved its PSK, with
+   * `peer.pairingId` set). Without it any client key is accepted.
+   */
+  readonly authorizeE2EPeer?: E2EPeerHook;
+  /** Router mode: the PSK of an unused pairing id, for clients pairing with IKpsk2. */
+  readonly e2ePairingPsk?: E2EPairingPskHook;
 }
 
 export class MeshCallServer {
@@ -105,6 +113,8 @@ export class MeshCallServer {
   private readonly handshakeTimeout: number;
   private readonly instanceId: string;
   private readonly tunnels: TunnelHost;
+  /** Services served only to authenticated end-to-end clients. */
+  private readonly requirePeer: ReadonlySet<string>;
   private settleRefused!: (error: UnauthenticatedError) => void;
   /**
    * Router mode: settles with the error once every Router refused this
@@ -113,10 +123,17 @@ export class MeshCallServer {
   public readonly refused = new Promise<UnauthenticatedError>((resolve) => { this.settleRefused = resolve; });
 
   public constructor(private readonly options: MeshCallServerOptions) {
-    if (options.e2ePrivateKey === undefined && [...(options.tunnelPolicies?.values() ?? [])].some((p) => p.requireE2E === true)) {
+    const policies = [...(options.tunnelPolicies?.values() ?? [])];
+    if (options.e2ePrivateKey === undefined && policies.some((p) => p.requireE2E === true)) {
       throw new TypeError("requireE2E needs e2ePrivateKey");
     }
-    this.tunnels = new TunnelHost(options.tunnelPolicies ?? new Map(), options.e2ePrivateKey);
+    if (options.e2ePrivateKey === undefined && policies.some((p) => p.requireE2EPeer === true)) {
+      throw new TypeError("requireE2EPeer needs e2ePrivateKey");
+    }
+    if (options.authorizeE2EPeer === undefined && policies.some((p) => p.requireE2EPeer === true)) {
+      // Otherwise any client key would do: the Router alone would decide.
+      throw new TypeError("requireE2EPeer needs authorizeE2EPeer");
+    }
     if (options.router !== undefined &&
       (options.host !== undefined || options.port !== undefined || options.unixPath !== undefined || options.pipe !== undefined)) {
       throw new TypeError("Router mode cannot be combined with a Direct listener");
@@ -135,6 +152,15 @@ export class MeshCallServer {
       throw new RangeError("maxInflight must be a positive integer");
     }
     this.instanceId = options.router?.instanceId ?? options.instanceId ?? randomUUID().replaceAll("-", "");
+    this.tunnels = new TunnelHost(options.tunnelPolicies ?? new Map(), {
+      instanceId: this.instanceId,
+      ...(options.e2ePrivateKey === undefined ? {} : { e2ePrivateKey: options.e2ePrivateKey }),
+      ...(options.authorizeE2EPeer === undefined ? {} : { authorizeE2EPeer: options.authorizeE2EPeer }),
+      ...(options.e2ePairingPsk === undefined ? {} : { e2ePairingPsk: options.e2ePairingPsk }),
+    });
+    this.requirePeer = new Set(
+      [...(options.tunnelPolicies?.entries() ?? [])].filter(([, p]) => p.requireE2EPeer === true).map(([name]) => name),
+    );
     this.logger = options.logger ?? new ConsoleRpcLogger({}, options.colorize ?? false);
     const services = new Map<string, Map<string, RuntimeMethod>>();
     this.registration = [];
@@ -355,6 +381,7 @@ export class MeshCallServer {
       interceptors: this.options.interceptors ?? [],
       instanceId: this.instanceId,
       targeted: this.targeted,
+      requirePeer: this.requirePeer,
       inflight: () => [...this.sessions.values()].reduce((sum, s) => sum + s.inFlight, 0),
       ...(this.options.maxInflight === undefined ? {} : { maxInflight: this.options.maxInflight }),
       ...(role === "router" ? { tunnels: this.tunnels } : {}),

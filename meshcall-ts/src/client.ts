@@ -9,7 +9,8 @@ import {
   UnauthenticatedError, UnavailableError,
 } from "./errors.js";
 import {
-  checkE2EAgreement, clientHandshake, ROUTER_SERVICE_PREFIX, SealedCall, type E2ESession,
+  checkE2EAgreement, checkE2EIdentity, E2EClient, ROUTER_SERVICE_PREFIX, SealedCall,
+  type ClientHandshake, type E2EIdentity, type E2ESession,
 } from "./e2e.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import {
@@ -109,6 +110,11 @@ export interface MeshCallClientOptions {
    * public key (a tunnel connection; docs/protocol.md → End-to-end encryption).
    */
   readonly e2eKey?: string;
+  /**
+   * This client's own key: it then authenticates itself to the instance
+   * (Noise IK, or IKpsk2 while pairing). Needs `e2eKey`.
+   */
+  readonly e2eIdentity?: E2EIdentity;
 }
 
 /**
@@ -231,6 +237,8 @@ export class MeshCallClient implements MeshCallRpc {
   /** The end-to-end session of the current connection (`e2eKey` set). */
   private e2e: E2ESession | undefined;
   private readonly sealedCalls = new Map<string, SealedCall>();
+  /** Handshakes every connection (`e2eKey` set) and remembers a confirmed pairing. */
+  private readonly e2eClient: E2EClient | undefined;
   // Sealing and opening are async: frames go through these in order.
   private outbound: Promise<void> = Promise.resolve();
   private inbound: Promise<void> = Promise.resolve();
@@ -252,6 +260,15 @@ export class MeshCallClient implements MeshCallRpc {
     this.root = this;
     this.endpoints = Array.isArray(url) ? [...(url as ReadonlyArray<WebSocketEndpoint>)] : [url as WebSocketEndpoint];
     checkE2EAgreement(options.auth?.token, options.e2eKey);
+    if (options.e2eIdentity !== undefined) {
+      if (options.e2eKey === undefined) {
+        throw new TypeError("e2eIdentity authenticates this client to the instance whose key you pinned: pass e2eKey too");
+      }
+      checkE2EIdentity(options.e2eIdentity);
+    }
+    if (options.e2eKey !== undefined) {
+      this.e2eClient = new E2EClient(options.e2eKey, options.auth?.token ?? "", options.e2eIdentity);
+    }
     if (this.endpoints.length === 0) throw new RangeError("At least one endpoint is required");
     for (const value of [options.maxFrameSize, options.handshakeTimeoutMs, options.pingTimeoutMs]) {
       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
@@ -795,8 +812,8 @@ export class MeshCallClient implements MeshCallRpc {
           writer.close();
           socket.close();
         };
-        const timer = setTimeout(() =>
-          fail(new DeadlineExceededError("MeshCall handshake timed out")), timeout);
+        const expire = () => fail(new DeadlineExceededError("MeshCall handshake timed out"));
+        let timer = setTimeout(expire, timeout);
         socket.once("open", () => {
           void writer.send({
             kind: "hello", protocol: PROTOCOL_VERSION, role: "client", peer_id: this.peerId,
@@ -816,8 +833,8 @@ export class MeshCallClient implements MeshCallRpc {
         };
         // After hello.ack on an E2E tunnel: the instance must answer the
         // handshake towards the pinned key before any call is made.
-        let handshake: Awaited<ReturnType<typeof clientHandshake>> | undefined;
-        let handshakeId: string | undefined;
+        let handshake: ClientHandshake | undefined;
+        let handshaking = false;
         socket.on("message", (data) => {
           if (ready) {
             this.handleMessage(data);
@@ -825,21 +842,31 @@ export class MeshCallClient implements MeshCallRpc {
           }
           try {
             const frame = decodeFrame(data);
-            if (handshakeId !== undefined) {
-              if (handshake === undefined || !("call_id" in frame) || frame.call_id !== handshakeId) return;
-              handshake.finish(frame).then(becomeReady, fail);
+            if (handshaking) {
+              const current = handshake;
+              if (current === undefined || !("call_id" in frame) || frame.call_id !== current.callId) return;
+              current.receive(frame, newCallId()).then(async (session) => {
+                if (session !== undefined) {
+                  becomeReady(session);
+                  return;
+                }
+                // A pairing's confirmation may wait for a person at the instance.
+                clearTimeout(timer);
+                timer = setTimeout(expire, current.timeoutMs);
+                await writer.send(current.frame);
+              }).catch(fail);
               return;
             }
             if (frame.kind !== "hello.ack" || frame.protocol !== PROTOCOL_VERSION) {
               throw new ProtocolError("Expected compatible hello.ack");
             }
-            const e2eKey = this.options.e2eKey;
-            if (e2eKey === undefined) {
+            const e2e = this.e2eClient;
+            if (e2e === undefined) {
               becomeReady(undefined);
               return;
             }
-            const callId = handshakeId = newCallId();
-            void clientHandshake(e2eKey, callId, this.options.auth?.token ?? "").then(async (started) => {
+            handshaking = true;
+            void e2e.start(newCallId()).then(async (started) => {
               handshake = started;
               await writer.send(started.frame);
             }).catch(fail);

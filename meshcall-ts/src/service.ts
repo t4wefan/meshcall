@@ -1,5 +1,6 @@
 import type { RpcLogger } from "./logging.js";
 import type { BalancePolicy, Metadata } from "./protocol.js";
+import type { E2EPeer } from "./e2e.js";
 import type { Tunnel } from "./tunnel.js";
 
 export interface RpcContext {
@@ -25,6 +26,12 @@ export interface RpcContext {
    * set), or `null`. Set by the Router; callers cannot forge it.
    */
   readonly tunnel: Tunnel | null;
+  /**
+   * The end-to-end session of a sealed call: its handshake and, when the
+   * client authenticated itself, its public key (`peerKey`) and pairing.
+   * `null` for a call that is not sealed.
+   */
+  readonly e2e: E2EPeer | null;
   /** Attach a trailer to the terminal `call.result` or `call.error` frame. */
   setTrailer(key: string, value: string): void;
   readonly trailers: Readonly<Metadata>;

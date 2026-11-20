@@ -3,8 +3,9 @@
 
 import type { CallOptions } from "./client.js";
 import {
-  b64decode, b64encode, checkE2EPrivateKey, e2ePublicKey, E2ESessionStore, handshakeFailed, nkRespond,
-  sameKey, TUNNEL_HANDSHAKE_METHOD, tunnelPrologue,
+  b64decode, b64encode, checkE2EPrivateKey, confirmAd, e2ePublicKey, IK, IKPSK2, parseHandshakeRequest, pskBytes,
+  respondHandshake, sameKey, TUNNEL_HANDSHAKE_METHOD, E2ESessionStore, handshakeFailed,
+  type E2EPeer, type E2ESession, type HandshakeRequest,
 } from "./e2e.js";
 import type { Metadata } from "./protocol.js";
 import type { MeshCallRpc } from "./rpc.js";
@@ -78,6 +79,18 @@ export interface TunnelClosed {
 export type TunnelOfferHook = (offer: TunnelOffer) => boolean | Promise<boolean>;
 /** Told when an accepted tunnel ends (revoked, expired, ...). */
 export type TunnelClosedHook = (closed: TunnelClosed) => void | Promise<void>;
+/**
+ * Decides whether an instance accepts a client's static key (`peer.peerKey`)
+ * on a tunnel; `peer.pairingId` is set when the client is pairing and has
+ * proven it holds that pairing's PSK. A hook that throws refuses.
+ */
+export type E2EPeerHook = (peer: E2EPeer) => boolean | Promise<boolean>;
+/**
+ * Returns the PSK (base64url) of an unused pairing id, or `undefined`. It
+ * must not spend the pairing: that happens when the client confirms it, in
+ * the `E2EPeerHook`.
+ */
+export type E2EPairingPskHook = (pairingId: string) => string | undefined | null | Promise<string | undefined | null>;
 
 /** How the services of one `mount` call answer tunnel offers. */
 export interface TunnelPolicy {
@@ -85,6 +98,17 @@ export interface TunnelPolicy {
   readonly onClosed?: TunnelClosedHook;
   /** Refuse offers without `e2e_key` that scope these services. */
   readonly requireE2E?: boolean;
+  /** Serve these services only in sessions whose client was authenticated (implies `requireE2E`). */
+  readonly requireE2EPeer?: boolean;
+}
+
+/** How an instance answers end-to-end handshakes. */
+export interface TunnelHostOptions {
+  readonly e2ePrivateKey?: string;
+  readonly authorizeE2EPeer?: E2EPeerHook;
+  readonly e2ePairingPsk?: E2EPairingPskHook;
+  /** Bound in IK / IKpsk2 handshakes. */
+  readonly instanceId?: string;
 }
 
 export interface OpenTunnelRequest {
@@ -171,7 +195,8 @@ export class TunnelHost {
   /** Sessions this instance handshook, per tunnel. */
   public readonly sessions = new E2ESessionStore();
 
-  public constructor(private readonly policies: ReadonlyMap<string, TunnelPolicy>, e2ePrivateKey?: string) {
+  public constructor(private readonly policies: ReadonlyMap<string, TunnelPolicy>, private readonly options: TunnelHostOptions = {}) {
+    const e2ePrivateKey = options.e2ePrivateKey;
     if (e2ePrivateKey !== undefined) this.privateKey = b64decode(checkE2EPrivateKey(e2ePrivateKey));
     if (e2ePrivateKey !== undefined) {
       this.publicKey = e2ePublicKey(e2ePrivateKey);
@@ -208,7 +233,7 @@ export class TunnelHost {
         if (this.publicKey === undefined || !sameKey(pinned, await this.publicKey) || typeof digest !== "string" || digest === "") {
           return { accept: false, reason: "e2e_key_mismatch" };
         }
-      } else if (offer.scopes.some((scope) => this.policies.get(scope.service)?.requireE2E === true)) {
+      } else if (offer.scopes.some((scope) => this.requiresE2E(scope.service))) {
         return { accept: false, reason: "e2e_required" };
       }
       const accept = await this.decide(offer);
@@ -220,7 +245,10 @@ export class TunnelHost {
       }
       return { accept };
     }
-    if (method === TUNNEL_HANDSHAKE_METHOD) return this.handshake(metadata, payload);
+    if (method === TUNNEL_HANDSHAKE_METHOD) {
+      if (payload !== null && typeof payload === "object" && "confirm" in payload) return this.confirm(metadata, payload);
+      return this.handshake(metadata, payload);
+    }
     if (method === "closed") {
       const { tunnel_id: tunnelId, reason } = (payload ?? {}) as { tunnel_id?: string; reason?: string };
       if (tunnelId !== undefined) {
@@ -244,29 +272,103 @@ export class TunnelHost {
     throw new TypeError("Unknown " + TUNNEL_HOST_SERVICE + " method " + method);
   }
 
-  /**
-   * Answer a client's Noise NK message 1 on an E2E tunnel this instance
-   * accepted; the session is kept under that tunnel.
-   */
-  private async handshake(metadata: Readonly<Metadata> | null | undefined, payload: unknown): Promise<unknown> {
+  private sealedTunnel(metadata: Readonly<Metadata> | null | undefined): { tunnel: Tunnel; digest: string; privateKey: Uint8Array } {
     const tunnel = this.lookup(metadata);
     const digest = tunnel === null ? undefined : this.digests.get(tunnel.id);
     if (tunnel === null || !tunnel.sealed || this.privateKey === undefined || digest === undefined) {
       throw handshakeFailed("not an end-to-end tunnel of this instance", "server");
     }
-    let answer: Awaited<ReturnType<typeof nkRespond>>;
+    return { tunnel, digest, privateKey: this.privateKey };
+  }
+
+  /**
+   * Answer a client's message 1 on an E2E tunnel this instance accepted; the
+   * session is kept under that tunnel (a pairing's waits for its confirmation).
+   */
+  private async handshake(metadata: Readonly<Metadata> | null | undefined, payload: unknown): Promise<unknown> {
+    const { tunnel, digest, privateKey } = this.sealedTunnel(metadata);
+    // Every refusal reads the same: a client cannot probe what failed.
+    const failed = () => handshakeFailed("message 1 does not open with this instance's key on this tunnel", "server");
+    let request: HandshakeRequest;
     try {
-      const message = (payload as { message?: unknown } | null | undefined)?.message;
-      // The prologue binds the tunnel the handshake came through: one made
-      // for another tunnel's credential does not open here.
-      answer = await nkRespond(this.privateKey, b64decode(typeof message === "string" ? message : ""), {
-        prologue: tunnelPrologue(digest),
+      request = parseHandshakeRequest(payload);
+    } catch {
+      throw failed();
+    }
+    let psk: Uint8Array | undefined;
+    if (request.protocol === IKPSK2) {
+      const lookup = this.options.e2ePairingPsk;
+      if (lookup === undefined || request.pairingId === null) throw failed();
+      let found: unknown;
+      try {
+        found = await lookup(request.pairingId);
+      } catch {
+        found = undefined; // a failing hook refuses
+      }
+      if (typeof found !== "string") throw failed();
+      try {
+        psk = pskBytes(found);
+      } catch {
+        throw failed();
+      }
+    }
+    let answer: Awaited<ReturnType<typeof respondHandshake>>;
+    try {
+      answer = await respondHandshake(request, {
+        privateKey, digest, instanceId: this.options.instanceId ?? "", ...(psk === undefined ? {} : { psk }),
       });
     } catch {
-      throw handshakeFailed("message 1 does not open with this instance's key on this tunnel", "server");
+      throw failed();
     }
-    this.sessions.add(tunnel.id, answer.session);
+    if (request.protocol === IKPSK2) {
+      // Message 1 does not prove the client knows the PSK: wait for its
+      // confirmation before anyone trusts this key.
+      this.sessions.addPending(tunnel.id, answer.session);
+    } else {
+      if (request.protocol === IK && !await this.authorized(tunnel, answer.session)) throw failed();
+      this.sessions.add(tunnel.id, answer.session);
+    }
     return { message: b64encode(answer.reply) };
+  }
+
+  /** A pairing client proves it holds the PSK; only then is the application asked to accept it. */
+  private async confirm(metadata: Readonly<Metadata> | null | undefined, payload: object): Promise<unknown> {
+    const { tunnel } = this.sealedTunnel(metadata);
+    const failed = () => handshakeFailed("pairing not confirmed", "server");
+    const { session: id, confirm } = payload as { session?: unknown; confirm?: unknown };
+    const session = this.sessions.takePending(tunnel.id, typeof id === "string" ? id : "");
+    if (session === undefined) throw failed();
+    let opened: string;
+    try {
+      opened = new TextDecoder().decode(await session.open(typeof confirm === "string" ? confirm : "", confirmAd(session.id)));
+    } catch {
+      throw failed();
+    }
+    if (opened !== "{}" || !await this.authorized(tunnel, session)) throw failed();
+    this.sessions.add(tunnel.id, session);
+    return {};
+  }
+
+  private async authorized(tunnel: Tunnel, session: E2ESession): Promise<boolean> {
+    const hook = this.options.authorizeE2EPeer;
+    if (hook === undefined) return true;
+    try {
+      return await hook({
+        protocol: session.protocol, session: session.id, peerKey: session.peerKey, pairingId: session.pairingId, tunnel,
+      }) === true;
+    } catch {
+      return false; // a failing hook refuses
+    }
+  }
+
+  /** Whether `service` is served only to authenticated end-to-end clients. */
+  public requiresPeer(service: string): boolean {
+    return this.policies.get(service)?.requireE2EPeer === true;
+  }
+
+  private requiresE2E(service: string): boolean {
+    const policy = this.policies.get(service);
+    return policy?.requireE2E === true || policy?.requireE2EPeer === true;
   }
 
   // Every scoped service must have opted in, and every hook must agree.

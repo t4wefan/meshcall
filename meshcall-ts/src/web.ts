@@ -29,7 +29,7 @@ import type {
   IssuedToken, RegistryService, RenewedToken, RouterIdentity, RouterScope, TokenInfo,
 } from "./router-auth.js";
 import { checkTunnelCredential, normalizeScopeService, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient } from "./tunnel.js";
-import { checkE2EAgreement, checkE2EKey } from "./e2e.js";
+import { checkE2EAgreement, checkE2EIdentity, checkE2EKey, type E2EIdentity } from "./e2e.js";
 import { WebSocketTransport } from "./web-socket.js";
 import { checkReceived } from "./validation.js";
 
@@ -39,7 +39,9 @@ export {
   MethodNotFoundError, PermissionDeniedError, ProtocolError, ResourceExhaustedError, UnauthenticatedError,
   UnavailableError, type Violation,
 } from "./errors.js";
-export { e2ePublicKey, generateE2EKey, type E2EKeyPair } from "./e2e.js";
+export {
+  e2ePublicKey, generateE2EKey, generateE2EPsk, type E2EIdentity, type E2EKeyPair, type E2EPairing,
+} from "./e2e.js";
 export type { MeshCallRpc, RpcDuplex, RpcStream } from "./rpc.js";
 export {
   TunnelsClient, type OpenedTunnel, type OpenTunnelRequest, type TunnelInfo, type TunnelScope,
@@ -214,6 +216,12 @@ export interface MeshWebOptions {
    * from the Router. Needs `tunnel` and a `ws://` or `wss://` Router.
    */
   readonly e2eKey?: string;
+  /**
+   * This client's own key and the id of the instance whose key it pinned:
+   * the client then authenticates itself to the instance (Noise IK), pairing
+   * first (IKpsk2) with `pairing`. Never falls back to NK. Needs `e2eKey`.
+   */
+  readonly e2eIdentity?: E2EIdentity;
   /** WebSocket keepalive ping cadence; `null` disables. Default 15 s. */
   readonly pingIntervalMs?: number | null;
   /** Extra headers on every request. */
@@ -232,7 +240,7 @@ export interface MeshWebOptions {
 /** A plain-JS typo must not leave the Mesh quietly anonymous; keeping this
  * table a `Record` makes the compiler insist on every option. */
 const WEB_OPTIONS: Readonly<Record<keyof MeshWebOptions, true>> = {
-  token: true, tunnel: true, e2eKey: true, pingIntervalMs: true, headers: true, fetch: true,
+  token: true, tunnel: true, e2eKey: true, e2eIdentity: true, pingIntervalMs: true, headers: true, fetch: true,
   retry: true, reconnect: true, deadlineGraceMs: true, logger: true,
 };
 
@@ -637,6 +645,12 @@ export class Mesh implements MeshCallRpc {
       }
       checkE2EKey(options.e2eKey);
     }
+    if (options.e2eIdentity !== undefined) {
+      if (options.e2eKey === undefined) {
+        throw new TypeError("e2eIdentity authenticates this client to the instance whose key you pinned: pass e2eKey too");
+      }
+      checkE2EIdentity(options.e2eIdentity);
+    }
     this.router = router;
     if (router.isHttp) {
       this.transport = new HttpTransport(router.url, { ...options, ...(bearer === undefined ? {} : { token: bearer }) });
@@ -652,6 +666,7 @@ export class Mesh implements MeshCallRpc {
         ...(options.pingIntervalMs === undefined ? {} : { pingIntervalMs: options.pingIntervalMs }),
         ...(options.logger === undefined ? {} : { logger: options.logger }),
         ...(options.e2eKey === undefined ? {} : { e2eKey: options.e2eKey }),
+        ...(options.e2eIdentity === undefined ? {} : { e2eIdentity: options.e2eIdentity }),
       });
     }
     this.registry = new RegistryClient(this);
