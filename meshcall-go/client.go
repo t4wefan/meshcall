@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,7 +41,18 @@ type ClientOptions struct {
 	// E2EKey is the pinned public key of a tunnel's instance: every call is
 	// sealed end to end after a handshake on each connection.
 	E2EKey string
+	// E2EIdentity is this client's own key: it authenticates itself to the
+	// instance (IK, or IKpsk2 to pair first). It needs E2EKey.
+	E2EIdentity *E2EIdentity
+
+	// e2ePaired is set once the instance confirmed the pairing; a Mesh
+	// shares it across the clients it makes.
+	e2ePaired *atomic.Bool
 }
+
+// e2eConfirmTimeout bounds a pairing confirmation, which may wait for a
+// person at the instance.
+const e2eConfirmTimeout = 120 * time.Second
 
 // RetryPolicy is the built-in unary retry (docs/protocol.md → Idempotency keys).
 type RetryPolicy struct {
@@ -211,6 +223,22 @@ func NewClient(opts ClientOptions, endpoints ...string) (*Client, error) {
 		return nil, errors.New("meshcall: this is an end-to-end tunnel credential: pass the instance's e2e key the issuer gave you (WithE2EKey)")
 	case c.opts.E2EKey != "" && !isE2ECredential(credential):
 		return nil, errors.New("meshcall: an e2e key needs the credential of an end-to-end tunnel (mtun_e2e.…)")
+	case c.opts.E2EIdentity != nil && c.opts.E2EKey == "":
+		return nil, errors.New("meshcall: an E2EIdentity authenticates this client to the instance whose key you pinned: pass E2EKey too")
+	}
+	if c.opts.E2EIdentity != nil {
+		if err := checkE2EIdentity(*c.opts.E2EIdentity); err != nil {
+			return nil, err
+		}
+		identity := *c.opts.E2EIdentity // the caller's copy may change; this one does not
+		if identity.Pairing != nil {
+			pairing := *identity.Pairing
+			identity.Pairing = &pairing
+		}
+		c.opts.E2EIdentity = &identity
+	}
+	if c.opts.e2ePaired == nil {
+		c.opts.e2ePaired = new(atomic.Bool)
 	}
 	if c.opts.HandshakeTimeout == 0 {
 		c.opts.HandshakeTimeout = 10 * time.Second
@@ -405,9 +433,10 @@ func (c *Client) handshake(ctx context.Context, e endpoint) (*conn, error) {
 	return conn, nil
 }
 
-// e2eHandshake runs Noise NK with the pinned instance key over a new
-// connection, before any call: TunnelHost/handshake, routed by the Router to
-// the tunnel's instance. It never falls back to plain calls.
+// e2eHandshake runs the Noise handshake with the pinned instance key over a
+// new connection, before any call: TunnelHost/handshake, routed by the
+// Router to the tunnel's instance, then a pairing's confirmation. It never
+// falls back to plain calls or to a weaker handshake.
 func (c *Client) e2eHandshake(conn *conn) (*e2eSession, error) {
 	failed := func(why string) *Error {
 		return detailed(CodeUnauthenticated, "End-to-end handshake failed: "+why, "client", "e2e_handshake_failed", false)
@@ -416,45 +445,70 @@ func (c *Client) e2eHandshake(conn *conn) (*e2eSession, error) {
 	if err != nil {
 		return nil, failed(err.Error())
 	}
-	// The prologue binds the session to this credential's tunnel.
-	prologue := e2eTunnelPrologue(e2eCredentialDigest(strings.TrimPrefix(c.opts.Authorization, "Bearer ")))
-	initiator, msg1, err := nkInitiate(pinned, nil, prologue, nil)
+	// The prologue binds the session to this credential's tunnel (and, for
+	// IK and IKpsk2, to the instance whose key was pinned).
+	credential := strings.TrimPrefix(c.opts.Authorization, "Bearer ")
+	hs, request, pairing, err := startE2EHandshake(credential, pinned, c.opts.E2EIdentity, c.opts.e2ePaired.Load(), nil)
 	if err != nil {
 		return nil, failed(err.Error())
 	}
+	answer, err := c.tunnelHostCall(conn, request, c.opts.HandshakeTimeout)
+	if err != nil {
+		return nil, err
+	}
+	var reply struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(answer, &reply)
+	msg2, err := b64.DecodeString(reply.Message)
+	if err != nil {
+		return nil, failed("malformed message 2")
+	}
+	if _, err := hs.readMessage(msg2); err != nil {
+		return nil, failed("message 2 is not from the pinned instance key")
+	}
+	sess := hs.split()
+	if pairing != nil {
+		// Prove the PSK; the instance accepts this client only then.
+		if _, err := c.tunnelHostCall(conn, e2eConfirmRequest(sess), e2eConfirmTimeout); err != nil {
+			return nil, err
+		}
+		c.opts.e2ePaired.Store(true)
+	}
+	return sess, nil
+}
+
+// tunnelHostCall makes one TunnelHost/handshake call on a connection before
+// any other call, and returns its result.
+func (c *Client) tunnelHostCall(conn *conn, payload map[string]string, timeout time.Duration) (json.RawMessage, error) {
+	failed := func(why string) *Error {
+		return detailed(CodeUnauthenticated, "End-to-end handshake failed: "+why, "client", "e2e_handshake_failed", false)
+	}
 	id := randomID()
-	request, _ := json.Marshal(map[string]string{"message": b64.EncodeToString(msg1)})
-	timeout := c.opts.HandshakeTimeout.Milliseconds()
-	if err := conn.send(frame{Kind: "call.open", CallID: id, Service: tunnelHostService, Method: "handshake", Payload: request, TimeoutMS: &timeout}); err != nil {
+	request, _ := json.Marshal(payload)
+	timeoutMS := timeout.Milliseconds()
+	if err := conn.send(frame{Kind: "call.open", CallID: id, Service: tunnelHostService, Method: "handshake", Payload: request, TimeoutMS: &timeoutMS}); err != nil {
 		return nil, failed(err.Error())
 	}
+	deadline := time.Now().Add(timeout)
 	for {
-		f, err := receiveWithin(conn, c.opts.HandshakeTimeout)
+		f, err := receiveWithin(conn, max(time.Millisecond, time.Until(deadline)))
 		if err != nil {
 			return nil, failed(err.Error())
 		}
 		if f.CallID != id {
 			continue
 		}
-		if f.Kind == "call.error" {
+		switch f.Kind {
+		case "call.error":
 			e := errorFromPayload(f.Error)
 			if e.Reason() == "e2e_handshake_failed" {
-				return nil, e // the instance's own answer: message 1 did not open
+				return nil, e // the instance's own answer: it refused the handshake
 			}
 			return nil, failed(e.Code + ": " + e.Message)
+		case "call.result":
+			return f.Payload, nil
 		}
-		var answer struct {
-			Message string `json:"message"`
-		}
-		_ = json.Unmarshal(f.Payload, &answer)
-		msg2, err := b64.DecodeString(answer.Message)
-		if err != nil {
-			return nil, failed("malformed message 2")
-		}
-		if _, sess, err := initiator.finish(msg2); err == nil {
-			return sess, nil
-		}
-		return nil, failed("message 2 is not from the pinned instance key")
 	}
 }
 

@@ -49,6 +49,12 @@ type ServerOptions struct {
 	// E2EPrivateKey (base64url X25519) lets the instance accept end-to-end
 	// sealed tunnels whose issuer pinned its public key.
 	E2EPrivateKey string
+	// AuthorizeE2EPeer decides which authenticated end-to-end clients the
+	// instance accepts (see WithAuthorizeE2EPeer); nil accepts any key.
+	AuthorizeE2EPeer func(context.Context, E2EPeer) bool
+	// E2EPairingPSK looks up a pairing's PSK by its id (see
+	// WithE2EPairingPSK); nil pairs no client.
+	E2EPairingPSK func(context.Context, string) (string, bool)
 }
 
 // Server runs services in Router mode (ConnectRouter) or direct mode (Listen).
@@ -99,11 +105,24 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		opts.MaxFrameSize = DefaultMaxFrameSize
 	}
 	for _, policy := range opts.TunnelPolicies {
-		if policy != nil && policy.RequireE2E && opts.E2EPrivateKey == "" {
+		if policy == nil {
+			continue
+		}
+		if policy.RequireE2E && opts.E2EPrivateKey == "" {
 			return nil, errors.New("meshcall: WithRequireE2E needs WithE2EPrivateKey")
+		}
+		if policy.RequireE2EPeer && opts.E2EPrivateKey == "" {
+			return nil, errors.New("meshcall: WithRequireE2EPeer needs WithE2EPrivateKey")
+		}
+		if policy.RequireE2EPeer && opts.AuthorizeE2EPeer == nil {
+			// Otherwise any client key would do: the Router alone would decide.
+			return nil, errors.New("meshcall: WithRequireE2EPeer needs WithAuthorizeE2EPeer")
 		}
 	}
 	tunnels := newTunnelHost(opts.TunnelPolicies)
+	tunnels.instanceID = opts.InstanceID
+	tunnels.authorize = opts.AuthorizeE2EPeer
+	tunnels.pairingPSK = opts.E2EPairingPSK
 	if opts.E2EPrivateKey != "" {
 		key, err := parsePrivateKey(opts.E2EPrivateKey)
 		if err != nil {
@@ -615,7 +634,15 @@ func (sess *session) handle(f frame) {
 }
 
 func (sess *session) tunnelCall(f frame) {
-	result, err := sess.server.tunnels.handle(sess.server.ctx, f.Method, f.Payload, f.Metadata)
+	// Hooks the call runs (offers, client authorization, pairings) see the
+	// call's own deadline; this runs off the receive loop.
+	ctx := sess.server.ctx
+	if f.TimeoutMS != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(*f.TimeoutMS)*time.Millisecond)
+		defer cancel()
+	}
+	result, err := sess.server.tunnels.handle(ctx, f.Method, f.Payload, f.Metadata)
 	if err != nil {
 		sess.server.logger.Warn("tunnel request failed", "method", f.Method, "error", err)
 		e, ok := AsError(err)
@@ -661,6 +688,12 @@ func (sess *session) open(f frame) {
 		sess.reject(f, &Error{Code: CodeMethodNotFound, Message: "Unknown method " + f.Service + "." + f.Method})
 		return
 	}
+	// Checked here, whatever the Router allowed: not through a plain tunnel,
+	// an NK session, or without a tunnel at all.
+	if s.tunnels.requiresPeer(f.Service) && (sealed == nil || sealed.session.peerKey == "") {
+		sess.reject(f, detailed(CodePermissionDenied, f.Service+" serves authenticated end-to-end clients only", "server", "e2e_peer_required", false))
+		return
+	}
 	// Targeting, applied the way the Router does (docs/protocol.md → Targeted calls).
 	switch {
 	case f.InstanceID != "" && f.InstanceID != s.opts.InstanceID:
@@ -677,6 +710,10 @@ func (sess *session) open(f frame) {
 	}
 	call := newServerCall(sess, f, m)
 	call.e2e = sealed
+	if sealed != nil {
+		peer := sealed.session.peer(call.ctx.Tunnel)
+		call.ctx.E2E = &peer
+	}
 	sess.mu.Lock()
 	sess.calls[f.CallID] = call
 	sess.mu.Unlock()

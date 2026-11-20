@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -786,6 +787,7 @@ type meshConfig struct {
 	token              string
 	tunnel             string
 	e2eKey             string
+	e2eIdentity        *E2EIdentity
 	auth               string
 	headers            map[string]string
 	httpTimeout        time.Duration
@@ -901,6 +903,9 @@ type Mesh struct {
 	registry   *RegistryClient
 	auth       *AuthClient
 	tunnels    *TunnelsClient
+	// e2ePaired: the instance confirmed this Mesh's pairing; every later
+	// handshake, on any connection, uses IK.
+	e2ePaired  atomic.Bool
 	mountedRaw []any
 	// mountedTunnels[i] is the tunnel policy of mountedRaw[i], or nil.
 	mountedTunnels  []*TunnelPolicy
@@ -962,6 +967,9 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 			panic(err.Error())
 		}
 	}
+	if cfg.e2eIdentity != nil && cfg.e2eKey == "" {
+		panic("meshcall: WithE2EIdentity authenticates this client to the instance whose key you pinned: pass WithE2EKey too")
+	}
 	m := &Mesh{
 		router:     router,
 		cfg:        cfg,
@@ -1017,6 +1025,8 @@ func (m *Mesh) ensureCaller() (Caller, error) {
 			Interceptors:     m.cfg.clientInterceptors,
 			Logger:           m.cfg.logger,
 			E2EKey:           m.cfg.e2eKey,
+			E2EIdentity:      m.cfg.e2eIdentity,
+			e2ePaired:        &m.e2ePaired,
 		}
 		if m.cfg.reconnect != nil {
 			clientOpts.Reconnect = *m.cfg.reconnect
@@ -1215,6 +1225,8 @@ type serveConfig struct {
 	listenAddr    string
 	dependencies  []DependencyProvider
 	e2ePrivateKey string
+	authorizePeer func(context.Context, E2EPeer) bool
+	pairingPSK    func(context.Context, string) (string, bool)
 }
 
 // ServeOption configures service mounting and serving on a Mesh.
@@ -1239,6 +1251,25 @@ func WithE2EPrivateKey(privateKey string) ServeOption {
 		panic(err.Error())
 	}
 	return serveOptFunc(func(s *serveConfig) { s.e2ePrivateKey = privateKey })
+}
+
+// WithAuthorizeE2EPeer decides which clients the instance accepts on its
+// end-to-end tunnels when they authenticate themselves (IK, or IKpsk2 once a
+// pairing is confirmed, with peer.PairingID set: record the client and spend
+// the pairing then). It runs off the connection's receive loop and may wait
+// for a person; a refusal, a panic or no answer before the handshake's
+// deadline all refuse the handshake alike. Without it any client key is
+// accepted (handlers still see it as ctx.E2E). WithRequireE2EPeer needs it.
+func WithAuthorizeE2EPeer(authorize func(ctx context.Context, peer E2EPeer) bool) ServeOption {
+	return serveOptFunc(func(s *serveConfig) { s.authorizePeer = authorize })
+}
+
+// WithE2EPairingPSK looks up the PSK (base64url, 32 bytes; GenerateE2EPSK)
+// of a pairing the instance's owner handed a new client out of band, by its
+// pairing id; ok false for an unknown or spent pairing. Without it the
+// instance pairs no client.
+func WithE2EPairingPSK(lookup func(ctx context.Context, pairingID string) (psk string, ok bool)) ServeOption {
+	return serveOptFunc(func(s *serveConfig) { s.pairingPSK = lookup })
 }
 
 // WithMaxInflight caps concurrent in-flight calls across all services on this server.
@@ -1328,7 +1359,7 @@ func (m *Mesh) Mount(args ...any) *Mesh {
 		}
 	}
 	if mount.tunnels != nil && mount.tunnels.Accept == nil {
-		panic("meshcall: WithTunnelClosed and WithRequireE2E need WithAcceptTunnels in the same Mount call")
+		panic("meshcall: WithTunnelClosed, WithRequireE2E and WithRequireE2EPeer need WithAcceptTunnels in the same Mount call")
 	}
 	for _, arg := range args {
 		switch v := arg.(type) {
@@ -1419,8 +1450,10 @@ func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningS
 		MaxFrameSize:  m.cfg.maxFrameSize,
 		Strict:        cfg.strict,
 
-		TunnelPolicies: tunnelPolicies,
-		E2EPrivateKey:  cfg.e2ePrivateKey,
+		TunnelPolicies:   tunnelPolicies,
+		E2EPrivateKey:    cfg.e2ePrivateKey,
+		AuthorizeE2EPeer: cfg.authorizePeer,
+		E2EPairingPSK:    cfg.pairingPSK,
 	}
 	if m.cfg.reconnect != nil {
 		serverOpts.Reconnect = *m.cfg.reconnect

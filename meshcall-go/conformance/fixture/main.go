@@ -274,6 +274,29 @@ func main() {
 	vaultPolicy := *tunnelPolicy
 	vaultPolicy.RequireE2E = true
 
+	type PeerSeen struct {
+		Protocol  *string `json:"protocol"`
+		PeerKey   *string `json:"peer_key"`
+		PairingID *string `json:"pairing_id"`
+	}
+	orNull := func(s string) *string {
+		if s == "" {
+			return nil
+		}
+		return &s
+	}
+	paired := meshcall.NewService("conformance.v1.Paired",
+		meshcall.Describe("Served to end-to-end clients that authenticated themselves only (RequireE2EPeer)."))
+	meshcall.HandleUnary(paired, "peer", func(ctx *meshcall.Context, req Empty) (PeerSeen, error) {
+		if ctx.E2E == nil {
+			return PeerSeen{}, nil
+		}
+		return PeerSeen{Protocol: orNull(ctx.E2E.Protocol), PeerKey: orNull(ctx.E2E.PeerKey), PairingID: orNull(ctx.E2E.PairingID)}, nil
+	}, meshcall.Doc("The end-to-end session of this call (ctx.E2E)."), meshcall.ReadOnly())
+	pairedPolicy := *tunnelPolicy
+	pairedPolicy.RequireE2EPeer = true
+	peers := newPeers(os.Getenv("MESHCALL_E2E_PEERS"), os.Getenv("MESHCALL_E2E_PAIRINGS"))
+
 	targeted := meshcall.NewService("conformance.v1.Targeted", meshcall.Targeted(),
 		meshcall.Describe("A targeted service: every call must name the instance it is for."))
 	meshcall.HandleUnary(targeted, "whoami", func(ctx *meshcall.Context, req Empty) (Instance, error) {
@@ -291,14 +314,16 @@ func main() {
 	maxFrame, _ := strconv.Atoi(os.Getenv("MESHCALL_MAX_FRAME_SIZE")) // 0: the default
 	var err error
 	server, err = meshcall.NewServer(meshcall.ServerOptions{
-		Services: []*meshcall.Service{fixture, targeted, vault}, InstanceID: instance, MaxFrameSize: maxFrame,
+		Services: []*meshcall.Service{fixture, targeted, vault, paired}, InstanceID: instance, MaxFrameSize: maxFrame,
 		PingInterval: time.Duration(ping) * time.Millisecond, PingTimeout: max(time.Second, 2*time.Duration(ping)*time.Millisecond),
 		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
 		TunnelPolicies: map[string]*meshcall.TunnelPolicy{
 			"conformance.v1.Fixture": tunnelPolicy, "conformance.v1.Targeted": tunnelPolicy,
-			"conformance.v1.Vault": &vaultPolicy,
+			"conformance.v1.Vault": &vaultPolicy, "conformance.v1.Paired": &pairedPolicy,
 		},
-		E2EPrivateKey: os.Getenv("MESHCALL_E2E_PRIVATE_KEY"),
+		E2EPrivateKey:    os.Getenv("MESHCALL_E2E_PRIVATE_KEY"),
+		AuthorizeE2EPeer: peers.authorize,
+		E2EPairingPSK:    peers.psk,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -312,4 +337,51 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "fixture registered")
 	select {}
+}
+
+// peers is the clients this instance accepts and its one-time pairings
+// (MESHCALL_E2E_PEERS, MESHCALL_E2E_PAIRINGS), in memory only.
+type peers struct {
+	mu       sync.Mutex
+	accepted map[string]bool
+	pairings map[string]string
+}
+
+func newPeers(keys, pairings string) *peers {
+	p := &peers{accepted: map[string]bool{}, pairings: map[string]string{}}
+	for _, key := range strings.Split(keys, ",") {
+		if key != "" {
+			p.accepted[key] = true
+		}
+	}
+	for _, entry := range strings.Split(pairings, ",") {
+		if id, psk, ok := strings.Cut(entry, ":"); ok && entry != "" {
+			p.pairings[id] = psk
+		}
+	}
+	return p
+}
+
+func (p *peers) psk(_ context.Context, pairingID string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	psk, ok := p.pairings[pairingID]
+	return psk, ok
+}
+
+func (p *peers) authorize(_ context.Context, peer meshcall.E2EPeer) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if peer.PeerKey == "" {
+		return false
+	}
+	if peer.PairingID != "" {
+		if _, ok := p.pairings[peer.PairingID]; !ok {
+			return false // spent
+		}
+		delete(p.pairings, peer.PairingID)
+		p.accepted[peer.PeerKey] = true
+		return true
+	}
+	return p.accepted[peer.PeerKey]
 }

@@ -104,6 +104,12 @@ type TunnelPolicy struct {
 	// RequireE2E refuses offers without an e2e_key that scope these
 	// services, so they are never served in clear through a tunnel.
 	RequireE2E bool
+	// RequireE2EPeer serves these services only inside end-to-end sessions
+	// whose client authenticated itself (IK, or a confirmed IKpsk2 pairing)
+	// and was accepted by ServerOptions.AuthorizeE2EPeer; it implies
+	// RequireE2E. Every other call is refused before any handler with
+	// CodePermissionDenied, reason "e2e_peer_required".
+	RequireE2EPeer bool
 }
 
 // MountOption configures the services of one Mesh.Mount call only.
@@ -151,6 +157,40 @@ func WithRequireE2E() MountOption {
 		}
 		c.tunnels.RequireE2E = true
 	})
+}
+
+// WithRequireE2EPeer serves the services of this Mount call only to clients
+// that authenticated themselves end to end (IK, or a confirmed IKpsk2
+// pairing) and that WithAuthorizeE2EPeer accepted. Every other call — through
+// a plain tunnel, an NK session, or without a tunnel at all — is refused
+// before any handler with CodePermissionDenied, reason "e2e_peer_required".
+// It implies WithRequireE2E and needs WithAcceptTunnels, WithE2EPrivateKey
+// and WithAuthorizeE2EPeer.
+func WithRequireE2EPeer() MountOption {
+	return mountOptFunc(func(c *mountConfig) {
+		if c.tunnels == nil {
+			c.tunnels = &TunnelPolicy{}
+		}
+		c.tunnels.RequireE2EPeer = true
+	})
+}
+
+// WithE2EIdentity gives a tunnel client its own static key: it then
+// authenticates itself to the instance (Noise IK) instead of staying
+// anonymous (NK). With identity.Pairing the first handshake pairs the
+// client (IKpsk2) and confirms it before the first call; once the instance
+// accepted it, every later handshake of this Mesh (reconnects too) uses IK.
+// It never falls back to NK. It needs WithE2EKey; identity.InstanceID is the
+// instance whose key you pinned.
+func WithE2EIdentity(identity E2EIdentity) MeshOption {
+	if err := checkE2EIdentity(identity); err != nil {
+		panic(err.Error())
+	}
+	if identity.Pairing != nil {
+		pairing := *identity.Pairing
+		identity.Pairing = &pairing
+	}
+	return meshOptFunc(func(c *meshConfig) { c.e2eIdentity = &identity })
 }
 
 // WithTunnel connects the Mesh with a tunnel credential ("mtun_…", from
@@ -232,6 +272,12 @@ type tunnelHost struct {
 	digests  map[string]string // tunnel id → credential digest, for E2E tunnels
 	key      *ecdh.PrivateKey  // nil: no end-to-end tunnels
 	sessions e2eSessions
+	// instanceID is bound in the IK / IKpsk2 prologue.
+	instanceID string
+	authorize  func(context.Context, E2EPeer) bool
+	pairingPSK func(context.Context, string) (string, bool)
+	// ephemeral is for test vectors only (nil: a fresh key per handshake).
+	ephemeral *ecdh.PrivateKey
 }
 
 func newTunnelHost(policies map[string]*TunnelPolicy) *tunnelHost {
@@ -285,7 +331,7 @@ func (h *tunnelHost) handle(ctx context.Context, method string, payload json.Raw
 		}
 		return map[string]bool{"accept": accept}, nil
 	case "handshake":
-		return h.handshake(metadata, payload)
+		return h.handshake(ctx, metadata, payload)
 	case "closed":
 		var closed struct {
 			TunnelID string `json:"tunnel_id"`
@@ -322,9 +368,11 @@ func (h *tunnelHost) ownKey(publicKey string) bool {
 	return err == nil && pinned.Equal(h.key.PublicKey())
 }
 
-// handshake answers a client's Noise NK message 1 on an E2E tunnel this
-// instance accepted, and keeps the session under that tunnel.
-func (h *tunnelHost) handshake(metadata map[string]string, payload json.RawMessage) (any, error) {
+// handshake answers TunnelHost/handshake on an E2E tunnel this instance
+// accepted: a client's message 1 (NK, IK or IKpsk2), or a pairing's
+// confirmation. Sessions are kept under that tunnel; a pairing's waits for
+// its confirmation.
+func (h *tunnelHost) handshake(ctx context.Context, metadata map[string]string, payload json.RawMessage) (any, error) {
 	failed := func(why string) error {
 		return detailed(CodeUnauthenticated, "End-to-end handshake failed: "+why, "server", "e2e_handshake_failed", false)
 	}
@@ -339,29 +387,154 @@ func (h *tunnelHost) handshake(metadata map[string]string, payload json.RawMessa
 		return nil, failed("not an end-to-end tunnel of this instance")
 	}
 	var request struct {
-		Message string `json:"message"`
+		Message   string  `json:"message"`
+		Protocol  string  `json:"protocol"`
+		PairingID string  `json:"pairing_id"`
+		Session   string  `json:"session"`
+		Confirm   *string `json:"confirm"`
 	}
-	message, err := []byte(nil), json.Unmarshal(payload, &request)
-	if err == nil {
-		message, err = b64.DecodeString(request.Message)
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, failed("malformed request")
 	}
+	if request.Confirm != nil {
+		return h.confirm(ctx, t, request.Session, *request.Confirm)
+	}
+	// Every refusal reads the same: a client cannot probe what failed.
+	refused := failed("message 1 does not open with this instance's key on this tunnel")
+	protocol := request.Protocol
+	if protocol == "" {
+		protocol = E2EProtocolNK
+	}
+	if _, ok := noisePatterns[protocol]; !ok {
+		return nil, refused
+	}
+	var psk []byte
+	pairingID := ""
+	if protocol == E2EProtocolIKpsk2 {
+		pairingID = request.PairingID
+		if checkPairingID(pairingID) != nil || h.pairingPSK == nil {
+			return nil, refused
+		}
+		found, answered := askHook(ctx, func(ctx context.Context) hookAnswer {
+			value, ok := h.pairingPSK(ctx, pairingID)
+			return hookAnswer{value, ok}
+		})
+		if !answered || !found.ok {
+			return nil, refused
+		}
+		var err error
+		if psk, err = parsePSK(found.value); err != nil {
+			return nil, refused
+		}
+	}
+	message, err := b64.DecodeString(request.Message)
 	if err != nil {
-		return nil, failed("malformed message")
+		return nil, refused
 	}
-	// The prologue binds the tunnel the handshake came through: a handshake
-	// made for another tunnel's credential does not open here.
-	reply, _, sess, err := nkRespond(h.key, nil, e2eTunnelPrologue(digest), message, nil)
+	// The prologue binds the tunnel the handshake came through (and, for IK
+	// and IKpsk2, this instance): one made for another does not open here.
+	prologue := e2eTunnelPrologue(digest)
+	if protocol != E2EProtocolNK {
+		prologue = e2ePeerPrologue(digest, h.instanceID)
+	}
+	hs, err := newHandshake(protocol, false, prologue, h.key, nil, psk, h.ephemeral)
 	if err != nil {
-		return nil, failed("message 1 does not open with this instance's key on this tunnel")
+		return nil, refused
+	}
+	if _, err := hs.readMessage(message); err != nil {
+		return nil, refused
+	}
+	reply, err := hs.writeMessage(nil)
+	if err != nil {
+		return nil, refused
+	}
+	sess := hs.split()
+	if protocol != E2EProtocolNK {
+		sess.peerKey = b64.EncodeToString(hs.rs.Bytes())
+	}
+	sess.pairingID = pairingID
+	switch protocol {
+	case E2EProtocolIKpsk2:
+		// Message 1 does not prove the client knows the PSK: wait for its
+		// confirmation before anyone trusts this key.
+		h.sessions.addPending(t.ID, sess)
+	case E2EProtocolIK:
+		if !h.authorized(ctx, t, sess) {
+			return nil, refused
+		}
+		h.sessions.add(t.ID, sess)
+	default:
+		h.sessions.add(t.ID, sess)
+	}
+	return map[string]string{"message": b64.EncodeToString(reply)}, nil
+}
+
+// confirm: a pairing client proves it holds the PSK; only then is the
+// application asked to accept it.
+func (h *tunnelHost) confirm(ctx context.Context, t *Tunnel, session, confirm string) (any, error) {
+	refused := detailed(CodeUnauthenticated, "End-to-end handshake failed: pairing not confirmed", "server", "e2e_handshake_failed", false)
+	sess := h.sessions.takePending(t.ID, session)
+	if sess == nil {
+		return nil, refused
+	}
+	opened, err := sess.open(confirm, e2eConfirmAD(sess.id))
+	if err != nil || string(opened) != "{}" || !h.authorized(ctx, t, sess) {
+		return nil, refused
 	}
 	h.sessions.add(t.ID, sess)
-	return map[string]string{"message": b64.EncodeToString(reply)}, nil
+	return struct{}{}, nil
+}
+
+// authorized asks the application whether it accepts the session's client;
+// no hook accepts any client key.
+func (h *tunnelHost) authorized(ctx context.Context, t *Tunnel, sess *e2eSession) bool {
+	if h.authorize == nil {
+		return true
+	}
+	accepted, answered := askHook(ctx, func(ctx context.Context) bool { return h.authorize(ctx, sess.peer(t)) })
+	return answered && accepted
+}
+
+// hookAnswer is a lookup hook's two results.
+type hookAnswer struct {
+	value string
+	ok    bool
+}
+
+// askHook runs an application hook, which may wait for a person: a panic,
+// or no answer before ctx ends, is no answer (answered false).
+func askHook[T any](ctx context.Context, hook func(context.Context) T) (result T, answered bool) {
+	type outcome struct {
+		value T
+		ok    bool
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		defer func() {
+			if recover() != nil {
+				done <- outcome{}
+			}
+		}()
+		done <- outcome{hook(ctx), true}
+	}()
+	select {
+	case o := <-done:
+		return o.value, o.ok
+	case <-ctx.Done():
+		return result, false
+	}
+}
+
+// requiresPeer: service was mounted with WithRequireE2EPeer.
+func (h *tunnelHost) requiresPeer(service string) bool {
+	policy := h.policies[service]
+	return policy != nil && policy.RequireE2EPeer
 }
 
 // requiresE2E: a scoped service was mounted with WithRequireE2E.
 func (h *tunnelHost) requiresE2E(offer TunnelOffer) bool {
 	for _, scope := range offer.Scopes {
-		if policy := h.policies[scope.Service]; policy != nil && policy.RequireE2E {
+		if policy := h.policies[scope.Service]; policy != nil && (policy.RequireE2E || policy.RequireE2EPeer) {
 			return true
 		}
 	}
