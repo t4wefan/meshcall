@@ -19,14 +19,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from meshcall.contract import normalize_service_name
 from meshcall.e2e import (
+    IK,
+    IKPSK2,
+    NK,
     PROLOGUE,
+    E2EPeer,
+    Handshake,
+    Session,
     SessionStore,
     b64decode,
     b64encode,
+    check_pairing_id,
+    confirm_ad,
     e2e_public_key,
     handshake_failed,
     load_private_key,
-    nk_respond,
+    psk_bytes,
 )
 from meshcall.errors import ContractError
 
@@ -115,6 +123,16 @@ TunnelOfferHook = Callable[[TunnelOffer], bool | Awaitable[bool]]
 TunnelClosedHook = Callable[[TunnelClosed], None | Awaitable[None]]
 """Told when an accepted tunnel ends (revoked, expired, ...). May be async."""
 
+E2EPeerHook = Callable[[E2EPeer], bool | Awaitable[bool]]
+"""Decides whether an instance accepts a client's static key (``peer.peer_key``)
+on a tunnel; ``peer.pairing_id`` is set when the client is pairing and has
+proven it holds that pairing's PSK. May be async."""
+
+E2EPairingPskHook = Callable[[str], str | None | Awaitable[str | None]]
+"""Returns the PSK (base64url) of an unused pairing id, or ``None``. Must not
+spend the pairing: that happens when the client confirms it, in the
+:data:`E2EPeerHook`. May be async."""
+
 
 @dataclass(frozen=True)
 class TunnelPolicy:
@@ -124,6 +142,8 @@ class TunnelPolicy:
     on_closed: TunnelClosedHook | None = None
     #: Refuse offers without ``e2e_key`` that scope these services.
     require_e2e: bool = False
+    #: Serve these services only in sessions whose client was authenticated.
+    require_e2e_peer: bool = False
 
 
 def check_tunnel_credential(credential: str) -> str:
@@ -249,8 +269,14 @@ class TunnelHost:
         worker: WorkerLoop,
         *,
         e2e_private_key: str | None = None,
+        authorize_e2e_peer: E2EPeerHook | None = None,
+        e2e_pairing_psk: E2EPairingPskHook | None = None,
+        instance_id: str = "",
     ) -> None:
         self._policies = dict(policies)
+        self._authorize_peer = authorize_e2e_peer
+        self._pairing_psk = e2e_pairing_psk
+        self._instance_id = instance_id
         self._worker = worker
         self._tunnels: dict[str, Tunnel] = {}
         # Tunnel id → credential digest, which the handshake prologue binds.
@@ -306,7 +332,9 @@ class TunnelHost:
                     self._digests[offer.tunnel_id] = digest
             return {"accept": accepted}
         if method == "handshake":
-            return self._handshake(metadata, payload)
+            if isinstance(payload, dict) and "confirm" in payload:
+                return await self._confirm(metadata, payload)
+            return await self._handshake(metadata, payload)
         if method == "closed":
             tunnel_id = str(payload.get("tunnel_id", ""))
             self.sessions.drop(tunnel_id)
@@ -320,11 +348,7 @@ class TunnelHost:
             return {}
         raise ContractError(f"Unknown {TUNNEL_HOST_SERVICE} method {method}")
 
-    def _handshake(
-        self, metadata: Mapping[str, str] | None, payload: Any
-    ) -> dict[str, Any]:
-        """Answer a client's Noise NK message 1 on an E2E tunnel this instance
-        accepted; the session is kept under that tunnel."""
+    def _sealed_tunnel(self, metadata: Mapping[str, str] | None) -> tuple[Tunnel, str]:
         tunnel = self.lookup(metadata)
         digest = self._digests.get(tunnel.id, "") if tunnel is not None else ""
         if (
@@ -336,27 +360,131 @@ class TunnelHost:
             raise handshake_failed(
                 "not an end-to-end tunnel of this instance", "server"
             )
+        return tunnel, digest
+
+    async def _handshake(
+        self, metadata: Mapping[str, str] | None, payload: Any
+    ) -> dict[str, Any]:
+        """Answer a client's message 1 on an E2E tunnel this instance
+        accepted; the session is kept under that tunnel (a pairing's waits
+        for its confirmation)."""
+        tunnel, digest = self._sealed_tunnel(metadata)
+        assert self._e2e_private_key is not None
+        body = payload if isinstance(payload, dict) else {}
+        protocol = str(body.get("protocol") or NK)
+        # Every refusal reads the same: a client cannot probe what failed.
+        failed = handshake_failed(
+            "message 1 does not open with this instance's key on this tunnel",
+            "server",
+        )
+        if protocol not in (NK, IK, IKPSK2):
+            raise failed
+        psk: bytes | None = None
+        pairing_id: str | None = None
+        if protocol == IKPSK2:
+            try:
+                pairing_id = check_pairing_id(str(body.get("pairing_id") or ""))
+            except ValueError:
+                raise failed from None
+            if self._pairing_psk is None:
+                raise failed
+            try:
+                found = await self._ask(self._pairing_psk, pairing_id)
+            except Exception:  # noqa: BLE001 - a failing hook refuses
+                found = None
+            if not isinstance(found, str):
+                raise failed
+            try:
+                psk = psk_bytes(found)
+            except ValueError:
+                raise failed from None
+        # The prologue binds the tunnel the handshake came through (and, for
+        # IK, this instance): one made for another does not open here.
+        prologue = PROLOGUE + b"|" + digest.encode()
+        if protocol != NK:
+            prologue += b"|" + self._instance_id.encode()
         try:
-            message = b64decode(str((payload or {}).get("message", "")))
-            # The prologue binds the tunnel the handshake came through: one
-            # made for another tunnel's credential does not open here.
-            reply, _, session = nk_respond(
-                load_private_key(self._e2e_private_key),
-                message,
-                prologue=PROLOGUE + b"|" + digest.encode(),
+            handshake = Handshake(
+                protocol,
+                initiator=False,
+                prologue=prologue,
+                s=load_private_key(self._e2e_private_key),
+                psk=psk,
             )
+            message = b64decode(str(body.get("message", "")))
+            handshake.read_message(message)
         except Exception as exc:
-            raise handshake_failed(
-                "message 1 does not open with this instance's key on this tunnel",
-                "server",
-            ) from exc
-        self.sessions.add(tunnel.id, session)
+            raise failed from exc
+        peer_key = (
+            b64encode(handshake.remote_static.public_bytes_raw())
+            if protocol != NK
+            else None
+        )
+        reply = handshake.write_message()
+        session = handshake.split()
+        session.peer_key = peer_key
+        session.pairing_id = pairing_id
+        if protocol == IKPSK2:
+            # Message 1 does not prove the client knows the PSK: wait for
+            # its confirmation before anyone trusts this key.
+            self.sessions.add_pending(tunnel.id, session)
+        else:
+            if protocol == IK and not await self._authorized(tunnel, session):
+                raise failed
+            self.sessions.add(tunnel.id, session)
         return {"message": b64encode(reply)}
+
+    async def _confirm(
+        self, metadata: Mapping[str, str] | None, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """A pairing client proves it holds the PSK; only then is the
+        application asked to accept it."""
+        tunnel, _ = self._sealed_tunnel(metadata)
+        failed = handshake_failed("pairing not confirmed", "server")
+        session = self.sessions.take_pending(tunnel.id, str(payload.get("session", "")))
+        if session is None:
+            raise failed
+        try:
+            opened = session.open(
+                str(payload.get("confirm", "")), confirm_ad(session.id)
+            )
+        except ValueError:
+            raise failed from None
+        if opened != b"{}" or not await self._authorized(tunnel, session):
+            raise failed
+        self.sessions.add(tunnel.id, session)
+        return {}
+
+    async def _authorized(self, tunnel: Tunnel, session: Session) -> bool:
+        if self._authorize_peer is None:
+            return True
+        peer = E2EPeer(
+            protocol=session.protocol,
+            session=session.id,
+            tunnel=tunnel,
+            peer_key=session.peer_key,
+            pairing_id=session.pairing_id,
+        )
+        try:
+            return await self._ask(self._authorize_peer, peer) is True
+        except Exception:  # noqa: BLE001 - a failing hook refuses
+            return False
+
+    async def _ask(self, hook: Callable[[Any], Any], argument: Any) -> Any:
+        async def run() -> Any:
+            return await _resolve(hook(argument))
+
+        return await self._worker.run(run())
+
+    def requires_peer(self, service: str) -> bool:
+        """Whether ``service`` is served only to authenticated E2E clients."""
+        policy = self._policies.get(service)
+        return policy is not None and policy.require_e2e_peer
 
     def _requires_e2e(self, offer: TunnelOffer) -> bool:
         return any(
             (policy := self._policies.get(scope.service)) is not None
-            and policy.require_e2e
+            and (policy.require_e2e or policy.require_e2e_peer)
             for scope in offer.scopes
         )
 

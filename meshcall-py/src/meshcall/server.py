@@ -25,7 +25,7 @@ from meshcall.contract import (
 from meshcall.di import DependencyScope, MetaPlan
 from meshcall.diagnostics import ContractWarning
 from meshcall.driver import DriverBinding, ServerDriver
-from meshcall.e2e import SealedCall, SealingConnection
+from meshcall.e2e import E2EPeer, SealedCall, SealingConnection
 from meshcall.errors import (
     CallCancelledError,
     ContractError,
@@ -68,7 +68,13 @@ from meshcall.protocol import (
 )
 from meshcall.streams import RpcDuplex, RpcInputStream
 from meshcall.transport import FrameConnection, is_frame_too_large
-from meshcall.tunnel import TUNNEL_HOST_SERVICE, TunnelHost, TunnelPolicy
+from meshcall.tunnel import (
+    TUNNEL_HOST_SERVICE,
+    E2EPairingPskHook,
+    E2EPeerHook,
+    TunnelHost,
+    TunnelPolicy,
+)
 from meshcall.worker import WorkerLoop, submit_to_loop
 
 INITIAL_STREAM_CREDIT = 16
@@ -112,14 +118,25 @@ class ServerRuntime:
         instance_id: str = "",
         tunnel_policies: Mapping[str, TunnelPolicy] | None = None,
         e2e_private_key: str | None = None,
+        authorize_e2e_peer: E2EPeerHook | None = None,
+        e2e_pairing_psk: E2EPairingPskHook | None = None,
     ) -> None:
         self.worker = worker
+        policies = (tunnel_policies or {}).values()
         if e2e_private_key is None and any(
-            p.require_e2e for p in (tunnel_policies or {}).values()
+            p.require_e2e or p.require_e2e_peer for p in policies
         ):
             raise ContractError("require_e2e needs e2e_private_key")
+        if authorize_e2e_peer is None and any(p.require_e2e_peer for p in policies):
+            # Otherwise any client key would do: the Router alone would decide.
+            raise ContractError("require_e2e_peer needs authorize_e2e_peer")
         self.tunnels = TunnelHost(
-            tunnel_policies or {}, worker, e2e_private_key=e2e_private_key
+            tunnel_policies or {},
+            worker,
+            e2e_private_key=e2e_private_key,
+            authorize_e2e_peer=authorize_e2e_peer,
+            e2e_pairing_psk=e2e_pairing_psk,
+            instance_id=instance_id,
         )
         self.instance_id = instance_id
         self.access_log = access_log
@@ -427,7 +444,16 @@ class _ServerSession:
         # Targeting, applied the same way the Router does (protocol.md →
         # Targeted calls), so direct and routed services behave alike.
         rejection: MeshCallError | None = None
-        if (
+        if self.runtime.tunnels.requires_peer(frame.service) and (
+            sealed is None or sealed.session.peer_key is None
+        ):
+            # Checked here, whatever the Router allowed: not through a plain
+            # tunnel, an NK session or without a tunnel at all.
+            rejection = PermissionDeniedError(
+                f"{frame.service} serves authenticated end-to-end clients only",
+                details={"source": "server", "reason": "e2e_peer_required"},
+            )
+        elif (
             frame.instance_id is not None
             and frame.instance_id != self.runtime.instance_id
         ):
@@ -618,6 +644,11 @@ class _ServerCall:
             if open_frame.idle_timeout_ms is not None
             else None
         )
+        tunnel = (
+            session.runtime.tunnels.lookup(open_frame.metadata)
+            if session.from_router
+            else None
+        )
         self.context = RpcContext(
             call_id=self.call_id,
             service=method.service_name,
@@ -626,9 +657,16 @@ class _ServerCall:
             logger=self.logger,
             idempotency_key=open_frame.idempotency_key,
             instance_id=session.runtime.instance_id,
-            tunnel=(
-                session.runtime.tunnels.lookup(open_frame.metadata)
-                if session.from_router
+            tunnel=tunnel,
+            e2e=(
+                E2EPeer(
+                    protocol=sealed.session.protocol,
+                    session=sealed.session.id,
+                    tunnel=tunnel,
+                    peer_key=sealed.session.peer_key,
+                    pairing_id=sealed.session.pairing_id,
+                )
+                if sealed is not None
                 else None
             ),
             _deadline=(
@@ -1034,12 +1072,16 @@ class RpcServer:
         max_inflight: int | None = None,
         tunnel_policies: Mapping[str, TunnelPolicy] | None = None,
         e2e_private_key: str | None = None,
+        authorize_e2e_peer: E2EPeerHook | None = None,
+        e2e_pairing_psk: E2EPairingPskHook | None = None,
     ) -> None:
         if max_inflight is not None and max_inflight < 1:
             raise ValueError("max_inflight must be positive")
         self.max_inflight = max_inflight
         self.tunnel_policies = dict(tunnel_policies or {})
         self.e2e_private_key = e2e_private_key
+        self.authorize_e2e_peer = authorize_e2e_peer
+        self.e2e_pairing_psk = e2e_pairing_psk
         self._services = list(services)
         self.driver = driver
         self.access_log = access_log
@@ -1093,6 +1135,8 @@ class RpcServer:
                     instance_id=self.driver.instance_id,
                     tunnel_policies=self.tunnel_policies,
                     e2e_private_key=self.e2e_private_key,
+                    authorize_e2e_peer=self.authorize_e2e_peer,
+                    e2e_pairing_psk=self.e2e_pairing_psk,
                 )
                 await self.driver.start(binding, runtime)
             except BaseException:
