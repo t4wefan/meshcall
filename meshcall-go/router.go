@@ -115,8 +115,20 @@ type WhoamiResponse struct {
 	ExpiresAtUnixMS *int64   `json:"expires_at_unix_ms,omitempty"`
 	// InstanceIDs lists the instance ids the identity may register under, when bound.
 	InstanceIDs []string `json:"instance_ids,omitempty"`
+	// Principal is set on temporary tokens issued with an issuer-chosen principal.
+	Principal string `json:"principal,omitempty"`
 	// Tunnel is set on a tunnel connection.
 	Tunnel *TunnelInfo `json:"tunnel,omitempty"`
+}
+
+// IssueTokenRequest asks meshcall.router.v1.AuthService/issue_token for a
+// scoped temporary bearer token. TTLSeconds defaults to 900 when omitted or <= 0.
+type IssueTokenRequest struct {
+	Scopes     []RouterScope `json:"scopes"`
+	TTLSeconds int64         `json:"ttl_seconds"`
+	// Principal is an optional issuer-chosen caller identity (at most 512 UTF-8
+	// bytes) the Router injects as meshcall-token-principal on routed calls.
+	Principal string `json:"principal,omitempty"`
 }
 
 // IssuedToken is returned by Mesh.Auth().IssueToken() (meshcall.router.v1.AuthService/issue_token).
@@ -125,6 +137,7 @@ type IssuedToken struct {
 	TokenID         string        `json:"token_id"`
 	ExpiresAtUnixMS int64         `json:"expires_at_unix_ms"`
 	Scopes          []RouterScope `json:"scopes"`
+	Principal       string        `json:"principal,omitempty"`
 }
 
 // RevokeTokenResponse is returned by Mesh.Auth().RevokeToken() (meshcall.router.v1.AuthService/revoke_token).
@@ -144,6 +157,7 @@ type RenewedToken struct {
 type TokenInfo struct {
 	TokenID         string   `json:"token_id"`
 	Issuer          string   `json:"issuer"`
+	Principal       string   `json:"principal,omitempty"`
 	InstanceIDs     []string `json:"instance_ids,omitempty"`
 	ExpiresAtUnixMS int64    `json:"expires_at_unix_ms"`
 	// Expired: it admits no new connection, but these stay up until revoked.
@@ -703,10 +717,10 @@ func (ac *AuthClient) Whoami(ctx context.Context, opts ...CallOption) (WhoamiRes
 }
 
 // IssueToken calls meshcall.router.v1.AuthService/issue_token to mint a scoped
-// bearer token. ttlSeconds may reach the Router's --token-max-ttl (30 days by
-// default); expiry bounds new connections only.
-func (ac *AuthClient) IssueToken(ctx context.Context, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
-	return issueToken(ctx, ac.caller, scopes, ttlSeconds, opts...)
+// bearer token. TTLSeconds defaults to 900 when <= 0 and may reach the Router's
+// --token-max-ttl (30 days by default); expiry bounds new connections only.
+func (ac *AuthClient) IssueToken(ctx context.Context, request IssueTokenRequest, opts ...CallOption) (IssuedToken, error) {
+	return issueToken(ctx, ac.caller, request, opts...)
 }
 
 // RevokeToken calls meshcall.router.v1.AuthService/revoke_token: every
@@ -763,15 +777,11 @@ func whoami(ctx context.Context, c Caller, opts ...CallOption) (WhoamiResponse, 
 	return Unary[struct{}, WhoamiResponse](ctx, c, routerAuthService, "whoami", struct{}{}, callOpts...)
 }
 
-func issueToken(ctx context.Context, c Caller, scopes []RouterScope, ttlSeconds int64, opts ...CallOption) (IssuedToken, error) {
-	if ttlSeconds <= 0 {
-		ttlSeconds = 900
+func issueToken(ctx context.Context, c Caller, request IssueTokenRequest, opts ...CallOption) (IssuedToken, error) {
+	if request.TTLSeconds <= 0 {
+		request.TTLSeconds = 900
 	}
-	type issueReq struct {
-		Scopes     []RouterScope `json:"scopes"`
-		TTLSeconds int64         `json:"ttl_seconds"`
-	}
-	return Unary[issueReq, IssuedToken](ctx, c, routerAuthService, "issue_token", issueReq{Scopes: scopes, TTLSeconds: ttlSeconds}, opts...)
+	return Unary[IssueTokenRequest, IssuedToken](ctx, c, routerAuthService, "issue_token", request, opts...)
 }
 
 func revokeToken(ctx context.Context, c Caller, tokenID string, opts ...CallOption) (RevokeTokenResponse, error) {

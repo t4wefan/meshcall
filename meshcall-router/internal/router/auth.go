@@ -35,6 +35,9 @@ type User struct {
 	expires     time.Time
 	tokenID     string
 	tokenDigest [32]byte
+	// principal is an optional issuer-chosen caller identity for a temporary
+	// token, injected by the Router as meshcall-token-principal on routed calls.
+	principal string
 	// connections counts the live connections (and HTTP requests) on a
 	// token, so an expired token holding some is kept for revoke_token.
 	connections int
@@ -76,6 +79,14 @@ const apiKeyPrefix = "mk_"
 
 // mayIssueTokens: tokens, API keys and anonymous callers cannot delegate.
 func (u *User) mayIssueTokens() bool { return u != nil && u.kind == identityAccount }
+
+// tokenPrincipal returns the issuer-chosen principal of a temporary token, or "".
+func (u *User) tokenPrincipal() string {
+	if u == nil || u.kind != identityToken {
+		return ""
+	}
+	return u.principal
+}
 
 // Accounts are immutable after startup; temporary tokens are synchronized separately.
 type Auth struct {

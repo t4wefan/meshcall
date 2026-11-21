@@ -135,12 +135,14 @@ public struct RouterIdentity: Decodable, Sendable, Hashable {
     public var call: [String]
     public var expiresAtUnixMs: Int64?
     public var instanceIDs: [String]?
+    /// The issuer-chosen principal of a temporary token, when set.
+    public var principal: String?
     /// The tunnel this connection belongs to, on a tunnel connection.
     public var tunnel: TunnelInfo?
 
     enum CodingKeys: String, CodingKey {
         case username, roles, register, call, expiresAtUnixMs = "expires_at_unix_ms", instanceIDs = "instance_ids"
-        case tunnel
+        case principal, tunnel
     }
 }
 

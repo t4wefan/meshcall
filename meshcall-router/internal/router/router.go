@@ -1015,7 +1015,7 @@ func (r *Router) forward(p *peer, f frame) {
 				return
 			}
 		} else {
-			f = stripTunnelMetadata(f)
+			f = applyRouterMetadata(f, p.user.tokenPrincipal())
 		}
 		if limit := r.config.MaxCallsPerConnection; limit > 0 && p.calls >= limit {
 			refuse(routerError(f.CallID, "resource_exhausted", "Too many calls in flight on this connection", true, "overloaded", ""))

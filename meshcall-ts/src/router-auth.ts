@@ -51,11 +51,14 @@ export function normalizeScopeService(service: string): string {
   }
 }
 
+export const TOKEN_PRINCIPAL_KEY = "meshcall-token-principal";
+
 export interface IssuedToken {
   readonly token: string;
   readonly token_id: string;
   readonly expires_at_unix_ms: number;
   readonly scopes: ReadonlyArray<RouterScope>;
+  readonly principal?: string;
 }
 
 /** `renewToken`'s answer: the same token, with its new expiry. */
@@ -68,6 +71,7 @@ export interface RenewedToken {
 export interface TokenInfo {
   readonly token_id: string;
   readonly issuer: string;
+  readonly principal?: string;
   readonly instance_ids?: ReadonlyArray<string>;
   readonly expires_at_unix_ms: number;
   /** Past its expiry: it admits no new connection, but these stay up until revoked. */
@@ -83,6 +87,8 @@ export interface RouterIdentity {
   readonly expires_at_unix_ms: number | null;
   /** The instance ids this identity may register under, when bound. */
   readonly instance_ids?: ReadonlyArray<string>;
+  /** The issuer-chosen principal of a temporary token, when set. */
+  readonly principal?: string;
   /** The tunnel this connection belongs to, on a tunnel connection. */
   readonly tunnel?: TunnelInfo;
 }
@@ -132,7 +138,9 @@ export class RouterAuthClient {
   }
 
   public issueToken(
-    request: ReadonlyArray<RouterScope> | { readonly scopes: ReadonlyArray<RouterScope>; readonly ttl_seconds?: number },
+    request:
+      | ReadonlyArray<RouterScope>
+      | { readonly scopes: ReadonlyArray<RouterScope>; readonly ttl_seconds?: number; readonly principal?: string },
     options?: CallOptions,
   ): Promise<IssuedToken> {
     const rawScopes = Array.isArray(request)
@@ -141,6 +149,9 @@ export class RouterAuthClient {
     const ttlSeconds = Array.isArray(request)
       ? 900
       : ((request as { readonly ttl_seconds?: number }).ttl_seconds ?? 900);
+    const principal = Array.isArray(request)
+      ? undefined
+      : (request as { readonly principal?: string }).principal;
     const scopes = rawScopes.map((scope) => ({
       ...scope,
       service: normalizeScopeService(scope.service),
@@ -148,6 +159,7 @@ export class RouterAuthClient {
     return this.client.unary(ROUTER_AUTH_SERVICE, "issue_token", {
       scopes,
       ttl_seconds: ttlSeconds,
+      ...(principal !== undefined ? { principal } : {}),
     }, options);
   }
 

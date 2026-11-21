@@ -115,11 +115,14 @@ such a key in caller metadata with non-retryable `invalid_argument`
 `reason: "invalid_metadata"`), and a server refuses it as a trailer. Lookups
 that ignore letter case (`meta()`) match a reserved key exactly. Metadata is
 opaque to the Router, which forwards it unchanged, with one exception: keys
-beginning with `meshcall-tunnel-`, in any letter case, are set only by the
-Router. It removes them from every `call.open` a client sends and, on a
-tunnel connection, sets `meshcall-tunnel-id` and `meshcall-tunnel-principal`
-(see [Tunnels](#tunnels)). Runtimes expose request metadata to handlers and
-interceptors and expose trailers to callers.
+beginning with `meshcall-tunnel-` or `meshcall-token-`, in any letter case,
+are set only by the Router. It removes them from every `call.open` a client
+sends; on a tunnel connection it sets `meshcall-tunnel-id` and
+`meshcall-tunnel-principal` (see [Tunnels](#tunnels)), and on a temporary
+token connection whose token carries a `principal` it sets
+`meshcall-token-principal` (see [Temporary tokens](#temporary-tokens)).
+Runtimes expose request metadata to handlers and interceptors and expose
+trailers to callers.
 
 ## Service names
 
@@ -605,10 +608,10 @@ reconnect is refused).
 
 | Method | Request | Result |
 | --- | --- | --- |
-| `issue_token` | `ttl_seconds`, `scopes[{service, methods?, register?, instance_ids?}]` | `token` (returned once), `token_id`, `expires_at_unix_ms`, `scopes` |
+| `issue_token` | `ttl_seconds`, `scopes[{service, methods?, register?, instance_ids?}]`, `principal?` | `token` (returned once), `token_id`, `expires_at_unix_ms`, `scopes`, `principal?` |
 | `renew_token` | `token_id`, `ttl_seconds` | `token_id`, `expires_at_unix_ms` |
 | `revoke_token` | `token_id` | `revoked` |
-| `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
+| `list_tokens` | `{}` | `tokens[{token_id, issuer, principal?, instance_ids?, expires_at_unix_ms, expired, connections}]` |
 
 Only an account may call these (with the method in its `call`
 ACL), and `renew_token`, `revoke_token` and `list_tokens` see only the
@@ -619,6 +622,18 @@ caller's own tokens. `ttl_seconds` is 1 up to the Router's maximum
 `details.reason: "ttl_invalid"`. Runtimes default to 900 s. The Router holds at most
 `--max-tokens` outstanding tokens (4096 by default; `resource_exhausted`
 beyond).
+
+**Principal.** `issue_token` takes an optional issuer-chosen `principal`
+(at most 512 UTF-8 bytes; longer values fail with `invalid_argument`). When
+set, it is reported by `issue_token`, `list_tokens` and `whoami`, and the
+Router sets `meshcall-token-principal` on every `call.open` routed from that
+token (WebSocket and HTTP alike) after stripping any `meshcall-token-*` keys
+the caller sent. Deduplication keys for idempotent unary calls are scoped by
+the token's `principal` so callers with different principals never share
+cached results. Server runtimes expose the Router-injected value on the call
+context (`ctx.token_principal` in Python, `ctx.tokenPrincipal` in TypeScript,
+`ctx.TokenPrincipal` in Go) on Router connections only; direct connections
+ignore it.
 
 **Lifetime.** `expires_at` bounds *new* connections and HTTP requests only,
 as for tunnel credentials: an expired token is refused at connect (HTTP 401,

@@ -562,14 +562,18 @@ export class AuthClient {
    * only, so one made before it stays up until it closes or is revoked.
    */
   public issueToken(
-    scopes: ReadonlyArray<RouterScope>, ttlSeconds = 900, options?: CallOptions,
+    scopes: ReadonlyArray<RouterScope>,
+    ttlSeconds = 900,
+    options?: CallOptions & { readonly principal?: string },
   ): Promise<IssuedToken> {
     if (scopes.length === 0) throw new RangeError("issueToken needs at least one scope");
     if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) throw new RangeError("ttlSeconds must be a positive integer");
+    const { principal, ...callOptions } = options ?? {};
     return this.rpc.unary(ROUTER_AUTH_SERVICE, "issue_token", {
       scopes: scopes.map((scope) => ({ ...scope, service: normalizeScopeService(scope.service) })),
       ttl_seconds: ttlSeconds,
-    }, options);
+      ...(principal !== undefined ? { principal } : {}),
+    }, callOptions);
   }
 
   public async revokeToken(tokenId: string, options?: CallOptions): Promise<boolean> {

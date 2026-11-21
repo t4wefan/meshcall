@@ -32,6 +32,11 @@ export interface RpcContext {
    * `null` for a call that is not sealed.
    */
   readonly e2e: E2EPeer | null;
+  /**
+   * The issuer-chosen principal of the temporary token the call arrived on,
+   * or `null`. Set by the Router; callers cannot forge it.
+   */
+  readonly tokenPrincipal: string | null;
   /** Attach a trailer to the terminal `call.result` or `call.error` frame. */
   setTrailer(key: string, value: string): void;
   readonly trailers: Readonly<Metadata>;

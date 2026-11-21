@@ -20,6 +20,7 @@ DEFAULT_PING_INTERVAL = 15.0
 DEFAULT_PING_TIMEOUT = 10.0
 DEFAULT_IDLE_TIMEOUT = 45.0
 RESERVED_METADATA_PREFIX = "meshcall-"
+TOKEN_PRINCIPAL_KEY = "meshcall-token-principal"
 
 
 def client_deadline_grace(timeout: float) -> float:
@@ -194,6 +195,9 @@ class RpcContext:
     #: client authenticated itself, its public key (``peer_key``) and
     #: pairing. ``None`` for a call that is not sealed.
     e2e: E2EPeer | None = None
+    #: The issuer-chosen principal of the temporary token the call arrived on,
+    #: or ``None``. Set by the Router; callers cannot forge it.
+    token_principal: str | None = None
     _deadline: float | None = field(default=None, repr=False)
     _trailers: dict[str, str] = field(default_factory=dict, repr=False)
 

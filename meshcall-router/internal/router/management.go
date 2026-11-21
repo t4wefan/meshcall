@@ -19,6 +19,11 @@ const AuthService = "meshcall.router.v1.AuthService"
 const RegistryService = "meshcall.router.v1.Registry"
 const reservedPrefix = "meshcall.router."
 
+const (
+	tokenPrincipalKey = "meshcall-token-principal"
+	tokenMetaPrefix   = "meshcall-token-"
+)
+
 type Scope struct {
 	Service  string   `json:"service"`
 	Methods  []string `json:"methods,omitempty"`
@@ -32,6 +37,9 @@ type Scope struct {
 type IssueTokenRequest struct {
 	TTLSeconds int     `json:"ttl_seconds"`
 	Scopes     []Scope `json:"scopes"`
+	// Principal is an optional issuer-chosen caller identity (up to 512 UTF-8
+	// bytes) the Router injects as meshcall-token-principal on routed calls.
+	Principal string `json:"principal,omitempty"`
 }
 
 type IssueTokenResult struct {
@@ -39,6 +47,7 @@ type IssueTokenResult struct {
 	TokenID       string  `json:"token_id"`
 	ExpiresUnixMS int64   `json:"expires_at_unix_ms"`
 	Scopes        []Scope `json:"scopes"`
+	Principal     string  `json:"principal,omitempty"`
 }
 
 // ttlError: ttl_seconds below 1 (tooShort) or above the Router's maximum,
@@ -88,7 +97,10 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 	if len(request.Scopes) == 0 || len(request.Scopes) > 128 {
 		return result, errors.New("scopes must contain 1..128 services")
 	}
-	user := &User{Username: issuer.Username}
+	if len(request.Principal) > maxPrincipal {
+		return result, errors.New("principal must be at most 512 bytes")
+	}
+	user := &User{Username: issuer.Username, principal: request.Principal}
 	seen := make(map[string]bool)
 	// The result reports the effective scopes: inherited instance_ids included.
 	effective := slices.Clone(request.Scopes)
@@ -164,7 +176,7 @@ func (a *Auth) issue(issuer *User, request IssueTokenRequest) (IssueTokenResult,
 	}
 	a.tokens[user.tokenID] = user
 	a.tokenDigests[user.tokenDigest] = user.tokenID
-	return IssueTokenResult{Token: token, TokenID: user.tokenID, ExpiresUnixMS: user.expires.UnixMilli(), Scopes: effective}, nil
+	return IssueTokenResult{Token: token, TokenID: user.tokenID, ExpiresUnixMS: user.expires.UnixMilli(), Scopes: effective, Principal: user.principal}, nil
 }
 
 // pruneLocked forgets expired tokens no connection uses any more; one that
@@ -186,6 +198,7 @@ func (a *Auth) forgetLocked(id string, user *User) {
 type TokenInfo struct {
 	TokenID       string   `json:"token_id"`
 	Issuer        string   `json:"issuer"`
+	Principal     string   `json:"principal,omitempty"`
 	InstanceIDs   []string `json:"instance_ids,omitempty"`
 	ExpiresUnixMS int64    `json:"expires_at_unix_ms"`
 	Expired       bool     `json:"expired"`
@@ -208,7 +221,7 @@ func (u *User) boundInstances() []string {
 }
 
 func (u *User) tokenInfo(now time.Time) TokenInfo {
-	return TokenInfo{TokenID: u.tokenID, Issuer: u.Username, InstanceIDs: u.boundInstances(), ExpiresUnixMS: u.expires.UnixMilli(),
+	return TokenInfo{TokenID: u.tokenID, Issuer: u.Username, Principal: u.principal, InstanceIDs: u.boundInstances(), ExpiresUnixMS: u.expires.UnixMilli(),
 		Expired: !now.Before(u.expires), Connections: u.connections}
 }
 
@@ -297,9 +310,10 @@ func (r *Router) management(p *peer, f frame) {
 			Register    []string    `json:"register"`
 			Call        []string    `json:"call"`
 			InstanceIDs []string    `json:"instance_ids,omitempty"`
+			Principal   string      `json:"principal,omitempty"`
 			Expires     *int64      `json:"expires_at_unix_ms"`
 			Tunnel      *TunnelInfo `json:"tunnel,omitempty"`
-		}{p.user.Username, p.user.Roles, nonNil(p.user.Register), nonNil(p.user.Call), p.user.boundInstances(), expires, tunnel}
+		}{p.user.Username, p.user.Roles, nonNil(p.user.Register), nonNil(p.user.Call), p.user.boundInstances(), p.user.tokenPrincipal(), expires, tunnel}
 	case "issue_token":
 		if !p.user.mayIssueTokens() {
 			fail("permission_denied", "Only accounts may issue temporary tokens")

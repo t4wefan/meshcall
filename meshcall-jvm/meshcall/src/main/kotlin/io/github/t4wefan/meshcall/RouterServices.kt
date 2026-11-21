@@ -175,6 +175,7 @@ public data class IssuedToken(
     @SerialName("token_id") val tokenId: String,
     @SerialName("expires_at_unix_ms") val expiresAtUnixMs: Long,
     val scopes: List<RouterScope> = emptyList(),
+    val principal: String? = null,
 )
 
 @Serializable
@@ -188,6 +189,7 @@ public data class RenewedToken(
 public data class TokenInfo(
     @SerialName("token_id") val tokenId: String,
     val issuer: String,
+    val principal: String? = null,
     @SerialName("instance_ids") val instanceIds: List<String>? = null,
     @SerialName("expires_at_unix_ms") val expiresAtUnixMs: Long,
     /** Past its expiry: it admits no new connection, but these stay up until revoked. */
@@ -203,12 +205,17 @@ public data class RouterIdentity(
     val call: List<String> = emptyList(),
     @SerialName("expires_at_unix_ms") val expiresAtUnixMs: Long? = null,
     @SerialName("instance_ids") val instanceIds: List<String>? = null,
+    val principal: String? = null,
     /** The tunnel this connection belongs to, on a tunnel connection. */
     val tunnel: TunnelInfo? = null,
 )
 
 @Serializable
-private data class IssueTokenBody(val scopes: List<RouterScope>, @SerialName("ttl_seconds") val ttlSeconds: Long)
+private data class IssueTokenBody(
+    val scopes: List<RouterScope>,
+    @SerialName("ttl_seconds") val ttlSeconds: Long,
+    val principal: String? = null,
+)
 
 @Serializable
 private data class TokenList(val tokens: List<TokenInfo> = emptyList())
@@ -223,10 +230,11 @@ public class AuthClient internal constructor(private val rpc: MeshCallRpc) {
     public suspend fun issueToken(
         scopes: List<RouterScope>,
         ttlSeconds: Long = 900,
+        principal: String? = null,
         options: CallOptions = CallOptions.DEFAULT,
     ): IssuedToken = rpc.unary(
         ROUTER_AUTH_SERVICE, "issue_token",
-        IssueTokenBody(scopes.map { it.copy(service = normalizeScopeService(it.service)) }, ttlSeconds),
+        IssueTokenBody(scopes.map { it.copy(service = normalizeScopeService(it.service)) }, ttlSeconds, principal),
         IssueTokenBody.serializer(), IssuedToken.serializer(), options,
     )
 
