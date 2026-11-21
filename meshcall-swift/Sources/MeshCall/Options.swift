@@ -126,6 +126,10 @@ public struct MeshOptions: Sendable {
     /// Seal every call end to end towards the instance holding this pinned
     /// public key (an end-to-end tunnel; docs/protocol.md → End-to-end encryption).
     public var e2eKey: String?
+    /// This client's own key: it authenticates itself to the instance whose
+    /// key is pinned in `e2eKey` (Noise IK; IKpsk2 to pair first). Without it
+    /// the handshake is NK and the Router alone decides who may connect.
+    public var e2eIdentity: E2EIdentity?
     public var peerID: String
     public var maxFrameSize: Int
     public var handshakeTimeout: Duration
@@ -146,7 +150,8 @@ public struct MeshOptions: Sendable {
     public var callOptions: CallOptions
 
     public init(
-        credentials: RouterCredentials? = nil, e2eKey: String? = nil, peerID: String = newID(),
+        credentials: RouterCredentials? = nil, e2eKey: String? = nil, e2eIdentity: E2EIdentity? = nil,
+        peerID: String = newID(),
         maxFrameSize: Int = defaultMaxFrameSize, handshakeTimeout: Duration = .seconds(10),
         deadlineGrace: Duration? = nil, pingInterval: Duration? = .seconds(15), pingTimeout: Duration = .seconds(10),
         reconnect: ReconnectPolicy = .default, retry: RetryPolicy = .default, interceptors: [ClientInterceptor] = [],
@@ -154,6 +159,7 @@ public struct MeshOptions: Sendable {
     ) {
         self.credentials = credentials
         self.e2eKey = e2eKey
+        self.e2eIdentity = e2eIdentity
         self.peerID = peerID
         self.maxFrameSize = maxFrameSize
         self.handshakeTimeout = handshakeTimeout
@@ -169,6 +175,13 @@ public struct MeshOptions: Sendable {
     func validate() throws {
         try checkE2EAgreement(credential: credentials?.token, e2eKey: e2eKey)
         if let e2eKey { _ = try keyBytes(e2eKey, "An E2E key (the instance's X25519 public key)") }
+        if let e2eIdentity {
+            guard e2eKey != nil else {
+                throw ConfigurationError(
+                    "e2eIdentity authenticates this client to the instance whose key you pinned: pass e2eKey too")
+            }
+            try e2eIdentity.validate()
+        }
         _ = try credentials?.authorization()
         if maxFrameSize <= 0 || handshakeTimeout <= .zero || pingTimeout <= .zero {
             throw ConfigurationError("Limits must be positive")

@@ -125,13 +125,28 @@ public final class Mesh: MeshCallRPC, @unchecked Sendable {
 
     /// A Mesh that reaches only the tunnel's instance, sealing every call end
     /// to end when the grant carries the instance's key.
-    public convenience init(tunnel grant: TunnelGrant, options: MeshOptions = MeshOptions()) throws {
+    ///
+    /// With `identity` the client also authenticates itself to the instance
+    /// (IK, or IKpsk2 to pair first; docs/protocol.md → Client authentication).
+    /// An app that pinned the instance's key and id itself (from a QR code,
+    /// say) sets the grant's `e2eKey` to its pinned key and the identity's
+    /// `instanceID` to its pinned id: the issuer's copies are then not trusted.
+    ///
+    ///     var grant = try JSONDecoder().decode(TunnelGrant.self, from: answer)
+    ///     grant.e2eKey = pinned.instanceKey
+    ///     let mesh = try Mesh(tunnel: grant, identity: E2EIdentity(
+    ///         privateKey: keychain.clientKey, instanceID: pinned.instanceID,
+    ///         pairing: E2EPairing(id: qr.pairingID, psk: qr.psk)))
+    public convenience init(
+        tunnel grant: TunnelGrant, identity: E2EIdentity? = nil, options: MeshOptions = MeshOptions()
+    ) throws {
         guard grant.credential.hasPrefix("mtun_"), !grant.credential.contains(where: \.isWhitespace) else {
             throw ConfigurationError("A tunnel credential starts with 'mtun_'; it is the credential the issuer returned")
         }
         var options = options
         options.credentials = .bearer(grant.credential)
         options.e2eKey = grant.e2eKey
+        if let identity { options.e2eIdentity = identity }
         try self.init(Router(grant.routerURL), options: options)
     }
 

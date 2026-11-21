@@ -30,6 +30,11 @@ export interface SessionOptions {
   /** This instance's id and the services whose calls must name it. */
   instanceId: string;
   targeted: ReadonlySet<string>;
+  /**
+   * Services served only inside end-to-end sessions whose client
+   * authenticated itself (IK or a confirmed IKpsk2), on every connection.
+   */
+  requirePeer?: ReadonlySet<string>;
   /** Server-wide in-flight count and cap, for local max_inflight enforcement. */
   inflight?: () => number;
   maxInflight?: number;
@@ -180,7 +185,7 @@ export class ServerSession {
       }
       // Targeting, applied the same way the Router does (protocol.md →
       // Targeted calls), so direct and routed services behave alike.
-      const rejection = this.openError(frame, method);
+      const rejection = this.openError(frame, method, sealed);
       if (rejection !== undefined) {
         const started = performance.now();
         void this.writer.send({
@@ -214,7 +219,14 @@ export class ServerSession {
     }
   }
 
-  private openError(frame: CallOpenFrame, method: RuntimeMethod): MeshCallError | undefined {
+  private openError(frame: CallOpenFrame, method: RuntimeMethod, sealed: SealedCall | undefined): MeshCallError | undefined {
+    if (this.options.requirePeer?.has(frame.service) === true && (sealed === undefined || sealed.session.peerKey === null)) {
+      // Checked here, whatever the Router allowed: not through a plain
+      // tunnel, an NK session or without a tunnel at all.
+      return new PermissionDeniedError(frame.service + " serves authenticated end-to-end clients only", {
+        details: { source: "server", reason: "e2e_peer_required" },
+      });
+    }
     const instance = frame.instance_id ?? undefined;
     if (instance !== undefined && instance !== this.options.instanceId) {
       return new UnavailableError("Instance " + instance + " is not this server (" + this.options.instanceId + ")", {
@@ -324,6 +336,7 @@ class ServerCall {
       ? null : this.started + frame.timeout_ms;
     this.idleTimeoutMs = frame.idle_timeout_ms ?? null;
     const trailers = this.trailers;
+    const tunnel = session.options.tunnels?.lookup(frame.metadata) ?? null;
     this.context = {
       signal: this.controller.signal,
       deadlineMs,
@@ -334,7 +347,11 @@ class ServerCall {
       metadata: Object.freeze({ ...(frame.metadata ?? {}) }),
       idempotencyKey: frame.idempotency_key ?? null,
       instanceId: session.options.instanceId,
-      tunnel: session.options.tunnels?.lookup(frame.metadata) ?? null,
+      tunnel,
+      e2e: sealed === undefined || tunnel === null ? null : {
+        protocol: sealed.session.protocol, session: sealed.session.id,
+        peerKey: sealed.session.peerKey, pairingId: sealed.session.pairingId, tunnel,
+      },
       setTrailer(key: string, value: string): void {
         if (key === "" || isReservedKey(key)) throw new RangeError("trailer key " + JSON.stringify(key) + " is empty or reserved (\"meshcall-\")");
         if (typeof value !== "string") throw new TypeError("trailer value for " + JSON.stringify(key) + " must be a string");

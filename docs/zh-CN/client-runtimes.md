@@ -24,7 +24,12 @@
   `e2e_key`）打开一个固定到某个实例的 Mesh。`mtun_e2e.` 凭据需要
   `Noise_NK_25519_AESGCM_SHA256`，prologue 为 `meshcall-e2e/1|<凭据的 sha256 十六进制>`；
   先用 `meshcall-router/conformance/testdata/noise_nk_25519_aesgcm_sha256.json` 验证握手。
-  收到 `e2e_session_unknown` 时重置连接，单次调用重试一次。
+  收到 `e2e_session_unknown` 时重置连接，单次调用重试一次。有自己密钥的客户端（`E2EIdentity`：
+  私钥、实例 id，配对时再加 pairing id 和 PSK）使用 `Noise_IK_25519_AESGCM_SHA256`，配对时使用
+  `Noise_IKpsk2_25519_AESGCM_SHA256` 并发出 `{session, confirm}` 确认调用，prologue 为
+  `meshcall-e2e/1|<sha256 十六进制>|<instance_id>`；配对确认之后的每次握手都走 IK，且绝不退回 NK。
+  用 NK 向量旁边的 IK、IKpsk2 向量和 `testdata/e2e_handshakes.json`（请求、应答、会话 id、确认）
+  验证，并覆盖 `e2e.ik` / `e2e.pairing…` 等客户端场景。
 - **错误**沿用共同的错误码和 `details` 键（`source`、`reason`、`instance_id`、`attempts`、`violations`）。
 
 JVM 上：WebSocket 用 OkHttp（或 Ktor）；调用 API 用协程（单次调用是 `suspend`，服务端流是

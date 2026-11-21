@@ -26,6 +26,10 @@ type Context struct {
 	// Tunnel is the tunnel the call arrived through (its id and the principal
 	// the issuer set), or nil. Set by the Router; callers cannot forge it.
 	Tunnel *Tunnel
+	// E2E is the end-to-end session of a sealed call: its handshake and, when
+	// the client authenticated itself, its public key (PeerKey) and pairing.
+	// Nil for a call that is not sealed.
+	E2E    *E2EPeer
 	Logger *slog.Logger
 	call   *serverCall
 }

@@ -15,7 +15,7 @@ This release is the **client side**: it does not register services.
 | | |
 | --- | --- |
 | Calls | unary, server stream, client stream, duplex; targeted calls (`instance`) |
-| Router features | tunnels (`mtun_…`), end-to-end sealed tunnels (Noise NK, pinned instance key), tokens, Registry, AuthService, TunnelService |
+| Router features | tunnels (`mtun_…`), end-to-end sealed tunnels (Noise NK, pinned instance key; IK / IKpsk2 when the client authenticates itself and pairs), tokens, Registry, AuthService, TunnelService |
 | Transport | `ws://`, `wss://` (OkHttp), several Routers for failover |
 | Codegen | `meshcall generate … --language kotlin`: kotlinx.serialization classes plus suspend / `Flow` methods and `…Async` methods for Java |
 | Dependencies | kotlinx-coroutines, kotlinx-serialization-json, OkHttp, BouncyCastle (X25519 only) |
@@ -135,10 +135,11 @@ val mesh = Mesh(
 val sessions = SessionsClient(mesh)                // the Router supplies instance_id
 ```
 
-The client starts the `Noise_NK_25519_AESGCM_SHA256` handshake towards the
-pinned key, never towards a key the Router offers; a wrong key fails with a
-non-retryable `UnauthenticatedException` (`reason = "e2e_handshake_failed"`)
-and never falls back to plaintext. An end-to-end credential without `e2eKey`,
+The client starts the handshake (`Noise_NK_25519_AESGCM_SHA256` unless it
+authenticates itself, below) towards the pinned key, never towards a key the
+Router offers; a wrong key fails with a non-retryable
+`UnauthenticatedException` (`reason = "e2e_handshake_failed"`) and never
+falls back to plaintext. An end-to-end credential without `e2eKey`,
 or a key with a plain credential, is refused when the `Mesh` is constructed.
 When the instance restarts and loses its sessions, the client handshakes
 again on a new connection and retries a unary call once
@@ -146,11 +147,63 @@ again on a new connection and retries a unary call once
 `UnauthenticatedException` and `reason = "tunnel_revoked"`, and later calls
 fail at once with the same error.
 
+### Client authentication and pairing
+
+By default the client has no key of its own and the Router alone decides who
+may connect. A client that keeps an X25519 key pair authenticates itself to
+the instance too (`Noise_IK_25519_AESGCM_SHA256`), so the instance can refuse
+every client it does not know, and services that require it
+(`require_e2e_peer`) answer only such clients; others get
+`PermissionDeniedException` with `reason = "e2e_peer_required"`.
+
+```kotlin
+val key = E2EKeyPair.generate()                // once; keep key.privateKey in the app's secure storage
+val mesh = Mesh(
+    Router("wss://router.example.com"),
+    MeshOptions(
+        tunnel = credential,
+        e2eKey = instancePublicKey,            // the issuer's, or the one the app pinned itself
+        e2eIdentity = E2EIdentity(key.privateKey, instanceId),
+    ),
+)
+```
+
+To be accepted the first time, the client pairs: the instance's owner hands it,
+out of band and never through the Router (for example in a QR code on the
+instance's device), the instance's id and public key, a pairing id and a
+one-time 32-byte PSK. The app may use that instance id and key instead of the
+issuer's; the issuer still pins the key when it opens the tunnel.
+
+```kotlin
+val identity = E2EIdentity(key.privateKey, qr.instanceId, E2EPairing(qr.pairingId, qr.psk))
+val mesh = Mesh(router, MeshOptions(tunnel = credential, e2eKey = qr.instanceKey, e2eIdentity = identity))
+mesh.connect()                                 // pairs, or throws
+```
+
+From Java: `new E2EIdentity(privateKey, instanceId).withPairing(new E2EPairing(id, psk))`
+and `MeshOptions.DEFAULT.withTunnel(…).withE2eKey(…).withE2eIdentity(identity)`.
+
+The first connection handshakes with `Noise_IKpsk2_25519_AESGCM_SHA256` and
+confirms the pairing before any call; the instance may wait for a person to
+accept the client, so the confirmation has 120 s (the handshake itself keeps
+`handshakeTimeoutMs`). Once confirmed, every later handshake of the same `Mesh`
+(reconnects included) uses IK with the same key. The pairing is then spent:
+store that the key is paired and construct later `Mesh`es without the pairing.
+A pairing that was never confirmed is tried again on the next connection until
+the instance refuses it. An unknown key, a spent pairing or a wrong PSK fail
+with a non-retryable `UnauthenticatedException` (`reason =
+"e2e_handshake_failed"`; the instance does not say which). The client never
+falls back to NK. An `e2eIdentity` without `e2eKey`, a private key or PSK that
+is not 32 bytes of base64url, an empty instance id or a pairing id outside 1 to
+128 bytes are refused before connecting.
+
 X25519 comes from BouncyCastle's pure-Java RFC 7748 code, called directly
 (no JCA provider is registered, so it does not clash with Android's built-in
 copy). JCA's `XDH` needs Android API 33. AES-256-GCM, SHA-256 and HMAC come
-from JCA, available on every Android level. The implementation is checked
-against the same published Noise test vector as the conformance harness.
+from JCA, available on every Android level. The NK, IK and IKpsk2 handshakes
+are checked against the same published Noise test vectors as the conformance
+harness, and the MeshCall requests, session ids and pairing confirmation
+against its `e2e_handshakes.json`.
 BouncyCastle is kept instead of a hand-written RFC 7748: its field arithmetic
 is constant-time and maintained, and R8 removes the rest of the jar (above).
 

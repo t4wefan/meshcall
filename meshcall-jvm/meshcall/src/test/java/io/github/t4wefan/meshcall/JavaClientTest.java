@@ -125,6 +125,26 @@ class JavaClientTest {
         }
     }
 
+    /** A client identity configured from Java, as an app with a pairing QR code would. */
+    @Test
+    void e2eIdentityFromJava() {
+        E2EKeyPair key = E2EKeyPair.generate();
+        assertEquals(key.getPublicKey(), E2EKeyPair.publicKey(key.getPrivateKey()));
+        E2EPairing pairing = new E2EPairing("pair-1", E2EKeyPair.generate().getPrivateKey());
+        E2EIdentity identity = new E2EIdentity(key.getPrivateKey(), "fixture-1").withPairing(pairing);
+        assertEquals(key.getPublicKey(), identity.getPublicKey());
+        MeshOptions options = MeshOptions.DEFAULT
+            .withTunnel("mtun_e2e.from-java")
+            .withE2eKey(E2EKeyPair.generate().getPublicKey())
+            .withE2eIdentity(identity);
+        assertEquals(identity, options.getE2eIdentity());
+        new Mesh(new Router("ws://127.0.0.1:1"), options).close();
+        // Without the pinned instance key the identity is refused before connecting.
+        assertThrows(IllegalArgumentException.class,
+            () -> new Mesh(new Router("ws://127.0.0.1:1"), MeshOptions.DEFAULT.withE2eIdentity(identity)));
+        assertThrows(IllegalArgumentException.class, () -> new E2EPairing("", pairing.getPsk()));
+    }
+
     private static List<String> texts(List<Text> items) {
         synchronized (items) {
             return items.stream().map(Text::getText).collect(java.util.stream.Collectors.toList());

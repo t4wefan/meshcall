@@ -30,9 +30,9 @@ import { MeshCallServer, type MeshCallServerOptions, type ServerInterceptor } fr
 import { DEFAULT_MAX_FRAME_SIZE } from "./transport.js";
 import {
   checkTunnelCredential, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient,
-  type TunnelClosedHook, type TunnelOfferHook, type TunnelPolicy,
+  type E2EPairingPskHook, type E2EPeerHook, type TunnelClosedHook, type TunnelOfferHook, type TunnelPolicy,
 } from "./tunnel.js";
-import { checkE2EAgreement, checkE2EKey, checkE2EPrivateKey } from "./e2e.js";
+import { checkE2EAgreement, checkE2EIdentity, checkE2EKey, checkE2EPrivateKey, type E2EIdentity } from "./e2e.js";
 import {
   AuthClient,
   DEFAULT_ROUTER_URL,
@@ -456,6 +456,14 @@ export interface MeshOptions {
    * it from the issuer, never from the Router. Needs `tunnel` and a WebSocket Router.
    */
   readonly e2eKey?: string;
+  /**
+   * This client's own key (`generateE2EKey().privateKey`, kept by the app) and
+   * the id of the instance whose key it pinned in `e2eKey`: the client then
+   * authenticates itself to the instance (Noise IK). With `pairing` (the id
+   * and PSK the instance's owner handed it out of band) the first handshake
+   * pairs (IKpsk2); later ones use IK. Never falls back to NK. Needs `e2eKey`.
+   */
+  readonly e2eIdentity?: E2EIdentity;
   /** Extra HTTP headers when connecting to an HTTP(S) Router. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Custom `fetch` implementation when connecting to an HTTP(S) Router. */
@@ -490,6 +498,19 @@ export interface ServeOptions {
    * Configure it as stably as `instanceId`.
    */
   readonly e2ePrivateKey?: string;
+  /**
+   * Which client keys this instance accepts on end-to-end tunnels: asked at
+   * an IK handshake, and with `peer.pairingId` set once a pairing client
+   * proved it holds the PSK (record the client and spend the pairing then).
+   * A refusal or a hook that throws fails the handshake. Without it any
+   * client key is accepted (handlers still see it as `ctx.e2e.peerKey`).
+   */
+  readonly authorizeE2EPeer?: E2EPeerHook;
+  /**
+   * The PSK (base64url) of a pairing the owner handed a new client, by its
+   * id, or `undefined` for an unknown or spent one. Must not spend it.
+   */
+  readonly e2ePairingPsk?: E2EPairingPskHook;
 }
 
 export interface MountOptions extends ServeOptions {
@@ -506,6 +527,14 @@ export interface MountOptions extends ServeOptions {
    * them in clear through a tunnel; needs `acceptTunnels` and `e2ePrivateKey`.
    */
   readonly requireE2E?: boolean;
+  /**
+   * Serve these services only to end-to-end clients that authenticated
+   * themselves and `authorizeE2EPeer` accepted; every other call (a plain
+   * tunnel, an NK session, no tunnel at all) is refused with
+   * `permission_denied` (`reason: "e2e_peer_required"`). Implies `requireE2E`;
+   * needs `acceptTunnels`, `e2ePrivateKey` and `authorizeE2EPeer`.
+   */
+  readonly requireE2EPeer?: boolean;
 }
 
 export class RunningServer {
@@ -614,6 +643,12 @@ export class Mesh implements MeshCallRpc {
       }
       checkE2EKey(options.e2eKey);
     }
+    if (options.e2eIdentity !== undefined) {
+      if (options.e2eKey === undefined) {
+        throw new TypeError("e2eIdentity authenticates this client to the instance whose key you pinned: pass e2eKey too");
+      }
+      checkE2EIdentity(options.e2eIdentity);
+    }
     this.router = router;
     this.options = options;
     this.credentials = options.credentials ?? (options.token !== undefined
@@ -688,6 +723,7 @@ export class Mesh implements MeshCallRpc {
           ...(this.options.retry === undefined ? {} : { retry: this.options.retry }),
           ...(this.options.logger === undefined ? {} : { logger: this.options.logger }),
           ...(this.options.e2eKey === undefined ? {} : { e2eKey: this.options.e2eKey }),
+          ...(this.options.e2eIdentity === undefined ? {} : { e2eIdentity: this.options.e2eIdentity }),
         };
         this.transport = new MeshCallClient(this.router.endpoints, this.options.peerId, clientOptions);
       }
@@ -741,7 +777,7 @@ export class Mesh implements MeshCallRpc {
       throw new Error("Cannot mount services while Mesh is already serving");
     }
     const { services, options: mountOptions } = splitServicesAndOptions(args);
-    const { acceptTunnels, onTunnelClosed, requireE2E, ...options } = mountOptions as MountOptions;
+    const { acceptTunnels, onTunnelClosed, requireE2E, requireE2EPeer, ...options } = mountOptions as MountOptions;
     for (const svc of services) {
       if (!isService(svc)) {
         throw new TypeError("mount() requires @service instances");
@@ -753,6 +789,9 @@ export class Mesh implements MeshCallRpc {
     if (requireE2E === true && (acceptTunnels === undefined || acceptTunnels === false)) {
       throw new TypeError("requireE2E needs acceptTunnels");
     }
+    if (requireE2EPeer === true && (acceptTunnels === undefined || acceptTunnels === false)) {
+      throw new TypeError("requireE2EPeer needs acceptTunnels");
+    }
     this.mountedServices.push(...services);
     this.mountOptions = { ...this.mountOptions, ...options };
     if (acceptTunnels !== undefined && acceptTunnels !== false) {
@@ -760,6 +799,7 @@ export class Mesh implements MeshCallRpc {
         accept: acceptTunnels,
         ...(onTunnelClosed === undefined ? {} : { onClosed: onTunnelClosed }),
         ...(requireE2E === true ? { requireE2E: true } : {}),
+        ...(requireE2EPeer === true ? { requireE2EPeer: true } : {}),
       };
       for (const svc of services) this.tunnelPolicies.set(bindService(svc).definition.name, policy);
     }
@@ -820,6 +860,8 @@ export class Mesh implements MeshCallRpc {
       ...(merged.interceptors === undefined ? {} : { interceptors: merged.interceptors }),
       tunnelPolicies: this.tunnelPolicies,
       ...(merged.e2ePrivateKey === undefined ? {} : { e2ePrivateKey: checkE2EPrivateKey(merged.e2ePrivateKey) }),
+      ...(merged.authorizeE2EPeer === undefined ? {} : { authorizeE2EPeer: merged.authorizeE2EPeer }),
+      ...(merged.e2ePairingPsk === undefined ? {} : { e2ePairingPsk: merged.e2ePairingPsk }),
     };
 
     const server = new MeshCallServer(serverOptions);

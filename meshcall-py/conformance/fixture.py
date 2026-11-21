@@ -10,7 +10,15 @@ from typing import cast
 
 from pydantic import BaseModel
 
-from meshcall import RpcContext, RpcDuplex, RpcInputStream, RpcServer, method, service
+from meshcall import (
+    E2EPeer,
+    RpcContext,
+    RpcDuplex,
+    RpcInputStream,
+    RpcServer,
+    method,
+    service,
+)
 from meshcall.drivers import WebSocketRouterServerDriver
 from meshcall.errors import MeshCallError
 from meshcall.tunnel import TunnelClosed, TunnelOffer, TunnelPolicy
@@ -86,6 +94,50 @@ class Vault:
         return Peek(sealed=ctx.tunnel is not None and ctx.tunnel.sealed)
 
 
+class PeerSeen(BaseModel):
+    protocol: str | None
+    peer_key: str | None
+    pairing_id: str | None
+
+
+@service("conformance.v1.Paired")
+class Paired:
+    """Served to end-to-end clients that authenticated themselves only."""
+
+    @method(read_only=True)
+    async def peer(self, ctx: RpcContext) -> PeerSeen:
+        """The end-to-end session of this call (ctx.e2e)."""
+        e2e = ctx.e2e
+        return PeerSeen(
+            protocol=e2e.protocol if e2e else None,
+            peer_key=e2e.peer_key if e2e else None,
+            pairing_id=e2e.pairing_id if e2e else None,
+        )
+
+
+class Peers:
+    """The clients this instance accepts and its one-time pairings."""
+
+    def __init__(self, peers: str, pairings: str) -> None:
+        self.accepted = {key for key in peers.split(",") if key}
+        self.pairings = dict(
+            entry.split(":", 1) for entry in pairings.split(",") if entry
+        )
+
+    def psk(self, pairing_id: str) -> str | None:
+        return self.pairings.get(pairing_id)
+
+    def authorize(self, peer: E2EPeer) -> bool:
+        if peer.peer_key is None:
+            return False
+        if peer.pairing_id is not None:
+            if self.pairings.pop(peer.pairing_id, None) is None:
+                return False  # spent
+            self.accepted.add(peer.peer_key)
+            return True
+        return peer.peer_key in self.accepted
+
+
 @service("conformance.v1.Targeted", targeted=True)
 class Targeted:
     """A targeted service: every call must name the instance it is for."""
@@ -110,7 +162,9 @@ class Fixture:
         return offer.principal != "refuse:me"
 
     def tunnel_closed(self, closed: TunnelClosed) -> None:
-        self.closed.append(ClosedTunnel(tunnel_id=closed.tunnel_id, reason=closed.reason))
+        self.closed.append(
+            ClosedTunnel(tunnel_id=closed.tunnel_id, reason=closed.reason)
+        )
 
     @method(read_only=True)
     async def tunnel_info(self, ctx: RpcContext) -> TunnelSeen:
@@ -253,8 +307,12 @@ async def main() -> None:
     else:
         driver = WebSocketRouterServerDriver(url, **options)
     policy = TunnelPolicy(fixture.accept_tunnel, fixture.tunnel_closed)
+    peers = Peers(
+        os.environ.get("MESHCALL_E2E_PEERS", ""),
+        os.environ.get("MESHCALL_E2E_PAIRINGS", ""),
+    )
     server = RpcServer(
-        services=[fixture, Targeted, Vault],
+        services=[fixture, Targeted, Vault, Paired],
         driver=driver,
         access_log=False,
         tunnel_policies={
@@ -263,8 +321,13 @@ async def main() -> None:
             "conformance.v1.Vault": TunnelPolicy(
                 fixture.accept_tunnel, fixture.tunnel_closed, require_e2e=True
             ),
+            "conformance.v1.Paired": TunnelPolicy(
+                fixture.accept_tunnel, fixture.tunnel_closed, require_e2e_peer=True
+            ),
         },
         e2e_private_key=os.environ["MESHCALL_E2E_PRIVATE_KEY"],
+        authorize_e2e_peer=peers.authorize,
+        e2e_pairing_psk=peers.psk,
     )
     fixture.server = server
     await server.start()

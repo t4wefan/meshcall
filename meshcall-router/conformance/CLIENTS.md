@@ -20,14 +20,18 @@ waits until the fixture has registered `conformance.v1.Fixture`, and prints one
 line:
 
 ```json
-{"kind":"env.ready","router_url":"ws://127.0.0.1:PORT","instance_id":"fixture-1","e2e_key":"<base64url>"}
+{"kind":"env.ready","router_url":"ws://127.0.0.1:PORT","instance_id":"fixture-1","e2e_key":"<base64url>","e2e_client_key":"<base64url>","e2e_pairings":[{"id":"pair-1","psk":"<base64url>"}]}
 ```
 
 Clients connect to `router_url` (the proxy). The Router runs in development
 mode, so anyone may open tunnels (`TunnelService/open`) for `instance_id`;
 `e2e_key` is the fixture's end-to-end public key, to pin in an end-to-end
-tunnel. The fixture serves `conformance.v1.Fixture`, `conformance.v1.Targeted`
-and `conformance.v1.Vault` as FIXTURE.md describes.
+tunnel. `e2e_client_key` is a client private key the fixture accepts (Noise
+IK), and `e2e_pairings` four one-time pairings for clients pairing with
+IKpsk2; each test uses its own pairing, since a spent one stays spent until
+`restart_fixture`, which also forgets the clients that paired. The fixture
+serves `conformance.v1.Fixture`, `conformance.v1.Targeted`,
+`conformance.v1.Vault` and `conformance.v1.Paired` as FIXTURE.md describes.
 
 ### Commands
 

@@ -1,6 +1,8 @@
 package io.github.t4wefan.meshcall
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -12,13 +14,15 @@ import java.util.concurrent.TimeUnit
 const val FIXTURE = "conformance.v1.Fixture"
 const val TARGETED = "conformance.v1.Targeted"
 const val VAULT = "conformance.v1.Vault"
+const val PAIRED = "conformance.v1.Paired"
 const val INSTANCE = "fixture-1"
 
 /**
  * The shared client conformance environment (meshcall-router/conformance/
  * CLIENTS.md): `meshcall-conformance env` runs a Router behind a pausing
  * proxy and a fixture service, and restarts or stalls them on command. The
- * fixture is the Go one unless `MESHCALL_FIXTURE` names another runtime's.
+ * fixture is the Go one unless `MESHCALL_FIXTURE` names another runtime's;
+ * [peers] is a second environment with the same fixture.
  * Both binaries come from the `buildGoBinaries` Gradle task (or
  * `MESHCALL_CONFORMANCE_BINARY` / `MESHCALL_FIXTURE`); without them the
  * integration tests are skipped.
@@ -31,6 +35,10 @@ class Env private constructor(
     val instance: String,
     /** The fixture's end-to-end public key. */
     val e2eKey: String,
+    /** A client private key the fixture accepts (Noise IK). */
+    val e2eClientKey: String?,
+    /** One-time pairings the fixture accepts (IKpsk2); each test uses its own. */
+    val e2ePairings: List<E2EPairing>,
 ) : AutoCloseable {
 
     fun mesh(options: MeshOptions = MeshOptions.DEFAULT): Mesh = Mesh(Router(url), options)
@@ -57,15 +65,17 @@ class Env private constructor(
         private fun bin(name: String): File? =
             System.getenv("MESHCALL_TEST_BIN")?.let { File(it, name) }?.takeIf { it.canExecute() }
 
+        private val root = File(System.getProperty("meshcall.repoRoot") ?: "../..")
+
+        private fun env(name: String) = System.getenv(name)?.takeIf { it.isNotBlank() }
+
         fun start(): Env {
-            val conformance = System.getenv("MESHCALL_CONFORMANCE_BINARY")?.takeIf { it.isNotBlank() }?.let(::File)
-                ?: bin("meshcall-conformance")
-            val fixture = System.getenv("MESHCALL_FIXTURE")?.takeIf { it.isNotBlank() } ?: bin("conformance-fixture")?.path
+            val conformance = env("MESHCALL_CONFORMANCE_BINARY")?.let(::File) ?: bin("meshcall-conformance")
+            val fixture = env("MESHCALL_FIXTURE") ?: bin("conformance-fixture")?.path
             assumeTrue(
                 conformance != null && conformance.canExecute() && fixture != null,
                 "meshcall-conformance / conformance-fixture not built (needs Go): integration tests skipped",
             )
-            val root = File(System.getProperty("meshcall.repoRoot") ?: "../..")
             val process = ProcessBuilder(conformance!!.path, "env", "--fixture", fixture!!)
                 .directory(root)
                 .redirectError(ProcessBuilder.Redirect.appendTo(File.createTempFile("conformance-env", ".log")))
@@ -75,14 +85,27 @@ class Env private constructor(
             val ready = Json.parseToJsonElement(line).jsonObject
             check(ready["kind"]?.jsonPrimitive?.content == "env.ready") { "unexpected first line: $line" }
             fun field(name: String) = ready[name]!!.jsonPrimitive.content
+            val pairings = (ready["e2e_pairings"] as? JsonArray)?.map { it.jsonObject }?.map {
+                E2EPairing(it["id"]!!.jsonPrimitive.content, it["psk"]!!.jsonPrimitive.content)
+            }
             return Env(
                 process, process.outputStream.bufferedWriter(), answers,
                 field("router_url"), field("instance_id"), field("e2e_key"),
+                ready["e2e_client_key"]?.jsonPrimitive?.contentOrNull, pairings ?: emptyList(),
             )
         }
 
         /** One environment for the whole test run; disruptive tests restore it before returning. */
         val shared: Env by lazy {
+            start().also { env -> Runtime.getRuntime().addShutdownHook(Thread { env.close() }) }
+        }
+
+        /**
+         * A second environment, same fixture, for the client authentication
+         * tests (`conformance.v1.Paired`): pairings they spend and clients they
+         * pair stay out of [shared].
+         */
+        val peers: Env by lazy {
             start().also { env -> Runtime.getRuntime().addShutdownHook(Thread { env.close() }) }
         }
     }

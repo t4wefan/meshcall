@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import {
   MeshCallError, MeshCallServer, method, service, z,
-  type DuplexChannel, type RpcContext, type WebSocketEndpoint,
+  type DuplexChannel, type E2EPeer, type RpcContext, type WebSocketEndpoint,
 } from "../src/index.js";
 import type { TunnelPolicy } from "../src/tunnel.js";
 
@@ -172,6 +172,47 @@ class Vault {
   }
 }
 
+const PeerSeen = z.object({
+  protocol: z.string().nullable(), peer_key: z.string().nullable(), pairing_id: z.string().nullable(),
+}).meta({ id: "PeerSeen" });
+
+@service("conformance.v1.Paired", { description: "Served to end-to-end clients that authenticated themselves only." })
+class Paired {
+  @method({ description: "The end-to-end session of this call (ctx.e2e).", readOnly: true, request: Empty, response: PeerSeen })
+  async peer(_: unknown, ctx: RpcContext) {
+    return { protocol: ctx.e2e?.protocol ?? null, peer_key: ctx.e2e?.peerKey ?? null, pairing_id: ctx.e2e?.pairingId ?? null };
+  }
+}
+
+/** The clients this instance accepts and its one-time pairings. */
+class Peers {
+  private readonly accepted: Set<string>;
+  private readonly pairings: Map<string, string>;
+
+  public constructor(peers: string, pairings: string) {
+    this.accepted = new Set(peers.split(",").filter((key) => key !== ""));
+    // `<pairing_id>:<psk>`; a base64url PSK has no ":".
+    this.pairings = new Map(pairings.split(",").filter((entry) => entry !== "").map((entry) => {
+      const [id = "", ...psk] = entry.split(":");
+      return [id, psk.join(":")] as [string, string];
+    }));
+  }
+
+  public readonly psk = (pairingId: string): string | undefined => this.pairings.get(pairingId);
+
+  public readonly authorize = (peer: E2EPeer): boolean => {
+    if (peer.peerKey === null) return false;
+    if (peer.pairingId !== null) {
+      if (!this.pairings.delete(peer.pairingId)) return false; // spent
+      this.accepted.add(peer.peerKey);
+      return true;
+    }
+    return this.accepted.has(peer.peerKey);
+  };
+}
+
+const peers = new Peers(process.env.MESHCALL_E2E_PEERS ?? "", process.env.MESHCALL_E2E_PAIRINGS ?? "");
+
 @service("conformance.v1.Targeted", { description: "A targeted service: every call must name the instance it is for.", targeted: true })
 class Targeted {
   @method({ description: "Return the id of the instance that served the call.", readOnly: true, request: Empty, response: Instance })
@@ -182,7 +223,7 @@ class Targeted {
 
 const ping = Number(process.env.MESHCALL_PING_INTERVAL_MS ?? "15000");
 server = new MeshCallServer({
-  services: [new Fixture(), new Targeted(), new Vault()],
+  services: [new Fixture(), new Targeted(), new Vault(), new Paired()],
   router: { endpoint: routerEndpoint(process.env.MESHCALL_ROUTER_URL as string), instanceId: process.env.MESHCALL_CONFORMANCE_INSTANCE ?? "fixture-1" },
   pingIntervalMs: ping, pingTimeoutMs: Math.max(1000, ping * 2),
   ...(process.env.MESHCALL_MAX_FRAME_SIZE === undefined ? {} : { maxFrameSize: Number(process.env.MESHCALL_MAX_FRAME_SIZE) }),
@@ -190,8 +231,11 @@ server = new MeshCallServer({
   tunnelPolicies: new Map([
     ["conformance.v1.Fixture", tunnelPolicy], ["conformance.v1.Targeted", tunnelPolicy],
     ["conformance.v1.Vault", { ...tunnelPolicy, requireE2E: true }],
+    ["conformance.v1.Paired", { ...tunnelPolicy, requireE2EPeer: true }],
   ]),
   e2ePrivateKey: process.env.MESHCALL_E2E_PRIVATE_KEY as string,
+  authorizeE2EPeer: peers.authorize,
+  e2ePairingPsk: peers.psk,
 });
 await server.start();
 process.stderr.write("fixture registered\n");

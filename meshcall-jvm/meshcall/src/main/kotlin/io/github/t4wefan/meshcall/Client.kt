@@ -22,6 +22,8 @@ import okhttp3.Request
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 internal class ClientOptions(
     val credentials: RouterCredentials?,
@@ -34,6 +36,7 @@ internal class ClientOptions(
     val retry: RetryPolicy,
     val interceptors: List<ClientInterceptor>,
     val e2eKey: String?,
+    val e2eIdentity: E2EIdentity?,
     val httpClient: OkHttpClient,
 )
 
@@ -69,6 +72,10 @@ internal class MeshCallClient(
     @Volatile private var current: Link? = null
     private var connecting: Deferred<Link>? = null
     @Volatile private var everConnected = false
+
+    // Set once the instance confirmed this client's pairing: every later
+    // handshake (a reconnect) uses IK with the same key, never the pairing again.
+    @Volatile private var paired = false
 
     // The Router's 4401 answer (revoked or expired credentials): later calls
     // fail with it, reason included, instead of reconnecting.
@@ -161,6 +168,11 @@ internal class MeshCallClient(
         val ready = CompletableDeferred<Link>()
         val handshake = arrayOfNulls<ClientHandshake>(1)
         var handshakeId: String? = null
+        // A pairing: the confirmation call and the session it confirms.
+        val confirmId = AtomicReference<String?>(null)
+        var pairingSession: E2ESession? = null
+        // Covers the WebSocket, hello and handshake; a pairing confirmation gets longer.
+        val deadline = AtomicLong(nowMs() + options.handshakeTimeoutMs)
         lateinit var link: Link
 
         fun fail(error: Throwable) {
@@ -197,8 +209,31 @@ internal class MeshCallClient(
                         if (id != null) {
                             // After hello.ack on an E2E tunnel: the instance must answer the
                             // handshake towards the pinned key before any call is made.
-                            if (frame.callId != id || (frame !is Frame.CallResult && frame !is Frame.CallError)) return
-                            becomeReady(handshake[0]!!.finish(frame))
+                            if (frame !is Frame.CallResult && frame !is Frame.CallError) return
+                            val started = handshake[0]!!
+                            val confirming = confirmId.get()
+                            if (confirming != null) {
+                                if (frame.callId != confirming) return
+                                started.confirmed(frame)
+                                // The instance accepted this key: IK from now on, reconnects included.
+                                paired = true
+                                becomeReady(pairingSession)
+                                return
+                            }
+                            if (frame.callId != id) return
+                            val session = started.finish(frame)
+                            if (!started.confirms) {
+                                becomeReady(session)
+                                return
+                            }
+                            // Pairing: prove the PSK before the first call. The instance may
+                            // wait for a person to accept the client.
+                            val callId = newCallId()
+                            confirmId.set(callId)
+                            pairingSession = session
+                            deadline.set(nowMs() + E2E_CONFIRM_TIMEOUT_MS + clientDeadlineGraceMs(E2E_CONFIRM_TIMEOUT_MS))
+                            connection.enqueue(started.confirmFrame(callId, session))
+                                .invokeOnCompletion { error -> if (error != null) fail(error) }
                             return
                         }
                         if (frame !is Frame.HelloAck || frame.protocol != PROTOCOL_VERSION) {
@@ -211,7 +246,9 @@ internal class MeshCallClient(
                         }
                         val callId = newCallId()
                         handshakeId = callId
-                        val started = ClientHandshake(e2eKey, callId, options.credentials?.token ?: "")
+                        val started = ClientHandshake(
+                            e2eKey, callId, options.credentials?.token ?: "", options.e2eIdentity, paired,
+                        )
                         handshake[0] = started
                         connection.enqueue(started.frame).invokeOnCompletion { error -> if (error != null) fail(error) }
                     } catch (error: Throwable) {
@@ -257,8 +294,21 @@ internal class MeshCallClient(
             .build()
         connection.attach(client.newWebSocket(request, connection))
         try {
-            return withTimeoutOrNull(options.handshakeTimeoutMs) { ready.await() }
-                ?: throw DeadlineExceededException("MeshCall handshake timed out").also { fail(it) }
+            while (true) {
+                val left = deadline.get() - nowMs()
+                if (left > 0) {
+                    withTimeoutOrNull(left) { ready.await() }?.let { return it }
+                    continue // the deadline may have moved on meanwhile
+                }
+                val error = if (confirmId.get() != null) {
+                    handshakeFailed("the instance did not confirm the pairing in time")
+                } else {
+                    DeadlineExceededException("MeshCall handshake timed out")
+                }
+                fail(error)
+                // Throws [error], unless the link became ready just as time ran out.
+                return ready.await()
+            }
         } catch (error: CancellationException) {
             fail(error)
             throw error

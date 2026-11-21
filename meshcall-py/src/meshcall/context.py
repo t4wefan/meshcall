@@ -13,6 +13,7 @@ from meshcall.errors import InvalidArgumentError
 from meshcall.logging import RpcLogger
 
 if TYPE_CHECKING:
+    from meshcall.e2e import E2EPeer
     from meshcall.tunnel import Tunnel
 
 DEFAULT_PING_INTERVAL = 15.0
@@ -189,6 +190,10 @@ class RpcContext:
     #: The tunnel the call arrived through (its id and the principal the
     #: issuer set), or ``None``. Set by the Router; callers cannot forge it.
     tunnel: Tunnel | None = None
+    #: The end-to-end session of a sealed call: its handshake and, when the
+    #: client authenticated itself, its public key (``peer_key``) and
+    #: pairing. ``None`` for a call that is not sealed.
+    e2e: E2EPeer | None = None
     _deadline: float | None = field(default=None, repr=False)
     _trailers: dict[str, str] = field(default_factory=dict, repr=False)
 

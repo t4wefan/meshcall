@@ -191,7 +191,7 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 用 `e2e_key` 开启的隧道会在客户端与实例之间端到端承载调用内容；Router 仍然路由、执行 scope、超时与流控，能看到服务、方法、时间、流结构、大小与错误码，但看不到 payload、元数据与错误消息。它按隧道选择启用；实例也可以强制要求（见下文）。
 
-**密钥与固定（pinning）。** 实例有一对静态 X25519 密钥，像实例 id 一样配置（它是稳定配置，不随进程变化）。签发方通过带外方式得知实例公钥——实例是它部署的——并在 `TunnelService/open` 中作为 `e2e_key` 传入（32 字节，无填充 base64url；其他内容由 Router 返回 `invalid_argument`）。Router 把它放进 offer；`e2e_key` 不是自己公钥的 offer，实例一律拒绝。签发方把同一个公钥与凭据一起交给客户端。客户端**从不从 Router 或实例获取公钥**：它用固定的公钥发起握手，只有持有对应私钥的一方才能完成；握手失败是不可重试的 `unauthenticated`，`reason: "e2e_handshake_failed"`，且从不回退到明文。这就挡住了中间人，包括 Router 自身。谁可以连接仍由 Router 决定：它看得到凭据，而客户端没有静态密钥（Noise `NK`）。
+**密钥与固定（pinning）。** 实例有一对静态 X25519 密钥，像实例 id 一样配置（它是稳定配置，不随进程变化）。签发方通过带外方式得知实例公钥——实例是它部署的——并在 `TunnelService/open` 中作为 `e2e_key` 传入（32 字节，无填充 base64url；其他内容由 Router 返回 `invalid_argument`）。Router 把它放进 offer；`e2e_key` 不是自己公钥的 offer，实例一律拒绝。签发方把同一个公钥与凭据一起交给客户端。客户端**从不从 Router 或实例获取公钥**：它用固定的公钥发起握手，只有持有对应私钥的一方才能完成；握手失败是不可重试的 `unauthenticated`，`reason: "e2e_handshake_failed"`，且从不回退到明文。这就挡住了中间人，包括 Router 自身。默认情况下客户端没有静态密钥（Noise `NK`），因此谁可以连接只由 Router 决定：它看得到凭据。有自己静态密钥的客户端还会向实例证明自己的身份（见[客户端认证](#客户端认证)），此时由实例和 Router 一起决定谁可以连接。
 
 **凭据表明自身类型。** 端到端隧道的凭据以 `mtun_e2e.` 开头（普通凭据从不包含 `.`）。运行时拿到端到端凭据却没有 `e2e_key`，或拿到 `e2e_key` 却配普通凭据，会在配置客户端时、连接之前就拒绝，因此不会因疏忽把未密封的 payload 发往 Router。
 
@@ -199,7 +199,7 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 **offer 应答。** 实例因端到端原因拒绝 offer 时会说明：`{"accept": false, "reason": "e2e_key_mismatch"}`（固定的公钥不是自己的）或 `"e2e_required"`（对要求端到端的服务发来了明文 offer）。Router 在签发方收到的 `tunnel_rejected` 消息中写明原因；若重新 offer 因 `e2e_key_mismatch` 被拒绝，Router 以 `key_changed` 原因关闭隧道（其连接也以该原因关闭）。
 
-**握手。** 每个客户端连接在第一个密封调用之前握手一次：客户端调用 `meshcall.router.v1.TunnelHost/handshake`（一元）`{message}` → `{message}`，即 `Noise_NK_25519_AESGCM_SHA256` 的两条消息，payload 为空，无填充 base64url。prologue 为 `meshcall-e2e/1|<credential_digest>`，其中 `credential_digest` 是隧道凭据（UTF-8 字节）的小写十六进制 SHA-256。客户端对自己的凭据求哈希；Router 在端到端隧道的 offer 中放入该摘要（绝不是凭据本身），字段为 `credential_digest`，实例使用握手所经过隧道的摘要。因此为一个隧道做的握手无法经由另一个隧道完成（`e2e_handshake_failed`）：持有第二个凭据的中继无法让某个客户端的密封调用以另一个隧道的 principal 执行；而一个隧道只有一个目标，会话也就绑定到了该实例。Router 只在端到端隧道的连接上路由这个方法，并带着隧道元数据送到目标实例；对其他连接，它与任何不可调用的保留方法一样被拒绝（普通隧道上为 `permission_denied`，`reason: "tunnel_scope"`；其他连接为 `method_not_found`，没有调用权限的连接则先得到 `permission_denied`）。会话 id 是握手哈希的前 16 字节（十六进制）；实例把会话记在该隧道下。Noise `Split()` 得到的两把密钥分别密封客户端 → 实例与实例 → 客户端。实例每个隧道最多保留 16 个会话（丢弃最旧的），隧道关闭时全部丢弃。
+**握手。** 每个客户端连接在第一个密封调用之前握手一次：客户端调用 `meshcall.router.v1.TunnelHost/handshake`（一元）`{message, protocol?, pairing_id?}` → `{message}`，即一次 Noise 握手的两条消息，payload 为空，无填充 base64url。`protocol` 指明握手方式（省略时为 `Noise_NK_25519_AESGCM_SHA256`；其余两种见[客户端认证](#客户端认证)）；实例对不认识的名称回答 `e2e_handshake_failed`。NK 的 prologue 为 `meshcall-e2e/1|<credential_digest>`，其中 `credential_digest` 是隧道凭据（UTF-8 字节）的小写十六进制 SHA-256。客户端对自己的凭据求哈希；Router 在端到端隧道的 offer 中放入该摘要（绝不是凭据本身），字段为 `credential_digest`，实例使用握手所经过隧道的摘要。因此为一个隧道做的握手无法经由另一个隧道完成（`e2e_handshake_failed`）：持有第二个凭据的中继无法让某个客户端的密封调用以另一个隧道的 principal 执行；而一个隧道只有一个目标，会话也就绑定到了该实例。Router 只在端到端隧道的连接上路由这个方法，并带着隧道元数据送到目标实例；对其他连接，它与任何不可调用的保留方法一样被拒绝（普通隧道上为 `permission_denied`，`reason: "tunnel_scope"`；其他连接为 `method_not_found`，没有调用权限的连接则先得到 `permission_denied`）。会话 id 是握手哈希的前 16 字节（十六进制）；实例把会话记在该隧道下。Noise `Split()` 得到的两把密钥分别密封客户端 → 实例与实例 → 客户端。实例每个隧道最多保留 16 个会话（丢弃最旧的），隧道关闭时全部丢弃。
 
 **未知会话与被拒绝的帧。** 指名实例不认识的会话的调用，在任何处理器运行前即被拒绝，返回 `unauthenticated`，`reason: "e2e_session_unknown"`（重连过的实例已丢失会话）。收到这个应答时，无论调用形状，客户端都丢弃会话及其连接，在下一次调用前重新握手；一元调用重试一次，流式调用报告该错误。已知会话的帧若无法打开——被篡改、重放、过旧、被挪到别的调用或方法——则被拒绝（`call.open`）或结束其调用（后续帧），返回 `unauthenticated`，`reason: "e2e_frame_rejected"`；会话保留，因为只有 Router 或路径上的其他方才可能改动帧。客户端收到无法打开的帧时，以同样方式结束该调用（`source: "client"`）。
 
@@ -219,6 +219,27 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 对 Router 自身服务（`meshcall.router.*`：`AuthService`、`Registry`、`TunnelService`）的调用由 Router 应答，即使在端到端连接上也从不密封。在端到端隧道上，Router 拒绝其余所有缺少 `e2e_session` 与 `sealed` 的 `call.open`，以及所有 HTTP `/v1/call`（HTTP 无法承载会话），返回 `permission_denied`，`reason: "tunnel_e2e_required"`。它不按幂等键对密封调用去重：重放的终止帧在另一个会话里无法打开。`TunnelService/list` 与 `AuthService/whoami` 会显示隧道的 `e2e_key`。
 
 **密钥轮换。** 换了新密钥的实例会拒绝固定旧公钥的隧道的重新 offer（`e2e_key_mismatch`），这些隧道因此以 `key_changed` 原因关闭；其客户端的调用以 `unauthenticated` / `key_changed` 失败，需要重新向签发方申请。第一个版本没有新旧密钥并存的过渡期。
+
+#### 客户端认证
+
+客户端可以有一对自己的静态 X25519 密钥（由客户端 App 生成并保存，除握手外不发给任何一方），从而也向实例证明自己的身份；这样即使 Router 放行，实例也能拒绝所有它不认识的客户端。为此新增两种握手：
+
+| `protocol` | 模式 | 用途 |
+| --- | --- | --- |
+| `Noise_IK_25519_AESGCM_SHA256` | `<- s` · `-> e, es, s, ss` · `<- e, ee, se` | 实例已经认识的客户端 |
+| `Noise_IKpsk2_25519_AESGCM_SHA256` | 同上，消息 2 末尾加 `psk` | 配对：客户端尚未被认识，证明自己持有配对秘密 |
+
+消息 1 携带用实例公钥加密的客户端静态公钥（payload 为空时 96 字节）；消息 2 为 48 字节。两者的 prologue 都是 `meshcall-e2e/1|<credential_digest>|<instance_id>`，带上目标实例的 id：客户端从拿到实例公钥的同一处取得它，实例使用自己的 id，因此为另一个实例做的握手即使公钥相同也打不开。会话 id、密钥、密封帧和各项上限与 NK 相同。
+
+**已认识的客户端（IK）。** 实例读出消息 1 后、应答之前，询问应用是否在这条隧道上接受该客户端公钥（`authorize_e2e_peer`；各运行时的写法见指南）。拒绝、钩子出错或不应答以及其他所有失败，都是同一个 `unauthenticated` / `e2e_handshake_failed`，消息也不说明是哪一种：客户端无法借此探测实例认识哪些公钥。没有配置该钩子的实例接受任何客户端公钥（处理器仍能看到它）。
+
+**配对（IKpsk2）。** 实例的主人通过带外方式、绝不经过 Router（例如在实例所在设备上显示的二维码）把实例 id 与公钥、一个 `pairing_id` 和一个 32 字节的预共享密钥（PSK，无填充 base64url）交给客户端，只能用一次，很快过期。握手请求以明文携带 `pairing_id`（1 到 128 字节；它不是秘密，只用来告诉实例该用哪个 PSK）；实例查找对应的 PSK（`e2e_pairing_psk`），对未知或已用过的 `pairing_id` 回答 `e2e_handshake_failed`，并在消息 2 中混入 PSK。由于 PSK 直到消息 2 末尾才参与，消息 1 并不能证明客户端知道它：任何看到过 `pairing_id` 的人都能用自己的公钥发出消息 1。因此配对会话处于**待确认**状态：指名它的调用按未知会话拒绝（`e2e_session_unknown`），直到客户端用同一方法的第二次调用确认，`{session, confirm}` → `{}`。其中 `session` 是会话 id，`confirm` 是 JSON 对象 `{}` 的密封字段（格式与密封帧相同，使用客户端方向的第一个计数器），关联数据为 `meshcall-e2e/1|confirm|<session>`。只有 `confirm` 能打开时，实例才带着客户端公钥**和 `pairing_id`** 询问应用；应用只在这时记录客户端（并作废这次配对），绝不能在收到消息 1 时就这样做。接受后，会话变为普通会话，调用返回 `{}`；拒绝、`confirm` 打不开或这条隧道上没有该 id 的待确认会话时，丢弃待确认会话并返回 `e2e_handshake_failed`。确认可能要等设备旁的人操作：客户端为它设置 120 秒超时。完成配对的客户端此后每次握手（重连、第二条连接）都用同一把密钥走 IK；从未确认成功的配对会一直用 IKpsk2 重试，直到实例拒绝。
+
+**处理器看到的内容。** 密封会话里的每个调用都把会话交给处理器（`ctx.e2e`）：`protocol`、会话 id `session`，对 IK 与 IKpsk2 还有客户端公钥（`peer_key`）和会话配对时的 `pairing_id`。Router 提供的 principal 仍是签发方填写的值；只有 `peer_key` 来自客户端自身。
+
+**要求经过认证的客户端。** 实例可以为某次挂载的服务提出这一要求（`require_e2e_peer`，隐含 `require_e2e`，并且需要配置上面的钩子）。此后实例只在已认证客户端的会话里提供这些服务；其他调用都在任何处理器运行之前被拒绝——经由普通隧道的、经由 NK 会话的，以及完全不经过隧道的调用（账号的定向调用、直连）——返回 `permission_denied`，`reason: "e2e_peer_required"`。这一检查由实例完成，与 Router 允许什么无关。
+
+**客户端。** 配置了自身密钥和实例 id 的客户端使用 IK；同时配置了配对信息时，先用 IKpsk2 配对，并在第一次调用前完成确认。它绝不会从 IK 或 IKpsk2 退回到 NK，并且可以使用自己固定的实例公钥，而不是签发方给的那一份：签发方仍要把公钥传给 `TunnelService/open`（不是实例自己的公钥时实例会拒绝），但自己固定了公钥的客户端不需要信任签发方的副本。
 
 ### 绑定实例的注册凭据
 

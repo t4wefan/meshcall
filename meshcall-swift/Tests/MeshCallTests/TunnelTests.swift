@@ -152,6 +152,151 @@
         }
     }
 
+    struct PeerSeen: Codable, Sendable {
+        var `protocol`: String?
+        var peer_key: String?
+        var pairing_id: String?
+    }
+
+    let paired = "conformance.v1.Paired"
+    let ikProtocol = "Noise_IK_25519_AESGCM_SHA256"
+    let ikpsk2Protocol = "Noise_IKpsk2_25519_AESGCM_SHA256"
+
+    // The client half of conformance/e2e_peers.go: clients that authenticate
+    // themselves end to end (IK) or pair first (IKpsk2). Its own environment:
+    // pairings are spent once per fixture.
+    final class E2EPeerTests: LiveTestCase {
+        private func grant() async throws -> TunnelGrant {
+            let opened = try await mesh.tunnels.open(
+                OpenTunnelRequest(
+                    instance: LiveMesh.instance, scopes: [TunnelScope(service: fixture), TunnelScope(service: paired)],
+                    principal: "user:alice/device:phone", ttlSeconds: 600, e2eKey: live.e2eKey))
+            return opened.grant(routerURL: live.routerURL)
+        }
+
+        private func client(_ privateKey: String, pairing: E2EPairing? = nil) async throws -> Mesh {
+            let grant = try await grant()
+            return try Mesh(
+                tunnel: grant, identity: E2EIdentity(privateKey: privateKey, instanceID: grant.instanceID, pairing: pairing))
+        }
+
+        private func peer(_ mesh: Mesh) async throws -> PeerSeen {
+            try await mesh.unary(paired, "peer", Empty(), as: PeerSeen.self, options: CallOptions(timeout: .seconds(10)))
+        }
+
+        private func pairing(_ index: Int) throws -> E2EPairing {
+            guard live.e2ePairings.count > index else {
+                throw XCTSkip("meshcall-conformance env gave no e2e_pairings (rebuild meshcall-router/bin)")
+            }
+            return live.e2ePairings[index]
+        }
+
+        // conformance-scenario: e2e.ik
+        func testAKnownClientKeyReachesThePairedService() async throws {
+            let key = live.e2eClientKey
+            let tunnel = try await client(key)
+            defer { Task { await tunnel.close() } }
+            let seen = try await peer(tunnel)
+            XCTAssertEqual(seen.protocol, ikProtocol)
+            XCTAssertEqual(seen.peer_key, try E2EKeyPair.publicKey(of: key))
+            XCTAssertNil(seen.pairing_id)
+            let echo = try await tunnel.unary(fixture, "echo", Echo(value: 3, text: "known"), as: Echo.self)
+            XCTAssertEqual(echo.value, 3)
+        }
+
+        // conformance-scenario: e2e.ik_unknown_key
+        func testAnUnknownClientKeyFailsTheHandshakeOnce() async throws {
+            let tunnel = try await client(E2EKeyPair.generate().privateKey)
+            defer { Task { await tunnel.close() } }
+            let error = await meshError {
+                _ = try await tunnel.unary(
+                    fixture, "echo", Echo(value: 1, text: "x"), as: Echo.self,
+                    options: CallOptions(timeout: .seconds(10), idempotent: true))
+            }
+            XCTAssertEqual(error?.code, .unauthenticated)
+            XCTAssertEqual(error?.reason, "e2e_handshake_failed")
+            XCTAssertEqual(error?.retryable, false)
+            XCTAssertNil(error?.details["attempts"], "not retried")
+        }
+
+        // conformance-scenario: e2e.peer_required
+        func testAClientWithoutAKeyIsRefusedByThePairedService() async throws {
+            let tunnel = try Mesh(tunnel: try await grant())  // NK
+            defer { Task { await tunnel.close() } }
+            let error = await meshError { _ = try await self.peer(tunnel) }
+            XCTAssertEqual(error?.code, .permissionDenied)
+            XCTAssertEqual(error?.reason, "e2e_peer_required")
+            let echo = try await tunnel.unary(fixture, "echo", Echo(value: 2, text: "nk"), as: Echo.self)
+            XCTAssertEqual(echo.value, 2)
+        }
+
+        // conformance-scenario: e2e.pairing
+        func testPairingThenTheKeyIsKnown() async throws {
+            let pairing = try pairing(0)
+            let key = E2EKeyPair.generate()
+            let pairingClient = try await client(key.privateKey, pairing: pairing)
+            defer { Task { await pairingClient.close() } }
+            let seen = try await peer(pairingClient)
+            XCTAssertEqual(seen.protocol, ikpsk2Protocol)
+            XCTAssertEqual(seen.peer_key, key.publicKey)
+            XCTAssertEqual(seen.pairing_id, pairing.id)
+
+            // The pairing is spent: another key cannot use it.
+            let intruder = try await client(E2EKeyPair.generate().privateKey, pairing: pairing)
+            defer { Task { await intruder.close() } }
+            let refused = await meshError { _ = try await self.peer(intruder) }
+            XCTAssertEqual(refused?.code, .unauthenticated)
+            XCTAssertEqual(refused?.reason, "e2e_handshake_failed")
+
+            // The paired key is known now: a new client with no pairing uses IK.
+            let known = try await client(key.privateKey)
+            defer { Task { await known.close() } }
+            let again = try await peer(known)
+            XCTAssertEqual(again.protocol, ikProtocol)
+            XCTAssertEqual(again.peer_key, key.publicKey)
+            XCTAssertNil(again.pairing_id)
+        }
+
+        // conformance-scenario: e2e.pairing_wrong_psk
+        func testAWrongPSKDoesNotSpendThePairing() async throws {
+            let pairing = try pairing(1)
+            let key = E2EKeyPair.generate()
+            let wrong = try await client(
+                key.privateKey, pairing: E2EPairing(id: pairing.id, psk: base64URLEncode(Data(repeating: 9, count: 32))))
+            defer { Task { await wrong.close() } }
+            let error = await meshError { _ = try await self.peer(wrong) }
+            XCTAssertEqual(error?.code, .unauthenticated)
+            XCTAssertEqual(error?.reason, "e2e_handshake_failed")
+
+            let right = try await client(key.privateKey, pairing: pairing)
+            defer { Task { await right.close() } }
+            let seen = try await peer(right)
+            XCTAssertEqual(seen.protocol, ikpsk2Protocol)
+            XCTAssertEqual(seen.pairing_id, pairing.id)
+        }
+
+        // conformance-scenario: e2e.pairing_reconnect
+        func testAfterAConfirmedPairingAReconnectUsesIK() async throws {
+            let pairing = try pairing(2)
+            let key = E2EKeyPair.generate()
+            let tunnel = try await client(key.privateKey, pairing: pairing)
+            defer { Task { await tunnel.close() } }
+            let first = try await peer(tunnel)
+            XCTAssertEqual(first.protocol, ikpsk2Protocol)
+
+            live.pauseRouter()
+            let alive = await tunnel.checkConnection(timeout: .milliseconds(300))
+            live.resumeRouter()
+            XCTAssertFalse(alive)
+
+            // The pairing is spent; the same Mesh handshakes again with IK.
+            let second = try await peer(tunnel)
+            XCTAssertEqual(second.protocol, ikProtocol)
+            XCTAssertEqual(second.peer_key, key.publicKey)
+            XCTAssertNil(second.pairing_id)
+        }
+    }
+
     // Connection loss, reconnect and the foreground check, against Routers
     // that stop and restart under the client.
     final class ReconnectTests: LiveTestCase {

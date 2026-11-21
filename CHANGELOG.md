@@ -86,6 +86,28 @@ matching `meshcall-go/vX.Y.Z` tag.
   Python needs the new `meshcall[e2e]` extra (`cryptography`); TypeScript
   uses WebCrypto; Go the standard library. The conformance suite checks it
   against every runtime with its own Noise implementation.
+- **Clients that authenticate themselves on end-to-end tunnels**, so an
+  instance can refuse every client it does not know even when the Router lets
+  it through. A client with a key of its own (`E2EIdentity`:
+  `Mesh(..., e2e_identity=…)`, `{ e2eIdentity }`, Go `WithE2EIdentity`, and
+  in Swift and the JVM next to the tunnel grant) handshakes with
+  `Noise_IK_25519_AESGCM_SHA256`; the instance asks `authorize_e2e_peer`
+  (`authorizeE2EPeer`, `WithAuthorizeE2EPeer`) whether it knows the key. A new
+  client pairs once with `Noise_IKpsk2_25519_AESGCM_SHA256` and a one-time
+  pairing id and PSK the device's owner shows out of band
+  (`generate_e2e_psk()`, looked up with `e2e_pairing_psk`): the session waits
+  until the client proves the PSK, and only then is the hook asked with the
+  `pairing_id`, so seeing the pairing on the wire is not enough to pair or
+  to spend it; later handshakes, reconnects included, use IK. The prologue of
+  both also binds the instance id. Handlers see `ctx.e2e` (`protocol`,
+  `session`, `peer_key`, `pairing_id`). `require_e2e_peer=True` at mount
+  (`requireE2EPeer`, `WithRequireE2EPeer()`) serves those services only to
+  authenticated clients and refuses everything else, tunnelled or not, with
+  the new reason `e2e_peer_required`. A client may pin the instance's key
+  itself instead of taking the issuer's copy. Every refused handshake reads
+  the same (`e2e_handshake_failed`). NK stays as it was for clients without
+  a key. New test vectors (`noise_ik…`, `noise_ikpsk2…`, `e2e_handshakes.json`)
+  and conformance scenarios cover every runtime.
 - **Instance-bound registration credentials**: `instance_ids` on accounts, API
   keys and token scopes (`RouterScope(instance_ids=[…])`) restricts the ids a
   credential may register under.

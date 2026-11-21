@@ -18,12 +18,11 @@ import (
 )
 
 // End-to-end sealed tunnels (docs/protocol.md → End-to-end encryption): a
-// Noise_NK_25519_AESGCM_SHA256 handshake per client connection, then the
-// payloads, metadata and error messages of every call travel sealed while
+// Noise handshake per client connection (NK, or IK / IKpsk2 when the client
+// authenticates itself), then the payloads, metadata and error messages of every call travel sealed while
 // the Router keeps routing on the clear header.
 
 const (
-	noiseProtocol   = "Noise_NK_25519_AESGCM_SHA256"
 	e2ePrologue     = "meshcall-e2e/1"
 	e2eWindow       = 1024
 	e2eMaxSessions  = 16
@@ -32,10 +31,10 @@ const (
 
 var b64 = base64.RawURLEncoding
 
-// GenerateE2EKey makes an instance key pair for end-to-end sealed tunnels:
-// configure privateKey on the instance (WithE2EPrivateKey) and give
-// publicKey to the issuer, which pins it in Tunnels().Open (E2EKey). Both
-// are base64url without padding.
+// GenerateE2EKey makes a key pair for end-to-end sealed tunnels. For an
+// instance: configure privateKey on it (WithE2EPrivateKey) and give
+// publicKey to the issuer, which pins it in Tunnels().Open (E2EKey). For a
+// client: its E2EIdentity.PrivateKey. Both are base64url without padding.
 func GenerateE2EKey() (privateKey, publicKey string, err error) {
 	key, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -51,6 +50,90 @@ func E2EPublicKey(privateKey string) (string, error) {
 		return "", err
 	}
 	return b64.EncodeToString(key.PublicKey().Bytes()), nil
+}
+
+// GenerateE2EPSK makes a pairing secret: 32 random bytes, base64url without
+// padding. The instance's owner hands it to a new client out of band (never
+// through the Router) with a pairing id; see WithE2EPairingPSK.
+func GenerateE2EPSK() (string, error) {
+	psk := make([]byte, 32)
+	if _, err := rand.Read(psk); err != nil {
+		return "", err
+	}
+	return b64.EncodeToString(psk), nil
+}
+
+// E2EPairing is a one-time pairing the instance's owner handed the client
+// out of band (never through the Router): its id (1 to 128 bytes) and its
+// 32-byte PSK, base64url without padding (GenerateE2EPSK).
+type E2EPairing struct {
+	ID  string
+	PSK string
+}
+
+// E2EIdentity is a client's own key for end-to-end tunnels: with it the
+// client authenticates itself to the instance (Noise IK).
+//
+// PrivateKey is this client's static X25519 key (GenerateE2EKey, kept by
+// the app); InstanceID the instance whose key the client pinned with
+// WithE2EKey, bound in the handshake. Pairing makes the first handshake a
+// pairing (IKpsk2); once the instance confirmed it, every later handshake
+// of the Mesh uses IK.
+type E2EIdentity struct {
+	PrivateKey string
+	InstanceID string
+	Pairing    *E2EPairing
+}
+
+// E2EPeer is the end-to-end session of a call (Context.E2E), or the client
+// an instance is asked to accept (WithAuthorizeE2EPeer).
+type E2EPeer struct {
+	// Protocol is the handshake: E2EProtocolNK, E2EProtocolIK or E2EProtocolIKpsk2.
+	Protocol string
+	// Session is the session id (hex).
+	Session string
+	// PeerKey is the client's static public key (base64url); empty for an NK
+	// session, whose client has none.
+	PeerKey string
+	// PairingID is the pairing the session was made with; empty otherwise.
+	PairingID string
+	// Tunnel is the tunnel the session belongs to.
+	Tunnel *Tunnel
+}
+
+const maxPairingID = 128
+
+func checkPairingID(id string) error {
+	if len(id) < 1 || len(id) > maxPairingID {
+		return errors.New("meshcall: a pairing id is 1 to 128 bytes")
+	}
+	return nil
+}
+
+func parsePSK(s string) ([]byte, error) {
+	raw, err := b64.DecodeString(s)
+	if err != nil || len(raw) != 32 {
+		return nil, errors.New("meshcall: a pairing PSK is 32 bytes, base64url without padding")
+	}
+	return raw, nil
+}
+
+func checkE2EIdentity(identity E2EIdentity) error {
+	if _, err := parsePrivateKey(identity.PrivateKey); err != nil {
+		return err
+	}
+	if identity.InstanceID == "" {
+		return errors.New("meshcall: E2EIdentity needs the InstanceID whose key you pinned")
+	}
+	if identity.Pairing != nil {
+		if err := checkPairingID(identity.Pairing.ID); err != nil {
+			return err
+		}
+		if _, err := parsePSK(identity.Pairing.PSK); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func parsePrivateKey(s string) (*ecdh.PrivateKey, error) {
@@ -69,7 +152,25 @@ func parsePublicKey(s string) (*ecdh.PublicKey, error) {
 	return ecdh.X25519().NewPublicKey(raw)
 }
 
-// --- Noise NK ---------------------------------------------------------------
+// --- Noise NK, IK, IKpsk2 ---------------------------------------------------
+
+// The handshakes a client may use (docs/protocol.md → End-to-end encryption,
+// Client authentication): NK when the client has no static key of its own,
+// IK when it authenticates itself, IKpsk2 to pair a client the instance does
+// not know yet.
+const (
+	E2EProtocolNK     = "Noise_NK_25519_AESGCM_SHA256"
+	E2EProtocolIK     = "Noise_IK_25519_AESGCM_SHA256"
+	E2EProtocolIKpsk2 = "Noise_IKpsk2_25519_AESGCM_SHA256"
+)
+
+// noisePatterns are the message patterns after the responder's static key
+// (<- s), which the initiator of all three knows beforehand.
+var noisePatterns = map[string][2][]string{
+	E2EProtocolNK:     {{"e", "es"}, {"e", "ee"}},
+	E2EProtocolIK:     {{"e", "es", "s", "ss"}, {"e", "ee", "se"}},
+	E2EProtocolIKpsk2: {{"e", "es", "s", "ss"}, {"e", "ee", "se", "psk"}},
+}
 
 type symmetricState struct {
 	ck, h [32]byte
@@ -77,9 +178,9 @@ type symmetricState struct {
 	n     uint64
 }
 
-func newSymmetricState(prologue []byte) *symmetricState {
+func newSymmetricState(protocol string, prologue []byte) *symmetricState {
 	s := &symmetricState{}
-	copy(s.h[:], noiseProtocol) // the name is shorter than HASHLEN: zero padded
+	copy(s.h[:], protocol) // every name here is at most HASHLEN: zero padded
 	s.ck = s.h
 	s.mixHash(prologue)
 	return s
@@ -92,23 +193,33 @@ func (s *symmetricState) mixHash(data []byte) {
 	copy(s.h[:], sum.Sum(nil))
 }
 
-func hkdf2(ck []byte, ikm []byte) (a, b [32]byte) {
+// hkdf is Noise's HKDF with HMAC-SHA256 and n (2 or 3) outputs.
+func hkdf(ck []byte, ikm []byte, n int) [][32]byte {
 	mac := hmac.New(sha256.New, ck)
 	mac.Write(ikm)
 	temp := mac.Sum(nil)
-	mac = hmac.New(sha256.New, temp)
-	mac.Write([]byte{1})
-	copy(a[:], mac.Sum(nil))
-	mac = hmac.New(sha256.New, temp)
-	mac.Write(a[:])
-	mac.Write([]byte{2})
-	copy(b[:], mac.Sum(nil))
-	return a, b
+	out := make([][32]byte, n)
+	var prev []byte
+	for i := range n {
+		mac = hmac.New(sha256.New, temp)
+		mac.Write(prev)
+		mac.Write([]byte{byte(i + 1)})
+		copy(out[i][:], mac.Sum(nil))
+		prev = out[i][:]
+	}
+	return out
 }
 
 func (s *symmetricState) mixKey(ikm []byte) {
-	ck, k := hkdf2(s.ck[:], ikm)
-	s.ck, s.k, s.n = ck, k[:], 0
+	out := hkdf(s.ck[:], ikm, 2)
+	s.ck, s.k, s.n = out[0], out[1][:], 0
+}
+
+func (s *symmetricState) mixKeyAndHash(ikm []byte) {
+	out := hkdf(s.ck[:], ikm, 3)
+	s.ck = out[0]
+	s.mixHash(out[1][:])
+	s.k, s.n = out[2][:], 0
 }
 
 func gcmNonce(n uint64) []byte {
@@ -152,98 +263,214 @@ func (s *symmetricState) decryptAndHash(ciphertext []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (s *symmetricState) split() (initiatorToResponder, responderToInitiator [32]byte) {
-	return hkdf2(s.ck[:], nil)
+// handshake is one end of a two-message Noise handshake towards (or as) a
+// responder whose static key the initiator knows: NK, IK or IKpsk2.
+type handshake struct {
+	protocol  string
+	initiator bool
+	sym       *symmetricState
+	s         *ecdh.PrivateKey // this end's static key (the initiator has one for IK and IKpsk2)
+	rs        *ecdh.PublicKey  // the other end's static key: pinned, or read from message 1
+	psk       []byte           // IKpsk2 only
+	e         *ecdh.PrivateKey
+	re        *ecdh.PublicKey
+	turn      int
 }
 
-// nkInitiator is the client side of a handshake in progress.
-type nkInitiator struct {
-	sym *symmetricState
-	e   *ecdh.PrivateKey
+// newHandshake starts a handshake. ephemeral is for test vectors only; nil
+// draws a fresh key when one is needed.
+func newHandshake(protocol string, initiator bool, prologue []byte, s *ecdh.PrivateKey, rs *ecdh.PublicKey, psk []byte, ephemeral *ecdh.PrivateKey) (*handshake, error) {
+	if _, ok := noisePatterns[protocol]; !ok {
+		return nil, errors.New("unknown handshake " + protocol)
+	}
+	if (protocol == E2EProtocolIKpsk2) != (psk != nil) {
+		return nil, errors.New("IKpsk2, and only IKpsk2, takes a PSK")
+	}
+	if psk != nil && len(psk) != 32 {
+		return nil, errors.New("a pairing PSK is 32 bytes")
+	}
+	if (protocol != E2EProtocolNK || !initiator) && s == nil {
+		return nil, errors.New(protocol + " needs this end's static key")
+	}
+	if initiator && rs == nil {
+		return nil, errors.New("the initiator needs the responder's static key")
+	}
+	hs := &handshake{protocol: protocol, initiator: initiator, sym: newSymmetricState(protocol, prologue), s: s, psk: psk, e: ephemeral}
+	responder := rs
+	if initiator {
+		hs.rs = rs
+	} else {
+		responder = s.PublicKey()
+	}
+	hs.sym.mixHash(responder.Bytes())
+	return hs, nil
 }
 
-// nkInitiate writes message 1 (-> e, es) towards the pinned responder key.
-// ephemeral is for test vectors only; nil draws a fresh key.
-func nkInitiate(rs *ecdh.PublicKey, ephemeral *ecdh.PrivateKey, prologue, payload []byte) (*nkInitiator, []byte, error) {
-	sym := newSymmetricState(prologue)
-	sym.mixHash(rs.Bytes())
-	e := ephemeral
-	if e == nil {
-		var err error
-		if e, err = ecdh.X25519().GenerateKey(rand.Reader); err != nil {
-			return nil, nil, err
+func (hs *handshake) tokens() []string {
+	tokens := noisePatterns[hs.protocol][hs.turn]
+	hs.turn++
+	return tokens
+}
+
+// dh computes a DH token: its first letter is the initiator's key, the
+// second the responder's.
+func (hs *handshake) dh(token string) ([]byte, error) {
+	mine, theirs := token[0], token[1]
+	if !hs.initiator {
+		mine, theirs = theirs, mine
+	}
+	local, remote := hs.s, hs.rs
+	if mine == 'e' {
+		local = hs.e
+	}
+	if theirs == 'e' {
+		remote = hs.re
+	}
+	if local == nil || remote == nil {
+		return nil, errors.New("handshake key missing")
+	}
+	return local.ECDH(remote)
+}
+
+func (hs *handshake) writeMessage(payload []byte) ([]byte, error) {
+	var out []byte
+	for _, token := range hs.tokens() {
+		switch token {
+		case "e":
+			if hs.e == nil {
+				var err error
+				if hs.e, err = ecdh.X25519().GenerateKey(rand.Reader); err != nil {
+					return nil, err
+				}
+			}
+			pub := hs.e.PublicKey().Bytes()
+			out = append(out, pub...)
+			hs.sym.mixHash(pub)
+			if hs.psk != nil {
+				hs.sym.mixKey(pub)
+			}
+		case "s":
+			out = append(out, hs.sym.encryptAndHash(hs.s.PublicKey().Bytes())...)
+		case "psk":
+			hs.sym.mixKeyAndHash(hs.psk)
+		default:
+			shared, err := hs.dh(token)
+			if err != nil {
+				return nil, err
+			}
+			hs.sym.mixKey(shared)
 		}
 	}
-	msg := append([]byte{}, e.PublicKey().Bytes()...)
-	sym.mixHash(e.PublicKey().Bytes())
-	es, err := e.ECDH(rs)
-	if err != nil {
-		return nil, nil, err
-	}
-	sym.mixKey(es)
-	msg = append(msg, sym.encryptAndHash(payload)...)
-	return &nkInitiator{sym: sym, e: e}, msg, nil
+	return append(out, hs.sym.encryptAndHash(payload)...), nil
 }
 
-// finish reads message 2 (<- e, ee) and returns the transport keys.
-func (i *nkInitiator) finish(msg []byte) (payload []byte, sess *e2eSession, err error) {
-	if len(msg) < 32+16 {
-		return nil, nil, errors.New("short handshake message")
+var errShortHandshake = errors.New("short handshake message")
+
+func (hs *handshake) readMessage(msg []byte) ([]byte, error) {
+	rest := msg
+	for _, token := range hs.tokens() {
+		switch token {
+		case "e":
+			if len(rest) < 32 {
+				return nil, errShortHandshake
+			}
+			re, err := ecdh.X25519().NewPublicKey(rest[:32])
+			if err != nil {
+				return nil, err
+			}
+			hs.re = re
+			hs.sym.mixHash(rest[:32])
+			if hs.psk != nil {
+				hs.sym.mixKey(rest[:32])
+			}
+			rest = rest[32:]
+		case "s":
+			size := 32
+			if hs.sym.k != nil {
+				size = 48
+			}
+			if len(rest) < size {
+				return nil, errShortHandshake
+			}
+			raw, err := hs.sym.decryptAndHash(rest[:size])
+			if err != nil {
+				return nil, err
+			}
+			if hs.rs, err = ecdh.X25519().NewPublicKey(raw); err != nil {
+				return nil, err
+			}
+			rest = rest[size:]
+		case "psk":
+			hs.sym.mixKeyAndHash(hs.psk)
+		default:
+			shared, err := hs.dh(token)
+			if err != nil {
+				return nil, err
+			}
+			hs.sym.mixKey(shared)
+		}
 	}
-	re, err := ecdh.X25519().NewPublicKey(msg[:32])
-	if err != nil {
-		return nil, nil, err
+	if hs.sym.k != nil && len(rest) < 16 {
+		return nil, errShortHandshake
 	}
-	i.sym.mixHash(msg[:32])
-	ee, err := i.e.ECDH(re)
-	if err != nil {
-		return nil, nil, err
-	}
-	i.sym.mixKey(ee)
-	if payload, err = i.sym.decryptAndHash(msg[32:]); err != nil {
-		return nil, nil, err
-	}
-	send, recv := i.sym.split()
-	return payload, newE2ESession(i.sym.h, send, recv), nil
+	return hs.sym.decryptAndHash(rest)
 }
 
-// nkRespond reads message 1 with the instance's static key and writes
-// message 2.
-func nkRespond(s *ecdh.PrivateKey, ephemeral *ecdh.PrivateKey, prologue, msg, payload []byte) (reply, received []byte, sess *e2eSession, err error) {
-	if len(msg) < 32+16 {
-		return nil, nil, nil, errors.New("short handshake message")
+// split returns the session once both messages are done: the initiator
+// sends with the first key, the responder with the second.
+func (hs *handshake) split() *e2eSession {
+	out := hkdf(hs.sym.ck[:], nil, 2)
+	toResponder, toInitiator := out[0], out[1]
+	if hs.initiator {
+		return newE2ESession(hs.protocol, hs.sym.h, toResponder, toInitiator)
 	}
-	sym := newSymmetricState(prologue)
-	sym.mixHash(s.PublicKey().Bytes())
-	re, err := ecdh.X25519().NewPublicKey(msg[:32])
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	sym.mixHash(msg[:32])
-	es, err := s.ECDH(re)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	sym.mixKey(es)
-	if received, err = sym.decryptAndHash(msg[32:]); err != nil {
-		return nil, nil, nil, err
-	}
-	e := ephemeral
-	if e == nil {
-		if e, err = ecdh.X25519().GenerateKey(rand.Reader); err != nil {
+	return newE2ESession(hs.protocol, hs.sym.h, toInitiator, toResponder)
+}
+
+// startE2EHandshake writes the client's message 1 and the
+// TunnelHost/handshake request carrying it: NK without an identity, IK with
+// one, IKpsk2 while its pairing is not confirmed. pairing is non-nil when the
+// session needs a confirmation. ephemeral is for test vectors only.
+func startE2EHandshake(credential string, pinned *ecdh.PublicKey, identity *E2EIdentity, paired bool, ephemeral *ecdh.PrivateKey) (hs *handshake, request map[string]string, pairing *E2EPairing, err error) {
+	digest := e2eCredentialDigest(credential)
+	protocol, prologue := E2EProtocolNK, e2eTunnelPrologue(digest)
+	var static *ecdh.PrivateKey
+	var psk []byte
+	if identity != nil {
+		protocol, prologue = E2EProtocolIK, e2ePeerPrologue(digest, identity.InstanceID)
+		if static, err = parsePrivateKey(identity.PrivateKey); err != nil {
 			return nil, nil, nil, err
 		}
+		if identity.Pairing != nil && !paired {
+			pairing = identity.Pairing
+			protocol = E2EProtocolIKpsk2
+			if psk, err = parsePSK(pairing.PSK); err != nil {
+				return nil, nil, nil, err
+			}
+		}
 	}
-	reply = append([]byte{}, e.PublicKey().Bytes()...)
-	sym.mixHash(e.PublicKey().Bytes())
-	ee, err := e.ECDH(re)
+	if hs, err = newHandshake(protocol, true, prologue, static, pinned, psk, ephemeral); err != nil {
+		return nil, nil, nil, err
+	}
+	msg1, err := hs.writeMessage(nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	sym.mixKey(ee)
-	reply = append(reply, sym.encryptAndHash(payload)...)
-	toResponder, toInitiator := sym.split()
-	return reply, received, newE2ESession(sym.h, toInitiator, toResponder), nil
+	request = map[string]string{"message": b64.EncodeToString(msg1)}
+	if protocol != E2EProtocolNK {
+		request["protocol"] = protocol
+	}
+	if pairing != nil {
+		request["pairing_id"] = pairing.ID
+	}
+	return hs, request, pairing, nil
+}
+
+// e2eConfirmRequest proves a pairing client holds the PSK: the sealed {}
+// under the confirmation's associated data, the first counter of its
+// direction.
+func e2eConfirmRequest(sess *e2eSession) map[string]string {
+	return map[string]string{"session": sess.id, "confirm": sess.seal([]byte("{}"), e2eConfirmAD(sess.id))}
 }
 
 // --- sessions and sealed frames ----------------------------------------------
@@ -252,10 +479,15 @@ func nkRespond(s *ecdh.PrivateKey, ephemeral *ecdh.PrivateKey, prologue, msg, pa
 // other's for receiving, with a replay window (frames may be dropped or
 // reordered by the Router, never accepted twice).
 type e2eSession struct {
-	id   string
-	hash [32]byte
-	send cipher.AEAD
-	recv cipher.AEAD
+	id       string
+	hash     [32]byte
+	protocol string
+	send     cipher.AEAD
+	recv     cipher.AEAD
+	// On the instance, for IK and IKpsk2: the client's static public key
+	// (base64url) and the pairing the session was made with.
+	peerKey   string
+	pairingID string
 
 	mu     sync.Mutex
 	sendN  uint64
@@ -263,16 +495,32 @@ type e2eSession struct {
 	window [e2eWindow / 64]uint64
 }
 
-func newE2ESession(h [32]byte, send, recv [32]byte) *e2eSession {
-	return &e2eSession{id: hex.EncodeToString(h[:16]), hash: h, send: newGCM(send[:]), recv: newGCM(recv[:])}
+func newE2ESession(protocol string, h [32]byte, send, recv [32]byte) *e2eSession {
+	return &e2eSession{id: hex.EncodeToString(h[:16]), hash: h, protocol: protocol, send: newGCM(send[:]), recv: newGCM(recv[:])}
 }
 
-// e2eAD is the associated data binding a sealed part to its frame.
+// peer is what a handler (Context.E2E) and the authorization hook see of
+// the session.
+func (s *e2eSession) peer(t *Tunnel) E2EPeer {
+	return E2EPeer{Protocol: s.protocol, Session: s.id, PeerKey: s.peerKey, PairingID: s.pairingID, Tunnel: t}
+}
+
 // e2eTunnelPrologue binds a handshake to one tunnel: the hex SHA-256 of its
 // credential, which the client hashes itself and the instance learns from
 // the offer.
 func e2eTunnelPrologue(credentialDigest string) []byte {
 	return []byte(e2ePrologue + "|" + credentialDigest)
+}
+
+// e2ePeerPrologue is the IK / IKpsk2 prologue: the tunnel, and the instance
+// whose key the client pinned.
+func e2ePeerPrologue(credentialDigest, instanceID string) []byte {
+	return []byte(e2ePrologue + "|" + credentialDigest + "|" + instanceID)
+}
+
+// e2eConfirmAD is the associated data of a pairing confirmation.
+func e2eConfirmAD(session string) []byte {
+	return []byte(e2ePrologue + "|confirm|" + session)
 }
 
 func e2eCredentialDigest(credential string) string {
@@ -288,6 +536,7 @@ const routerServicePrefix = "meshcall.router."
 // in a plain one).
 func isE2ECredential(credential string) bool { return strings.HasPrefix(credential, "mtun_e2e.") }
 
+// e2eAD is the associated data binding a sealed part to its frame.
 func e2eAD(kind, callID, service, method, direction string, sequence *int64, session string) []byte {
 	seq := ""
 	if sequence != nil {
@@ -463,10 +712,20 @@ func (c *e2eCall) openFrame(f frame) (frame, error) {
 	return f, nil
 }
 
-// e2eSessions is an instance's sessions under each tunnel, oldest first.
+// e2eSessions is an instance's sessions under each tunnel, oldest first,
+// and as many pairing sessions waiting for their confirmation.
 type e2eSessions struct {
 	mu       sync.Mutex
 	byTunnel map[string][]*e2eSession
+	pending  map[string][]*e2eSession
+}
+
+func putSession(table map[string][]*e2eSession, tunnelID string, sess *e2eSession) {
+	list := append(table[tunnelID], sess)
+	if len(list) > e2eMaxSessions {
+		list = list[len(list)-e2eMaxSessions:]
+	}
+	table[tunnelID] = list
 }
 
 func (s *e2eSessions) add(tunnelID string, sess *e2eSession) {
@@ -475,11 +734,33 @@ func (s *e2eSessions) add(tunnelID string, sess *e2eSession) {
 	if s.byTunnel == nil {
 		s.byTunnel = map[string][]*e2eSession{}
 	}
-	list := append(s.byTunnel[tunnelID], sess)
-	if len(list) > e2eMaxSessions {
-		list = list[len(list)-e2eMaxSessions:]
+	putSession(s.byTunnel, tunnelID, sess)
+}
+
+// addPending keeps a pairing session until its client confirms it; calls
+// naming it meanwhile find no session.
+func (s *e2eSessions) addPending(tunnelID string, sess *e2eSession) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending == nil {
+		s.pending = map[string][]*e2eSession{}
 	}
-	s.byTunnel[tunnelID] = list
+	putSession(s.pending, tunnelID, sess)
+}
+
+// takePending removes and returns a pairing session: each is confirmed at
+// most once.
+func (s *e2eSessions) takePending(tunnelID, id string) *e2eSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list := s.pending[tunnelID]
+	for i, sess := range list {
+		if sess.id == id {
+			s.pending[tunnelID] = append(list[:i:i], list[i+1:]...)
+			return sess
+		}
+	}
+	return nil
 }
 
 func (s *e2eSessions) find(tunnelID, id string) *e2eSession {
@@ -496,5 +777,6 @@ func (s *e2eSessions) find(tunnelID, id string) *e2eSession {
 func (s *e2eSessions) drop(tunnelID string) {
 	s.mu.Lock()
 	delete(s.byTunnel, tunnelID)
+	delete(s.pending, tunnelID)
 	s.mu.Unlock()
 }

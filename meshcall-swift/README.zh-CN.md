@@ -72,10 +72,45 @@ let sessions = SessionsClient(mesh)
 ```
 
 隧道连接上只能看到这个实例在授权范围内的服务，实例也是隐含的。带 `e2e_key` 时，每个调用都
-用 `Noise_NK_25519_AESGCM_SHA256` 朝固定的公钥加密：Router 负责路由和检查范围，但看不到
+朝固定的公钥加密（`Noise_NK_25519_AESGCM_SHA256`；配了客户端身份时用 IK，见下文）：Router 负责路由和检查范围，但看不到
 载荷、元数据和错误信息。客户端从不从 Router 获取公钥；握手失败时返回
 `unauthenticated` / `e2e_handshake_failed`，绝不退回明文。端到端凭据（`mtun_e2e.…`）
 没有配公钥，或者普通凭据配了公钥，都会在连接前直接拒绝。
+
+### 客户端认证
+
+默认情况下客户端没有自己的密钥（NK），能不能连接只由 Router 决定。客户端有了自己的 X25519
+密钥后，也会向实例证明自己的身份，实例就可以拒绝它不认识的客户端
+（`Noise_IK_25519_AESGCM_SHA256`）。密钥生成一次并妥善保存（例如放在钥匙串里）；离开设备的
+只有它的公钥，而且只出现在握手里：
+
+```swift
+let key = E2EKeyPair.generate()          // 保存 key.privateKey
+let mesh = try Mesh(tunnel: grant, identity: E2EIdentity(privateKey: key.privateKey, instanceID: grant.instanceID))
+```
+
+要和一个还不认识这个密钥的实例配对，再加上实例主人在带外给出的一次性配对信息（例如实例设备上
+显示的二维码，绝不经过 Router）：配对 id 和 32 字节的 PSK。这时第一次握手用
+`Noise_IKpsk2_25519_AESGCM_SHA256`，并在第一个调用之前确认（实例可能要等人确认，所以确认最多
+等 120 秒）；实例接受之后，这个 `Mesh` 之后的每次握手（包括重连）都用 IK。已经配对过的客户端
+新建 `Mesh` 时，传不带 `pairing` 的身份即可。
+
+```swift
+var grant = try JSONDecoder().decode(TunnelGrant.self, from: body)
+grant.e2eKey = qr.instanceKey            // 用二维码里固定的公钥，不用签发方给的副本
+let mesh = try Mesh(
+    tunnel: grant,
+    identity: E2EIdentity(
+        privateKey: key.privateKey, instanceID: qr.instanceID,
+        pairing: E2EPairing(id: qr.pairingID, psk: qr.psk)))
+```
+
+如示例所示，自己固定了实例公钥和 id 的应用不需要签发方给的副本：把 `grant.e2eKey` 和身份的
+`instanceID` 换成自己的值即可（签发方仍会在 `tunnels.open` 时固定公钥，公钥不是实例自己的，
+实例会拒绝）。客户端绝不从 IK 或 IKpsk2 退回 NK。密钥不被认识、配对已用过或 PSK 不对，都返回
+`unauthenticated` / `e2e_handshake_failed`（几种情况的回答完全一样，实例不会透露它认识哪些
+密钥）；身份没有配 `e2eKey`，或者密钥、PSK 格式不对、`instanceID` 为空、配对 id 不在 1–128
+字节之间，都会在连接前直接拒绝。`E2EIdentity` 和 `E2EPairing` 的 `description` 不包含密钥。
 
 ## 错误
 
@@ -124,7 +159,7 @@ do {
 ## 选项
 
 `MeshOptions`：`credentials`（API Key、临时令牌和隧道凭据用 `.bearer`，账号用 `.basic`）、
-`e2eKey`、`maxFrameSize`（64 MiB）、`handshakeTimeout`（10 秒）、`deadlineGrace`
+`e2eKey`、`e2eIdentity`、`maxFrameSize`（64 MiB）、`handshakeTimeout`（10 秒）、`deadlineGrace`
 （`max(1 秒, 10%)`）、`pingInterval` / `pingTimeout`（15 秒 / 10 秒）、`reconnect`、
 `retry`、`interceptors`（每次尝试都会经过；一元调用的 trailer 在 `info.trailers` 里）和默认的
 `callOptions`。传多个 Router 地址可以故障切换：`Router(urls: ["wss://a", "wss://b"])`。
@@ -147,7 +182,8 @@ scripts/check.sh swift   # 另外还有：iOS 构建、生成代码的类型检�
 [`conformance/CLIENTS.md`](../meshcall-router/conformance/CLIENTS.md)）：真实的 Router、
 一个能让连接停住的代理和一个一致性 fixture。测试覆盖一致性套件的全部客户端场景，每个测试都标有
 `// conformance-scenario: <id>`：所有调用形态、额度、超时、取消、元数据、帧大小、隧道、
-端到端加密、吊销、Router 重启和回到前台时的检查。Noise 握手用与 Go、TypeScript 相同的测试向量验证。
+端到端加密、吊销、客户端认证和配对、Router 重启和回到前台时的检查。NK、IK 和 IKpsk2 握手用与
+其他运行时相同的测试向量验证（cacophony 向量和 `conformance/testdata/e2e_handshakes.json`）。
 
 默认用 Go 的 fixture（没有设置 `MESHCALL_FIXTURE_BINARY` 时自动 `go build`）；用
 `MESHCALL_FIXTURE` 可以让同一套测试跑在其他运行时的服务端上：
