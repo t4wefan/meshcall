@@ -26,7 +26,7 @@ Router 调用 Python、TypeScript 或 Go 编写的服务，通过 WebSocket 讲 
 // 应用的 settings.gradle.kts
 includeBuild("path/to/meshcall/meshcall-jvm")
 // build.gradle.kts
-dependencies { implementation("io.github.t4wefan:meshcall:0.3.0") }
+dependencies { implementation("io.github.t4wefan:meshcall:0.4.0") }
 plugins { kotlin("plugin.serialization") } // 生成的客户端使用 kotlinx.serialization
 ```
 

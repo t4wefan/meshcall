@@ -46,6 +46,13 @@ echo "==> $OLD -> $NEW"
 # npm: version field only; this repo uses yarn, so no package-lock to touch.
 (cd meshcall-ts && npm version "$NEW" --no-git-tag-version --allow-same-version >/dev/null)
 
+# JVM: Gradle module version.
+if [ -f meshcall-jvm/meshcall/build.gradle.kts ]; then
+  sed -i.bak -E "s/^version = \"[^\"]*\"/version = \"$NEW\"/" meshcall-jvm/meshcall/build.gradle.kts
+  rm meshcall-jvm/meshcall/build.gradle.kts.bak
+  grep -q "^version = \"$NEW\"" meshcall-jvm/meshcall/build.gradle.kts || fail "could not set meshcall-jvm version"
+fi
+
 # Generated clients require the release whose API they use.
 sed -i.bak -E "s/^const RuntimeRelease = \"[^\"]*\"/const RuntimeRelease = \"$NEW\"/" meshcall-router/internal/codegen/packages.go
 rm meshcall-router/internal/codegen/packages.go.bak
