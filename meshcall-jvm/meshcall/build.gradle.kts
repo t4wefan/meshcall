@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "io.github.t4wefan"
-version = "0.3.0"
+version = "0.4.0"
 
 kotlin {
     jvmToolchain(17)

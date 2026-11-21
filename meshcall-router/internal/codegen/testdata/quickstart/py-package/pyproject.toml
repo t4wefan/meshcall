@@ -5,7 +5,7 @@ description = "Generated MeshCall Python client"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "meshcall>=0.3.0",
+    "meshcall>=0.4.0",
     "pydantic>=2.11",
 ]
 
