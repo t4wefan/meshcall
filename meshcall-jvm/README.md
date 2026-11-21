@@ -29,7 +29,7 @@ it from this repository (an included build):
 // settings.gradle.kts of your app
 includeBuild("path/to/meshcall/meshcall-jvm")
 // build.gradle.kts
-dependencies { implementation("io.github.t4wefan:meshcall:0.3.0") }
+dependencies { implementation("io.github.t4wefan:meshcall:0.4.0") }
 plugins { kotlin("plugin.serialization") } // generated clients use kotlinx.serialization
 ```
 
