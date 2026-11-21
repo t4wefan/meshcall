@@ -15,7 +15,12 @@ from typing import Any
 from loguru import logger as default_logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from meshcall.context import RpcContext, ServerCallNext, ServerInterceptor
+from meshcall.context import (
+    TOKEN_PRINCIPAL_KEY,
+    RpcContext,
+    ServerCallNext,
+    ServerInterceptor,
+)
 from meshcall.contract import (
     MethodBinding,
     get_service_contract,
@@ -667,6 +672,11 @@ class _ServerCall:
                     pairing_id=sealed.session.pairing_id,
                 )
                 if sealed is not None
+                else None
+            ),
+            token_principal=(
+                open_frame.metadata.get(TOKEN_PRINCIPAL_KEY)
+                if session.from_router and open_frame.metadata
                 else None
             ),
             _deadline=(

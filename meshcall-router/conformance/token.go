@@ -205,6 +205,190 @@ func tokenLifetime(h *harness) error {
 	}
 }
 
+// tokenPrincipal verifies issuer-chosen principal on AuthService/issue_token:
+// reported by issue_token/list_tokens/whoami, injected as meshcall-token-principal
+// on routed WS and HTTP calls, stripped when forged by callers in any letter case,
+// bounded to 512 bytes, and scoped into idempotency deduplication.
+func tokenPrincipal(h *harness) error {
+	hash, err := router.HashPassword("conformance")
+	if err != nil {
+		return err
+	}
+	doc, _ := json.Marshal(map[string]any{"users": []map[string]any{{
+		"username": "ctl", "password_hash": hash,
+		"roles": []string{"client", "server"}, "register": []string{"*"}, "call": []string{"*"},
+	}}})
+	auth, err := router.ParseAuth(doc)
+	if err != nil {
+		return err
+	}
+	r, err := router.Start(router.Config{Auth: auth})
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	opts := h.opts
+	opts.Local = false
+	sub := &harness{ctx: h.ctx, opts: opts, port: r.Ready().Port}
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("ctl:conformance"))
+	ctl, err := sub.clientWith(basic, "")
+	if err != nil {
+		return err
+	}
+	defer ctl.close()
+
+	const service = "conformance.token.v1.Echo"
+	ctx, cancel := context.WithTimeout(h.ctx, h.opts.Timeout)
+	defer cancel()
+	srvConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d", sub.port),
+		&websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {basic}}})
+	if err != nil {
+		return err
+	}
+	defer srvConn.CloseNow()
+	for _, msg := range []string{
+		`{"kind":"hello","protocol":"` + protocol + `","role":"server","peer_id":"tok-srv","instance_id":"srv-1"}`,
+		`{"kind":"server.register","instance_id":"srv-1","services":[{"name":"` + service + `","methods":[{"name":"who","stream":"unary","balance":{"kind":"round_robin"}}]}]}`,
+	} {
+		if err := srvConn.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
+			return err
+		}
+	}
+	for {
+		_, data, err := srvConn.Read(ctx)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), "server.register.ack") {
+			break
+		}
+	}
+	go func() {
+		for {
+			_, data, err := srvConn.Read(h.ctx)
+			if err != nil {
+				return
+			}
+			var f frame
+			if json.Unmarshal(data, &f) != nil || f["kind"] != "call.open" {
+				continue
+			}
+			reply, _ := json.Marshal(frame{"kind": "call.result", "call_id": f["call_id"],
+				"payload": frame{"metadata": f["metadata"]}})
+			_ = srvConn.Write(h.ctx, websocket.MessageText, reply)
+		}
+	}()
+
+	// >512 bytes rejected.
+	if f, err := ctl.callService(authService, "issue_token", frame{
+		"ttl_seconds": 60, "scopes": []frame{{"service": service, "methods": []string{"who"}}},
+		"principal": strings.Repeat("a", 513),
+	}, nil); err != nil {
+		return err
+	} else if code, _, _, _ := errorOf(f); code != "invalid_argument" {
+		return fmt.Errorf("overlong principal: %v", f)
+	}
+
+	issue := func(principal string) (string, string, error) {
+		req := frame{"ttl_seconds": 60, "scopes": []frame{{"service": service, "methods": []string{"who"}}}}
+		if principal != "" {
+			req["principal"] = principal
+		}
+		f, err := ctl.callService(authService, "issue_token", req, nil)
+		if err != nil || f["kind"] != "call.result" {
+			return "", "", fmt.Errorf("issue_token(%q): %v %v", principal, err, f)
+		}
+		p := asMap(f["payload"])
+		gotP, _ := p["principal"].(string)
+		if gotP != principal {
+			return "", "", fmt.Errorf("issue_token principal = %q, want %q", gotP, principal)
+		}
+		tok, _ := p["token"].(string)
+		id, _ := p["token_id"].(string)
+		return tok, id, nil
+	}
+	aliceTok, _, err := issue("user:alice")
+	if err != nil {
+		return err
+	}
+	bobTok, _, err := issue("user:bob")
+	if err != nil {
+		return err
+	}
+
+	alice, err := sub.clientWith("Bearer "+aliceTok, "")
+	if err != nil {
+		return err
+	}
+	defer alice.close()
+	bob, err := sub.clientWith("Bearer "+bobTok, "")
+	if err != nil {
+		return err
+	}
+	defer bob.close()
+
+	// whoami reports principal.
+	if f, err := alice.callService(authService, "whoami", frame{}, nil); err != nil || asMap(f["payload"])["principal"] != "user:alice" {
+		return fmt.Errorf("whoami principal: %v %v", err, f)
+	}
+
+	// WS call strips forged keys and injects meshcall-token-principal.
+	forged := frame{"metadata": map[string]string{
+		"meshcall-token-principal": "user:mallory",
+		"MeshCall-Token-Principal": "user:mallory2",
+		"meshcall-token-extra":     "x",
+		"keep":                     "1",
+	}}
+	if f, err := alice.callService(service, "who", frame{}, forged); err != nil {
+		return err
+	} else {
+		meta := asMap(asMap(f["payload"])["metadata"])
+		if meta["meshcall-token-principal"] != "user:alice" || meta["keep"] != "1" || len(meta) != 2 {
+			return fmt.Errorf("alice ws metadata: %v", meta)
+		}
+	}
+
+	// Ordinary account cannot forge meshcall-token-*.
+	if f, err := ctl.callService(service, "who", frame{}, forged); err != nil {
+		return err
+	} else {
+		meta := asMap(asMap(f["payload"])["metadata"])
+		if len(meta) != 1 || meta["keep"] != "1" {
+			return fmt.Errorf("ctl forged metadata survived: %v", meta)
+		}
+	}
+
+	// HTTP /v1/call/... injects meshcall-token-principal and strips forged headers.
+	req, _ := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("http://127.0.0.1:%d/v1/call/%s/who", sub.port, service), strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+aliceTok)
+	req.Header.Set("MeshCall-Meta-meshcall-token-principal", "user:evil")
+	req.Header.Set("MeshCall-Meta-keep", "http")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var httpBody frame
+	if err := json.NewDecoder(resp.Body).Decode(&httpBody); err != nil {
+		return err
+	}
+	meta := asMap(httpBody["metadata"])
+	if meta["meshcall-token-principal"] != "user:alice" || meta["keep"] != "http" || len(meta) != 2 {
+		return fmt.Errorf("alice http metadata: %v", meta)
+	}
+
+	// Dedup isolation across different principals.
+	if f, err := alice.callService(service, "who", frame{}, frame{"idempotency_key": "shared"}); err != nil ||
+		asMap(asMap(f["payload"])["metadata"])["meshcall-token-principal"] != "user:alice" {
+		return fmt.Errorf("alice dedup call: %v %v", err, f)
+	}
+	if f, err := bob.callService(service, "who", frame{}, frame{"idempotency_key": "shared"}); err != nil ||
+		asMap(asMap(f["payload"])["metadata"])["meshcall-token-principal"] != "user:bob" {
+		return fmt.Errorf("bob dedup leaked alice: %v %v", err, f)
+	}
+	return nil
+}
+
 // rawServer registers one unary method, ping, and answers every call to it
 // until the connection closes, which closes the returned channel.
 func (h *harness) rawServer(authorization, service, instanceID string) (*websocket.Conn, <-chan struct{}, error) {

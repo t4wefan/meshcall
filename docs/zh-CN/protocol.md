@@ -76,7 +76,7 @@ WebSocket 可以运行在 TCP 上，也可以运行在平台的本地传输上�
 ### 元数据（Metadata 与 Trailers）
 - `call.open` 上的 `metadata` 携带调用方传入的请求头（如 Trace Context、关联 ID、租户标识）；
 - `call.result` 与 `call.error` 上的 `metadata` 携带服务端返回的响应尾标（Trailers）；
-- Key 与 Value 均为字符串，Key 区分大小写且不能为空；以 `meshcall-` 开头的 Key（不区分大小写）保留给运行时与 Router，由它们以小写设置：客户端拒绝调用方元数据中的此类 Key，返回不可重试的 `invalid_argument`（`source: "client"`，`reason: "reserved_metadata"`；空 Key 为 `reason: "invalid_metadata"`），服务端也拒绝把它用作 Trailer；不区分大小写的查找（`meta()`）对保留 Key 只做精确匹配。Router 原样转发元数据，唯一的例外是以 `meshcall-tunnel-` 开头的 Key（不区分大小写）只由 Router 设置：它从客户端发出的每个 `call.open` 中移除这些 Key，并在隧道连接上设置 `meshcall-tunnel-id` 与 `meshcall-tunnel-principal`（见[隧道](#隧道tunnels)）。
+- Key 与 Value 均为字符串，Key 区分大小写且不能为空；以 `meshcall-` 开头的 Key（不区分大小写）保留给运行时与 Router，由它们以小写设置：客户端拒绝调用方元数据中的此类 Key，返回不可重试的 `invalid_argument`（`source: "client"`，`reason: "reserved_metadata"`；空 Key 为 `reason: "invalid_metadata"`），服务端也拒绝把它用作 Trailer；不区分大小写的查找（`meta()`）对保留 Key 只做精确匹配。Router 原样转发元数据，唯一的例外是以 `meshcall-tunnel-` 或 `meshcall-token-` 开头的 Key（不区分大小写）只由 Router 设置：它从客户端发出的每个 `call.open` 中移除这些 Key；在隧道连接上设置 `meshcall-tunnel-id` 与 `meshcall-tunnel-principal`（见[隧道](#隧道tunnels)）；在带有 `principal` 的临时令牌连接上设置 `meshcall-token-principal`（见[临时令牌](#临时令牌temporary-tokens)）。
 
 ---
 
@@ -255,12 +255,14 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 | 方法 | 请求 | 结果 |
 | --- | --- | --- |
-| `issue_token` | `ttl_seconds`、`scopes[{service, methods?, register?, instance_ids?}]` | `token`（只返回一次）、`token_id`、`expires_at_unix_ms`、`scopes` |
+| `issue_token` | `ttl_seconds`、`scopes[{service, methods?, register?, instance_ids?}]`、`principal?` | `token`（只返回一次）、`token_id`、`expires_at_unix_ms`、`scopes`、`principal?` |
 | `renew_token` | `token_id`、`ttl_seconds` | `token_id`、`expires_at_unix_ms` |
 | `revoke_token` | `token_id` | `revoked` |
-| `list_tokens` | `{}` | `tokens[{token_id, issuer, instance_ids?, expires_at_unix_ms, expired, connections}]` |
+| `list_tokens` | `{}` | `tokens[{token_id, issuer, principal?, instance_ids?, expires_at_unix_ms, expired, connections}]` |
 
 只有账号可以调用这些方法（且 `call` ACL 中包含该方法）；`renew_token`、`revoke_token` 与 `list_tokens` 只能看到调用方自己签发的令牌。`ttl_seconds` 取 1 到 Router 的上限（`--token-max-ttl`，默认 30 天）；超过上限返回 `invalid_argument`，`details.reason: "ttl_too_long"`，并带 `details.max_ttl_seconds`；小于 1 返回 `invalid_argument`，`details.reason: "ttl_invalid"`。运行时默认 900 秒。Router 同时最多持有 `--max-tokens` 个未失效令牌（默认 4096；超出返回 `resource_exhausted`）。
+
+**调用方身份（Principal）。** `issue_token` 接受可选的签发方自定 `principal`（最多 512 UTF-8 字节；超出返回 `invalid_argument`）。设置后，`issue_token`、`list_tokens` 与 `whoami` 会返回该字段；Router 会在该令牌路由的每个 `call.open`（含 WebSocket 与 HTTP）上剥离客户端自带的 `meshcall-token-*` 后注入 `meshcall-token-principal`。幂等一元调用的去重键同时按令牌的 `principal` 隔离，不同身份的调用方不会串用缓存结果。服务端运行时仅在 Router 连接上将该值暴露到调用上下文（Python `ctx.token_principal`、TypeScript `ctx.tokenPrincipal`、Go `ctx.TokenPrincipal`），直连模式忽略它。
 
 **生命周期。** 与隧道凭据一样，`expires_at` 只约束*新*连接与 HTTP 请求：过期令牌在连接时被拒绝（HTTP 401，或在 `hello` 中发送时为 4401），但过期前已认证的连接保持在线——其调用与实例注册照常工作——直到连接关闭或令牌被吊销。`revoke_token` 立即以 4401 `token_revoked` 关闭该令牌上的所有连接，过期后同样有效，也是切断活跃连接的唯一方式：进行中的调用以不可重试的 `unauthenticated` 和该 `details.reason` 失败（进行中的 HTTP 调用以同样的错误应答 401），客户端会像隧道被撤销时一样记住这个应答。仍持有连接的过期令牌会继续列出（`expired: true`），以便签发方吊销；没有连接的过期令牌会被遗忘。
 

@@ -33,6 +33,8 @@ const AddReq = z.object({ a: z.number().int(), b: z.number().int() });
 const AddRes = z.object({ sum: z.number().int(), caller: z.string() });
 const EchoReq = z.object({ text: z.string() });
 const EchoRes = z.object({ text: z.string() });
+const WhoReq = z.object({});
+const WhoRes = z.object({ principal: z.string().nullable() });
 
 @service("math", { description: "Math service for Router DX tests." })
 class MathService {
@@ -60,6 +62,16 @@ class EchoService {
   })
   repeat(req: z.infer<typeof EchoReq>) {
     return { text: req.text };
+  }
+
+  @method({
+    description: "Return the Router-injected token principal.",
+    readOnly: true,
+    request: WhoReq,
+    response: WhoRes,
+  })
+  who(_req: z.infer<typeof WhoReq>, ctx: { tokenPrincipal: string | null }) {
+    return { principal: ctx.tokenPrincipal };
   }
 }
 
@@ -201,18 +213,27 @@ test(
     const identity = await adminMesh.auth.whoami();
     assert.equal(identity.username, "admin");
 
-    const issued = await adminMesh.auth.issueToken([{ service: "echo", methods: ["repeat"] }], 300);
+    const issued = await adminMesh.auth.issueToken(
+      [{ service: "echo", methods: ["repeat", "who"] }],
+      300,
+      { principal: "user:alice" },
+    );
     assert.ok(issued.token);
     assert.ok(issued.token_id);
+    assert.equal(issued.principal, "user:alice");
 
     await using scopedMesh = await Mesh.connect(new Router(router.url), {
       token: issued.token,
     });
+    assert.equal((await scopedMesh.auth.whoami()).principal, "user:alice");
     const echo = new EchoTestClient(scopedMesh);
     assert.deepEqual(await echo.repeat("hello"), { text: "hello" });
+    assert.deepEqual(await scopedMesh.unary("echo.v0", "who", {}), { principal: "user:alice" });
+    assert.deepEqual(await adminMesh.unary("echo.v0", "who", {}), { principal: null });
 
     const [listed] = (await adminMesh.auth.listTokens()).filter((t) => t.token_id === issued.token_id);
     assert.equal(listed?.issuer, "admin");
+    assert.equal(listed?.principal, "user:alice");
     assert.equal(listed?.connections, 1);
     assert.equal(listed?.expired, false);
     assert.equal(JSON.stringify(listed).includes(issued.token), false);

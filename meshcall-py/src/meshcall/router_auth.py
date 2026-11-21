@@ -67,6 +67,7 @@ class IssuedToken(BaseModel):
     token_id: str
     expires_at_unix_ms: int
     scopes: list[RouterScope]
+    principal: str | None = None
 
 
 class RenewedToken(BaseModel):
@@ -81,6 +82,7 @@ class TokenInfo(BaseModel):
 
     token_id: str
     issuer: str
+    principal: str | None = None
     instance_ids: list[str] = Field(default_factory=list)
     expires_at_unix_ms: int
     #: Past its expiry: it admits no new connection, but these stay up.
@@ -96,6 +98,8 @@ class RouterIdentity(BaseModel):
     expires_at_unix_ms: int | None
     #: The instance ids this identity may register under, when bound.
     instance_ids: list[str] | None = None
+    #: The issuer-chosen principal of a temporary token, when set.
+    principal: str | None = None
     #: The tunnel this connection belongs to, on a tunnel connection.
     tunnel: TunnelInfo | None = None
 
@@ -143,6 +147,7 @@ class _IssueRequest(BaseModel):
     # The Router bounds it (--token-max-ttl; invalid_argument with the limit).
     ttl_seconds: int
     scopes: list[RouterScope]
+    principal: str | None = None
 
 
 class _RevokeRequest(BaseModel):
@@ -186,7 +191,11 @@ class RouterAuthClient(ClientBase):
         return await self.call_unary(AUTH_SERVICE, "whoami", _Empty(), RouterIdentity)
 
     async def issue_token(
-        self, scopes: list[RouterScope], ttl_seconds: int = 900
+        self,
+        scopes: list[RouterScope],
+        ttl_seconds: int = 900,
+        *,
+        principal: str | None = None,
     ) -> IssuedToken:
         normalized = [
             scope.model_copy(
@@ -194,10 +203,17 @@ class RouterAuthClient(ClientBase):
             )
             for scope in scopes
         ]
+        request = (
+            _IssueRequest(
+                ttl_seconds=ttl_seconds, scopes=normalized, principal=principal
+            )
+            if principal is not None
+            else _IssueRequest(ttl_seconds=ttl_seconds, scopes=normalized)
+        )
         return await self.call_unary(
             AUTH_SERVICE,
             "issue_token",
-            _IssueRequest(ttl_seconds=ttl_seconds, scopes=normalized),
+            request,
             IssuedToken,
         )
 

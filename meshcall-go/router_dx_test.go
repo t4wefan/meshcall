@@ -233,10 +233,12 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 		t.Fatalf("Auth().Whoami admin failed: %+v, err=%v", me, err)
 	}
 
-	issued, err := adminMesh.Auth().IssueToken(ctx, []meshcall.RouterScope{
-		{Service: "test.v1.Echo", Methods: []string{"ping"}},
-	}, 600)
-	if err != nil || !strings.HasPrefix(issued.Token, "mt_") || issued.TokenID == "" {
+	issued, err := adminMesh.Auth().IssueToken(ctx, meshcall.IssueTokenRequest{
+		Scopes:     []meshcall.RouterScope{{Service: "test.v1.Echo", Methods: []string{"ping"}}},
+		TTLSeconds: 600,
+		Principal:  "user:alice",
+	})
+	if err != nil || !strings.HasPrefix(issued.Token, "mt_") || issued.TokenID == "" || issued.Principal != "user:alice" {
 		t.Fatalf("Auth().IssueToken failed: %+v, err=%v", issued, err)
 	}
 
@@ -251,7 +253,7 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 	defer func() { _ = scopedMesh.Close() }()
 
 	scopedMe, err := scopedMesh.Auth().Whoami(ctx)
-	if err != nil || scopedMe.Username != "admin" || len(scopedMe.Call) != 1 || scopedMe.Call[0] != "test.v1.Echo/ping" {
+	if err != nil || scopedMe.Username != "admin" || scopedMe.Principal != "user:alice" || len(scopedMe.Call) != 1 || scopedMe.Call[0] != "test.v1.Echo/ping" {
 		t.Fatalf("Auth().Whoami scoped failed: %+v, err=%v", scopedMe, err)
 	}
 
@@ -261,7 +263,7 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 		t.Fatalf("Auth().RenewToken failed: %+v, err=%v", renewed, err)
 	}
 	tokens, err := adminMesh.Auth().ListTokens(ctx)
-	if err != nil || len(tokens) != 1 || tokens[0].TokenID != issued.TokenID || tokens[0].Connections != 1 || tokens[0].Expired {
+	if err != nil || len(tokens) != 1 || tokens[0].TokenID != issued.TokenID || tokens[0].Principal != "user:alice" || tokens[0].Connections != 1 || tokens[0].Expired {
 		t.Fatalf("Auth().ListTokens failed: %+v, err=%v", tokens, err)
 	}
 	_, err = adminMesh.Auth().RenewToken(ctx, issued.TokenID, 31*24*3600)
@@ -281,7 +283,10 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 	// A stream in flight keeps the reason of the revocation, fast or slow: the
 	// client sends credit while the socket closes.
 	for round := range 16 {
-		token, err := adminMesh.Auth().IssueToken(ctx, []meshcall.RouterScope{{Service: "test.v1.Echo", Methods: []string{"count"}}}, 300)
+		token, err := adminMesh.Auth().IssueToken(ctx, meshcall.IssueTokenRequest{
+			Scopes:     []meshcall.RouterScope{{Service: "test.v1.Echo", Methods: []string{"count"}}},
+			TTLSeconds: 300,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -317,13 +322,19 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 	}
 
 	// An instance whose token is revoked does not retry: serving ends, saying why.
-	serving, err := adminMesh.Auth().IssueToken(ctx, []meshcall.RouterScope{{Service: "test.v1.Other", Register: true}}, 300)
+	serving, err := adminMesh.Auth().IssueToken(ctx, meshcall.IssueTokenRequest{
+		Scopes:     []meshcall.RouterScope{{Service: "test.v1.Other", Register: true}},
+		TTLSeconds: 300,
+	})
 	if err != nil {
 		t.Fatalf("issuing a registration token: %v", err)
 	}
+	type whoResp struct {
+		Principal string `json:"principal"`
+	}
 	other := meshcall.NewService("test.v1.Other", meshcall.Describe("Other service."))
-	meshcall.HandleUnary(other, "ping", func(_ *meshcall.Context, _ PingReq) (PingResp, error) {
-		return PingResp{OK: true}, nil
+	meshcall.HandleUnary(other, "ping", func(c *meshcall.Context, _ PingReq) (whoResp, error) {
+		return whoResp{Principal: c.TokenPrincipal}, nil
 	}, meshcall.Doc("Ping."), meshcall.Idempotent())
 	instance := meshcall.NewMesh(meshcall.NewRouter(router.URL()), meshcall.WithToken(serving.Token),
 		meshcall.WithReconnect(meshcall.ReconnectPolicy{InitialDelay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}))
@@ -341,6 +352,24 @@ func TestMeshAuthBuiltinsDX(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the instance did not connect: %+v", tokens)
 		}
+	}
+	// A token issued with a principal reaches the handler as ctx.TokenPrincipal.
+	callerTok, err := adminMesh.Auth().IssueToken(ctx, meshcall.IssueTokenRequest{
+		Scopes:     []meshcall.RouterScope{{Service: "test.v1.Other", Methods: []string{"ping"}}},
+		TTLSeconds: 300,
+		Principal:  "user:bob",
+	})
+	if err != nil {
+		t.Fatalf("issuing principal caller token: %v", err)
+	}
+	callerMesh, err := meshcall.ConnectMesh(ctx, meshcall.NewRouter(router.URL()), meshcall.WithToken(callerTok.Token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = callerMesh.Close() }()
+	gotWho, err := meshcall.Unary[PingReq, whoResp](ctx, callerMesh, "test.v1.Other", "ping", PingReq{})
+	if err != nil || gotWho.Principal != "user:bob" {
+		t.Fatalf("ctx.TokenPrincipal = %+v, err=%v", gotWho, err)
 	}
 	if revoked, err := adminMesh.Auth().RevokeToken(ctx, serving.TokenID); err != nil || !revoked.Revoked {
 		t.Fatalf("revoking the instance's token: %+v %v", revoked, err)

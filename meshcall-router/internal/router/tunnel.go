@@ -593,7 +593,7 @@ func (r *Router) tunnelCall(t *tunnel, f frame) (frame, *frame) {
 		e := routerError(f.CallID, "unavailable", "Instance "+t.instanceID+" is offline", true, "instance_offline", t.instanceID)
 		return f, &e
 	}
-	rewritten, err := rewriteCallOpen(f, t)
+	rewritten, err := rewriteCallOpen(f, t, "")
 	if err != nil {
 		e := callError(f.CallID, "protocol_error", "Invalid call.open frame", false)
 		return f, &e
@@ -621,38 +621,47 @@ func (t *tunnel) credentialDigest() string {
 // method a tunnel connection may call: it is routed to the tunnel's target.
 func isHandshake(f frame) bool { return f.Service == TunnelHostService && f.Method == "handshake" }
 
-// reservedTunnelKey matches meshcall-tunnel-* in any letter case: metadata
-// lookups (meta() in the runtimes) may ignore case, so a mixed-case key must
-// not survive to forge what only the Router sets.
-func reservedTunnelKey(key string) bool {
-	return len(key) >= len(tunnelMetaPrefix) && strings.EqualFold(key[:len(tunnelMetaPrefix)], tunnelMetaPrefix)
+// reservedRouterMetaKey matches meshcall-tunnel-* and meshcall-token-* in any
+// letter case: metadata lookups (meta() in the runtimes) may ignore case, so a
+// mixed-case key must not survive to forge what only the Router sets.
+func reservedRouterMetaKey(key string) bool {
+	return hasFoldPrefix(key, tunnelMetaPrefix) || hasFoldPrefix(key, tokenMetaPrefix)
 }
 
-// stripTunnelMetadata removes meshcall-tunnel-* keys a caller sent on an
-// ordinary connection: only the Router may set them.
-func stripTunnelMetadata(f frame) frame {
-	if f.Metadata == nil {
-		return f
-	}
-	var metadata map[string]string
-	if json.Unmarshal(f.Metadata, &metadata) != nil {
-		return f
-	}
-	for key := range metadata {
-		if reservedTunnelKey(key) {
-			if rewritten, err := rewriteCallOpen(f, nil); err == nil {
-				return rewritten
+func hasFoldPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// applyRouterMetadata strips caller-supplied meshcall-tunnel-* and
+// meshcall-token-* keys on an ordinary connection and, when the caller
+// authenticated with a temporary token carrying a principal, injects
+// meshcall-token-principal.
+func applyRouterMetadata(f frame, tokenPrincipal string) frame {
+	needsRewrite := tokenPrincipal != ""
+	if !needsRewrite && f.Metadata != nil {
+		var metadata map[string]string
+		if json.Unmarshal(f.Metadata, &metadata) == nil {
+			for key := range metadata {
+				if reservedRouterMetaKey(key) {
+					needsRewrite = true
+					break
+				}
 			}
-			return f
 		}
+	}
+	if !needsRewrite {
+		return f
+	}
+	if rewritten, err := rewriteCallOpen(f, nil, tokenPrincipal); err == nil {
+		return rewritten
 	}
 	return f
 }
 
-// rewriteCallOpen re-encodes a call.open without caller-supplied tunnel
-// metadata and, for t, with the tunnel's identity and target instance. Every
-// other field, known or not, is kept.
-func rewriteCallOpen(f frame, t *tunnel) (frame, error) {
+// rewriteCallOpen re-encodes a call.open without caller-supplied Router-owned
+// metadata and, for t or tokenPrincipal, with the Router's identity metadata
+// (and target instance for tunnels). Every other field, known or not, is kept.
+func rewriteCallOpen(f frame, t *tunnel, tokenPrincipal string) (frame, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(f.raw, &fields); err != nil {
 		return f, err
@@ -667,13 +676,15 @@ func rewriteCallOpen(f frame, t *tunnel) (frame, error) {
 		metadata = map[string]string{}
 	}
 	for key := range metadata {
-		if reservedTunnelKey(key) {
+		if reservedRouterMetaKey(key) {
 			delete(metadata, key)
 		}
 	}
 	if t != nil {
 		metadata[tunnelIDKey], metadata[tunnelPrincipalKey] = t.id, t.principal
 		fields["instance_id"], _ = json.Marshal(t.instanceID)
+	} else if tokenPrincipal != "" {
+		metadata[tokenPrincipalKey] = tokenPrincipal
 	}
 	if len(metadata) == 0 {
 		delete(fields, "metadata")

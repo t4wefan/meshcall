@@ -236,12 +236,12 @@ printf '{"value":1}\n{"value":2}\n' | meshcall call demo.v1.Sum.sum '{}' --stdin
 | 方法 | 请求参数 | 所需权限 |
 | --- | --- | --- |
 | `whoami` | `{}` | 任何已认证的客户端身份（含临时 Token） |
-| `issue_token` | `ttl_seconds`（1 到 `--token-max-ttl`）, `scopes` | `call` 列表包含 `meshcall.router.v1.AuthService/issue_token` 的账号 |
+| `issue_token` | `ttl_seconds`（1 到 `--token-max-ttl`）, `scopes`, `principal?` | `call` 列表包含 `meshcall.router.v1.AuthService/issue_token` 的账号 |
 | `renew_token` | `token_id`, `ttl_seconds` | `call` 列表包含 `renew_token` 的账号（仅可续期自己签发的 Token） |
 | `revoke_token` | `token_id` | `call` 列表包含 `revoke_token` 的账号（仅可吊销自己签发的 Token） |
 | `list_tokens` | `{}` | `call` 列表包含 `list_tokens` 的账号；列出自己签发的 Token，从不返回密钥 |
 
-身份绑定了实例 id 时 `whoami` 还会返回 `instance_ids`，在隧道连接上返回 `tunnel`。
+身份绑定了实例 id 时 `whoami` 还会返回 `instance_ids`，带有自定义身份的临时 Token 返回 `principal`，在隧道连接上返回 `tunnel`。签发临时 Token 时传入 `principal`（最多 512 UTF-8 字节）后，Router 会在该 Token 路由的每个调用（含 WebSocket 与 HTTP）上剥离客户端自带的 `meshcall-token-*` 并注入 `meshcall-token-principal`。
 
 `scopes` 中每项为 `{"service": …, "methods": [...]}`；`methods: ["*"]` 允许该服务全部方法，省略 `methods` 不授予调用权限；`register: true`（Python 为 `RouterScope(register_service=True)`）授予注册该服务的权限，适合短生命周期的 Worker；此类 scope 上的 `instance_ids` 把它限制在这些实例 id 上（受 `instance_ids` 限制的签发方只能收窄自己的列表，未指定的 scope 继承签发方的列表）。Scope 中的服务名必须是具体且不重复的，不接受命名空间通配符与 Router 保留命名空间。
 

@@ -816,6 +816,12 @@ func newServerCall(sess *session, f frame, m *method) *serverCall {
 			}
 			return nil
 		}(),
+		TokenPrincipal: func() string {
+			if sess.fromRouter {
+				return metadata[tokenPrincipalKey]
+			}
+			return ""
+		}(),
 		Logger: sess.server.logger.With("service", f.Service, "method", f.Method, "call_id", f.CallID),
 	}
 	return call

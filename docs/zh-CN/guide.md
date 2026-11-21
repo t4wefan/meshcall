@@ -112,8 +112,10 @@ me, err := mesh.Auth().Whoami(ctx)
 if err != nil {
     return err
 }
-issued, err := mesh.Auth().IssueToken(ctx,
-    []meshcall.RouterScope{{Service: "chat.v1.Chat", Methods: []string{"send"}}}, 900)
+issued, err := mesh.Auth().IssueToken(ctx, meshcall.IssueTokenRequest{
+    Scopes:     []meshcall.RouterScope{{Service: "chat.v1.Chat", Methods: []string{"send"}}},
+    TTLSeconds: 900,
+})
 if err != nil {
     return err
 }

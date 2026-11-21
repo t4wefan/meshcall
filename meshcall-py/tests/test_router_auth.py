@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 from router_fixtures import PASSWORD, write_auth_file
 from test_direct import NumberRequest, NumberResult, NumberService, NumberServiceClient
 from test_router import RouteServiceA
@@ -14,9 +15,12 @@ from meshcall import (
     RouterAuthClient,
     RouterCredentials,
     RouterScope,
+    RpcContext,
     RpcServer,
     WebSocketRouter,
     get_service_contract,
+    method,
+    service,
 )
 from meshcall.context import ReconnectPolicy
 from meshcall.drivers import WebSocketClientDriver, WebSocketRouterServerDriver
@@ -351,3 +355,71 @@ def test_a_4401_close_names_the_reason_the_router_gave(reason: str) -> None:
     error = close_error(CLOSE_UNAUTHENTICATED, reason)
     assert isinstance(error, UnauthenticatedError)
     assert error.reason == reason
+
+
+class _EmptyReq(BaseModel):
+    pass
+
+
+class _PrincipalReply(BaseModel):
+    principal: str | None
+    raw: str | None
+
+
+@service(name="auth.v1.Who")
+class _WhoService:
+    """Return the Router-injected token principal."""
+
+    @method(read_only=True)
+    async def who(self, ctx: RpcContext) -> _PrincipalReply:
+        """Report the caller's token principal."""
+        return _PrincipalReply(
+            principal=ctx.token_principal,
+            raw=ctx.metadata.get("meshcall-token-principal"),
+        )
+
+
+async def test_token_principal_reaches_handler_context(tmp_path: Path) -> None:
+    name = get_service_contract(_WhoService).name
+    auth_file = write_auth_file(tmp_path / "auth.json", name)
+    async with WebSocketRouter(auth_file=auth_file) as router:
+        uri = f"ws://127.0.0.1:{router.bound_port}"
+        creds = RouterCredentials(username="issuer", password=PASSWORD)
+        server_mesh = Mesh(Router(uri), credentials=creds)
+        server_mesh.mount(_WhoService())
+        async with server_mesh.serve(), Mesh(Router(uri), credentials=creds) as issuer:
+            issued = await issuer.auth.issue_token(
+                [RouterScope(service=name, methods=["who"])],
+                ttl_seconds=300,
+                principal="user:alice",
+            )
+            assert issued.principal == "user:alice"
+            listed = [
+                t
+                for t in await issuer.auth.list_tokens()
+                if t.token_id == issued.token_id
+            ]
+            assert listed and listed[0].principal == "user:alice"
+
+            with pytest.raises(InvalidArgumentError):
+                await issuer.auth.issue_token(
+                    [RouterScope(service=name, methods=["who"])],
+                    ttl_seconds=60,
+                    principal="x" * 513,
+                )
+
+            async with Mesh(Router(uri), token=issued.token) as client:
+                me = await client.auth.whoami()
+                assert me.principal == "user:alice"
+                reply = await client.call_unary(
+                    name, "who", _EmptyReq(), _PrincipalReply
+                )
+                assert reply == _PrincipalReply(
+                    principal="user:alice", raw="user:alice"
+                )
+
+            # Plain account call has no token_principal.
+            plain_reply = await issuer.call_unary(
+                name, "who", _EmptyReq(), _PrincipalReply
+            )
+            assert plain_reply == _PrincipalReply(principal=None, raw=None)

@@ -12,6 +12,18 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ### Added
 
+- **Temporary token `principal` propagation**: `AuthService/issue_token` now
+  accepts an optional issuer-chosen `principal` (at most 512 UTF-8 bytes),
+  reported by `issue_token`, `list_tokens` and `whoami`. For every call routed
+  from that token (WebSocket and HTTP alike), the Router strips any
+  caller-supplied `meshcall-token-*` metadata (case-insensitively), injects
+  `meshcall-token-principal`, and scopes idempotent unary deduplication by
+  token principal. Server runtimes expose it on the call context on Router
+  connections only (`ctx.token_principal` in Python, `ctx.tokenPrincipal` in
+  TypeScript, `ctx.TokenPrincipal` in Go). In Go, `AuthClient.IssueToken` now
+  takes `IssueTokenRequest{Scopes, TTLSeconds, Principal}` (matching
+  `TunnelsClient.Open`).
+
 - **Swift client runtime** (`meshcall-swift/`, a Swift package for iOS 16 and
   macOS 13). `Mesh(Router(…))` or `Mesh(tunnel: grant)` calls services through
   the Router in every shape: `unary`, `serverStream` (an `AsyncSequence` whose

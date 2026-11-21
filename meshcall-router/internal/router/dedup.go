@@ -34,12 +34,16 @@ type dedupEntry struct {
 
 func dedupKey(f frame, p *peer) string {
 	// A targeted duplicate is only a duplicate on the same instance, and a
-	// tunnel's calls never join another principal's.
-	tunnel := ""
-	if p.user != nil && p.user.tunnel != nil {
-		tunnel = p.user.tunnel.id
+	// tunnel's or principal-bearing token's calls never join another principal's.
+	scope := ""
+	if p.user != nil {
+		if p.user.tunnel != nil {
+			scope = "t:" + p.user.tunnel.id
+		} else if principal := p.user.tokenPrincipal(); principal != "" {
+			scope = "p:" + principal
+		}
 	}
-	return f.Service + "\x00" + f.Method + "\x00" + f.Idempotency + "\x00" + f.InstanceID + "\x00" + tunnel
+	return f.Service + "\x00" + f.Method + "\x00" + f.Idempotency + "\x00" + f.InstanceID + "\x00" + scope
 }
 
 // dedupLookup returns the entry for a keyed call.open, evicting expired ones.

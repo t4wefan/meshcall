@@ -436,13 +436,17 @@ same `code` / `message` / `details` / `hint` fields).
 | Method | Request | Permission |
 | --- | --- | --- |
 | `whoami` | `{}` | Any authenticated client identity, including a temporary token |
-| `issue_token` | `ttl_seconds`, `scopes` | Account with the method in its `call` ACL |
+| `issue_token` | `ttl_seconds`, `scopes`, `principal?` | Account with the method in its `call` ACL |
 | `renew_token` | `token_id`, `ttl_seconds` | Account with the method in its `call` ACL; only its own tokens |
 | `revoke_token` | `token_id` | Account with the method in its `call` ACL; only its own tokens |
 | `list_tokens` | `{}` | Account with the method in its `call` ACL; lists its own tokens, never their secrets |
 
 `whoami` also reports `instance_ids` when the identity is bound to instance
-ids, and `tunnel` on a tunnel connection.
+ids, `principal` when a temporary token carries an issuer-chosen principal,
+and `tunnel` on a tunnel connection. When a temporary token carries a
+`principal` (up to 512 UTF-8 bytes), the Router strips any caller-supplied
+`meshcall-token-*` metadata and injects `meshcall-token-principal` on every
+call routed from that token (WebSocket and HTTP alike).
 
 An issuance request can grant one service or several explicitly named services:
 

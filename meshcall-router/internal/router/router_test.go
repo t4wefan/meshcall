@@ -1226,3 +1226,169 @@ func TestDisabledBalanceNeedsExactlyOneInstance(t *testing.T) {
 		t.Fatalf("one instance: %+v", got)
 	}
 }
+
+func TestTokenPrincipalMetadataAndDedup(t *testing.T) {
+	hash, err := HashPassword("test-only-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authJSON, _ := json.Marshal(map[string]any{"users": []map[string]any{{
+		"username": "issuer", "password_hash": hash,
+		"roles": []string{"client", "server"}, "register": []string{"*"}, "call": []string{"*"},
+	}}})
+	auth, err := ParseAuth(authJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := runningRouter(t, auth)
+	worker := dial(t, r, basicHeader("issuer", "test-only-password"))
+	registerPeer(t, worker, "worker")
+	issuer := dial(t, r, basicHeader("issuer", "test-only-password"))
+	hello(t, issuer, "client", "issuer")
+	rpc := func(conn *websocket.Conn, callID, method string, payload any) frame {
+		data, _ := json.Marshal(payload)
+		send(t, conn, frame{Kind: "call.open", CallID: callID, Service: AuthService, Method: method, Payload: data})
+		return receive(t, conn)
+	}
+
+	// Overlong principal is rejected.
+	tooLong := rpc(issuer, "m0", "issue_token", IssueTokenRequest{
+		TTLSeconds: 60, Scopes: []Scope{{Service: testService, Methods: []string{"echo"}}},
+		Principal: strings.Repeat("x", maxPrincipal+1),
+	})
+	if tooLong.Error == nil || tooLong.Error.Code != "invalid_argument" {
+		t.Fatalf("overlong principal: %+v", tooLong)
+	}
+
+	issueWith := func(id, principal string) IssueTokenResult {
+		t.Helper()
+		resp := rpc(issuer, id, "issue_token", IssueTokenRequest{
+			TTLSeconds: 60, Scopes: []Scope{{Service: testService, Methods: []string{"echo"}}}, Principal: principal,
+		})
+		if resp.Error != nil {
+			t.Fatalf("issue_token(%q): %+v", principal, resp.Error)
+		}
+		var out IssueTokenResult
+		if err := json.Unmarshal(resp.Payload, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Principal != principal {
+			t.Fatalf("issue_token principal = %q, want %q", out.Principal, principal)
+		}
+		return out
+	}
+
+	alice := issueWith("m1", "user:alice")
+	bob := issueWith("m2", "user:bob")
+	plain := issueWith("m3", "")
+
+	// list_tokens reports principal.
+	listed := rpc(issuer, "m4", "list_tokens", map[string]any{})
+	var listResp struct {
+		Tokens []TokenInfo `json:"tokens"`
+	}
+	if err := json.Unmarshal(listed.Payload, &listResp); err != nil {
+		t.Fatal(err)
+	}
+	principals := map[string]string{}
+	for _, tok := range listResp.Tokens {
+		principals[tok.TokenID] = tok.Principal
+	}
+	if principals[alice.TokenID] != "user:alice" || principals[bob.TokenID] != "user:bob" || principals[plain.TokenID] != "" {
+		t.Fatalf("list_tokens principals: %+v", principals)
+	}
+
+	// whoami reports principal on the token connection.
+	aliceConn := dial(t, r, "Bearer "+alice.Token)
+	hello(t, aliceConn, "client", "alice")
+	var who struct {
+		Principal string `json:"principal"`
+	}
+	if err := json.Unmarshal(rpc(aliceConn, "w1", "whoami", map[string]any{}).Payload, &who); err != nil || who.Principal != "user:alice" {
+		t.Fatalf("whoami principal = %q err=%v", who.Principal, err)
+	}
+
+	// WS call: Router strips caller-forged meshcall-token-* (mixed case) and sets meshcall-token-principal.
+	forgedMeta, _ := json.Marshal(map[string]string{
+		"meshcall-token-principal": "user:mallory",
+		"MeshCall-Token-Principal": "user:mallory2",
+		"meshcall-token-extra":     "bad",
+		"keep":                     "yes",
+	})
+	send(t, aliceConn, frame{Kind: "call.open", CallID: "c-alice", Service: testService, Method: "echo",
+		Payload: json.RawMessage(`{}`), Metadata: forgedMeta})
+	got := receive(t, worker)
+	var meta map[string]string
+	if err := json.Unmarshal(got.Metadata, &meta); err != nil {
+		t.Fatalf("metadata: %v %s", err, string(got.Metadata))
+	}
+	if meta[tokenPrincipalKey] != "user:alice" || meta["keep"] != "yes" || len(meta) != 2 {
+		t.Fatalf("alice metadata = %+v", meta)
+	}
+	send(t, worker, frame{Kind: "call.result", CallID: "c-alice", Payload: json.RawMessage(`{"who":"alice"}`)})
+	receive(t, aliceConn)
+
+	// Ordinary account and principal-less token cannot forge meshcall-token-*.
+	send(t, issuer, frame{Kind: "call.open", CallID: "c-issuer", Service: testService, Method: "echo",
+		Payload: json.RawMessage(`{}`), Metadata: forgedMeta})
+	got = receive(t, worker)
+	meta = nil
+	if err := json.Unmarshal(got.Metadata, &meta); err != nil {
+		t.Fatalf("issuer metadata: %v", err)
+	}
+	if len(meta) != 1 || meta["keep"] != "yes" {
+		t.Fatalf("issuer forged metadata survived: %+v", meta)
+	}
+	send(t, worker, frame{Kind: "call.result", CallID: "c-issuer", Payload: json.RawMessage(`{}`)})
+	receive(t, issuer)
+
+	// HTTP /v1/call/... injects meshcall-token-principal and strips forged headers.
+	httpDone := make(chan string, 1)
+	go func() {
+		req, _ := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/v1/call/%s/echo", r.Ready().Port, testService), strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+alice.Token)
+		req.Header.Set("MeshCall-Meta-meshcall-token-principal", "user:evil")
+		req.Header.Set("MeshCall-Meta-keep", "http")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			httpDone <- "err:" + err.Error()
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		httpDone <- string(body)
+	}()
+	got = receive(t, worker)
+	meta = nil
+	if err := json.Unmarshal(got.Metadata, &meta); err != nil {
+		t.Fatalf("http metadata: %v", err)
+	}
+	if meta[tokenPrincipalKey] != "user:alice" || meta["keep"] != "http" || len(meta) != 2 {
+		t.Fatalf("http alice metadata = %+v", meta)
+	}
+	send(t, worker, frame{Kind: "call.result", CallID: got.CallID, Payload: json.RawMessage(`{"ok":true}`)})
+	if body := <-httpDone; !strings.Contains(body, `"ok":true`) {
+		t.Fatalf("http response: %s", body)
+	}
+
+	// Dedup isolation: same idempotency_key from user:alice and user:bob never share results.
+	bobConn := dial(t, r, "Bearer "+bob.Token)
+	hello(t, bobConn, "client", "bob")
+	send(t, aliceConn, frame{Kind: "call.open", CallID: "d-alice", Service: testService, Method: "echo",
+		Idempotency: "same-key", Payload: json.RawMessage(`{}`)})
+	got = receive(t, worker)
+	send(t, worker, frame{Kind: "call.result", CallID: got.CallID, Payload: json.RawMessage(`{"who":"alice"}`)})
+	if res := receive(t, aliceConn); string(res.Payload) != `{"who":"alice"}` {
+		t.Fatalf("alice dedup result: %s", res.Payload)
+	}
+	send(t, bobConn, frame{Kind: "call.open", CallID: "d-bob", Service: testService, Method: "echo",
+		Idempotency: "same-key", Payload: json.RawMessage(`{}`)})
+	got = receive(t, worker)
+	if got.CallID != "d-bob" {
+		t.Fatalf("bob did not get a distinct call: %+v", got)
+	}
+	send(t, worker, frame{Kind: "call.result", CallID: got.CallID, Payload: json.RawMessage(`{"who":"bob"}`)})
+	if res := receive(t, bobConn); string(res.Payload) != `{"who":"bob"}` {
+		t.Fatalf("bob dedup result: %s", res.Payload)
+	}
+}

@@ -13,6 +13,7 @@ import type {
 import type { DuplexChannel, RpcContext, ServerCallNext, ServerInterceptor, ServiceMethod } from "./service.js";
 import { isFrameTooLarge, type FrameWriter } from "./transport.js";
 import { TUNNEL_HOST_SERVICE, type TunnelHost } from "./tunnel.js";
+import { TOKEN_PRINCIPAL_KEY } from "./router-auth.js";
 import { InvalidOutputError, validatePayload, type MethodValidators } from "./validation.js";
 
 export interface RuntimeMethod {
@@ -352,6 +353,9 @@ class ServerCall {
         protocol: sealed.session.protocol, session: sealed.session.id,
         peerKey: sealed.session.peerKey, pairingId: sealed.session.pairingId, tunnel,
       },
+      tokenPrincipal: session.options.tunnels !== undefined
+        ? (frame.metadata?.[TOKEN_PRINCIPAL_KEY] ?? null)
+        : null,
       setTrailer(key: string, value: string): void {
         if (key === "" || isReservedKey(key)) throw new RangeError("trailer key " + JSON.stringify(key) + " is empty or reserved (\"meshcall-\")");
         if (typeof value !== "string") throw new TypeError("trailer value for " + JSON.stringify(key) + " must be a string");

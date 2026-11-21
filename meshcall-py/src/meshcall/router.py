@@ -457,23 +457,36 @@ class AuthClient:
         )
 
     async def issue_token(
-        self, scopes: Sequence[RouterScope], ttl_seconds: int = 900
+        self,
+        scopes: Sequence[RouterScope],
+        ttl_seconds: int = 900,
+        *,
+        principal: str | None = None,
     ) -> IssuedToken:
         """Issue a scoped Bearer token.
 
         ``ttl_seconds`` may reach the Router's maximum (``--token-max-ttl``,
         30 days by default). Expiry bounds new connections only: one made
-        before it stays up until it closes or the token is revoked."""
+        before it stays up until it closes or the token is revoked. When
+        ``principal`` (at most 512 UTF-8 bytes) is set, the Router injects
+        ``meshcall-token-principal`` on every call routed from the token."""
         normalized = [
             scope.model_copy(
                 update={"service": _normalize_scope_service(scope.service)}
             )
             for scope in scopes
         ]
+        request = (
+            _IssueRequest(
+                ttl_seconds=ttl_seconds, scopes=normalized, principal=principal
+            )
+            if principal is not None
+            else _IssueRequest(ttl_seconds=ttl_seconds, scopes=normalized)
+        )
         return await self._mesh.call_unary(
             AUTH_SERVICE,
             "issue_token",
-            _IssueRequest(ttl_seconds=ttl_seconds, scopes=normalized),
+            request,
             IssuedToken,
         )
 

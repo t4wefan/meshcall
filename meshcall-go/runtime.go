@@ -14,6 +14,8 @@ import (
 // Context is what a handler learns about, and attaches to, the current call.
 // It is a context.Context that ends when the call is cancelled, its
 // timeout_ms passes, or the connection is lost.
+const tokenPrincipalKey = "meshcall-token-principal"
+
 type Context struct {
 	context.Context
 	CallID         string
@@ -29,9 +31,12 @@ type Context struct {
 	// E2E is the end-to-end session of a sealed call: its handshake and, when
 	// the client authenticated itself, its public key (PeerKey) and pairing.
 	// Nil for a call that is not sealed.
-	E2E    *E2EPeer
-	Logger *slog.Logger
-	call   *serverCall
+	E2E *E2EPeer
+	// TokenPrincipal is the issuer-chosen principal of the temporary token the
+	// call arrived on, or "". Set by the Router; callers cannot forge it.
+	TokenPrincipal string
+	Logger         *slog.Logger
+	call           *serverCall
 }
 
 // SetTrailer attaches a trailer to the call's terminal frame.
