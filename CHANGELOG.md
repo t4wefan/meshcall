@@ -10,6 +10,17 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **Python handlers run on the server's own event loop.** `RpcServer`,
+  `mesh.serve()` and `mesh.run()` now run handlers, validation and stream
+  iteration on the loop that started the server instead of a dedicated
+  worker thread, so handlers can use the application's async clients, pools
+  and locks (asyncpg, redis.asyncio, httpx, another `Mesh`) without bridging
+  back to that loop. Handlers must not block the loop synchronously; move
+  blocking work to `asyncio.to_thread`. `isolate_handlers=True` restores the
+  previous worker-thread behaviour.
+
 ## [0.4.0] - 2026-11-21
 
 ### Added

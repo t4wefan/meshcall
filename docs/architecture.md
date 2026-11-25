@@ -137,18 +137,27 @@ last; per-call options are attached with `with_options` (or the optional
 trailing options argument of generated TypeScript and Go methods) and are not
 treated as business parameters.
 
-## RPC and service loop isolation
+## RPC and service loops
 
-Every Python `RpcServer` owns a persistent service worker loop running in a
-dedicated thread. WebSocket receive/send, call state, deadlines, cancellation,
-flow-control credit, and terminal-frame arbitration remain on the RPC loop.
-Pydantic request validation, the user handler, response validation, and stream
-iteration run on the service worker loop.
+By default a Python `RpcServer` runs handlers on the event loop that started
+it (`await server.start()`, `mesh.serve()`, `mesh.run()`), the same loop that
+owns WebSocket receive/send, call state, deadlines, cancellation,
+flow-control credit and terminal-frame arbitration. Handlers can therefore use
+the application's own async clients, pools and locks (asyncpg, redis.asyncio,
+httpx, another `Mesh`), which asyncio binds to the loop that created them.
+Handlers must not block that loop synchronously; offload blocking work with
+`asyncio.to_thread`.
 
-Cross-loop operations use thread-safe future submission. A synchronously
-blocking handler can delay other work assigned to the current service worker,
-but it cannot prevent the RPC loop from enforcing a deadline or maintaining
-other connections. The TypeScript client consumes unary, server-streaming,
+`RpcServer(isolate_handlers=True)` (`mesh.serve(isolate_handlers=True)`) opts
+in to a persistent service worker loop in a dedicated thread. Pydantic request
+validation, the handler, response validation and stream iteration then run on
+that loop, and cross-loop operations use thread-safe future submission. A
+synchronously blocking handler can delay other work on the worker, but it
+cannot prevent the RPC loop from enforcing a deadline or maintaining other
+connections. Resources created on the application's loop must then not be
+used from handlers.
+
+The TypeScript client consumes unary, server-streaming,
 client-streaming and duplex calls; TypeScript
 service handlers run on Node's event loop and must avoid blocking it
 synchronously.
