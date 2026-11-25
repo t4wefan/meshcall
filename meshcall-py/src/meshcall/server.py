@@ -80,7 +80,7 @@ from meshcall.tunnel import (
     TunnelHost,
     TunnelPolicy,
 )
-from meshcall.worker import WorkerLoop, submit_to_loop
+from meshcall.worker import HandlerLoop, InlineLoop, WorkerLoop, run_on_loop
 
 INITIAL_STREAM_CREDIT = 16
 _STREAM_END = object()
@@ -112,7 +112,7 @@ class ServerRuntime:
     def __init__(
         self,
         services: Sequence[object],
-        worker: WorkerLoop,
+        worker: HandlerLoop,
         *,
         access_log: bool = True,
         log_level: str | int = "INFO",
@@ -300,7 +300,7 @@ class _ServerSession:
         runtime: ServerRuntime,
         connection: FrameConnection,
         methods: dict[tuple[str, str], RuntimeMethod],
-        worker: WorkerLoop,
+        worker: HandlerLoop,
         *,
         access_log: bool,
         log_level: str | int,
@@ -952,7 +952,7 @@ class _ServerCall:
         await self._run_on_rpc(self.send_output_payload(payload))
 
     async def _run_on_rpc(self, coroutine: Any) -> Any:
-        return await asyncio.wrap_future(submit_to_loop(self.rpc_loop, coroutine))
+        return await run_on_loop(self.rpc_loop, coroutine)
 
     async def _send_result(self, payload: Any) -> None:
         await self._send_terminal(
@@ -1041,12 +1041,7 @@ class _ServerInputStream(RpcInputStream[Any]):
         return self
 
     async def __anext__(self) -> Any:
-        value = await asyncio.wrap_future(
-            submit_to_loop(
-                self.call.rpc_loop,
-                self.call.next_input_payload(),
-            )
-        )
+        value = await run_on_loop(self.call.rpc_loop, self.call.next_input_payload())
         if value is _STREAM_END:
             raise StopAsyncIteration
         if isinstance(value, BaseException):
@@ -1084,10 +1079,12 @@ class RpcServer:
         e2e_private_key: str | None = None,
         authorize_e2e_peer: E2EPeerHook | None = None,
         e2e_pairing_psk: E2EPairingPskHook | None = None,
+        isolate_handlers: bool = False,
     ) -> None:
         if max_inflight is not None and max_inflight < 1:
             raise ValueError("max_inflight must be positive")
         self.max_inflight = max_inflight
+        self.isolate_handlers = isolate_handlers
         self.tunnel_policies = dict(tunnel_policies or {})
         self.e2e_private_key = e2e_private_key
         self.authorize_e2e_peer = authorize_e2e_peer
@@ -1104,7 +1101,7 @@ class RpcServer:
         self._state_lock = asyncio.Lock()
         self._binding: DriverBinding | None = None
         self._runtime: ServerRuntime | None = None
-        self._worker: WorkerLoop | None = None
+        self._worker: HandlerLoop | None = None
         self._closed = asyncio.Event()
         self._closed.set()
 
@@ -1127,11 +1124,15 @@ class RpcServer:
             self.state = ServerState.STARTING
             self._closed.clear()
             binding: DriverBinding | None = None
-            worker: WorkerLoop | None = None
+            worker: HandlerLoop | None = None
             try:
                 binding = self.driver.acquire_binding(self.owner_id)
                 self._binding = binding
-                worker = WorkerLoop(name=f"meshcall-worker-{self.owner_id[:8]}")
+                worker = (
+                    WorkerLoop(name=f"meshcall-worker-{self.owner_id[:8]}")
+                    if self.isolate_handlers
+                    else InlineLoop()
+                )
                 await worker.start()
                 runtime = ServerRuntime(
                     tuple(self._services),

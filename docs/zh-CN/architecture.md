@@ -15,7 +15,7 @@ Go 结构体标签服务定义 ---- WriteContract -------------+       +--> 生�
                                                             |
                                                             +--> 生成 Go 客户端文件
 
-Python RPC 事件循环 <---- 线程安全桥接 ----> 业务工作线程事件循环 (Service Worker Loop)
+Python RPC 事件循环（默认也执行 Handler；isolate_handlers=True 时桥接到业务工作线程事件循环）
         |
         v
 逻辑帧连接与按调用公平调度器 (Fair Scheduler)
@@ -63,14 +63,11 @@ Python 按签名顺序提取非注入参数，单个模型类型的参数保持�
 
 ---
 
-## 2. RPC 事件循环与业务工作线程隔离（Python）
+## 2. RPC 事件循环与 Handler（Python）
 
-每个 Python `RpcServer` 实例都拥有一个运行在独立后台线程中的**业务工作事件循环（Service Worker Loop）**：
+默认情况下，Python `RpcServer` 在启动它的那个事件循环上执行 Handler（`await server.start()`、`mesh.serve()`、`mesh.run()`），这个循环同时负责 WebSocket 收发帧、调用状态机、超时定时器、取消传播、流控信用窗口（Credit）以及终止帧（Terminal Frame）仲裁。因此 Handler 可以直接使用应用自己的异步客户端、连接池和锁（asyncpg、redis.asyncio、httpx、另一个 `Mesh` 等）；asyncio 会把这些资源绑定到创建它们的循环上。Handler 不能同步阻塞这个循环，阻塞操作请用 `asyncio.to_thread` 移出去。
 
-- **RPC 事件循环（主循环）**：负责 WebSocket 收发帧、调用状态机、超时定时器、取消传播、流控信用窗口（Credit）以及最终终止帧（Terminal Frame）仲裁。
-- **Service Worker 事件循环（独立线程）**：负责 Pydantic 请求校验、执行用户业务 Handler、响应校验以及异步生成器流迭代。
-
-两个事件循环之间通过线程安全的 Future 桥接。**这样设计的核心收益是**：即便用户的某个业务 Handler 不慎执行了同步阻塞操作或繁重的 CPU 计算，也只会延缓当前业务工作线程上的任务，**绝不会卡死底层的 RPC 事件循环**——心跳保活（Ping/Pong）、其他并发调用的超时取消及连接管理依然毫秒级精准响应。
+`RpcServer(isolate_handlers=True)`（或 `mesh.serve(isolate_handlers=True)`）会改为在独立后台线程中运行一个**业务工作事件循环**：Pydantic 请求校验、Handler、响应校验与异步生成器流迭代都在这个循环上执行，两个循环之间通过线程安全的 Future 桥接。这样某个 Handler 同步阻塞时只会拖慢工作线程上的任务，RPC 事件循环仍能按时处理超时、心跳和其他连接；代价是应用循环上创建的资源不能在 Handler 里使用。
 
 其他运行时：
 

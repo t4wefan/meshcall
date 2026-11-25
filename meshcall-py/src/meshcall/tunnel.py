@@ -40,7 +40,7 @@ from meshcall.errors import ContractError
 
 if TYPE_CHECKING:
     from meshcall.router import Mesh
-    from meshcall.worker import WorkerLoop
+    from meshcall.worker import HandlerLoop
 
 TUNNEL_SERVICE = "meshcall.router.v1.TunnelService"
 TUNNEL_HOST_SERVICE = "meshcall.router.v1.TunnelHost"
@@ -266,7 +266,7 @@ class TunnelHost:
     def __init__(
         self,
         policies: Mapping[str, TunnelPolicy],
-        worker: WorkerLoop,
+        worker: HandlerLoop,
         *,
         e2e_private_key: str | None = None,
         authorize_e2e_peer: E2EPeerHook | None = None,

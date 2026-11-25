@@ -556,6 +556,7 @@ class RunningServer:
         e2e_private_key: str | None = None,
         authorize_e2e_peer: E2EPeerHook | None = None,
         e2e_pairing_psk: E2EPairingPskHook | None = None,
+        isolate_handlers: bool = False,
     ) -> None:
         self.mesh = mesh
         self.router = mesh.router
@@ -585,6 +586,7 @@ class RunningServer:
             e2e_private_key=e2e_private_key,
             authorize_e2e_peer=authorize_e2e_peer,
             e2e_pairing_psk=e2e_pairing_psk,
+            isolate_handlers=isolate_handlers,
         )
         self._stopped = False
 
@@ -639,6 +641,7 @@ class _ServeHandle:
         log_level: str | int = "INFO",
         colorize: bool = False,
         logger: RpcLogger | None = None,
+        isolate_handlers: bool = False,
     ) -> None:
         self._mesh = mesh
         self._drain_timeout = drain_timeout
@@ -646,6 +649,7 @@ class _ServeHandle:
         self._log_level = log_level
         self._colorize = colorize
         self._logger = logger
+        self._isolate_handlers = isolate_handlers
         self._server: RunningServer | None = None
 
     def _build_server(self) -> RunningServer:
@@ -666,6 +670,7 @@ class _ServeHandle:
             e2e_private_key=self._mesh._e2e_private_key,
             authorize_e2e_peer=self._mesh._authorize_e2e_peer,
             e2e_pairing_psk=self._mesh._e2e_pairing_psk,
+            isolate_handlers=self._isolate_handlers,
         )
         self._mesh._running_server = srv
         self._server = srv
@@ -1068,11 +1073,18 @@ class Mesh:
         log_level: str | int = "INFO",
         colorize: bool = False,
         logger: RpcLogger | None = None,
+        isolate_handlers: bool = False,
     ) -> _ServeHandle:
         """Serve mounted services on this Mesh.
 
         Use either ``async with mesh.serve() as srv:`` (background context
         manager) or ``await mesh.serve()`` (blocks until SIGINT/SIGTERM).
+
+        Handlers run on the event loop that calls ``serve``, so they can use
+        the application's own async clients and pools. ``isolate_handlers=True``
+        runs them on a dedicated worker thread and loop instead, so a handler
+        that blocks synchronously cannot stall frame I/O; resources bound to
+        the application's loop must then not be used from handlers.
         """
         if not self._mounted_services:
             raise ValueError(
@@ -1085,6 +1097,7 @@ class Mesh:
             log_level=log_level,
             colorize=colorize,
             logger=logger,
+            isolate_handlers=isolate_handlers,
         )
 
     def run(
@@ -1095,6 +1108,7 @@ class Mesh:
         log_level: str | int = "INFO",
         colorize: bool = False,
         logger: RpcLogger | None = None,
+        isolate_handlers: bool = False,
     ) -> None:
         """Synchronous entrypoint: serve mounted services until interrupted (SIGINT / SIGTERM)."""
         handle = self.serve(
@@ -1103,6 +1117,7 @@ class Mesh:
             log_level=log_level,
             colorize=colorize,
             logger=logger,
+            isolate_handlers=isolate_handlers,
         )
         with contextlib.suppress(KeyboardInterrupt):
             asyncio.run(handle._serve_forever())

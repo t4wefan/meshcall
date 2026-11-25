@@ -11,8 +11,32 @@ from loguru import logger
 ResultT = TypeVar("ResultT")
 
 
+class InlineLoop:
+    """Runs handlers on the loop that started the server (the default).
+
+    Handlers then share that loop with the application's own clients, pools
+    and locks, which asyncio binds to the loop that created them.
+    """
+
+    running = True
+
+    async def start(self) -> None:
+        return None
+
+    async def run(self, coroutine: Coroutine[Any, Any, ResultT]) -> ResultT:
+        return await coroutine
+
+    async def stop(self) -> None:
+        return None
+
+
 class WorkerLoop:
-    """Owns a persistent asyncio loop in a dedicated daemon thread."""
+    """Owns a persistent asyncio loop in a dedicated daemon thread.
+
+    Opt-in (``isolate_handlers=True``): a handler that blocks synchronously
+    then cannot stall frame I/O, at the cost of every handler running on a
+    loop the application's own async resources do not belong to.
+    """
 
     def __init__(self, *, name: str, shutdown_timeout: float = 1.0) -> None:
         self.name = name
@@ -98,17 +122,24 @@ class WorkerLoop:
             asyncio.set_event_loop(None)
 
 
-def submit_to_loop(
+HandlerLoop = InlineLoop | WorkerLoop
+
+
+async def run_on_loop(
     loop: asyncio.AbstractEventLoop,
     coroutine: Coroutine[Any, Any, ResultT],
-) -> ConcurrentFuture[ResultT]:
-    """Submit a coroutine to its owning loop from a different worker loop."""
+) -> ResultT:
+    """Await a coroutine on its owning loop, hopping threads only if needed."""
 
+    if asyncio.get_running_loop() is loop:
+        return await coroutine
+    future: ConcurrentFuture[ResultT]
     try:
-        return asyncio.run_coroutine_threadsafe(coroutine, loop)
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
     except BaseException:
         coroutine.close()
         raise
+    return await asyncio.wrap_future(future)
 
 
 def _resolve_ready(
