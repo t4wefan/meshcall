@@ -217,7 +217,7 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 		lines = append(lines, "")
 		lines = append(lines, tsDocLines(m.Description, "  ")...)
 		lines = append(lines, "  public "+m.Name+"(")
-		for _, p := range tsParameters(m, registry) {
+		for _, p := range tsParameters(m, registry, service.Targeted || m.Stream == "client_stream") {
 			lines = append(lines, "    "+p+",")
 		}
 		for _, p := range extraParams {
@@ -318,7 +318,11 @@ func tsParameterNames(m *contract.Method) []string {
 	return names
 }
 
-func tsParameters(m *contract.Method, registry *typeRegistry) []string {
+// tsParameters renders the request parameters. When a required parameter
+// follows them (a targeted method's options, a client stream's items), an
+// optional field cannot be written "name?: T" (TS1016): it becomes a required
+// position that accepts undefined, so the caller still may leave it unset.
+func tsParameters(m *contract.Method, registry *typeRegistry, requiredFollows bool) []string {
 	properties := m.Request.Schema.Obj("properties")
 	required := stringSet(m.Request.Schema.Strings("required"))
 	defNames := registry.DefinitionNames(m.Request)
@@ -332,10 +336,12 @@ func tsParameters(m *contract.Method, registry *typeRegistry) []string {
 		}
 		t := tsType(prop, defNames)
 		switch {
-		case required[field] || m.Stream == "client_stream":
+		case required[field]:
 			params = append(params, local+": "+t)
 		case prop.Has("default"):
 			params = append(params, local+": "+t+" = "+jsonDumps(prop.Values["default"]))
+		case requiredFollows:
+			params = append(params, local+": "+t+" | undefined")
 		default:
 			params = append(params, local+"?: "+t)
 		}
