@@ -256,11 +256,21 @@ func RenderGoClient(service *contract.Service, opts GoOptions) string {
 	className += "Client"
 	var client strings.Builder
 	client.WriteString(goComment(service.Description, ""))
-	client.WriteString("type " + className + " struct {\n\trpc meshcall.Caller\n}\n\n")
-	client.WriteString("// New" + className + " wraps a Mesh (or any Caller).\n")
-	client.WriteString("func New" + className + "(rpc meshcall.Caller) *" + className + " {\n\treturn &" + className + "{rpc: rpc}\n}\n\n")
-	client.WriteString("// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.\n")
-	client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithCallOptions(opts)}\n}\n\n")
+	if service.Targeted {
+		// One client per instance, in every language: the id is bound once, so
+		// no call can forget it or name another (a tunnel's instance included).
+		client.WriteString("type " + className + " struct {\n\trpc      meshcall.Caller\n\tinstance string\n}\n\n")
+		client.WriteString("// New" + className + " wraps a Mesh (or any Caller); every call goes to instance.\n")
+		client.WriteString("func New" + className + "(rpc meshcall.Caller, instance string) *" + className + " {\n\treturn &" + className + "{rpc: rpc, instance: instance}\n}\n\n")
+		client.WriteString("// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.\n")
+		client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithCallOptions(opts), instance: c.instance}\n}\n\n")
+	} else {
+		client.WriteString("type " + className + " struct {\n\trpc meshcall.Caller\n}\n\n")
+		client.WriteString("// New" + className + " wraps a Mesh (or any Caller).\n")
+		client.WriteString("func New" + className + "(rpc meshcall.Caller) *" + className + " {\n\treturn &" + className + "{rpc: rpc}\n}\n\n")
+		client.WriteString("// WithOptions returns a shallow copy of the client with default CallOptions applied to every call.\n")
+		client.WriteString("func (c *" + className + ") WithOptions(opts meshcall.CallOptions) *" + className + " {\n\treturn &" + className + "{rpc: c.rpc.WithCallOptions(opts)}\n}\n\n")
+	}
 	client.WriteString("// ServiceName is the service these calls address.\nconst ServiceName = " + jsonDumps(service.Name) + "\n")
 	for _, m := range service.Methods {
 		g.writeMethod(&client, service, m, className)
@@ -413,22 +423,19 @@ func (g *goWriter) writeMethod(b *strings.Builder, service *contract.Service, m 
 		b.WriteString("//\n// Deprecated: " + note + ".\n")
 	}
 	sigParams := []string{"ctx context.Context"}
-	if service.Targeted {
-		// Required on tunnel connections too: see renderPythonClientClass.
-		sigParams = append(sigParams, "instance string")
-	}
 	paramDecls, reqExpr := g.goMethodParams(m, request)
 	sigParams = append(sigParams, paramDecls...)
 	var defaults []string
-	if service.Targeted {
-		defaults = append(defaults, "meshcall.WithInstance(instance)")
-	}
 	if m.Annotations.Idempotent && m.Stream == "unary" {
 		defaults = append(defaults, "meshcall.IdempotentCall()")
 	}
 	options := "opts..."
 	if len(defaults) > 0 {
 		options = "append([]meshcall.CallOption{" + strings.Join(defaults, ", ") + "}, opts...)..."
+	}
+	if service.Targeted {
+		// Last, so no per-call option can address another instance.
+		options = "append(append([]meshcall.CallOption{" + strings.Join(defaults, ", ") + "}, opts...), meshcall.WithInstance(c.instance))..."
 	}
 	call := func(fn, types string, args ...string) string {
 		all := append([]string{"ctx", "c.rpc", "ServiceName", jsonDumps(m.Name)}, args...)

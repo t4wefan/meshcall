@@ -39,10 +39,14 @@ export interface Chunk {
  * A targeted service whose methods have optional request fields.
  */
 export class FilesClient {
-  public constructor(private readonly rpc: MeshCallRpc) {}
+  readonly #instance: string;
 
-  public withOptions(options: CallOptions): FilesClient {
-    return new FilesClient(this.rpc.withOptions(options));
+  public constructor(private readonly rpc: MeshCallRpc, instance: string) {
+    this.#instance = instance;
+  }
+
+  public withOptions(options: Omit<CallOptions, "instance">): FilesClient {
+    return new FilesClient(this.rpc.withOptions(options), this.#instance);
   }
 
   /**
@@ -52,7 +56,7 @@ export class FilesClient {
     all: boolean | undefined,
     limit: number = 20,
     cwd: string,
-    options: CallOptions & { instance: string },
+    options?: Omit<CallOptions, "instance">,
   ): Promise<Total> {
     return this.rpc.unary<ListRequest, Total>(
       "test.v1.Files",
@@ -62,7 +66,7 @@ export class FilesClient {
         limit: limit,
         cwd: cwd,
       },
-      { ...options, responseSchema: TotalSchema },
+      { ...options, instance: this.#instance, responseSchema: TotalSchema },
     );
   }
 
@@ -74,7 +78,7 @@ export class FilesClient {
     size: number | undefined,
     overwrite: boolean | undefined,
     items: AsyncIterable<Chunk>,
-    options: CallOptions & { instance: string },
+    options?: Omit<CallOptions, "instance">,
   ): Promise<Total> {
     return this.rpc.clientStream<UploadRequest, Chunk, Total>(
       "test.v1.Files",
@@ -85,7 +89,7 @@ export class FilesClient {
         overwrite: overwrite,
       },
       items,
-      { ...options, responseSchema: TotalSchema },
+      { ...options, instance: this.#instance, responseSchema: TotalSchema },
     );
   }
 }

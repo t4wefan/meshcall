@@ -189,8 +189,8 @@ async def test_tunnel_credentials_have_one_way_in() -> None:
 
 
 async def test_generated_targeted_client_over_a_tunnel(meshcall_cli, tmp_path) -> None:
-    """Generated clients keep `instance` required (T76): on a tunnel the
-    caller passes the tunnel's instance, and the Router checks it."""
+    """Generated targeted clients are bound to an instance: on a tunnel the
+    caller binds the tunnel's instance, and the Router checks it."""
     out = tmp_path / "workspace_client.py"
     meshcall_cli(
         "generate",
@@ -213,11 +213,14 @@ async def test_generated_targeted_client_over_a_tunnel(meshcall_cli, tmp_path) -
                 instance="box-a", scopes=["test.v1.Workspace"], principal="user:alice"
             )
             async with Mesh(Router(router.url), tunnel=opened.credential) as mesh:
-                client = module.WorkspaceClient(mesh)
-                seen = await client.whoami(instance=opened.instance_id)
+                client = module.WorkspaceClient(mesh, instance=opened.instance_id)
+                seen = await client.whoami()
                 assert seen.principal == "user:alice"
+                # with_options keeps the bound instance.
+                timed = await client.with_options(timeout=5.0).whoami()
+                assert timed.principal == "user:alice"
                 with pytest.raises(PermissionDeniedError) as wrong:
-                    await client.whoami(instance="box-b")
+                    await module.WorkspaceClient(mesh, instance="box-b").whoami()
                 assert wrong.value.reason == "tunnel_scope"
                 assert (wrong.value.details or {}).get("instance_id") == "box-a"
 

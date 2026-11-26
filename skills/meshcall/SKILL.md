@@ -16,7 +16,7 @@ Typed streaming RPC over WebSocket and HTTP across Python, TypeScript and Go.
      - `server_stream`: single request → stream of output items (`@stream` returning `AsyncIterator[Out]`).
       - `client_stream`: initial parameters + stream of input items → single response (`@mutates` with `AsyncIterator[In]` as its last parameter).
       - `duplex`: initial parameters + concurrent bidirectional item stream (`@mutates(reason="…")` with `DuplexChannel[In, Out]` as its last parameter, returning `None`).
-   - **Targeted services** (`@service("…", targeted=True)`): services whose instances hold distinct in-memory state (a session, a loaded model, an actor). Instead of load-balancing across instances, callers must pass `instance="<instance_id>"` to address a specific instance.
+   - **Targeted services** (`@service("…", targeted=True)`): services whose instances hold distinct in-memory state (a session, a loaded model, an actor). Instead of load-balancing across instances, callers address a specific instance: a generated client is bound to one when it is constructed, a raw call passes `instance="<instance_id>"`.
 2. **Layer 2 — Router (`Router` / `LocalRouter`)**:
    Peers never connect directly to each other's ports; all services and clients connect to a stateless **Router** (`ws://127.0.0.1:8765` by default) that maintains the live service registry, validates deadlines, deduplicates idempotent calls and load-balances across healthy instances.
    - `Router(url=None)` is a pure endpoint descriptor pointing to an external Router (`ws://`, `wss://`, `http://`, `https://`, `unix://`, `pipe://`, or a list of failover URLs; defaults to `MESHCALL_ROUTER_URL` or `"ws://127.0.0.1:8765"`).
@@ -238,8 +238,10 @@ you edit so warnings fail fast with a `hint` that says exactly what to add):
   field in TypeScript decorators and Go struct tags / `meshcall.Doc(...)`).
 - A service whose instances hold distinct state (a session, a loaded model,
   an actor) is `targeted=True` / `targeted: true`: callers must name the
-  instance (`instance="worker-3"`, generated clients require it, handlers
-  read `ctx.instance_id` / `ctx.instanceId`).
+  instance: a generated client is bound to one when constructed
+  (`WorkerClient(mesh, instance="worker-3")`, `new WorkerClient(mesh, "worker-3")`,
+  `NewWorkerClient(mesh, "worker-3")`); handlers read `ctx.instance_id` /
+  `ctx.instanceId`.
 - `@query` marks pure reads (`read_only=True, idempotent=True`); `@mutates(idempotent=...)`
   or `@mutates(destructive=True)` marks state-changing methods. Retry policies
   only retry idempotent calls.
@@ -438,8 +440,8 @@ my_app/
   the caller from `ctx.tunnel` (id, principal), never from metadata; an
   issuer account or API key calls `mesh.tunnels.open(instance=…, scopes=…,
   principal=…)` and hands the `mtun_…` credential to the client, which
-  connects with `Mesh(router, tunnel=cred)`. Targeted clients still pass
-  `instance` (the tunnel's id). Bind registration credentials with
+  connects with `Mesh(router, tunnel=cred)`. Targeted clients are
+  constructed with the tunnel's instance id. Bind registration credentials with
   `instance_ids` so nothing can impersonate the instance. When the Router
   must not read the traffic, seal it end to end: give the instance a key
   pair once (`generate_e2e_key()` / `generateE2EKey()` /

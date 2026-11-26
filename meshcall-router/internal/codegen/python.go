@@ -52,7 +52,7 @@ func RenderPythonClient(service *contract.Service, opts PythonOptions) string {
 		lines = append(lines, "", abc)
 	}
 	lines = append(lines, pyModelImportLines(modelLines)...)
-	lines = append(lines, "", "from meshcall.rpc import RpcClient")
+	lines = append(lines, "", pyRpcImportLine(service))
 	if imports := pyStreamImports(service); len(imports) > 0 {
 		lines = append(lines, "from meshcall.streams import "+strings.Join(imports, ", "))
 	}
@@ -92,7 +92,7 @@ func RenderPythonClientModule(service *contract.Service, opts PythonOptions) str
 	if abc := pyAbcImportLine(service); abc != "" {
 		lines = append(lines, "", abc)
 	}
-	lines = append(lines, "", "from meshcall.rpc import RpcClient")
+	lines = append(lines, "", pyRpcImportLine(service))
 	if imports := pyStreamImports(service); len(imports) > 0 {
 		lines = append(lines, "from meshcall.streams import "+strings.Join(imports, ", "))
 	}
@@ -103,6 +103,13 @@ func RenderPythonClientModule(service *contract.Service, opts PythonOptions) str
 	}
 	lines = append(lines, renderPythonClientClass(service, registry, className)...)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func pyRpcImportLine(service *contract.Service) string {
+	if service.Targeted {
+		return "from meshcall.rpc import MeshCallRpc, RpcClient"
+	}
+	return "from meshcall.rpc import RpcClient"
 }
 
 func pyAbcImportLine(service *contract.Service) string {
@@ -127,23 +134,25 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 	lines := []string{"class " + className + "(RpcClient):"}
 	lines = append(lines, pyDocstringLines(service.Description, "    ")...)
 	lines = append(lines, "    service_name = "+pyStringRepr(service.Name))
+	if service.Targeted {
+		// One client per instance, in every language: the id is bound once, so
+		// no call can forget it or name another (a tunnel's instance included).
+		lines = append(lines,
+			"",
+			"    def __init__(self, rpc: MeshCallRpc, *, instance: str) -> None:",
+			"        super().__init__(rpc)",
+			"        self._instance = instance",
+		)
+	}
 	for _, m := range service.Methods {
 		request := registry.Name(m.Request)
 		params := pyParameters(m, registry)
-		if service.Targeted {
-			// instance stays required on tunnel connections too, where the Router
-			// implies it: the caller passes the tunnel's instance id and the Router
-			// checks it, so every Mesh keeps this compile-time check (Go cannot vary
-			// a signature by Mesh type, so a tunnel-only shape would differ by
-			// language).
-			params = append(params, "*", "instance: str")
-		}
 		lines = append(lines, "")
 		var idempotent []string
 		if m.Annotations.Idempotent {
 			idempotent = []string{"            idempotent=True,"}
 		}
-		// Per-call options (timeout, metadata, instance, idempotency key) come
+		// Per-call options (timeout, metadata, idempotency key) come
 		// from RpcClient.with_options(), so the signature matches the server
 		// handler exactly.
 		tail := func(call string, args ...string) []string {
@@ -152,7 +161,7 @@ func renderPythonClientClass(service *contract.Service, registry *typeRegistry, 
 				out = append(out, "            "+a+",")
 			}
 			if service.Targeted {
-				out = append(out, "            instance=instance,")
+				out = append(out, "            instance=self._instance,")
 			}
 			out = append(out, idempotent...)
 			return append(out, "        )")

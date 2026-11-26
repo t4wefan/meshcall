@@ -82,9 +82,10 @@ Per-call control parameters are deliberately kept out of the generated
 attach `timeout`, `idle_timeout` / `timeoutMs`, `metadata`,
 `idempotency_key` / `idempotencyKey` and `instance`; generated TypeScript and
 Go methods also accept an optional trailing options / `opts ...` argument for
-the same purpose. A targeted service's generated client keeps `instance` a
-required argument (Python keyword-only, TypeScript required option, Go
-positional parameter) so the compiler enforces it.
+the same purpose. A targeted service's generated client is bound to one
+instance when it is constructed (`ActorClient(mesh, instance="a")`,
+`new ActorClient(mesh, "a")`, `NewActorClient(mesh, "a")`), so the compiler
+enforces the target once and no per-call option can name another.
 
 ## Dependency injection scope
 

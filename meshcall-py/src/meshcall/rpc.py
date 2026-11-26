@@ -140,8 +140,13 @@ class RpcClient:
         idempotency_key: str | None = None,
         instance: str | None = None,
     ) -> Self:
-        """Return a shallow copy whose calls use these options."""
+        """Return a shallow copy whose calls use these options.
+
+        The copy keeps what a generated client binds at construction, such as
+        a targeted client's ``instance``.
+        """
         clone: Self = object.__new__(type(self))
+        clone.__dict__.update(self.__dict__)
         RpcClient.__init__(
             clone,
             self._rpc.with_options(

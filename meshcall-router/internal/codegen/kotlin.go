@@ -65,9 +65,10 @@ var kotlinNaming = Naming{
 		"Any": true, "Boolean": true, "Deprecated": true, "Double": true, "Iterable": true, "JvmOverloads": true,
 		"List": true, "Long": true, "Map": true, "Nothing": true, "String": true, "Suppress": true, "Unit": true,
 	},
-	// The client declares withOptions and calls serializer and javaItems
-	// unqualified. Helpers called on rpc (future, observe, unary, …) cannot clash.
-	ReservedMembers: map[string]bool{"withOptions": true, "serializer": true, "javaItems": true},
+	// The client declares withOptions and boundInstance and calls serializer and
+	// javaItems unqualified. Helpers called on rpc (future, observe, unary, …)
+	// cannot clash.
+	ReservedMembers: map[string]bool{"withOptions": true, "boundInstance": true, "serializer": true, "javaItems": true},
 }
 
 var kotlinKeywords = map[string]bool{
@@ -351,9 +352,17 @@ func uniqueSorted(list []string) []string {
 
 func writeKotlinClient(b *strings.Builder, model *ClientModel, className string, uses map[string]bool) {
 	b.WriteString(kotlinDoc(model.Description, ""))
-	b.WriteString("public class " + className + "(private val rpc: MeshCallRpc) {\n")
-	b.WriteString("    /** A view of this client with [options] applied to every call. */\n")
-	b.WriteString("    public fun withOptions(options: CallOptions): " + className + " = " + className + "(rpc.withOptions(options))\n")
+	if model.Targeted {
+		// One client per instance, in every language: the id is bound once, so
+		// no call can forget it or name another (a tunnel's instance included).
+		b.WriteString("public class " + className + "(private val rpc: MeshCallRpc, private val boundInstance: String) {\n")
+		b.WriteString("    /** A view of this client with [options] applied to every call. */\n")
+		b.WriteString("    public fun withOptions(options: CallOptions): " + className + " = " + className + "(rpc.withOptions(options), boundInstance)\n")
+	} else {
+		b.WriteString("public class " + className + "(private val rpc: MeshCallRpc) {\n")
+		b.WriteString("    /** A view of this client with [options] applied to every call. */\n")
+		b.WriteString("    public fun withOptions(options: CallOptions): " + className + " = " + className + "(rpc.withOptions(options))\n")
+	}
 	javaNames := kotlinJavaNames(model.Methods)
 	for i, m := range model.Methods {
 		writeKotlinMethod(b, model, m, javaNames[i], uses)
@@ -386,11 +395,6 @@ func kotlinJavaNames(methods []ClientMethod) []string {
 func writeKotlinMethod(b *strings.Builder, model *ClientModel, m ClientMethod, asyncName string, uses map[string]bool) {
 	name := kotlinEscape(m.Name)
 	var params, args []string
-	if model.Targeted {
-		// Required on tunnel connections too, so the compiler enforces it.
-		params = append(params, "instance: String")
-		args = append(args, "instance")
-	}
 	request := m.Request + "()"
 	if m.WholeRequest {
 		params = append(params, "request: "+m.Request)
@@ -422,7 +426,7 @@ func writeKotlinMethod(b *strings.Builder, model *ClientModel, m ClientMethod, a
 	}
 	options := "options"
 	if model.Targeted {
-		options += ".withInstance(instance)"
+		options += ".withInstance(boundInstance)"
 	}
 	if m.Idempotent {
 		options += ".withIdempotent(true)"

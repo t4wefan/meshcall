@@ -54,55 +54,55 @@ public data class SessionsChatRequest(
     val prefix: String? = null,
 )
 
-/** Every call names the instance it is for. */
-public class SessionsClient(private val rpc: MeshCallRpc) {
+/** Each client is bound to one instance. */
+public class SessionsClient(private val rpc: MeshCallRpc, private val boundInstance: String) {
     /** A view of this client with [options] applied to every call. */
-    public fun withOptions(options: CallOptions): SessionsClient = SessionsClient(rpc.withOptions(options))
+    public fun withOptions(options: CallOptions): SessionsClient = SessionsClient(rpc.withOptions(options), boundInstance)
 
     /** Unary, no parameters. */
-    public suspend fun status(instance: String, options: CallOptions = CallOptions.DEFAULT): Text =
-        rpc.unary(SERVICE_NAME, "status", SessionsStatusRequest(), serializer<SessionsStatusRequest>(), serializer<Text>(), options.withInstance(instance))
+    public suspend fun status(options: CallOptions = CallOptions.DEFAULT): Text =
+        rpc.unary(SERVICE_NAME, "status", SessionsStatusRequest(), serializer<SessionsStatusRequest>(), serializer<Text>(), options.withInstance(boundInstance))
 
     /** [status] for Java. */
     @JvmOverloads
-    public fun statusAsync(instance: String, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Text> =
-        rpc.future { status(instance, options) }
+    public fun statusAsync(options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Text> =
+        rpc.future { status(options) }
 
     /** Unary with a parameter. */
-    public suspend fun rename(instance: String, title: String, options: CallOptions = CallOptions.DEFAULT): Text =
-        rpc.unary(SERVICE_NAME, "rename", SessionsRenameRequest(title = title), serializer<SessionsRenameRequest>(), serializer<Text>(), options.withInstance(instance).withIdempotent(true))
+    public suspend fun rename(title: String, options: CallOptions = CallOptions.DEFAULT): Text =
+        rpc.unary(SERVICE_NAME, "rename", SessionsRenameRequest(title = title), serializer<SessionsRenameRequest>(), serializer<Text>(), options.withInstance(boundInstance).withIdempotent(true))
 
     /** [rename] for Java. */
     @JvmOverloads
-    public fun renameAsync(instance: String, title: String, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Text> =
-        rpc.future { rename(instance, title, options) }
+    public fun renameAsync(title: String, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Text> =
+        rpc.future { rename(title, options) }
 
     /** Server stream. */
-    public fun watch(instance: String, since: Long = 0, options: CallOptions = CallOptions.DEFAULT): Flow<Text> =
-        rpc.serverStream(SERVICE_NAME, "watch", SessionsWatchRequest(since = since), serializer<SessionsWatchRequest>(), serializer<Text>(), options.withInstance(instance))
+    public fun watch(since: Long = 0, options: CallOptions = CallOptions.DEFAULT): Flow<Text> =
+        rpc.serverStream(SERVICE_NAME, "watch", SessionsWatchRequest(since = since), serializer<SessionsWatchRequest>(), serializer<Text>(), options.withInstance(boundInstance))
 
     /** [watch] for Java: items go to [observer]. */
     @JvmOverloads
-    public fun watchAsync(instance: String, since: Long = 0, observer: StreamObserver<Text>, options: CallOptions = CallOptions.DEFAULT): CallHandle =
-        rpc.observe(watch(instance, since, options), observer)
+    public fun watchAsync(since: Long = 0, observer: StreamObserver<Text>, options: CallOptions = CallOptions.DEFAULT): CallHandle =
+        rpc.observe(watch(since, options), observer)
 
     /** Client stream. */
-    public suspend fun upload(instance: String, items: Flow<Text>, options: CallOptions = CallOptions.DEFAULT): Total =
-        rpc.clientStream(SERVICE_NAME, "upload", SessionsUploadRequest(), items, serializer<SessionsUploadRequest>(), serializer<Text>(), serializer<Total>(), options.withInstance(instance))
+    public suspend fun upload(items: Flow<Text>, options: CallOptions = CallOptions.DEFAULT): Total =
+        rpc.clientStream(SERVICE_NAME, "upload", SessionsUploadRequest(), items, serializer<SessionsUploadRequest>(), serializer<Text>(), serializer<Total>(), options.withInstance(boundInstance))
 
     /** [upload] for Java. */
     @JvmOverloads
-    public fun uploadAsync(instance: String, items: Iterable<Text>, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Total> =
-        rpc.future { upload(instance, javaItems(items), options) }
+    public fun uploadAsync(items: Iterable<Text>, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Total> =
+        rpc.future { upload(javaItems(items), options) }
 
     /** Duplex. */
-    public suspend fun chat(instance: String, prefix: String = "", options: CallOptions = CallOptions.DEFAULT): DuplexCall<Text, Text> =
-        rpc.duplex(SERVICE_NAME, "chat", SessionsChatRequest(prefix = prefix), serializer<SessionsChatRequest>(), serializer<Text>(), serializer<Text>(), options.withInstance(instance))
+    public suspend fun chat(prefix: String = "", options: CallOptions = CallOptions.DEFAULT): DuplexCall<Text, Text> =
+        rpc.duplex(SERVICE_NAME, "chat", SessionsChatRequest(prefix = prefix), serializer<SessionsChatRequest>(), serializer<Text>(), serializer<Text>(), options.withInstance(boundInstance))
 
     /** [chat] for Java: output goes to [observer]. */
     @JvmOverloads
-    public fun chatAsync(instance: String, prefix: String = "", observer: StreamObserver<Text>, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<JavaDuplexCall<Text, Text>> =
-        rpc.duplexAsync({ chat(instance, prefix, options) }, observer)
+    public fun chatAsync(prefix: String = "", observer: StreamObserver<Text>, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<JavaDuplexCall<Text, Text>> =
+        rpc.duplexAsync({ chat(prefix, options) }, observer)
 
     public companion object {
         /** The service these calls address. */

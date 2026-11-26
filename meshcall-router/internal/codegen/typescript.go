@@ -177,13 +177,29 @@ func renderTypeScriptDeclarations(registry *typeRegistry, received map[string]bo
 
 func renderTypeScriptClientClass(service *contract.Service, registry *typeRegistry, className string) []string {
 	lines := tsDocLines(service.Description, "")
-	lines = append(lines,
-		"export class "+className+" {",
-		"  public constructor(private readonly rpc: "+tsRpcType(service)+") {}",
-		"",
-		"  public withOptions(options: CallOptions): "+className+" {",
-		"    return new "+className+"(this.rpc.withOptions(options));",
-		"  }")
+	if service.Targeted {
+		// One client per instance: the id is bound once, so no call can forget
+		// it or name another, and per-call options cannot override it.
+		lines = append(lines,
+			"export class "+className+" {",
+			"  readonly #instance: string;",
+			"",
+			"  public constructor(private readonly rpc: "+tsRpcType(service)+", instance: string) {",
+			"    this.#instance = instance;",
+			"  }",
+			"",
+			"  public withOptions(options: Omit<CallOptions, \"instance\">): "+className+" {",
+			"    return new "+className+"(this.rpc.withOptions(options), this.#instance);",
+			"  }")
+	} else {
+		lines = append(lines,
+			"export class "+className+" {",
+			"  public constructor(private readonly rpc: "+tsRpcType(service)+") {}",
+			"",
+			"  public withOptions(options: CallOptions): "+className+" {",
+			"    return new "+className+"(this.rpc.withOptions(options));",
+			"  }")
+	}
 	for _, m := range service.Methods {
 		request := registry.Name(m.Request)
 		var resultType, rpcCall string
@@ -217,15 +233,14 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 		lines = append(lines, "")
 		lines = append(lines, tsDocLines(m.Description, "  ")...)
 		lines = append(lines, "  public "+m.Name+"(")
-		for _, p := range tsParameters(m, registry, service.Targeted || m.Stream == "client_stream") {
+		for _, p := range tsParameters(m, registry, m.Stream == "client_stream") {
 			lines = append(lines, "    "+p+",")
 		}
 		for _, p := range extraParams {
 			lines = append(lines, "    "+p+",")
 		}
 		if service.Targeted {
-			// Required on tunnel connections too: see renderPythonClientClass.
-			lines = append(lines, "    options: "+optionsType+" & { instance: string },")
+			lines = append(lines, "    options?: Omit<"+optionsType+", \"instance\">,")
 		} else {
 			lines = append(lines, "    options?: "+optionsType+",")
 		}
@@ -248,6 +263,9 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 			fields = append(fields, "idempotent: true")
 		}
 		fields = append(fields, "...options")
+		if service.Targeted {
+			fields = append(fields, "instance: this.#instance")
+		}
 		switch m.Stream {
 		case "server_stream", "duplex":
 			fields = append(fields, "itemSchema: "+registry.Name(m.OutputItem)+"Schema")
@@ -319,10 +337,10 @@ func tsParameterNames(m *contract.Method) []string {
 }
 
 // tsParameters renders the request parameters. An optional field followed by
-// a required parameter (a later required field, or a targeted method's
-// options or a client stream's items when requiredFollows) cannot be written
-// "name?: T" (TS1016): it becomes a required position that accepts undefined,
-// so the caller still may leave it unset.
+// a required parameter (a later required field, or a client stream's items
+// when requiredFollows) cannot be written "name?: T" (TS1016): it becomes a
+// required position that accepts undefined, so the caller still may leave it
+// unset.
 func tsParameters(m *contract.Method, registry *typeRegistry, requiredFollows bool) []string {
 	properties := m.Request.Schema.Obj("properties")
 	required := stringSet(m.Request.Schema.Strings("required"))

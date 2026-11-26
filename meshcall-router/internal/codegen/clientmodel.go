@@ -135,7 +135,7 @@ type ClientModel struct {
 	Service     *contract.Service
 	ClientName  string
 	Description string
-	// Targeted services take the instance as the first parameter of every method.
+	// Targeted services bind the instance once, when the client is constructed.
 	Targeted bool
 	Types    []*TypeDecl
 	Methods  []ClientMethod
