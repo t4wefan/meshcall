@@ -1,6 +1,7 @@
 // Tunnels: instance-scoped connections through the Router (docs/protocol.md →
 // Tunnels). No Node imports: `meshcall/web` shares the issuer client.
 
+import type { RouterSet } from "./routers.js";
 import type { CallOptions } from "./client.js";
 import {
   b64decode, b64encode, checkE2EPrivateKey, confirmAd, e2ePublicKey, IK, IKPSK2, parseHandshakeRequest, pskBytes,
@@ -40,6 +41,8 @@ export interface TunnelInfo {
 /** The result of `mesh.tunnels.open`: hand `credential` to the client once. */
 export interface OpenedTunnel extends TunnelInfo {
   readonly credential: string;
+  /** The Router that holds the tunnel, as the Mesh lists it: the client connects there. */
+  readonly router: string;
 }
 
 /** What an instance is asked to accept before a tunnel becomes usable. */
@@ -144,7 +147,11 @@ export function normalizeScopeService(service: string): string {
 
 /** Issuer API for the Router's `meshcall.router.v1.TunnelService` (`mesh.tunnels`). */
 export class TunnelsClient {
-  public constructor(private readonly rpc: MeshCallRpc) {}
+  /**
+   * `where` names the Mesh's Router, or gives the set of its Routers: a
+   * tunnel is opened on the Router the instance is registered with.
+   */
+  public constructor(private readonly rpc: MeshCallRpc, private readonly where: () => string | RouterSet) {}
 
   /**
    * Open a tunnel to one instance; resolves once the instance accepted it.
@@ -152,10 +159,10 @@ export class TunnelsClient {
    * instance refuses and `UnavailableError` (`instance_unknown`) when it is not
    * registered.
    */
-  public open(request: OpenTunnelRequest, options?: CallOptions): Promise<OpenedTunnel> {
+  public async open(request: OpenTunnelRequest, options?: CallOptions): Promise<OpenedTunnel> {
     // The Router checks the request (`invalid_argument`), so every runtime fails alike.
     const ttl = request.ttlSeconds ?? 3600;
-    return this.rpc.unary(TUNNEL_SERVICE, "open", {
+    const body = {
       instance_id: request.instance,
       scopes: request.scopes.map((scope) => typeof scope === "string"
         ? { service: normalizeScopeService(scope), methods: ["*"] }
@@ -165,15 +172,31 @@ export class TunnelsClient {
       ...(request.maxConnections === undefined ? {} : { max_connections: request.maxConnections }),
       // The Router checks it (invalid_argument), as in every runtime.
       ...(request.e2eKey === undefined ? {} : { e2e_key: request.e2eKey }),
-    }, options);
+    };
+    const where = this.where();
+    if (typeof where === "string") {
+      return { ...await this.rpc.unary<typeof body, Omit<OpenedTunnel, "router">>(TUNNEL_SERVICE, "open", body, options), router: where };
+    }
+    // Opened where the instance is registered, found as a targeted call finds it.
+    return where.route(request.instance, options ?? {}, async (connection, attempt, router) => ({
+      ...await connection.unary<typeof body, Omit<OpenedTunnel, "router">>(TUNNEL_SERVICE, "open", body, attempt),
+      router,
+    }));
   }
 
   /** Close a tunnel and every connection on it; `false` if it is not yours or gone. */
   public async revoke(tunnelId: string, options?: CallOptions): Promise<boolean> {
-    const result = await this.rpc.unary<{ tunnel_id: string }, { revoked: boolean }>(
+    const revoke = async (rpc: MeshCallRpc): Promise<boolean> => (await rpc.unary<{ tunnel_id: string }, { revoked: boolean }>(
       TUNNEL_SERVICE, "revoke", { tunnel_id: tunnelId }, { idempotent: true, ...options },
-    );
-    return result.revoked;
+    )).revoked;
+    const where = this.where();
+    if (typeof where === "string") return revoke(this.rpc);
+    // Revoked on every Router: only the one that opened it knows the id.
+    const results = await Promise.allSettled(where.routers.map((router) => revoke(where.at(router))));
+    if (results.some((result) => result.status === "fulfilled" && result.value)) return true;
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed !== undefined) throw failed.reason;
+    return false;
   }
 
   /** The tunnels this identity opened that are still open. */

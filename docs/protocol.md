@@ -664,8 +664,12 @@ A peer may be given a *credential source* instead of a fixed token or tunnel
 credential: a function the runtime calls for the credential to send
 (`token=` / `tunnel=` given a function in Python, `token` / `tunnel` given a
 function in TypeScript, `WithTokenSource` / `WithTunnelSource` in Go). The
-runtime calls it before every connection it opens, first and reconnects
-alike, and before every HTTP request; caching is up to the source. A source
+runtime calls it with the Router it is connecting to, its URL as the Router
+lists it (`wss://…`, and `unix:///…` / `pipe://…` for local listeners), before
+every connection it opens, first and reconnects alike, and before every HTTP
+request; caching is up to the source. Credentials are issued per Router, so a
+peer of [several Routers](#several-routers) returns the one for that Router; a
+peer of one may ignore the argument. A source
 that fails, or returns an empty value, fails that connection attempt the
 way an unreachable Router would (`unavailable`, retryable,
 `details.reason: "credential_source"`). A source returning a credential of
@@ -693,6 +697,53 @@ An end-to-end client binds each session to the credential of its connection
 (the prologue), so a new credential means a new handshake; a pairing the
 instance confirmed stays confirmed. The pinned key and the client's identity
 do not change with the credential.
+
+## Several Routers
+
+This is runtime behaviour, not a wire change: Routers do not know of each
+other (no shared registry, tokens or tunnels), and each sees ordinary
+connections.
+
+A peer may be given several Routers (`Router([url1, url2])`, `NewRouter(url1,
+url2)`). A service instance registers with every one of them, under the same
+instance id, and keeps each registration up on its own. A client keeps one
+connection per Router, opened when a call first needs it, and sends each call
+to one Router:
+
+- a call naming an instance goes first to the Router a call to that instance
+  last succeeded on; otherwise, and for other calls, the Routers are tried in
+  the order listed, starting from the one that served the last call;
+- the client moves on to the next Router only when the call surely reached no
+  handler: the Router could not be reached (connecting failed, its
+  credentials were refused, its credential source failed), or it answered
+  `unavailable` with `source: "router"` and `reason` `no_instances`,
+  `instance_unknown` or `router_draining`, which it does before routing;
+- any other outcome, success or error, is the call's. A call that fails with
+  `unavailable` forgets where its instance was, so the next call looks again;
+- when every Router answered that it did not route the call, the call fails
+  with the most telling answer: `router_draining` (retryable) if a Router is
+  draining, else `instance_unknown` if a Router serves the service but not the
+  instance, else `no_instances`;
+- when no Router routed it and one could not be reached, the client waits per
+  its reconnect policy and tries them all again within the call's timeout,
+  failing with that Router's error when the time runs out. The retry policy
+  applies to the call as a whole, each attempt going round the Routers again.
+
+Streams move on under the same rule. A Router that did not route a call
+granted it no credit, so nothing the caller handed over was sent: a client
+stream's item that was pulled but not sent, and a duplex call's items whose
+`send` had not completed, are sent to the next Router. A duplex call is
+routed once a `send` completes or the server's first output (or result)
+arrives; until then `send` and `close_send` wait.
+
+The Router's own services (`meshcall.router.*`: registry, tokens, tunnels)
+answer for that Router alone. On a peer of several Routers they are reached
+through a view bound to one Router (`mesh.at(router)` in Python and
+TypeScript, `mesh.At(router)` in Go), and calling them without one is a
+client error naming the Routers. Two exceptions: `tunnels.open` is routed as a
+call to its `instance` is, and its result names the Router that holds the
+tunnel (`router`), which the tunnel's client connects to; `tunnels.revoke`
+is sent to every Router and reports whether any revoked it.
 
 ## Timeouts
 

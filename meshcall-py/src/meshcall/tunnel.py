@@ -9,6 +9,7 @@ accept_tunnels=...)``. Calls arriving through an accepted tunnel expose it as
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -77,6 +78,9 @@ class OpenedTunnel(TunnelInfo):
     """The result of ``mesh.tunnels.open``: hand ``credential`` to the client once."""
 
     credential: str = Field(repr=False)
+    #: The Router that holds the tunnel, as the Mesh lists it: the client
+    #: connects there.
+    router: str = ""
 
 
 class TunnelOffer(BaseModel):
@@ -230,16 +234,52 @@ class TunnelsClient:
         if e2e_key is not None:
             # The Router checks it (invalid_argument), as in every runtime.
             request.e2e_key = e2e_key
-        return await self._mesh.call_unary(
-            TUNNEL_SERVICE, "open", request, OpenedTunnel
-        )
+        place = self._mesh._tunnel_place()
+        if isinstance(place, str):
+            opened = await self._mesh.call_unary(
+                TUNNEL_SERVICE, "open", request, OpenedTunnel
+            )
+            return opened.model_copy(update={"router": place})
+
+        # Opened where the instance is registered, found as a targeted call finds it.
+        async def open_on(client: Any, options: Any, router: str) -> OpenedTunnel:
+            opened = await client.call_unary(
+                TUNNEL_SERVICE,
+                "open",
+                request,
+                OpenedTunnel,
+                timeout=options.timeout,
+            )
+            return opened.model_copy(update={"router": router})
+
+        return await place.route(instance, place._options, open_on)
 
     async def revoke(self, tunnel_id: str) -> bool:
         """Close a tunnel and every connection on it; ``False`` if it is not yours or gone."""
-        result = await self._mesh.call_unary(
-            TUNNEL_SERVICE, "revoke", _RevokeRequest(tunnel_id=tunnel_id), _RevokeResult
+
+        async def revoke(rpc: Any) -> bool:
+            result = await rpc.call_unary(
+                TUNNEL_SERVICE,
+                "revoke",
+                _RevokeRequest(tunnel_id=tunnel_id),
+                _RevokeResult,
+            )
+            return bool(result.revoked)
+
+        place = self._mesh._tunnel_place()
+        if isinstance(place, str):
+            return await revoke(self._mesh)
+        # Revoked on every Router: only the one that opened it knows the id.
+        results = await asyncio.gather(
+            *(revoke(place.at(router)) for router in place.routers),
+            return_exceptions=True,
         )
-        return result.revoked
+        if any(result is True for result in results):
+            return True
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return False
 
     async def list(self) -> list[TunnelInfo]:
         """The tunnels this identity opened that are still open."""

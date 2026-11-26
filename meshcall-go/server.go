@@ -231,7 +231,7 @@ func (s *Server) register(ctx context.Context, link *routerLink) error {
 	header := http.Header{}
 	authorization := s.opts.Authorization
 	if s.opts.AuthSource != nil {
-		token, err := askCredentialSource(ctx, s.opts.AuthSource, nil)
+		token, err := askCredentialSource(ctx, s.opts.AuthSource, link.endpoint.text, nil)
 		if err != nil {
 			return err
 		}

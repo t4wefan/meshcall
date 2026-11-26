@@ -259,7 +259,8 @@ task can't operate through a newly acquired generation.
   drain timeout for in-flight calls, then stops; nothing in flight fails.
 - Instance disconnect terminates its routed calls with retryable `unavailable`.
 - Clients and Router-mode servers accept a list of Router endpoints (`Router([uri1, uri2])`):
-  clients fail over to the next endpoint, servers keep one registration per Router.
+  servers keep one registration per Router; clients keep one connection per Router and send
+  each call to the Router that routes it (docs/protocol.md → Several Routers).
 - Connection loss terminates all local active calls. Clients then reconnect
   lazily on the next call with exponential backoff and jitter
   (`ReconnectPolicy`), waiting at most that call's timeout. Router-mode

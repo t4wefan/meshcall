@@ -16,7 +16,8 @@ matching `meshcall-go/vX.Y.Z` tag.
   function instead of a fixed value (`Mesh(router, token=fetch)` in Python,
   `new Mesh(router, { tunnel: () => openTunnel() })` in TypeScript and
   `meshcall/web`, `WithTokenSource` / `WithTunnelSource` in Go). The runtime
-  asks it before every connection, registration and HTTP request. When the
+  asks it, with the Router it connects to (so tokens issued per Router work
+  across several), before every connection, registration and HTTP request. When the
   Router refuses the old credential (expired at reconnect, revoked), a client
   asks again and retries once, without keeping the refusal for later calls;
   a served instance keeps reconnecting, asking each time, instead of giving
@@ -26,6 +27,27 @@ matching `meshcall-go/vX.Y.Z` tag.
   `unavailable` / `credential_source`; a credential of the wrong kind raises
   `CredentialSourceError`. Swift and the JVM do not have it yet. See
   docs/protocol.md → Credential sources.
+- **Several Routers, one Mesh** (#83, item 4). A client of several Routers
+  keeps one connection per Router and sends each call to one that routes it:
+  a call to an instance goes to the Router a call to it last succeeded on,
+  otherwise to each Router in turn, moving on only when a Router answers
+  `no_instances`, `instance_unknown` or `router_draining` (before routing) or
+  cannot be reached. Server streams, client streams and duplex calls move on
+  the same way without losing what the caller handed over. `mesh.routers`
+  (Go: `Endpoints()`) lists the Routers and `mesh.at(router)` (Go:
+  `mesh.At(router)`) reaches one of them; `tunnels.open` opens the tunnel
+  where its instance is and returns that Router as `router`, and
+  `tunnels.revoke` revokes on every Router. Swift and the JVM do not have it
+  yet. See docs/protocol.md → Several Routers.
+
+### Changed
+
+- **Breaking:** on a Mesh over several Routers, the Router's own services
+  (`registry`, `auth`, `tunnels.list`) must be reached through
+  `mesh.at(router)`; called on the Mesh they fail at once instead of going to
+  whichever Router the connection happened to use. A client no longer stays
+  on one Router: a targeted call no longer fails with `instance_unknown` just
+  because its instance is registered on another Router of the list.
 
 ## [0.4.0] - 2026-11-21
 

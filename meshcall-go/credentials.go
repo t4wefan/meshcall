@@ -6,11 +6,13 @@ import (
 	"strings"
 )
 
-// CredentialSource returns the credential to connect with. The runtime calls
-// it before every connection, registration and HTTP request; caching is up
-// to the source. A Router refusing the old credential asks it again
-// (docs/protocol.md → Credential sources).
-type CredentialSource func(ctx context.Context) (string, error)
+// CredentialSource returns the credential to connect to router with (its URL
+// as the Router lists it: wss://…, unix:///…, pipe://…). The runtime calls it
+// before every connection, registration and HTTP request; caching is up to
+// the source. A Router refusing the old credential asks it again
+// (docs/protocol.md → Credential sources). A Mesh over one Router may ignore
+// router.
+type CredentialSource func(ctx context.Context, router string) (string, error)
 
 // CredentialSourceError reports a credential a source returned that cannot
 // be used as configured (a tunnel credential given as a token, a plain one
@@ -21,8 +23,8 @@ func (e *CredentialSourceError) Error() string { return "meshcall: " + e.Message
 
 // askCredentialSource asks source for a credential and checks it; a failing
 // source fails this connection attempt as an unreachable Router would.
-func askCredentialSource(ctx context.Context, source CredentialSource, check func(string) error) (string, error) {
-	credential, err := source(ctx)
+func askCredentialSource(ctx context.Context, source CredentialSource, router string, check func(string) error) (string, error) {
+	credential, err := source(ctx, router)
 	if err != nil {
 		var kind *CredentialSourceError
 		if errors.As(err, &kind) {
@@ -47,8 +49,8 @@ func askCredentialSource(ctx context.Context, source CredentialSource, check fun
 // kindedSource checks that what a WithTokenSource or WithTunnelSource source
 // returns is that kind of credential.
 func kindedSource(source CredentialSource, tunnel bool) CredentialSource {
-	return func(ctx context.Context) (string, error) {
-		credential, err := source(ctx)
+	return func(ctx context.Context, router string) (string, error) {
+		credential, err := source(ctx, router)
 		if err != nil || credential == "" {
 			return credential, err
 		}

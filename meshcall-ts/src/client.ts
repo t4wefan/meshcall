@@ -27,7 +27,7 @@ import {
   validateMetadata,
 } from "./liveness.js";
 import { ConsoleRpcLogger, type RpcLogger } from "./logging.js";
-import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
+import { formatRouterEndpointUrl, mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter, isFrameTooLarge } from "./transport.js";
 import { checkReceived } from "./validation.js";
 import {
@@ -795,7 +795,8 @@ export class MeshCallClient implements MeshCallRpc {
     for (let offset = 0; offset < this.endpoints.length; offset += 1) {
       const index = (this.cursor + offset) % this.endpoints.length;
       try {
-        await this.open(this.endpoints[index] as WebSocketEndpoint, await this.currentAuth());
+        const endpoint = this.endpoints[index] as WebSocketEndpoint;
+        await this.open(endpoint, await this.currentAuth(formatRouterEndpointUrl(endpoint)));
         this.cursor = index;
         return;
       } catch (error) {
@@ -806,11 +807,11 @@ export class MeshCallClient implements MeshCallRpc {
   }
 
   /** The credentials for the next connection: fixed, or fresh from the source. */
-  private async currentAuth(): Promise<RouterCredentials | undefined> {
+  private async currentAuth(router: string): Promise<RouterCredentials | undefined> {
     const source = this.options.authSource;
     if (source === undefined) return this.options.auth;
     const e2eKey = this.options.e2eKey;
-    const token = await askCredentialSource(source, (credential) => checkE2EAgreement(credential, e2eKey));
+    const token = await askCredentialSource(source, router, (credential) => checkE2EAgreement(credential, e2eKey));
     this.e2eClient?.useCredential(token);
     return { token };
   }

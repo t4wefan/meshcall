@@ -5,8 +5,12 @@
 import { MeshCallError, UnauthenticatedError, UnavailableError } from "./errors.js";
 import { checkTunnelCredential, TUNNEL_CREDENTIAL_PREFIX } from "./tunnel.js";
 
-/** Returns the credential to connect with; called before every connection. */
-export type CredentialSource = () => string | Promise<string>;
+/**
+ * Returns the credential to connect to `router` with (its URL as the Router
+ * lists it: `wss://…`, `unix:///…`, `pipe://…`); called before every
+ * connection. A Mesh over one Router may ignore the argument.
+ */
+export type CredentialSource = (router: string) => string | Promise<string>;
 
 /** A fixed credential or a source of fresh ones. */
 export type CredentialOption = string | CredentialSource;
@@ -29,11 +33,12 @@ export class CredentialSourceError extends TypeError {
  */
 export async function askCredentialSource(
   source: CredentialSource,
+  router: string,
   check: (credential: string) => void = () => undefined,
 ): Promise<string> {
   let credential: unknown;
   try {
-    credential = await source();
+    credential = await source(router);
   } catch (error) {
     if (error instanceof MeshCallError || error instanceof CredentialSourceError) throw error;
     throw new UnavailableError("The credential source failed: " + String(error), {
@@ -63,8 +68,8 @@ export function isRouterRefusal(error: unknown): error is UnauthenticatedError {
  * is a function: what it returns is checked to be that kind of credential.
  */
 export function kindedSource(source: CredentialSource, kind: "token" | "tunnel"): CredentialSource {
-  return async () => {
-    const credential = await source();
+  return async (router) => {
+    const credential = await source(router);
     if (typeof credential !== "string" || credential === "") return credential;
     try {
       if (kind === "tunnel") checkTunnelCredential(credential);

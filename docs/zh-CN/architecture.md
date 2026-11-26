@@ -128,7 +128,7 @@ Python 按签名顺序提取非注入参数，单个模型类型的参数保持�
 - **容量与熔断**：`max_inflight` 限制每个实例的并发调用数，服务端自身也会执行（`resource_exhausted`，`reason: "overloaded"`），Router 绕开满载实例；Router 的实例级熔断器在连续超时或 `internal`/`unavailable` 后排除实例，再放行一个探测调用。
 - **重试**：内置的 `RetryPolicy`（位于客户端拦截器链最外层）只在错误可重试、错误码在策略集合中，且方法按契约是幂等的或调用带有 `idempotency_key` 时重发失败的一元调用；各次尝试共享调用的超时，最终错误报告 `details.attempts`。流从不重试。
 - **优雅排空**：`mesh.run` / `mesh.serve` 在 SIGINT / SIGTERM 或退出上下文时自动排空；也可显式调用 `await mesh.drain()` / `mesh.Drain(ctx)` 或 `stop(drain=True)` / `close({ drain: true })`，它们先停止接收新调用（向 Router 发送 `server.drain`，或关闭监听器），在排空超时内等待进行中的调用结束后再停止，进行中的调用不会失败。
-- **断线重连策略**：连接断开会立即终止该连接上的活跃调用。随后客户端在下次发起调用时按指数退避与随机抖动（`ReconnectPolicy`）自动重连，最多等待该调用的超时；Router 模式服务端则在后台以同样退避持续重连并重新注册。调用从不自动重放。客户端与 Router 模式服务端都接受多个 Router 端点（`Router([uri1, uri2])`）：客户端故障转移到下一个端点，服务端在每个 Router 上各保持一个注册。
+- **断线重连策略**：连接断开会立即终止该连接上的活跃调用。随后客户端在下次发起调用时按指数退避与随机抖动（`ReconnectPolicy`）自动重连，最多等待该调用的超时；Router 模式服务端则在后台以同样退避持续重连并重新注册。调用从不自动重放。客户端与 Router 模式服务端都接受多个 Router 端点（`Router([uri1, uri2])`）：服务端在每个 Router 上各保持一个注册；客户端为每个 Router 保持一条连接，把每个调用发给能路由它的 Router（见协议 → 多个 Router）。
 - **帧错误**：仍能对应到某个调用的畸形帧只使该调用以 `protocol_error` 失败；无法归属的帧会关闭连接。超大帧使发送它的调用以 `resource_exhausted` 失败。
 
 ---

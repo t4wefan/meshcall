@@ -23,6 +23,7 @@ from meshcall.context import (
 from meshcall.credentials import (
     CredentialSource,
     ask_credential_source,
+    router_name,
 )
 from meshcall.driver import ClientDriver, DriverBinding, ServerDriver
 from meshcall.drivers.local import (
@@ -173,12 +174,14 @@ class WebSocketClientDriver(ClientDriver):
         assert last is not None
         raise last
 
-    async def _current_auth(self) -> RouterCredentials | None:
+    async def _current_auth(self, uri: str | None) -> RouterCredentials | None:
         if self.auth_source is None:
             return self.auth
         e2e_key = self.e2e_key
         token = await ask_credential_source(
-            self.auth_source, lambda value: _check_e2e_agreement(value, e2e_key)
+            self.auth_source,
+            router_name(uri, self.unix_path, self.pipe),
+            lambda value: _check_e2e_agreement(value, e2e_key),
         )
         # The handshake binds the session to the credential it connects with.
         self.auth = RouterCredentials.bearer(token)
@@ -190,7 +193,7 @@ class WebSocketClientDriver(ClientDriver):
             unix_path=self.unix_path,
             pipe=self.pipe,
             max_frame_size=self.max_frame_size,
-            auth=await self._current_auth(),
+            auth=await self._current_auth(uri),
         )
         connection = FrameConnection(
             websocket,
@@ -553,7 +556,10 @@ class _RouterLink:
         auth = driver.auth
         if driver.auth_source is not None:
             auth = RouterCredentials.bearer(
-                await ask_credential_source(driver.auth_source)
+                await ask_credential_source(
+                    driver.auth_source,
+                    router_name(self.endpoint, driver.unix_path, driver.pipe),
+                )
             )
         websocket = await _connect_endpoint(
             uri=self.endpoint,

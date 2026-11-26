@@ -119,6 +119,8 @@ class _HttpTransport:
         #: Asked for a bearer credential before every request instead of
         #: ``credentials`` (docs/protocol.md → Credential sources).
         self.auth_source = auth_source
+        #: The Router as listed, which a credential source is given.
+        self.url = url
         self.base = url.rstrip("/")
         if not self.base.startswith(("http://", "https://")):
             raise ValueError("HTTP transport needs an http(s):// Router URL")
@@ -183,7 +185,7 @@ class _HttpTransport:
 
     async def _auth_header(self) -> dict[str, str]:
         if self.auth_source is not None:
-            token = await ask_credential_source(self.auth_source)
+            token = await ask_credential_source(self.auth_source, self.url)
             return {"Authorization": f"Bearer {token}"}
         credentials = self.credentials
         if credentials is None:

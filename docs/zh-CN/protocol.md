@@ -272,7 +272,7 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 这是运行时行为，不是线上协议的变化：Router 看到的是带普通凭据的普通连接。
 
-节点可以用*凭据函数*代替固定的 Token 或隧道凭据：运行时在需要发送凭据时调用它（Python 给 `token=` / `tunnel=` 传函数，TypeScript 给 `token` / `tunnel` 传函数，Go 用 `WithTokenSource` / `WithTunnelSource`）。运行时在打开每条连接前都会调用它，首次连接和重连一样，每个 HTTP 请求前也会调用；缓存由函数自己决定。函数出错或返回空值时，这次连接尝试像连不上 Router 一样失败（`unavailable`，可重试，`details.reason: "credential_source"`）。返回的凭据种类不对（Token 函数返回隧道凭据，或固定了端到端公钥却返回普通凭据）时，在发送任何内容前以配置错误（`CredentialSourceError`）失败，和直接这样配置时一样。
+节点可以用*凭据函数*代替固定的 Token 或隧道凭据：运行时在需要发送凭据时调用它（Python 给 `token=` / `tunnel=` 传函数，TypeScript 给 `token` / `tunnel` 传函数，Go 用 `WithTokenSource` / `WithTunnelSource`）。运行时在打开每条连接前都会调用它，首次连接和重连一样，每个 HTTP 请求前也会调用，并传入要连接的 Router，即 Router 列表中写的 URL（`wss://…`，本机监听为 `unix:///…` / `pipe://…`）；缓存由函数自己决定。凭据按 Router 签发，所以连接[多个 Router](#多个-routerseveral-routers) 的节点要返回对应那个 Router 的凭据；只连一个 Router 的节点可以忽略这个参数。函数出错或返回空值时，这次连接尝试像连不上 Router 一样失败（`unavailable`，可重试，`details.reason: "credential_source"`）。返回的凭据种类不对（Token 函数返回隧道凭据，或固定了端到端公钥却返回普通凭据）时，在发送任何内容前以配置错误（`CredentialSourceError`）失败，和直接这样配置时一样。
 
 Router 拒绝凭据时（HTTP 401、关闭码 4401），配置了凭据函数的节点不会记住这次拒绝：
 
@@ -280,6 +280,22 @@ Router 拒绝凭据时（HTTP 401、关闭码 4401），配置了凭据函数的
 - **服务实例**按平常的退避策略持续重连，每次尝试前都问函数，而不是放弃这个 Router。只要配置了凭据函数，它就不会报告被该 Router 拒绝。
 
 端到端客户端把每个会话绑定到所在连接的凭据（prologue），所以新凭据意味着重新握手；实例已确认的配对保持有效。固定的公钥和客户端身份不随凭据变化。
+
+## 多个 Router（Several Routers）
+
+这是运行时行为，不是线上协议的变化：Router 之间互不知晓（不共享注册表、令牌或隧道），每个 Router 看到的都是普通连接。
+
+节点可以配置多个 Router（`Router([url1, url2])`、`NewRouter(url1, url2)`）。服务实例用同一个实例 ID 在每个 Router 上注册，各自维持注册。客户端为每个 Router 保持一条连接，在调用第一次用到它时才打开，每个调用只发给一个 Router：
+
+- 指定了实例的调用，先发给上次成功调用该实例的 Router；没有这样的 Router 时，以及其他调用，按列表顺序依次尝试，从上一个调用所用的 Router 开始；
+- 只有在调用肯定没有到达任何处理函数时，客户端才换下一个 Router：连不上这个 Router（连接失败、凭据被拒、凭据函数出错），或它回了 `source: "router"`、`reason` 为 `no_instances`、`instance_unknown` 或 `router_draining` 的 `unavailable`，这些都是 Router 在路由之前给出的；
+- 其他结果，无论成功还是出错，都是这个调用的结果。以 `unavailable` 失败的调用会忘掉实例所在的 Router，下次重新找；
+- 所有 Router 都回答没有路由时，调用以最有信息量的回答失败：有 Router 正在排空时为 `router_draining`（可重试），否则有 Router 提供该服务但没有这个实例时为 `instance_unknown`，否则为 `no_instances`；
+- 没有 Router 路由这个调用、且有 Router 连不上时，客户端按重连策略等待，并在调用的超时内再把所有 Router 试一遍，时间用完时以连不上的那个 Router 的错误失败。重试策略作用于整个调用，每次重试都重新依次尝试各 Router。
+
+流式调用按同样的规则换 Router。没有路由调用的 Router 不会给它任何额度，所以调用方交出的内容都没有发出：客户端流中已取出但未发送的条目，以及双向流中 `send` 尚未完成的条目，会发给下一个 Router。双向流在某次 `send` 完成、或服务端第一个输出（或结果）到达时视为已路由；在此之前 `send` 和 `close_send` 会等待。
+
+Router 自己的服务（`meshcall.router.*`：注册表、令牌、隧道）只代表那一个 Router。连接多个 Router 的节点要通过绑定到某个 Router 的视图调用它们（Python 和 TypeScript 为 `mesh.at(router)`，Go 为 `mesh.At(router)`），不经视图直接调用是客户端错误，错误信息会列出各 Router。两个例外：`tunnels.open` 像调用其 `instance` 一样路由，结果中的 `router` 指明持有该隧道的 Router，隧道的客户端连接这个 Router；`tunnels.revoke` 发给每个 Router，任一 Router 撤销即返回 true。
 
 ## 超时（Timeouts）
 

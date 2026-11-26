@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -47,6 +48,8 @@ type TunnelInfo struct {
 // client once.
 type OpenedTunnel struct {
 	Credential string `json:"credential"`
+	// Router holds the tunnel, as the Mesh lists it: the client connects there.
+	Router string `json:"-"`
 	TunnelInfo
 }
 
@@ -217,7 +220,12 @@ func WithE2EKey(publicKey string) MeshOption {
 }
 
 // TunnelsClient is the issuer API for the Router's TunnelService.
-type TunnelsClient struct{ caller Caller }
+type TunnelsClient struct {
+	caller Caller
+	// place names the Mesh's Router, or gives the set of its Routers: a
+	// tunnel is opened on the Router the instance is registered with.
+	place func() (string, *routerSet)
+}
 
 type openTunnelWire struct {
 	InstanceID     string        `json:"instance_id"`
@@ -249,7 +257,29 @@ func (tc *TunnelsClient) Open(ctx context.Context, request OpenTunnelRequest, op
 		}
 		wire.Scopes = append(wire.Scopes, TunnelScope{Service: name, Methods: methods})
 	}
-	return Unary[openTunnelWire, OpenedTunnel](ctx, tc.caller, tunnelService, "open", wire, opts...)
+	router, set := tc.where()
+	if set == nil {
+		opened, err := Unary[openTunnelWire, OpenedTunnel](ctx, tc.caller, tunnelService, "open", wire, opts...)
+		opened.Router = router
+		return opened, err
+	}
+	// Opened where the instance is registered, found as a targeted call finds it.
+	var opened OpenedTunnel
+	err := set.route(ctx, set.resolve(append(opts, WithInstance(request.Instance))), func(ctx context.Context, c *Client, attempt []CallOption, router string) error {
+		var err error
+		// The instance is named in the request, not as the call's target.
+		opened, err = Unary[openTunnelWire, OpenedTunnel](ctx, c, tunnelService, "open", wire, append(attempt, WithInstance(""))...)
+		opened.Router = router
+		return err
+	})
+	return opened, err
+}
+
+func (tc *TunnelsClient) where() (string, *routerSet) {
+	if tc.place == nil {
+		return "", nil
+	}
+	return tc.place()
 }
 
 // Revoke closes a tunnel and every connection on it; false if it is not the
@@ -258,10 +288,36 @@ func (tc *TunnelsClient) Revoke(ctx context.Context, tunnelID string, opts ...Ca
 	type request struct {
 		TunnelID string `json:"tunnel_id"`
 	}
-	result, err := Unary[request, struct {
-		Revoked bool `json:"revoked"`
-	}](ctx, tc.caller, tunnelService, "revoke", request{tunnelID}, opts...)
-	return result.Revoked, err
+	revoke := func(c Caller) (bool, error) {
+		result, err := Unary[request, struct {
+			Revoked bool `json:"revoked"`
+		}](ctx, c, tunnelService, "revoke", request{tunnelID}, opts...)
+		return result.Revoked, err
+	}
+	_, set := tc.where()
+	if set == nil {
+		return revoke(tc.caller)
+	}
+	// Revoked on every Router: only the one that opened it knows the id.
+	results := make([]error, len(set.routers))
+	revoked := make([]bool, len(set.routers))
+	var wg sync.WaitGroup
+	for i, router := range set.routers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, err := set.at(router)
+			if err == nil {
+				revoked[i], err = revoke(c.WithOptions(CallOptions{}))
+			}
+			results[i] = err
+		}()
+	}
+	wg.Wait()
+	if slices.Contains(revoked, true) {
+		return true, nil
+	}
+	return false, errors.Join(results...)
 }
 
 // List returns the tunnels the caller opened that are still open.

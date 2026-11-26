@@ -91,7 +91,7 @@ async def test_a_tunnel_source_replaces_a_revoked_tunnel(sealed: bool) -> None:
             current = await open_tunnel()
             asked = 0
 
-            async def source() -> str:
+            async def source(_: str) -> str:
                 nonlocal asked
                 asked += 1
                 return current.credential
@@ -137,7 +137,7 @@ async def test_a_failing_or_wrong_source_fails_the_attempt_not_the_mesh() -> Non
     async with LocalRouter(port=0) as router:
         fail = True
 
-        def source() -> str:
+        def source(_: str) -> str:
             if fail:
                 raise RuntimeError("vault unreachable")
             return "mt_any"
@@ -156,7 +156,7 @@ async def test_a_failing_or_wrong_source_fails_the_attempt_not_the_mesh() -> Non
         finally:
             await mesh.close()
 
-        wrong = Mesh(Router(router.url), token=lambda: "mtun_abc")
+        wrong = Mesh(Router(router.url), token=lambda _: "mtun_abc")
         try:
             with pytest.raises(CredentialSourceError):
                 await wrong.registry.list()
@@ -164,7 +164,7 @@ async def test_a_failing_or_wrong_source_fails_the_attempt_not_the_mesh() -> Non
             await wrong.close()
 
     with pytest.raises(Exception, match="cannot serve"):
-        Mesh(Router("ws://127.0.0.1:1"), tunnel=lambda: "mtun_x").mount(Box())
+        Mesh(Router("ws://127.0.0.1:1"), tunnel=lambda _: "mtun_x").mount(Box())
 
 
 async def test_an_instance_with_a_token_source_registers_again(tmp_path: Path) -> None:
@@ -190,7 +190,7 @@ async def test_an_instance_with_a_token_source_registers_again(tmp_path: Path) -
         current = await issue()
         asked = 0
 
-        def source() -> str:
+        def source(_: str) -> str:
             nonlocal asked
             asked += 1
             return current.token
@@ -223,7 +223,7 @@ async def test_an_instance_with_a_token_source_registers_again(tmp_path: Path) -
 
         caller = await caller_token()
         http_url = router.url.replace("ws://", "http://")
-        async with Mesh(Router(http_url), token=lambda: caller.token) as http:
+        async with Mesh(Router(http_url), token=lambda _: caller.token) as http:
             box2 = Mesh(Router(router.url), credentials=basic).mount(
                 Box(), instance_id="box-a"
             )

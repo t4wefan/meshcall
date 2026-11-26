@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import cast
 
 from meshcall.errors import MeshCallError, UnauthenticatedError, UnavailableError
 
-#: Returns the credential to connect with (sync or async); called before
-#: every connection.
-CredentialSource = Callable[[], "str | Awaitable[str]"]
+#: Returns the credential to connect to the Router it is given (its URL as
+#: the Router lists it: ``wss://…``, ``unix:///…``, ``pipe://…``), sync or
+#: async; called before every connection. A Mesh over one Router may ignore
+#: the argument.
+CredentialSource = Callable[[str], "str | Awaitable[str]"]
 
 TUNNEL_CREDENTIAL_PREFIX = "mtun_"
 
@@ -34,14 +37,24 @@ def _source_failed(message: str) -> UnavailableError:
     )
 
 
+def router_name(uri: str | None, unix_path: Path | None, pipe: str | None) -> str:
+    """How a Router endpoint is named to credential sources and in results."""
+    if uri is not None:
+        return uri
+    if unix_path is not None:
+        return f"unix://{unix_path}"
+    return f"pipe://{pipe}"
+
+
 async def ask_credential_source(
     source: CredentialSource,
+    router: str,
     check: Callable[[str], None] | None = None,
 ) -> str:
-    """Ask ``source`` for a credential and check it; a failing source fails
-    this connection attempt as an unreachable Router would."""
+    """Ask ``source`` for a credential to ``router`` and check it; a failing
+    source fails this connection attempt as an unreachable Router would."""
     try:
-        value = source()
+        value = source(router)
         if inspect.isawaitable(value):
             value = await cast(Awaitable[str], value)
     except (MeshCallError, CredentialSourceError):
@@ -62,8 +75,8 @@ def kinded_source(source: CredentialSource, kind: str) -> CredentialSource:
     """The source a Mesh gives its driver for a ``token=`` or ``tunnel=``
     function: what it returns is checked to be that kind of credential."""
 
-    async def checked() -> str:
-        value = source()
+    async def checked(router: str) -> str:
+        value = source(router)
         if inspect.isawaitable(value):
             value = await cast(Awaitable[str], value)
         if not isinstance(value, str) or not value:

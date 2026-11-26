@@ -22,6 +22,7 @@ import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import { methodValidators } from "./validation.js";
 
 import { askCredentialSource, type CredentialSource } from "./credentials.js";
+import { formatRouterEndpointUrl } from "./rpc.js";
 import type { RouterCredentials } from "./router-auth.js";
 import { TUNNEL_CAPABILITY, TunnelHost, type E2EPairingPskHook, type E2EPeerHook, type TunnelPolicy } from "./tunnel.js";
 
@@ -504,7 +505,7 @@ export class MeshCallServer {
   }
 
   private async startRouterLink(router: RouterConnectionOptions, link: RouterLink): Promise<void> {
-    const auth = router.authSource === undefined ? router.auth : { token: await askCredentialSource(router.authSource) };
+    const auth = router.authSource === undefined ? router.auth : { token: await askCredentialSource(router.authSource, formatRouterEndpointUrl(link.endpoint)) };
     const socket = createSocket(link.endpoint, this.maxFrameSize, this.handshakeTimeout, auth);
     // link.socket is set only once registered: a failed attempt is retried by
     // the caller, and must neither start a second reconnect loop when it

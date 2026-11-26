@@ -53,7 +53,7 @@ func (s *sourceBoxState) count() int { s.mu.Lock(); defer s.mu.Unlock(); return 
 
 func (s *sourceBoxState) reset() { s.mu.Lock(); s.asked = 0; s.mu.Unlock() }
 
-func (s *sourceBoxState) source(context.Context) (string, error) {
+func (s *sourceBoxState) source(context.Context, string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.asked++
@@ -169,7 +169,7 @@ func TestFailingOrWrongSourceFailsTheAttempt(t *testing.T) {
 	defer func() { _ = router.Stop() }()
 	var mu sync.Mutex
 	fail := true
-	mesh := meshcall.NewMesh(meshcall.NewRouter(router.URL()), meshcall.WithTokenSource(func(context.Context) (string, error) {
+	mesh := meshcall.NewMesh(meshcall.NewRouter(router.URL()), meshcall.WithTokenSource(func(context.Context, string) (string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if fail {
@@ -192,7 +192,7 @@ func TestFailingOrWrongSourceFailsTheAttempt(t *testing.T) {
 		t.Fatalf("after the source recovered: %v", err)
 	}
 
-	wrong := meshcall.NewMesh(meshcall.NewRouter(router.URL()), meshcall.WithTokenSource(func(context.Context) (string, error) {
+	wrong := meshcall.NewMesh(meshcall.NewRouter(router.URL()), meshcall.WithTokenSource(func(context.Context, string) (string, error) {
 		return "mtun_abc", nil
 	}))
 	defer func() { _ = wrong.Close() }()

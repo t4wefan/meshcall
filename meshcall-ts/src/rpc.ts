@@ -60,3 +60,15 @@ export interface MeshCallRpc {
   close?(): Promise<void>;
   [Symbol.asyncDispose]?(): Promise<void>;
 }
+
+/** A Router endpoint as a URL (`unix:///…`, `pipe://…` for local ones): how a Router is named to credential sources and in results. */
+export function formatRouterEndpointUrl(endpoint: string | { readonly unixPath: string } | { readonly pipe: string }): string {
+  if (typeof endpoint === "string") return endpoint;
+  if ("unixPath" in endpoint) {
+    return endpoint.unixPath.startsWith("unix://") ? endpoint.unixPath : `unix://${endpoint.unixPath}`;
+  }
+  const bare = endpoint.pipe.startsWith("pipe://")
+    ? endpoint.pipe.slice("pipe://".length)
+    : endpoint.pipe.replace(/^\\\\\.\\pipe\\/u, "");
+  return `pipe://${bare}`;
+}

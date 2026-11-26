@@ -266,8 +266,13 @@ func (c *Client) Client() *Client { return c }
 // underlying connection and merges opts into every call made through it.
 func (c *Client) WithOptions(opts CallOptions) *Client {
 	clone := *c
-	merged := make([]CallOption, 0, len(c.defaultOpts)+5)
-	merged = append(merged, c.defaultOpts...)
+	clone.defaultOpts = append(append([]CallOption{}, c.defaultOpts...), opts.asOptions()...)
+	return &clone
+}
+
+// asOptions are these options as CallOption values.
+func (opts CallOptions) asOptions() []CallOption {
+	merged := make([]CallOption, 0, 6)
 	if opts.Timeout > 0 {
 		merged = append(merged, WithTimeout(opts.Timeout))
 	}
@@ -290,8 +295,7 @@ func (c *Client) WithOptions(opts CallOptions) *Client {
 	if opts.Idempotent {
 		merged = append(merged, IdempotentCall())
 	}
-	clone.defaultOpts = merged
-	return &clone
+	return merged
 }
 
 // Close closes the connection; calls in flight fail with unavailable.
@@ -422,7 +426,7 @@ func (c *Client) handshake(ctx context.Context, e endpoint) (*conn, error) {
 	header := http.Header{}
 	authorization := c.opts.Authorization
 	if c.opts.AuthSource != nil {
-		token, err := askCredentialSource(ctx, c.opts.AuthSource, func(credential string) error {
+		token, err := askCredentialSource(ctx, c.opts.AuthSource, e.text, func(credential string) error {
 			return checkE2EAgreement(credential, c.opts.E2EKey)
 		})
 		if err != nil {
@@ -963,7 +967,13 @@ func (c *Client) runChain(ctx context.Context, info *CallInfo, innermost ClientC
 }
 
 func (c *Client) retry(ctx context.Context, info *CallInfo, next ClientCallNext) error {
-	policy := *c.opts.Retry
+	return retryCall(ctx, *c.opts.Retry, info, next)
+}
+
+// retryCall runs a unary call under policy: re-sent only for a retryable
+// error whose code is in RetryCodes, when the method is idempotent or the
+// call carries an idempotency key, within the call's timeout.
+func retryCall(ctx context.Context, policy RetryPolicy, info *CallInfo, next ClientCallNext) error {
 	if policy.MaxAttempts == 0 {
 		policy.MaxAttempts = DefaultRetry.MaxAttempts
 	}

@@ -842,7 +842,7 @@ If an instance repeatedly times out or returns `internal`/`unavailable` (default
 
 ### 4. Multi-Router High Availability
 
-Run two or more independent `meshcall-router` processes. Give the same endpoint list to the `Router` object passed to `Mesh`—mounted services register with **all** Routers simultaneously, and clients fail over automatically when one Router goes down:
+Run two or more independent `meshcall-router` processes. Give the same endpoint list to the `Router` object passed to `Mesh`—mounted services register with **all** Routers simultaneously, and clients keep one connection per Router and send each call where it can be routed:
 
 ```python
 router = Router(["ws://router-1.internal:8765", "ws://router-2.internal:8765"])
@@ -862,6 +862,15 @@ router := meshcall.NewRouter(
     "ws://router-2.internal:8765",
 )
 mesh := meshcall.NewMesh(router)
+```
+
+Routers share nothing, so an instance may be registered on some of them only (it lost one, or it was given a different list). The client finds it: a call to an instance goes to the Router a call to it last succeeded on, otherwise to each Router in turn, moving on only when a Router answers that it did not route the call (`no_instances`, `instance_unknown`, `router_draining`) or cannot be reached. Streams and duplex calls move on the same way, with nothing the caller handed over lost. See [protocol → Several Routers](protocol.md#several-routers).
+
+Tokens, tunnels and the registry belong to one Router. Reach them through `mesh.at(router)` (Go: `mesh.At(router)`), one of `mesh.routers` (Go: `mesh.Endpoints()`); calling them on the Mesh itself is an error naming the Routers. `mesh.tunnels.open` is the exception: it opens the tunnel where the instance is and returns that Router as `opened.router`, the URL to give the tunnel's client; `mesh.tunnels.revoke` revokes on every Router. A credential function receives the Router it is asked for, so per-Router tokens work too:
+
+```python
+tokens = {url: await issuer_mesh.at(url).auth.issue_token(scopes) for url in issuer_mesh.routers}
+worker = Mesh(Router(list(tokens)), token=lambda router: tokens[router].token)
 ```
 
 ### 5. Zero-Downtime Rolling Restarts (`drain`)
@@ -980,20 +989,20 @@ Bind each instance's registration credential to its instance id with `instance_i
 
 ### Credential Sources: Replace Expiring Credentials
 
-When the credential comes from somewhere that replaces it (an issuer that hands out short-lived tokens, a control plane that opens a new tunnel each time), pass a function instead of the value. The runtime calls it before every connection, registration and HTTP request, so caching is up to you. When the Router refuses the old credential (expired at reconnect, revoked), the runtime asks the function again instead of giving up:
+When the credential comes from somewhere that replaces it (an issuer that hands out short-lived tokens, a control plane that opens a new tunnel each time), pass a function instead of the value. The runtime calls it with the Router it is connecting to (its URL as listed) before every connection, registration and HTTP request, so caching is up to you; with one Router you may ignore the argument. When the Router refuses the old credential (expired at reconnect, revoked), the runtime asks the function again instead of giving up:
 
 ```python
-mesh = Mesh(router, token=issuer.current_token)          # sync or async function
-box = Mesh(router, tunnel=lambda: api.open_tunnel("box-a"), e2e_key=pinned)
+mesh = Mesh(router, token=issuer.current_token)          # (router) -> str, sync or async
+box = Mesh(router, tunnel=lambda router: api.open_tunnel("box-a", router), e2e_key=pinned)
 ```
 
 ```typescript
-const mesh = new Mesh(router, { token: () => issuer.currentToken() });
-const box = new Mesh(router, { tunnel: () => api.openTunnel("box-a"), e2eKey: pinned });
+const mesh = new Mesh(router, { token: (router) => issuer.currentToken(router) });
+const box = new Mesh(router, { tunnel: (router) => api.openTunnel("box-a", router), e2eKey: pinned });
 ```
 
 ```go
-mesh := meshcall.NewMesh(router, meshcall.WithTokenSource(issuer.CurrentToken))
+mesh := meshcall.NewMesh(router, meshcall.WithTokenSource(issuer.CurrentToken)) // func(ctx, router) (string, error)
 box := meshcall.NewMesh(router, meshcall.WithTunnelSource(api.OpenTunnel), meshcall.WithE2EKey(pinned))
 ```
 

@@ -846,7 +846,7 @@ defer func() { _ = srv.Close() }()
 
 ### 4. 多 Router 无状态双活容灾
 
-可以同时启动多个独立的 `meshcall-router` 进程，并把同一份地址列表交给传入 `Mesh` 的 `Router` 对象——挂载的服务会同时向**所有** Router 保持注册，客户端会在当前 Router 故障时自动切换到下一个可用 Router：
+可以同时启动多个独立的 `meshcall-router` 进程，并把同一份地址列表交给传入 `Mesh` 的 `Router` 对象——挂载的服务会同时向**所有** Router 保持注册，客户端为每个 Router 保持一条连接，把每个调用发给能路由它的 Router：
 
 ```python
 router = Router(["ws://router-1.internal:8765", "ws://router-2.internal:8765"])
@@ -866,6 +866,15 @@ router := meshcall.NewRouter(
     "ws://router-2.internal:8765",
 )
 mesh := meshcall.NewMesh(router)
+```
+
+各 Router 之间不共享任何状态，所以实例可能只注册在其中一部分 Router 上（掉了一个，或拿到的列表不同）。客户端会找到它：调用某个实例时，先发给上次成功调用它的 Router，否则依次尝试各 Router，只有当 Router 回答没有路由这个调用（`no_instances`、`instance_unknown`、`router_draining`）或连不上时才换下一个。流式调用和双向流也按同样方式换 Router，调用方交出的内容不会丢失。详见[协议 → 多个 Router](protocol.md#多个-routerseveral-routers)。
+
+令牌、隧道和注册表属于某一个 Router。通过 `mesh.at(router)`（Go：`mesh.At(router)`）访问它们，`router` 取自 `mesh.routers`（Go：`mesh.Endpoints()`）；直接在 Mesh 上调用会报错并列出各 Router。`mesh.tunnels.open` 是例外：它在实例所在的 Router 上打开隧道，并以 `opened.router` 返回这个 Router，也就是要交给隧道客户端的 URL；`mesh.tunnels.revoke` 会在每个 Router 上撤销。凭据函数会收到要连接的 Router，所以也可以按 Router 分别发令牌：
+
+```python
+tokens = {url: await issuer_mesh.at(url).auth.issue_token(scopes) for url in issuer_mesh.routers}
+worker = Mesh(Router(list(tokens)), token=lambda router: tokens[router].token)
 ```
 
 ### 5. 零中断优雅停机（Graceful Drain）
@@ -984,20 +993,20 @@ meshcall-router new-api-key ci-bot   # 只打印一次 Key，以及应加入 "ap
 
 ### 凭据函数：替换会过期的凭据
 
-如果凭据由别处签发并会被替换（签发短期 Token 的服务、每次开一条新隧道的控制面），可以传一个函数代替固定值。运行时在每次连接、注册和 HTTP 请求前都会调用它，缓存由你决定。Router 拒绝旧凭据时（重连时已过期、被吊销），运行时会再问一次这个函数，而不是放弃：
+如果凭据由别处签发并会被替换（签发短期 Token 的服务、每次开一条新隧道的控制面），可以传一个函数代替固定值。运行时在每次连接、注册和 HTTP 请求前都会调用它，并传入要连接的 Router（列表中写的 URL），缓存由你决定；只有一个 Router 时可以忽略这个参数。Router 拒绝旧凭据时（重连时已过期、被吊销），运行时会再问一次这个函数，而不是放弃：
 
 ```python
-mesh = Mesh(router, token=issuer.current_token)          # 同步或异步函数
-box = Mesh(router, tunnel=lambda: api.open_tunnel("box-a"), e2e_key=pinned)
+mesh = Mesh(router, token=issuer.current_token)          # (router) -> str，同步或异步
+box = Mesh(router, tunnel=lambda router: api.open_tunnel("box-a", router), e2e_key=pinned)
 ```
 
 ```typescript
-const mesh = new Mesh(router, { token: () => issuer.currentToken() });
-const box = new Mesh(router, { tunnel: () => api.openTunnel("box-a"), e2eKey: pinned });
+const mesh = new Mesh(router, { token: (router) => issuer.currentToken(router) });
+const box = new Mesh(router, { tunnel: (router) => api.openTunnel("box-a", router), e2eKey: pinned });
 ```
 
 ```go
-mesh := meshcall.NewMesh(router, meshcall.WithTokenSource(issuer.CurrentToken))
+mesh := meshcall.NewMesh(router, meshcall.WithTokenSource(issuer.CurrentToken)) // func(ctx, router) (string, error)
 box := meshcall.NewMesh(router, meshcall.WithTunnelSource(api.OpenTunnel), meshcall.WithE2EKey(pinned))
 ```
 

@@ -5,6 +5,7 @@ func init() {
 		Name: "jvm", Tests: "meshcall-jvm/meshcall/src/test",
 		Skipped: map[string]string{
 			"auth.credential_source": "credential sources are not implemented in the JVM client yet (#83)",
+			"routers.several":        "several Routers are not implemented in the JVM client yet (#83)",
 		},
 	})
 }

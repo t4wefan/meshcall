@@ -6,6 +6,7 @@ func init() {
 		Skipped: map[string]string{
 			"duplex.no_idempotency_key": "refused at compile time: DuplexCallOptions has no idempotency key",
 			"auth.credential_source":    "credential sources are not implemented in the Swift client yet (#83)",
+			"routers.several":           "several Routers are not implemented in the Swift client yet (#83)",
 		},
 	})
 }

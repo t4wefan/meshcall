@@ -27,6 +27,7 @@ import {
   RouterCredentials,
 } from "./router-auth.js";
 import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
+import { RouterSet } from "./routers.js";
 import { MeshCallServer, type MeshCallServerOptions, type ServerInterceptor } from "./server.js";
 import { DEFAULT_MAX_FRAME_SIZE } from "./transport.js";
 import {
@@ -621,7 +622,9 @@ export class Mesh implements MeshCallRpc {
   private ownsRoot = true;
   private ownsLocalRouter = false;
   private defaultCallOptions: CallOptions = {};
-  private transport: (MeshCallClient | HttpTransport) | undefined;
+  private transport: (MeshCallClient | HttpTransport | RouterSet) | undefined;
+  /** Set on a `mesh.at(router)` view: its calls go to that Router only. */
+  private pinned: string | undefined;
   private readonly mountedServices: object[] = [];
   private mountOptions: ServeOptions = {};
   private activeServer: RunningServer | undefined;
@@ -669,7 +672,35 @@ export class Mesh implements MeshCallRpc {
     this.root = this;
     this.registry = new RegistryClient(this);
     this.auth = new AuthClient(this);
-    this.tunnels = new TunnelsClient(this);
+    this.tunnels = new TunnelsClient(this, () => this.tunnelPlace());
+  }
+
+  /** The Routers this Mesh connects to, as URLs (`unix:///…` and `pipe://…` for local ones). */
+  public get routers(): ReadonlyArray<string> {
+    const router = this.root.router;
+    return router instanceof LocalRouter ? [router.url] : router.urls;
+  }
+
+  /**
+   * This Mesh with its calls going to one of its Routers only, sharing its
+   * connection: for what belongs to one Router (`mesh.at(r).auth.issueToken`,
+   * `mesh.at(r).registry.list()`) on a Mesh over several.
+   */
+  public at(router: string): Mesh {
+    const routers = this.routers;
+    if (!routers.includes(router)) {
+      throw new RangeError(`${JSON.stringify(router)} is not one of this Mesh's Routers: ${routers.join(", ")}`);
+    }
+    if (routers.length === 1) return this;
+    const clone = this.withOptions({});
+    clone.pinned = router;
+    return clone;
+  }
+
+  private tunnelPlace(): string | RouterSet {
+    if (this.pinned !== undefined) return this.pinned;
+    const transport = this.ensureTransport();
+    return transport instanceof RouterSet ? transport : this.routers[0]!;
   }
 
   private async ensureRouterStarted(): Promise<void> {
@@ -701,16 +732,21 @@ export class Mesh implements MeshCallRpc {
       ownsRoot: false,
       ownsLocalRouter: false,
       defaultCallOptions: mergeCallOptions(this.defaultCallOptions, options),
+      pinned: this.pinned,
       registry: new RegistryClient(clone),
       auth: new AuthClient(clone),
-      tunnels: new TunnelsClient(clone),
+      tunnels: new TunnelsClient(clone, () => clone.tunnelPlace()),
     });
     return clone;
   }
 
   private ensureTransport(): MeshCallRpc {
     if (this.root !== this) {
-      return this.root.ensureTransport().withOptions(this.defaultCallOptions);
+      const transport = this.root.ensureTransport();
+      if (this.pinned !== undefined && transport instanceof RouterSet) {
+        return transport.at(this.pinned).withOptions(this.defaultCallOptions);
+      }
+      return transport.withOptions(this.defaultCallOptions);
     }
     if (this.transport === undefined) {
       if (this.router.isHttp) {
@@ -740,7 +776,17 @@ export class Mesh implements MeshCallRpc {
           ...(this.options.e2eKey === undefined ? {} : { e2eKey: this.options.e2eKey }),
           ...(this.options.e2eIdentity === undefined ? {} : { e2eIdentity: this.options.e2eIdentity }),
         };
-        this.transport = new MeshCallClient(this.router.endpoints, this.options.peerId, clientOptions);
+        const endpoints = this.router.endpoints;
+        if (endpoints.length === 1) {
+          this.transport = new MeshCallClient(endpoints, this.options.peerId, clientOptions);
+        } else {
+          // One connection per Router; the set fails over, backs off and retries.
+          const urls = endpoints.map(formatRouterEndpointUrl);
+          const { reconnect, retry, ...perRouter } = clientOptions;
+          this.transport = new RouterSet(urls, (url) => new MeshCallClient(
+            endpoints[urls.indexOf(url)]!, this.options.peerId, { ...perRouter, reconnect: { enabled: false }, retry: false },
+          ), { ...(reconnect === undefined ? {} : { reconnect }), ...(retry === undefined ? {} : { retry }) });
+        }
       }
     }
     return Object.keys(this.defaultCallOptions).length > 0
@@ -750,6 +796,9 @@ export class Mesh implements MeshCallRpc {
 
   public get client(): MeshCallClient {
     const active = this.ensureTransport();
+    if (active instanceof RouterSet) {
+      throw new Error("This Mesh has several Routers, each with its own connection: use mesh.at(router).client");
+    }
     if (!(active instanceof MeshCallClient)) {
       throw new Error("HTTP Mesh does not use a WebSocket MeshCallClient");
     }
@@ -763,7 +812,7 @@ export class Mesh implements MeshCallRpc {
     }
     await this.ensureRouterStarted();
     const transport = this.ensureTransport();
-    if (transport instanceof MeshCallClient) {
+    if (transport instanceof MeshCallClient || transport instanceof RouterSet) {
       await transport.connect();
     }
     return this;
@@ -956,7 +1005,7 @@ export class Mesh implements MeshCallRpc {
         if (this.transport !== undefined) {
           const t = this.transport;
           this.transport = undefined;
-          if (t instanceof MeshCallClient) {
+          if (t instanceof MeshCallClient || t instanceof RouterSet) {
             await t.close();
           }
         }

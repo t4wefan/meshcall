@@ -22,7 +22,9 @@ import {
   clientDeadlineGraceMs, retryUnary, validateMetadata, type ReconnectPolicy, type RetryPolicy,
 } from "./policy.js";
 import type { Metadata } from "./protocol.js";
-import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
+import { formatRouterEndpointUrl, mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
+
+export { formatRouterEndpointUrl };
 import { askCredentialSource, kindedSource, type CredentialOption, type CredentialSource } from "./credentials.js";
 // Types only: importing router-auth's values would pull contract.ts (and Node's
 // crypto/fs/path) into browser bundles.
@@ -32,6 +34,7 @@ import type {
 import { checkTunnelCredential, normalizeScopeService, TUNNEL_CREDENTIAL_PREFIX, TunnelsClient } from "./tunnel.js";
 import { checkE2EAgreement, checkE2EIdentity, checkE2EKey, type E2EIdentity } from "./e2e.js";
 import { WebSocketTransport } from "./web-socket.js";
+import { RouterSet } from "./routers.js";
 import { checkReceived } from "./validation.js";
 
 export type { CallOptions } from "./client.js";
@@ -89,17 +92,6 @@ function validateEndpointScheme(endpoint: RouterEndpoint): void {
   throw new TypeError(
     `Router URL must use ws://, wss://, http://, https://, unix:// or pipe://, got ${JSON.stringify(endpoint)}`,
   );
-}
-
-export function formatRouterEndpointUrl(endpoint: RouterEndpoint): string {
-  if (typeof endpoint === "string") return endpoint;
-  if ("unixPath" in endpoint) {
-    return endpoint.unixPath.startsWith("unix://") ? endpoint.unixPath : `unix://${endpoint.unixPath}`;
-  }
-  const bare = endpoint.pipe.startsWith("pipe://")
-    ? endpoint.pipe.slice("pipe://".length)
-    : endpoint.pipe.replace(/^\\\\\.\\pipe\\/u, "");
-  return `pipe://${bare}`;
 }
 
 function resolveRouterEndpoints(options: RouterOptions): {
@@ -332,7 +324,8 @@ export class HttpTransport implements MeshCallRpc {
   private readonly fetcher: typeof fetch;
   private defaultCallOptions: CallOptions = {};
 
-  public constructor(url: string, private readonly options: HttpTransportOptions = {}) {
+  /** `url` is the Router as listed, which a credential source is given. */
+  public constructor(private readonly url: string, private readonly options: HttpTransportOptions = {}) {
     this.base = url.replace(/^ws(s?):/u, "http$1:").replace(/\/+$/u, "");
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
@@ -340,6 +333,7 @@ export class HttpTransport implements MeshCallRpc {
   public withOptions(options: CallOptions): this {
     const clone = Object.create(HttpTransport.prototype) as this;
     Object.assign(clone, {
+      url: this.url,
       base: this.base,
       fetcher: this.fetcher,
       options: this.options,
@@ -422,7 +416,7 @@ export class HttpTransport implements MeshCallRpc {
     const headers: Record<string, string> = { ...(this.options.headers ?? {}), "Content-Type": contentType };
     const source = this.options.authSource;
     if (source !== undefined) {
-      headers.Authorization = "Bearer " + await askCredentialSource(source);
+      headers.Authorization = "Bearer " + await askCredentialSource(source, this.url);
     } else if (this.options.authorization !== undefined) {
       headers.Authorization = this.options.authorization;
     } else if (this.options.token !== undefined) {
@@ -439,7 +433,7 @@ export class HttpTransport implements MeshCallRpc {
       // The Router refused the credential before routing: nothing ran, so a
       // new one from the source may be sent once more.
       await response.body?.cancel().catch(() => undefined);
-      headers.Authorization = "Bearer " + await askCredentialSource(source);
+      headers.Authorization = "Bearer " + await askCredentialSource(source, this.url);
       response = await this.fetcher(url, { method: "POST", headers, body, signal: control.controller.signal });
     }
     if (response.ok) return response;
@@ -642,7 +636,11 @@ export class Mesh implements MeshCallRpc {
   public readonly auth: AuthClient;
   /** The Router's `TunnelService`: open, revoke and list tunnels. */
   public readonly tunnels: TunnelsClient;
-  private readonly transport: HttpTransport | WebSocketTransport;
+  private readonly transport: HttpTransport | WebSocketTransport | RouterSet;
+  /** The client of a Mesh over several Routers, shared by its views. */
+  private readonly set: RouterSet | undefined;
+  /** Set on a `mesh.at(router)` view: its calls go to that Router only. */
+  private readonly pinned: string | undefined;
 
   public constructor(router: Router, options: MeshWebOptions = {}) {
     if (!(router instanceof Router)) {
@@ -692,20 +690,61 @@ export class Mesh implements MeshCallRpc {
       if (urls.length !== router.urls.length) {
         throw new TypeError("meshcall/web connects to ws://, wss://, http:// or https:// Routers only");
       }
-      this.transport = new WebSocketTransport(urls, {
+      const transportOptions = {
         ...(bearer === undefined ? {} : { authorization: "Bearer " + bearer }),
         ...(authSource === undefined ? {} : { authSource }),
-        ...(options.retry === undefined ? {} : { retry: options.retry }),
         ...(options.deadlineGraceMs === undefined ? {} : { deadlineGraceMs: options.deadlineGraceMs }),
         ...(options.pingIntervalMs === undefined ? {} : { pingIntervalMs: options.pingIntervalMs }),
         ...(options.logger === undefined ? {} : { logger: options.logger }),
         ...(options.e2eKey === undefined ? {} : { e2eKey: options.e2eKey }),
         ...(options.e2eIdentity === undefined ? {} : { e2eIdentity: options.e2eIdentity }),
-      });
+      };
+      const retry = options.retry === undefined ? {} : { retry: options.retry };
+      // One connection per Router; the set fails over and retries.
+      this.transport = urls.length === 1
+        ? new WebSocketTransport(urls, { ...transportOptions, ...retry })
+        : new RouterSet(urls, (url) => new WebSocketTransport([url], { ...transportOptions, retry: false }), {
+          reconnect: { enabled: false }, ...retry,
+        });
     }
+    this.pinned = undefined;
+    this.set = this.transport instanceof RouterSet ? this.transport : undefined;
     this.registry = new RegistryClient(this);
     this.auth = new AuthClient(this);
-    this.tunnels = new TunnelsClient(this);
+    this.tunnels = new TunnelsClient(this, () => this.tunnelPlace());
+  }
+
+  /** The Routers this Mesh connects to, as URLs. */
+  public get routers(): ReadonlyArray<string> {
+    return this.router.urls;
+  }
+
+  /**
+   * This Mesh with its calls going to one of its Routers only, sharing its
+   * connection: for what belongs to one Router (`mesh.at(r).auth.issueToken`)
+   * on a Mesh over several.
+   */
+  public at(router: string): Mesh {
+    if (!this.routers.includes(router)) {
+      throw new RangeError(`${JSON.stringify(router)} is not one of this Mesh's Routers: ${this.routers.join(", ")}`);
+    }
+    if (this.routers.length === 1 || this.pinned === router) return this;
+    const clone = Object.create(Mesh.prototype) as Mesh;
+    Object.assign(clone, {
+      router: this.router,
+      set: this.set,
+      transport: this.set!.at(router),
+      pinned: router,
+      registry: new RegistryClient(clone),
+      auth: new AuthClient(clone),
+      tunnels: new TunnelsClient(clone, () => router),
+    });
+    return clone;
+  }
+
+  private tunnelPlace(): string | RouterSet {
+    if (this.pinned !== undefined) return this.pinned;
+    return this.transport instanceof RouterSet ? this.transport : this.routers[0]!;
   }
 
   public static async connect(router: Router, options: MeshWebOptions = {}): Promise<Mesh> {
@@ -719,22 +758,24 @@ export class Mesh implements MeshCallRpc {
     const transport = this.transport.withOptions(options);
     Object.assign(clone, {
       router: this.router,
+      set: this.set,
       transport,
+      pinned: this.pinned,
       registry: new RegistryClient(clone),
       auth: new AuthClient(clone),
-      tunnels: new TunnelsClient(clone),
+      tunnels: new TunnelsClient(clone, () => clone.tunnelPlace()),
     });
     return clone;
   }
 
   public async connect(): Promise<this> {
-    if (this.transport instanceof WebSocketTransport) await this.transport.connect();
+    if (this.transport instanceof WebSocketTransport || this.transport instanceof RouterSet) await this.transport.connect();
     return this;
   }
 
   public async close(): Promise<void> {
     // fetch keeps no persistent connection.
-    if (this.transport instanceof WebSocketTransport) await this.transport.close();
+    if (this.transport instanceof WebSocketTransport || this.transport instanceof RouterSet) await this.transport.close();
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {

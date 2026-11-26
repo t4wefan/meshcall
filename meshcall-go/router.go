@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -920,6 +921,10 @@ type Mesh struct {
 	authHeader string
 	authSource CredentialSource
 	wsClient   *Client
+	// set is the client of a Mesh over several Routers, one connection each.
+	set *routerSet
+	// pinned is set on a mesh.At(router) view: its calls go to that Router only.
+	pinned     string
 	httpCaller *httpTransport
 	registry   *RegistryClient
 	auth       *AuthClient
@@ -1015,8 +1020,67 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 	}
 	m.registry = &RegistryClient{caller: m}
 	m.auth = &AuthClient{caller: m}
-	m.tunnels = &TunnelsClient{caller: m}
+	m.tunnels = &TunnelsClient{caller: m, place: m.tunnelPlace}
 	return m
+}
+
+// At returns this Mesh with its calls going to one of its Routers only,
+// sharing its connection: for what belongs to one Router
+// (mesh.At(r).Auth().IssueToken, mesh.At(r).Registry().List) on a Mesh over
+// several. router is one of Endpoints().
+func (m *Mesh) At(router string) (*Mesh, error) {
+	routers := m.Endpoints()
+	if !slices.Contains(routers, router) {
+		return nil, errors.New("meshcall: " + router + " is not one of this Mesh's Routers: " + strings.Join(routers, ", "))
+	}
+	if len(routers) == 1 || m.pinned == router {
+		return m, nil
+	}
+	if _, err := m.ensureCaller(); err != nil {
+		return nil, err
+	}
+	if m.set == nil {
+		return nil, errors.New("meshcall: Mesh.At on a view of another Router")
+	}
+	client, err := m.set.at(router)
+	if err != nil {
+		return nil, err
+	}
+	clone := m.view()
+	clone.pinned = router
+	clone.wsClient = client.WithOptions(CallOptions{})
+	clone.wsClient.defaultOpts = append(clone.wsClient.defaultOpts, m.set.defaults...)
+	return clone, nil
+}
+
+// view is a shallow copy sharing this Mesh's connections and mounts.
+func (m *Mesh) view() *Mesh {
+	clone := &Mesh{
+		router:         m.router,
+		cfg:            m.cfg,
+		authHeader:     m.authHeader,
+		authSource:     m.authSource,
+		set:            m.set,
+		pinned:         m.pinned,
+		mountedRaw:     m.mountedRaw,
+		mountCfg:       m.mountCfg,
+		mountedTunnels: m.mountedTunnels,
+	}
+	clone.registry = &RegistryClient{caller: clone}
+	clone.auth = &AuthClient{caller: clone}
+	clone.tunnels = &TunnelsClient{caller: clone, place: clone.tunnelPlace}
+	return clone
+}
+
+// tunnelPlace names the Mesh's Router, or gives the set of its Routers.
+func (m *Mesh) tunnelPlace() (string, *routerSet) {
+	if m.pinned != "" {
+		return m.pinned, nil
+	}
+	if _, err := m.ensureCaller(); err == nil && m.set != nil {
+		return "", m.set
+	}
+	return m.URL(), nil
 }
 
 // ConnectMesh creates a Mesh and eagerly establishes its client connection to the Router.
@@ -1048,6 +1112,9 @@ func (m *Mesh) ensureCaller() (Caller, error) {
 		}
 		return m.httpCaller, nil
 	}
+	if m.set != nil && m.pinned == "" {
+		return m.set, nil
+	}
 	if m.wsClient == nil {
 		clientOpts := ClientOptions{
 			Authorization:    m.authHeader,
@@ -1067,6 +1134,20 @@ func (m *Mesh) ensureCaller() (Caller, error) {
 		}
 		if m.cfg.reconnect != nil {
 			clientOpts.Reconnect = *m.cfg.reconnect
+		}
+		if endpoints := m.router.Endpoints(); len(endpoints) > 1 {
+			// One connection per Router; the set fails over, backs off and retries.
+			perRouter := clientOpts
+			perRouter.Reconnect = ReconnectPolicy{Disabled: true}
+			perRouter.Retry = &RetryPolicy{Disabled: true}
+			retry := DefaultRetry
+			if m.cfg.retry != nil {
+				retry = *m.cfg.retry
+			}
+			m.set = newRouterSet(endpoints, func(router string) (*Client, error) {
+				return NewClient(perRouter, router)
+			}, clientOpts.Reconnect, retry)
+			return m.set, nil
 		}
 		c, err := NewClient(clientOpts, m.router.Endpoints()...)
 		if err != nil {
@@ -1094,6 +1175,12 @@ func (m *Mesh) Connect(ctx context.Context) error {
 	if m.router.IsHTTP() {
 		_, err := m.ensureCaller()
 		return err
+	}
+	if len(m.router.Endpoints()) > 1 && m.pinned == "" {
+		if _, err := m.ensureCaller(); err != nil {
+			return err
+		}
+		return m.set.connect(ctx)
 	}
 	// Reset wsClient if endpoints changed (e.g., LocalRouter was started after NewMesh).
 	if m.wsClient != nil {
@@ -1143,26 +1230,16 @@ func (m *Mesh) Tunnels() *TunnelsClient {
 
 // WithOptions returns a shallow copy of Mesh that attaches default CallOptions to calls made through it.
 func (m *Mesh) WithOptions(opts CallOptions) *Mesh {
-	clone := &Mesh{
-		router:     m.router,
-		cfg:        m.cfg,
-		authHeader: m.authHeader,
-		authSource: m.authSource,
-		mountedRaw: m.mountedRaw,
-		mountCfg:   m.mountCfg,
-
-		mountedTunnels: m.mountedTunnels,
-	}
-	if m.router.IsHTTP() {
-		_, _ = m.ensureCaller()
+	_, _ = m.ensureCaller()
+	clone := m.view()
+	switch {
+	case m.router.IsHTTP():
 		clone.httpCaller = m.httpCaller.WithOptions(opts)
-	} else {
-		_, _ = m.ensureCaller()
+	case m.set != nil && m.pinned == "":
+		clone.set = m.set.withOptions(opts)
+	default:
 		clone.wsClient = m.wsClient.WithOptions(opts)
 	}
-	clone.registry = &RegistryClient{caller: clone}
-	clone.auth = &AuthClient{caller: clone}
-	clone.tunnels = &TunnelsClient{caller: clone}
 	return clone
 }
 
@@ -1232,6 +1309,12 @@ func (m *Mesh) Close() error {
 		if err := m.wsClient.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+	if m.set != nil && m.pinned == "" {
+		if err := m.set.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		m.set = nil // a later call connects anew, as a single Router's client does
 	}
 	if m.httpCaller != nil {
 		if err := m.httpCaller.Close(); err != nil && firstErr == nil {

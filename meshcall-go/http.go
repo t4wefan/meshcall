@@ -34,6 +34,8 @@ type httpTransportOptions struct {
 
 // httpTransport is an internal Layer 1 Caller that speaks the Router's HTTP v1 API.
 type httpTransport struct {
+	// router is the Router as listed, which a credential source is given.
+	router    string
 	base      string
 	options   httpTransportOptions
 	defaults  CallOptions
@@ -77,6 +79,7 @@ func newHTTPTransport(endpoint string, options httpTransportOptions) *httpTransp
 		reconnect = DefaultReconnect
 	}
 	return &httpTransport{
+		router:    endpoint,
 		base:      base,
 		options:   options,
 		logger:    logger,
@@ -183,7 +186,7 @@ func (h *httpTransport) headers(ctx context.Context, options CallOptions, conten
 		headers.Set(key, value)
 	}
 	if h.options.AuthSource != nil {
-		token, err := askCredentialSource(ctx, h.options.AuthSource, nil)
+		token, err := askCredentialSource(ctx, h.options.AuthSource, h.router, nil)
 		if err != nil {
 			return nil, err
 		}

@@ -28,7 +28,7 @@ from meshcall.contract import (
     get_service_warnings,
     normalize_service_name,
 )
-from meshcall.credentials import CredentialSource, kinded_source
+from meshcall.credentials import CredentialSource, kinded_source, router_name
 from meshcall.drivers.local import PIPE_PREFIX, check_unix_supported, pipe_address
 from meshcall.drivers.websocket import (
     WebSocketClientDriver,
@@ -65,6 +65,7 @@ from meshcall.router_auth import (
     _RevokeResult,
 )
 from meshcall.router_install import find_router_binary
+from meshcall.routers import RouterSet
 from meshcall.server import RpcServer
 from meshcall.streams import RpcDuplexClient, RpcServerStream
 from meshcall.transport import DEFAULT_MAX_FRAME_SIZE
@@ -855,6 +856,51 @@ class Mesh:
         self._running_server: RunningServer | None = None
         self._owns_local_router = False
         self._entered = False
+        #: Set on a ``mesh.at(router)`` view: its calls go to that Router only.
+        self._pinned: str | None = None
+        #: The client of a Mesh over several Routers, shared by its views.
+        self._router_set: RouterSet | None = None
+
+    @property
+    def routers(self) -> tuple[str, ...]:
+        """The Routers this Mesh connects to, as URLs (``unix:///…`` and
+        ``pipe://…`` for local ones)."""
+        if isinstance(self.router, LocalRouter):
+            return (self.router.url,)
+        urls, unix_path, pipe = self.router._endpoints()
+        if urls:
+            return urls
+        return (router_name(None, unix_path, pipe),)
+
+    def at(self, router: str) -> Mesh:
+        """This Mesh with its calls going to one of its Routers only, sharing
+        its connection: for what belongs to one Router
+        (``mesh.at(r).auth.issue_token``, ``mesh.at(r).registry.list()``) on a
+        Mesh over several."""
+        routers = self.routers
+        if router not in routers:
+            raise ValueError(
+                f"{router!r} is not one of this Mesh's Routers: {', '.join(routers)}"
+            )
+        if len(routers) == 1 or self._pinned == router:
+            return self
+        self._ensure_client()
+        assert self._router_set is not None
+        clone = copy.copy(self)
+        clone._owns_local_router = False
+        clone._owns_client = False
+        clone._pinned = router
+        pinned = self._router_set.at(router)
+        if self.timeout is not None:
+            pinned = pinned.with_options(timeout=self.timeout)
+        clone._client = pinned
+        return clone
+
+    def _tunnel_place(self) -> str | RouterSet:
+        if self._pinned is not None:
+            return self._pinned
+        client = self._ensure_client()
+        return client if isinstance(client, RouterSet) else self.routers[0]
 
     async def _ensure_router_started(self) -> None:
         if isinstance(self.router, LocalRouter) and not self.router.is_running:
@@ -900,6 +946,15 @@ class Mesh:
                     timeout=self.timeout,
                     client=self._http_client,
                 )
+            elif len(self.router._endpoints()[0]) > 1:
+                # One connection per Router; the set fails over, backs off and retries.
+                self._client = self._router_set = RouterSet(
+                    self.router._endpoints()[0],
+                    self._router_client,
+                    reconnect=self.reconnect,
+                    retry=self.retry,
+                    timeout=self.timeout,
+                )
             else:
                 urls, unix_path, pipe = self.router._endpoints()
                 driver = WebSocketClientDriver(
@@ -927,6 +982,27 @@ class Mesh:
                     client._owns_root = True
                 self._client = client
         return self._client
+
+    def _router_client(self, url: str) -> ClientBase:
+        """The client of one Router of several: one attempt per connection, no retries."""
+        driver = WebSocketClientDriver(
+            uri=url,
+            peer_id=self.peer_id,
+            max_frame_size=self.max_frame_size,
+            auth=self.credentials,
+            auth_source=self.auth_source,
+            ping_interval=self.ping_interval,
+            ping_timeout=self.ping_timeout,
+            e2e_key=self.e2e_key,
+            e2e_identity=self.e2e_identity,
+        )
+        return ClientBase(
+            driver,
+            deadline_grace=self.deadline_grace,
+            reconnect=ReconnectPolicy(enabled=False),
+            interceptors=self.interceptors,
+            retry=RetryPolicy(enabled=False),
+        )
 
     def with_options(
         self,

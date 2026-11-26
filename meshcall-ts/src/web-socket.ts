@@ -595,28 +595,31 @@ export class WebSocketTransport implements MeshCallRpc {
 
   /** Dial; a source asked again once if the Router refused its credential. */
   private async dial(): Promise<Connection> {
-    if (this.options.authSource === undefined) return this.dialOnce(this.options.authorization);
     try {
-      return await this.dialOnce(await this.sourceAuthorization());
+      return await this.dialOnce();
     } catch (error) {
-      if (!isRouterRefusal(error)) throw error;
-      return this.dialOnce(await this.sourceAuthorization());
+      if (this.options.authSource === undefined || !isRouterRefusal(error)) throw error;
+      return this.dialOnce();
     }
   }
 
-  private async sourceAuthorization(): Promise<string> {
+  /** The Authorization header for `url`: fixed, or fresh from the source. */
+  private async authorizationFor(url: string): Promise<string | undefined> {
+    if (this.options.authSource === undefined) return this.options.authorization;
     const e2eKey = this.options.e2eKey;
-    const token = await askCredentialSource(this.options.authSource!, (credential) => checkE2EAgreement(credential, e2eKey));
+    const token = await askCredentialSource(this.options.authSource, url, (credential) => checkE2EAgreement(credential, e2eKey));
     this.e2eClient?.useCredential(token);
     return "Bearer " + token;
   }
 
   /** Try each URL once, starting with the last one that worked. */
-  private async dialOnce(authorization: string | undefined): Promise<Connection> {
+  private async dialOnce(): Promise<Connection> {
     let last: unknown;
     for (let i = 0; i < this.urls.length; i += 1) {
       const index = (this.cursor + i) % this.urls.length;
-      const connection = new Connection(this.urls[index]!, this.options, (error) => {
+      const url = this.urls[index]!;
+      const authorization = await this.authorizationFor(url);
+      const connection = new Connection(url, this.options, (error) => {
         if (this.connection === connection) this.connection = undefined;
         // With a source, the next connection asks it for a new credential instead.
         if (error instanceof UnauthenticatedError && this.options.authSource === undefined) this.refused = error;
