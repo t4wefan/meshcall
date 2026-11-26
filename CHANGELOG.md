@@ -26,10 +26,11 @@ matching `meshcall-go/vX.Y.Z` tag.
   named by its path (`ListResponse` → `ListResponseSessionsItem`), while the
   client still validates received payloads against the original schema.
 - **Generated TypeScript for targeted services compiles** (#73). Optional
-  request fields that come before a required parameter (a targeted method's
-  `options`, a client stream's `items`) are now `name: T | undefined` instead
-  of `name?: T`, which TypeScript rejected (TS1016). Optional fields of
-  client-stream methods are no longer typed as required.
+  request fields that come before a required parameter (a later required
+  field, a targeted method's `options`, a client stream's `items`) are now
+  `name: T | undefined` instead of `name?: T`, which TypeScript rejected
+  (TS1016). Optional fields of client-stream methods are no longer typed as
+  required.
 - **Request parameters that clash with generated names.** A TypeScript client
   method whose request has a field named `options`, `items` or a word strict
   mode reserves (`default`, `delete`, `this`, …) no longer produces a

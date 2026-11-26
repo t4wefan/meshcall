@@ -318,15 +318,25 @@ func tsParameterNames(m *contract.Method) []string {
 	return names
 }
 
-// tsParameters renders the request parameters. When a required parameter
-// follows them (a targeted method's options, a client stream's items), an
-// optional field cannot be written "name?: T" (TS1016): it becomes a required
-// position that accepts undefined, so the caller still may leave it unset.
+// tsParameters renders the request parameters. An optional field followed by
+// a required parameter (a later required field, or a targeted method's
+// options or a client stream's items when requiredFollows) cannot be written
+// "name?: T" (TS1016): it becomes a required position that accepts undefined,
+// so the caller still may leave it unset.
 func tsParameters(m *contract.Method, registry *typeRegistry, requiredFollows bool) []string {
 	properties := m.Request.Schema.Obj("properties")
 	required := stringSet(m.Request.Schema.Strings("required"))
 	defNames := registry.DefinitionNames(m.Request)
 	locals := tsParameterNames(m)
+	// requiredAfter[i]: some parameter after position i is required.
+	requiredAfter := make([]bool, len(m.Parameters))
+	later := requiredFollows
+	for i := len(m.Parameters) - 1; i >= 0; i-- {
+		requiredAfter[i] = later
+		if required[m.Parameters[i]] {
+			later = true
+		}
+	}
 	var params []string
 	for i, field := range m.Parameters {
 		local := locals[i]
@@ -340,7 +350,7 @@ func tsParameters(m *contract.Method, registry *typeRegistry, requiredFollows bo
 			params = append(params, local+": "+t)
 		case prop.Has("default"):
 			params = append(params, local+": "+t+" = "+jsonDumps(prop.Values["default"]))
-		case requiredFollows:
+		case requiredAfter[i]:
 			params = append(params, local+": "+t+" | undefined")
 		default:
 			params = append(params, local+"?: "+t)
