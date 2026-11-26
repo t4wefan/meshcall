@@ -34,7 +34,7 @@ export class TypeScriptGreetingServiceClient {
    * Add every streamed value to offset and return the total.
    */
   public sum(
-    offset: number,
+    offset: number = 0,
     items: AsyncIterable<NumberItem>,
     options?: CallOptions,
   ): Promise<SumResult> {

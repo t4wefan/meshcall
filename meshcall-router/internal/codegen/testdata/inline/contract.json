@@ -23,6 +23,9 @@
             "schema": {
               "type": "object",
               "properties": {
+                "note": {
+                  "type": "string"
+                },
                 "session": {
                   "type": "object",
                   "properties": {
@@ -199,6 +202,7 @@
             }
           },
           "parameters": [
+            "note",
             "session",
             "sessions",
             "cursor",

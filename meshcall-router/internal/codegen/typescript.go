@@ -217,7 +217,7 @@ func renderTypeScriptClientClass(service *contract.Service, registry *typeRegist
 		lines = append(lines, "")
 		lines = append(lines, tsDocLines(m.Description, "  ")...)
 		lines = append(lines, "  public "+m.Name+"(")
-		for _, p := range tsParameters(m, registry) {
+		for _, p := range tsParameters(m, registry, service.Targeted || m.Stream == "client_stream") {
 			lines = append(lines, "    "+p+",")
 		}
 		for _, p := range extraParams {
@@ -318,11 +318,25 @@ func tsParameterNames(m *contract.Method) []string {
 	return names
 }
 
-func tsParameters(m *contract.Method, registry *typeRegistry) []string {
+// tsParameters renders the request parameters. An optional field followed by
+// a required parameter (a later required field, or a targeted method's
+// options or a client stream's items when requiredFollows) cannot be written
+// "name?: T" (TS1016): it becomes a required position that accepts undefined,
+// so the caller still may leave it unset.
+func tsParameters(m *contract.Method, registry *typeRegistry, requiredFollows bool) []string {
 	properties := m.Request.Schema.Obj("properties")
 	required := stringSet(m.Request.Schema.Strings("required"))
 	defNames := registry.DefinitionNames(m.Request)
 	locals := tsParameterNames(m)
+	// requiredAfter[i]: some parameter after position i is required.
+	requiredAfter := make([]bool, len(m.Parameters))
+	later := requiredFollows
+	for i := len(m.Parameters) - 1; i >= 0; i-- {
+		requiredAfter[i] = later
+		if required[m.Parameters[i]] {
+			later = true
+		}
+	}
 	var params []string
 	for i, field := range m.Parameters {
 		local := locals[i]
@@ -332,10 +346,12 @@ func tsParameters(m *contract.Method, registry *typeRegistry) []string {
 		}
 		t := tsType(prop, defNames)
 		switch {
-		case required[field] || m.Stream == "client_stream":
+		case required[field]:
 			params = append(params, local+": "+t)
 		case prop.Has("default"):
 			params = append(params, local+": "+t+" = "+jsonDumps(prop.Values["default"]))
+		case requiredAfter[i]:
+			params = append(params, local+": "+t+" | undefined")
 		default:
 			params = append(params, local+"?: "+t)
 		}

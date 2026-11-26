@@ -1,0 +1,132 @@
+{
+  "protocol": "meshcall/1",
+  "services": [
+    {
+      "name": "test.v1.Files",
+      "version": "1",
+      "source_module": "optional",
+      "source_qualname": "Files",
+      "balance": {
+        "kind": "round_robin",
+        "key": null
+      },
+      "description": "A targeted service whose methods have optional request fields.",
+      "targeted": true,
+      "methods": [
+        {
+          "name": "list",
+          "stream": "unary",
+          "description": "Optional fields before the required options of a targeted method.",
+          "request": {
+            "module": "optional",
+            "qualname": "ListRequest",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "all": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "type": "integer",
+                  "default": 20
+                },
+                "cwd": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "cwd"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "parameters": [
+            "all",
+            "limit",
+            "cwd"
+          ],
+          "response": {
+            "module": "optional",
+            "qualname": "Total",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "total": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "name": "upload",
+          "stream": "client_stream",
+          "description": "Optional fields before a client stream's items.",
+          "request": {
+            "module": "optional",
+            "qualname": "UploadRequest",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer"
+                },
+                "overwrite": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "parameters": [
+            "path",
+            "size",
+            "overwrite"
+          ],
+          "input_item": {
+            "module": "optional",
+            "qualname": "Chunk",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "data": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "data"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "response": {
+            "module": "optional",
+            "qualname": "Total",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "total": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "total"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

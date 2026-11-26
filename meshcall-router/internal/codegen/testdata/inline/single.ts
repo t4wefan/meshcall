@@ -38,6 +38,7 @@ export interface ListRequestOptions {
 }
 
 export interface ListRequest {
+  note?: string;
   session: ListRequestSession;
   sessions: Array<ListRequestSessionsItem>;
   cursor: ListRequestCursor | null;
@@ -95,6 +96,7 @@ export class InlineClient {
   }
 
   public list(
+    note: string | undefined,
     session: ListRequestSession,
     sessions: Array<ListRequestSessionsItem>,
     cursor: ListRequestCursor | null,
@@ -110,6 +112,7 @@ export class InlineClient {
       "test.v1.Inline",
       "list",
       {
+        note: note,
         session: session,
         sessions: sessions,
         cursor: cursor,
