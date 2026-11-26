@@ -200,6 +200,14 @@ func WithTunnel(credential string) MeshOption {
 	return meshOptFunc(func(c *meshConfig) { c.tunnel = credential })
 }
 
+// WithTunnelSource connects the Mesh with tunnel credentials from source (a
+// new tunnel of the same instance), asked before every connection; a Router
+// refusing the old one asks it again (docs/protocol.md → Credential
+// sources). An end-to-end key pinned with WithE2EKey stays the same.
+func WithTunnelSource(source CredentialSource) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.tunnelSource = source })
+}
+
 // WithE2EKey seals every call on the tunnel end to end with the instance's
 // public key, as the issuer pinned it (OpenTunnelRequest.E2EKey). Take the
 // key from the issuer, never from the Router: the handshake succeeds only

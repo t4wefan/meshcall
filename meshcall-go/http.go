@@ -18,15 +18,18 @@ import (
 
 type httpTransportOptions struct {
 	Authorization string
-	Token         string
-	Username      string
-	Password      string
-	Headers       map[string]string
-	Retry         *RetryPolicy
-	Reconnect     ReconnectPolicy
-	Timeout       time.Duration
-	Logger        *slog.Logger
-	Client        *http.Client
+	// AuthSource is asked for a bearer credential before every request; a 401
+	// asks it again and resends once when the body can be sent again.
+	AuthSource CredentialSource
+	Token      string
+	Username   string
+	Password   string
+	Headers    map[string]string
+	Retry      *RetryPolicy
+	Reconnect  ReconnectPolicy
+	Timeout    time.Duration
+	Logger     *slog.Logger
+	Client     *http.Client
 }
 
 // httpTransport is an internal Layer 1 Caller that speaks the Router's HTTP v1 API.
@@ -136,12 +139,56 @@ func (h *httpTransport) optionsFor(opts []CallOption) CallOptions {
 	return merged
 }
 
-func (h *httpTransport) headers(options CallOptions, contentType string) http.Header {
+// send sends the request newRequest builds. With a source, it asks for the
+// credential first; a 401 (refused before routing: nothing ran) is sent once
+// more with a new credential when replayable. A source's error is returned
+// as it is; any other error is the HTTP client's.
+func (h *httpTransport) send(ctx context.Context, options CallOptions, contentType string, replayable bool,
+	newRequest func() (*http.Request, error)) (*http.Response, error) {
+	for askedAgain := false; ; askedAgain = true {
+		headers, err := h.headers(ctx, options, contentType)
+		if err != nil {
+			return nil, err
+		}
+		request, err := newRequest()
+		if err != nil {
+			return nil, detailed(CodeInvalidArgument, err.Error(), "client", "", false)
+		}
+		request.Header = headers
+		response, err := h.client.Do(request)
+		if err != nil || response.StatusCode != http.StatusUnauthorized || h.options.AuthSource == nil || askedAgain || !replayable {
+			return response, err
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}
+}
+
+// sourceError is err when send failed before sending: a source's error or a
+// request that could not be built.
+func sourceError(err error) error {
+	var kind *CredentialSourceError
+	if errors.As(err, &kind) {
+		return err
+	}
+	if _, ok := AsError(err); ok {
+		return err
+	}
+	return nil
+}
+
+func (h *httpTransport) headers(ctx context.Context, options CallOptions, contentType string) (http.Header, error) {
 	headers := http.Header{}
 	for key, value := range h.options.Headers {
 		headers.Set(key, value)
 	}
-	if h.options.Authorization != "" {
+	if h.options.AuthSource != nil {
+		token, err := askCredentialSource(ctx, h.options.AuthSource, nil)
+		if err != nil {
+			return nil, err
+		}
+		headers.Set("Authorization", "Bearer "+token)
+	} else if h.options.Authorization != "" {
 		headers.Set("Authorization", h.options.Authorization)
 	} else if h.options.Token != "" {
 		headers.Set("Authorization", "Bearer "+h.options.Token)
@@ -167,7 +214,7 @@ func (h *httpTransport) headers(options CallOptions, contentType string) http.He
 	for key, value := range options.Metadata {
 		headers.Set("MeshCall-Meta-"+key, value)
 	}
-	return headers
+	return headers, nil
 }
 
 func (h *httpTransport) callURL(service, method string) string {
@@ -186,13 +233,13 @@ func (h *httpTransport) unaryRaw(ctx context.Context, service, method string, re
 	}
 	for attempt := 1; ; attempt++ {
 		callCtx, cancel := h.withTimeout(ctx, options)
-		httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, h.callURL(service, method), bytes.NewReader(request))
-		if err != nil {
+		response, err := h.send(callCtx, options, "application/json", true, func() (*http.Request, error) {
+			return http.NewRequestWithContext(callCtx, http.MethodPost, h.callURL(service, method), bytes.NewReader(request))
+		})
+		if failed := sourceError(err); failed != nil {
 			cancel()
-			return nil, nil, detailed(CodeInvalidArgument, err.Error(), "client", "", false)
+			return nil, nil, failed
 		}
-		httpRequest.Header = h.headers(options, "application/json")
-		response, err := h.client.Do(httpRequest)
 		if err != nil {
 			cancel()
 			if mayRetry && attempt < h.retry.MaxAttempts && ctx.Err() == nil {
@@ -248,13 +295,13 @@ func (h *httpTransport) serverStreamRaw(ctx context.Context, service, method str
 		return nil, err
 	}
 	callCtx, cancel := h.withTimeout(ctx, options)
-	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, h.callURL(service, method), bytes.NewReader(request))
-	if err != nil {
+	response, err := h.send(callCtx, options, "application/json", true, func() (*http.Request, error) {
+		return http.NewRequestWithContext(callCtx, http.MethodPost, h.callURL(service, method), bytes.NewReader(request))
+	})
+	if failed := sourceError(err); failed != nil {
 		cancel()
-		return nil, detailed(CodeInvalidArgument, err.Error(), "client", "", false)
+		return nil, failed
 	}
-	httpRequest.Header = h.headers(options, "application/json")
-	response, err := h.client.Do(httpRequest)
 	if err != nil {
 		cancel()
 		return nil, detailed(CodeUnavailable, "HTTP request failed: "+err.Error(), "client", "", true)
@@ -293,12 +340,14 @@ func (h *httpTransport) clientStreamRaw(ctx context.Context, service, method str
 		})
 		_ = writer.Close()
 	}()
-	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, h.callURL(service, method), reader)
-	if err != nil {
-		return nil, nil, detailed(CodeInvalidArgument, err.Error(), "client", "", false)
+	// The streamed body cannot be sent twice: a 401 is reported as it is.
+	response, err := h.send(callCtx, options, "application/x-ndjson", false, func() (*http.Request, error) {
+		return http.NewRequestWithContext(callCtx, http.MethodPost, h.callURL(service, method), reader)
+	})
+	if failed := sourceError(err); failed != nil {
+		_ = reader.CloseWithError(failed)
+		return nil, nil, failed
 	}
-	httpRequest.Header = h.headers(options, "application/x-ndjson")
-	response, err := h.client.Do(httpRequest)
 	if err != nil {
 		return nil, nil, detailed(CodeUnavailable, "HTTP request failed: "+err.Error(), "client", "", true)
 	}

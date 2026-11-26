@@ -10,6 +10,23 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Added
+
+- **Credential sources** (#83, item 3). `token` and `tunnel` accept a
+  function instead of a fixed value (`Mesh(router, token=fetch)` in Python,
+  `new Mesh(router, { tunnel: () => openTunnel() })` in TypeScript and
+  `meshcall/web`, `WithTokenSource` / `WithTunnelSource` in Go). The runtime
+  asks it before every connection, registration and HTTP request. When the
+  Router refuses the old credential (expired at reconnect, revoked), a client
+  asks again and retries once, without keeping the refusal for later calls;
+  a served instance keeps reconnecting, asking each time, instead of giving
+  up on that Router; an HTTP request answered 401 is resent once (not a
+  client stream). End-to-end clients handshake anew with each credential and
+  keep a confirmed pairing. A failing source fails the attempt as
+  `unavailable` / `credential_source`; a credential of the wrong kind raises
+  `CredentialSourceError`. Swift and the JVM do not have it yet. See
+  docs/protocol.md → Credential sources.
+
 ## [0.4.0] - 2026-11-21
 
 ### Added

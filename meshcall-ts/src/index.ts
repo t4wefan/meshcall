@@ -64,6 +64,7 @@ export {
 } from "./liveness.js";
 export { ConsoleRpcLogger, type RpcLogger, type LogContext, type LogLevel } from "./logging.js";
 export type { WebSocketEndpoint } from "./endpoint.js";
+export { CredentialSourceError, type CredentialOption, type CredentialSource } from "./credentials.js";
 export {
   type BalanceKind,
   type BalancePolicy,

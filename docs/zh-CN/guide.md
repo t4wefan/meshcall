@@ -982,6 +982,32 @@ meshcall-router new-api-key ci-bot   # 只打印一次 Key，以及应加入 "ap
 
 用 `instance_ids` 把每个实例的注册凭据绑定到它的实例 id（账号、API Key，以及 Token 上的 `RouterScope(..., instance_ids=[...])`）：以其他 id 注册会被拒绝，这样就没有凭据能在实例离线时冒充它。
 
+### 凭据函数：替换会过期的凭据
+
+如果凭据由别处签发并会被替换（签发短期 Token 的服务、每次开一条新隧道的控制面），可以传一个函数代替固定值。运行时在每次连接、注册和 HTTP 请求前都会调用它，缓存由你决定。Router 拒绝旧凭据时（重连时已过期、被吊销），运行时会再问一次这个函数，而不是放弃：
+
+```python
+mesh = Mesh(router, token=issuer.current_token)          # 同步或异步函数
+box = Mesh(router, tunnel=lambda: api.open_tunnel("box-a"), e2e_key=pinned)
+```
+
+```typescript
+const mesh = new Mesh(router, { token: () => issuer.currentToken() });
+const box = new Mesh(router, { tunnel: () => api.openTunnel("box-a"), e2eKey: pinned });
+```
+
+```go
+mesh := meshcall.NewMesh(router, meshcall.WithTokenSource(issuer.CurrentToken))
+box := meshcall.NewMesh(router, meshcall.WithTunnelSource(api.OpenTunnel), meshcall.WithE2EKey(pinned))
+```
+
+- 客户端会再问一次并重连。新凭据也被拒绝时，这次调用以 `unauthenticated` 失败；下一次调用会再问。Router 关闭连接时还在进行的调用照样失败（它们可能已经执行）。
+- 提供服务的实例按退避策略持续重连，每次都重新询问，而不是停止。
+- 被回 401 的 HTTP 请求会换新凭据再发一次（客户端流的请求体无法重发）。
+- 函数出错或返回空值时，这次尝试以 `unavailable`、`reason: "credential_source"`（可重试）失败。Token 函数返回隧道凭据，或在固定了端到端公钥时返回普通凭据，属于配置错误（`CredentialSourceError`）。
+
+固定的端到端公钥和客户端身份不随凭据变化；每条新隧道都会重新握手，已确认的配对保持有效。详见[协议 → 凭据函数](protocol.md#凭据函数credential-sources)。
+
 ### 3. 隧道：一个实例只给一个调用方
 
 **收益：** 平台可以给某个人的浏览器或手机发放一个只通向*一个*实例（他的开发容器、他的 Agent 会话）的凭据，Router 对这个连接的表现就像是该实例自己的 Router。控制面不在数据路径上；实例从 Router 得知调用者是谁，而不是从调用方自带的元数据。

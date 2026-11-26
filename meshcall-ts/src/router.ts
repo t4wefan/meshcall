@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { kindedSource, type CredentialOption, type CredentialSource } from "./credentials.js";
 import { createHash } from "node:crypto";
 import {
   accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
@@ -440,15 +441,22 @@ export const WebSocketRouter = LocalRouter;
 export type WebSocketRouter = LocalRouter;
 
 export interface MeshOptions {
-  /** Bearer token (`mk_…` or `mt_…`); mutually exclusive with `credentials` and `tunnel`. */
-  readonly token?: string;
+  /**
+   * Bearer token (`mk_…` or `mt_…`); mutually exclusive with `credentials` and
+   * `tunnel`. Or a function returning one, asked before every connection,
+   * registration and HTTP request; a Router refusing the old one asks it again
+   * (docs/protocol.md → Credential sources).
+   */
+  readonly token?: CredentialOption;
   /** Router credentials (Bearer or Basic); mutually exclusive with `token` and `tunnel`. */
   readonly credentials?: RouterCredentials;
   /**
    * A tunnel credential (`mtun_…`, from `mesh.tunnels.open`): this Mesh then
-   * reaches only the tunnel's instance and cannot mount services.
+   * reaches only the tunnel's instance and cannot mount services. Or a
+   * function returning one (a new tunnel of the same instance), asked before
+   * every connection; a Router refusing the old one asks it again.
    */
-  readonly tunnel?: string;
+  readonly tunnel?: CredentialOption;
   /**
    * The instance public key the issuer pinned for this tunnel (`e2eKey` of
    * `tunnels.open`): every call is then sealed end to end, and the connection
@@ -607,6 +615,7 @@ export class Mesh implements MeshCallRpc {
   /** The Router's `TunnelService`: open, revoke and list tunnels. */
   public readonly tunnels: TunnelsClient;
   private readonly credentials: RouterCredentials | undefined;
+  private readonly authSource: CredentialSource | undefined;
   private readonly tunnelPolicies = new Map<string, TunnelPolicy>();
   private root: Mesh;
   private ownsRoot = true;
@@ -626,16 +635,17 @@ export class Mesh implements MeshCallRpc {
     if ([options.token, options.credentials, options.tunnel].filter((v) => v !== undefined).length > 1) {
       throw new TypeError("Specify one of token, credentials or tunnel on Mesh");
     }
-    const bearer = options.token ?? options.credentials?.token;
+    const { token, tunnel } = options;
+    const bearer = typeof token === "string" ? token : options.credentials?.token;
     if (bearer?.startsWith(TUNNEL_CREDENTIAL_PREFIX) === true) {
       throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
     }
-    if (options.e2eKey !== undefined || options.tunnel !== undefined) {
-      if (options.e2eKey !== undefined && options.tunnel === undefined) {
+    if (options.e2eKey !== undefined || tunnel !== undefined) {
+      if (options.e2eKey !== undefined && tunnel === undefined) {
         throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
       }
       // Refused here, before any payload goes towards the Router unsealed.
-      checkE2EAgreement(options.tunnel, options.e2eKey);
+      if (typeof tunnel === "string") checkE2EAgreement(tunnel, options.e2eKey);
     }
     if (options.e2eKey !== undefined) {
       if (router.isHttp) {
@@ -651,9 +661,11 @@ export class Mesh implements MeshCallRpc {
     }
     this.router = router;
     this.options = options;
-    this.credentials = options.credentials ?? (options.token !== undefined
-      ? RouterCredentials.bearer(options.token)
-      : options.tunnel !== undefined ? RouterCredentials.bearer(checkTunnelCredential(options.tunnel)) : undefined);
+    this.credentials = options.credentials ?? (typeof token === "string"
+      ? RouterCredentials.bearer(token)
+      : typeof tunnel === "string" ? RouterCredentials.bearer(checkTunnelCredential(tunnel)) : undefined);
+    this.authSource = typeof tunnel === "function" ? kindedSource(tunnel, "tunnel")
+      : typeof token === "function" ? kindedSource(token, "token") : undefined;
     this.root = this;
     this.registry = new RegistryClient(this);
     this.auth = new AuthClient(this);
@@ -684,6 +696,7 @@ export class Mesh implements MeshCallRpc {
       router: this.root.router,
       options: this.root.options,
       credentials: this.root.credentials,
+      authSource: this.root.authSource,
       root: this.root,
       ownsRoot: false,
       ownsLocalRouter: false,
@@ -703,6 +716,7 @@ export class Mesh implements MeshCallRpc {
       if (this.router.isHttp) {
         this.transport = new HttpTransport(this.router.url, {
           ...(this.credentials === undefined ? {} : { authorization: authorizationHeader(this.credentials) }),
+          ...(this.authSource === undefined ? {} : { authSource: this.authSource }),
           ...(this.options.headers === undefined ? {} : { headers: this.options.headers }),
           ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
           ...(this.options.retry === undefined ? {} : { retry: this.options.retry }),
@@ -713,6 +727,7 @@ export class Mesh implements MeshCallRpc {
       } else {
         const clientOptions: MeshCallClientOptions = {
           ...(this.credentials === undefined ? {} : { auth: this.credentials }),
+          ...(this.authSource === undefined ? {} : { authSource: this.authSource }),
           ...(this.options.maxFrameSize === undefined ? {} : { maxFrameSize: this.options.maxFrameSize }),
           ...(this.options.handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs: this.options.handshakeTimeoutMs }),
           ...(this.options.deadlineGraceMs === undefined ? {} : { deadlineGraceMs: this.options.deadlineGraceMs }),
@@ -835,6 +850,7 @@ export class Mesh implements MeshCallRpc {
       router: {
         endpoint: endpoints,
         ...(this.credentials === undefined ? {} : { auth: this.credentials }),
+        ...(this.authSource === undefined ? {} : { authSource: this.authSource }),
         ...(merged.instanceId === undefined ? {} : { instanceId: merged.instanceId }),
       },
       ...(merged.instanceId === undefined ? {} : { instanceId: merged.instanceId }),

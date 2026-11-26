@@ -14,6 +14,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from meshcall.context import DEFAULT_RETRY, RetryPolicy
+from meshcall.credentials import CredentialSource, ask_credential_source
 from meshcall.errors import MeshCallError, ProtocolError
 from meshcall.router_auth import RouterCredentials
 from meshcall.streams import RpcDuplexClient, RpcServerStream
@@ -111,9 +112,13 @@ class _HttpTransport:
         retry: RetryPolicy = DEFAULT_RETRY,
         timeout: float | None = None,
         client: httpx.AsyncClient | None = None,
+        auth_source: CredentialSource | None = None,
     ) -> None:
         if credentials is not None and token is not None:
             raise ValueError("Pass credentials or token, not both")
+        #: Asked for a bearer credential before every request instead of
+        #: ``credentials`` (docs/protocol.md → Credential sources).
+        self.auth_source = auth_source
         self.base = url.rstrip("/")
         if not self.base.startswith(("http://", "https://")):
             raise ValueError("HTTP transport needs an http(s):// Router URL")
@@ -176,7 +181,10 @@ class _HttpTransport:
 
     # -- HTTP plumbing -----------------------------------------------------
 
-    def _auth_header(self) -> dict[str, str]:
+    async def _auth_header(self) -> dict[str, str]:
+        if self.auth_source is not None:
+            token = await ask_credential_source(self.auth_source)
+            return {"Authorization": f"Bearer {token}"}
         credentials = self.credentials
         if credentials is None:
             return {}
@@ -189,13 +197,13 @@ class _HttpTransport:
             }
         return {}
 
-    def _headers(
+    async def _headers(
         self,
         options: _Options,
         *,
         content_type: str | None = None,
     ) -> dict[str, str]:
-        headers = {**self.headers, **self._auth_header()}
+        headers = {**self.headers, **(await self._auth_header())}
         if content_type is not None:
             headers["Content-Type"] = content_type
         if options.timeout is not None:
@@ -263,12 +271,23 @@ class _HttpTransport:
         while True:
             attempt += 1
             try:
-                response = await self._client.post(
-                    self._url(service, method),
-                    json=payload,
-                    headers=self._headers(options, content_type="application/json"),
-                    timeout=self._request_timeout(options),
-                )
+                for asked_again in (False, True):
+                    response = await self._client.post(
+                        self._url(service, method),
+                        json=payload,
+                        headers=await self._headers(
+                            options, content_type="application/json"
+                        ),
+                        timeout=self._request_timeout(options),
+                    )
+                    # Refused before routing, nothing ran: a source may have a
+                    # new credential, so send once more.
+                    if (
+                        response.status_code != 401
+                        or self.auth_source is None
+                        or asked_again
+                    ):
+                        break
                 body = self._env(response.content)
                 if response.status_code >= 400:
                     raise _error_from(response.status_code, body)
@@ -366,7 +385,9 @@ class _HttpTransport:
             response = await self._client.post(
                 self._url(service, method),
                 content=body(),
-                headers=self._headers(options, content_type="application/x-ndjson"),
+                headers=await self._headers(
+                    options, content_type="application/x-ndjson"
+                ),
                 timeout=self._request_timeout(options),
             )
         except httpx.HTTPError as exc:
@@ -430,18 +451,26 @@ class _HTTPServerStream(RpcServerStream[Any]):
     async def _open(self) -> None:
         if self._response is not None:
             return
-        self._context = self._router._client.stream(
-            "POST",
-            self._router._url(self._service, self._method),
-            content=json.dumps(
-                self._request.model_dump(mode="json", by_alias=True, exclude_unset=True)
-            ),
-            headers=self._router._headers(
-                self._options, content_type="application/json"
-            ),
-            timeout=self._router._request_timeout(self._options),
-        )
-        response = await self._context.__aenter__()
+        router = self._router
+        for asked_again in (False, True):
+            self._context = router._client.stream(
+                "POST",
+                router._url(self._service, self._method),
+                content=json.dumps(
+                    self._request.model_dump(
+                        mode="json", by_alias=True, exclude_unset=True
+                    )
+                ),
+                headers=await router._headers(
+                    self._options, content_type="application/json"
+                ),
+                timeout=router._request_timeout(self._options),
+            )
+            response = await self._context.__aenter__()
+            if response.status_code != 401 or router.auth_source is None or asked_again:
+                break
+            # Refused before routing: ask the source again and resend once.
+            await self._context.__aexit__(None, None, None)
         self._response = response
         if response.status_code >= 400:
             body = await response.aread()

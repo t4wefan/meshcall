@@ -21,8 +21,12 @@ import (
 type ClientOptions struct {
 	// Authorization is sent with the WebSocket upgrade ("Basic …", "Bearer mk_…").
 	Authorization string
-	PeerID        string
-	MaxFrameSize  int
+	// AuthSource, instead of Authorization, is asked for a bearer credential
+	// before every connection; a Router refusing it asks it once more
+	// (docs/protocol.md → Credential sources).
+	AuthSource   CredentialSource
+	PeerID       string
+	MaxFrameSize int
 	// Keepalive: ping when idle this long (negative disables); close when a
 	// pong takes longer than PingTimeout.
 	PingInterval time.Duration
@@ -216,13 +220,14 @@ func NewClient(opts ClientOptions, endpoints ...string) (*Client, error) {
 		c.opts.PingTimeout = DefaultPingTimeout
 	}
 	// A credential and the key must agree before anything is sent: an
-	// end-to-end tunnel never sees an unsealed payload by mistake.
-	credential := strings.TrimPrefix(c.opts.Authorization, "Bearer ")
+	// end-to-end tunnel never sees an unsealed payload by mistake. A source's
+	// credentials are checked the same way before each connection.
+	if c.opts.AuthSource == nil {
+		if err := checkE2EAgreement(strings.TrimPrefix(c.opts.Authorization, "Bearer "), c.opts.E2EKey); err != nil {
+			return nil, err
+		}
+	}
 	switch {
-	case isE2ECredential(credential) && c.opts.E2EKey == "":
-		return nil, errors.New("meshcall: this is an end-to-end tunnel credential: pass the instance's e2e key the issuer gave you (WithE2EKey)")
-	case c.opts.E2EKey != "" && !isE2ECredential(credential):
-		return nil, errors.New("meshcall: an e2e key needs the credential of an end-to-end tunnel (mtun_e2e.…)")
 	case c.opts.E2EIdentity != nil && c.opts.E2EKey == "":
 		return nil, errors.New("meshcall: an E2EIdentity authenticates this client to the instance whose key you pinned: pass E2EKey too")
 	}
@@ -358,10 +363,20 @@ func (c *Client) connection(ctx context.Context) (*conn, error) {
 
 func (c *Client) connectWithBackoff(ctx context.Context, retry bool) (*conn, error) {
 	next := c.opts.Reconnect.delays()
+	askedAgain := false
 	for {
 		conn, err := c.connectAny(ctx)
 		if err == nil {
 			return conn, nil
+		}
+		// A source may have a new credential: ask it once more, at once.
+		if c.opts.AuthSource != nil && !askedAgain && isRouterRefusal(err) {
+			askedAgain = true
+			continue
+		}
+		var kind *CredentialSourceError
+		if errors.As(err, &kind) {
+			return nil, err
 		}
 		// Refused credentials fail the same way again: report them at once.
 		if e, isMesh := AsError(err); isMesh && (e.Code == CodeUnauthenticated || e.Code == CodePermissionDenied) {
@@ -405,8 +420,18 @@ func (c *Client) handshake(ctx context.Context, e endpoint) (*conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.opts.HandshakeTimeout)
 	defer cancel()
 	header := http.Header{}
-	if c.opts.Authorization != "" {
-		header.Set("Authorization", c.opts.Authorization)
+	authorization := c.opts.Authorization
+	if c.opts.AuthSource != nil {
+		token, err := askCredentialSource(ctx, c.opts.AuthSource, func(credential string) error {
+			return checkE2EAgreement(credential, c.opts.E2EKey)
+		})
+		if err != nil {
+			return nil, err
+		}
+		authorization = "Bearer " + token
+	}
+	if authorization != "" {
+		header.Set("Authorization", authorization)
 	}
 	conn, err := e.connect(ctx, header, c.opts.MaxFrameSize)
 	if err != nil {
@@ -425,7 +450,7 @@ func (c *Client) handshake(ctx context.Context, e endpoint) (*conn, error) {
 		return nil, &Error{Code: CodeProtocolError, Message: "Expected a compatible hello.ack"}
 	}
 	if c.opts.E2EKey != "" {
-		if conn.e2e, err = c.e2eHandshake(conn); err != nil {
+		if conn.e2e, err = c.e2eHandshake(conn, strings.TrimPrefix(authorization, "Bearer ")); err != nil {
 			conn.close()
 			return nil, err
 		}
@@ -437,7 +462,7 @@ func (c *Client) handshake(ctx context.Context, e endpoint) (*conn, error) {
 // new connection, before any call: TunnelHost/handshake, routed by the
 // Router to the tunnel's instance, then a pairing's confirmation. It never
 // falls back to plain calls or to a weaker handshake.
-func (c *Client) e2eHandshake(conn *conn) (*e2eSession, error) {
+func (c *Client) e2eHandshake(conn *conn, credential string) (*e2eSession, error) {
 	failed := func(why string) *Error {
 		return detailed(CodeUnauthenticated, "End-to-end handshake failed: "+why, "client", "e2e_handshake_failed", false)
 	}
@@ -447,7 +472,6 @@ func (c *Client) e2eHandshake(conn *conn) (*e2eSession, error) {
 	}
 	// The prologue binds the session to this credential's tunnel (and, for
 	// IK and IKpsk2, to the instance whose key was pinned).
-	credential := strings.TrimPrefix(c.opts.Authorization, "Bearer ")
 	hs, request, pairing, err := startE2EHandshake(credential, pinned, c.opts.E2EIdentity, c.opts.e2ePaired.Load(), nil)
 	if err != nil {
 		return nil, failed(err.Error())
@@ -529,7 +553,8 @@ func (c *Client) readLoop(conn *conn) {
 		}
 	}
 	c.mu.Lock()
-	if lost := conn.lost(); lost.Code == CodeUnauthenticated {
+	// With a source, the next connection asks it for a new credential instead.
+	if lost := conn.lost(); lost.Code == CodeUnauthenticated && c.opts.AuthSource == nil {
 		c.refused = lost
 	}
 	if c.conn == conn {

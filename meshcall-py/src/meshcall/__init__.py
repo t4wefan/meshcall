@@ -22,6 +22,7 @@ from meshcall.contract import (
     stream,
 )
 from meshcall.contract_io import load_contract, render_contract, write_contract
+from meshcall.credentials import CredentialSource, CredentialSourceError
 from meshcall.di import dependency, meta
 from meshcall.diagnostics import ContractWarning, MeshCallWarning, lint_contract
 from meshcall.e2e import (
@@ -111,6 +112,8 @@ __all__ = [
     "ClientInterceptor",
     "ContractError",
     "ContractWarning",
+    "CredentialSource",
+    "CredentialSourceError",
     "DeadlineExceededError",
     "DuplexChannel",
     "E2EIdentity",

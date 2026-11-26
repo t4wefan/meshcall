@@ -268,6 +268,19 @@ Router 内置的 `meshcall.router.v1.TunnelService`（一元方法）：
 
 **续期。** `renew_token` 把 `expires_at` 设为当前时间加 `ttl_seconds`（受同一上限约束）。密钥、scope 与 `instance_ids` 都不变，因此无需重新分发，也无需重连。无法续期的令牌——已过期、已吊销、未知或属于其他签发方：应答相同，签发方因此无从得知其他签发方的令牌——返回 `invalid_argument`，`details.reason: "token_expired"`；签发方应改为签发新令牌。
 
+## 凭据函数（Credential sources）
+
+这是运行时行为，不是线上协议的变化：Router 看到的是带普通凭据的普通连接。
+
+节点可以用*凭据函数*代替固定的 Token 或隧道凭据：运行时在需要发送凭据时调用它（Python 给 `token=` / `tunnel=` 传函数，TypeScript 给 `token` / `tunnel` 传函数，Go 用 `WithTokenSource` / `WithTunnelSource`）。运行时在打开每条连接前都会调用它，首次连接和重连一样，每个 HTTP 请求前也会调用；缓存由函数自己决定。函数出错或返回空值时，这次连接尝试像连不上 Router 一样失败（`unavailable`，可重试，`details.reason: "credential_source"`）。返回的凭据种类不对（Token 函数返回隧道凭据，或固定了端到端公钥却返回普通凭据）时，在发送任何内容前以配置错误（`CredentialSourceError`）失败，和直接这样配置时一样。
+
+Router 拒绝凭据时（HTTP 401、关闭码 4401），配置了凭据函数的节点不会记住这次拒绝：
+
+- **客户端**再问一次函数并重连一次。新凭据也被拒绝时，这次尝试以该 `unauthenticated` 错误失败；下一次调用会再问函数。Router 以 4401 关闭连接时还在进行的调用照样以该错误失败（它们可能已经执行）；之后的调用会用新凭据连接。被回 401 的 HTTP 请求（在路由前被拒，什么都没执行）会换新凭据再发一次，客户端流除外，因为它的请求体无法发送两次。
+- **服务实例**按平常的退避策略持续重连，每次尝试前都问函数，而不是放弃这个 Router。只要配置了凭据函数，它就不会报告被该 Router 拒绝。
+
+端到端客户端把每个会话绑定到所在连接的凭据（prologue），所以新凭据意味着重新握手；实例已确认的配对保持有效。固定的公钥和客户端身份不随凭据变化。
+
 ## 超时（Timeouts）
 
 - **`timeout_ms`**：整个调用的总时间预算（相对时间，各节点使用本地单调时钟从处理 `call.open` 起独立计时，无需机器间时钟同步）。缺省表示不限。
