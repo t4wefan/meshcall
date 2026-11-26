@@ -10,6 +10,27 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **Generated TypeScript clients take any `MeshCallRpc`.** A service with a
+  duplex method used to require `MeshCallClient`; every generated client now
+  accepts `MeshCallClient`, `meshcall/web`'s `HttpTransport`, a `Mesh` or an
+  application's own wrapper, and a duplex method throws a `TypeError` when the
+  client it was given has no duplex calls.
+
+### Fixed
+
+- **Nested objects in TypeScript contracts get named types.** zod inlines
+  every nested object, so generated TypeScript typed them as
+  `Record<string, unknown>`. The generator now emits an interface for each,
+  named by its path (`ListResponse` → `ListResponseSessionsItem`), while the
+  client still validates received payloads against the original schema.
+- **Request parameters that clash with generated names.** A TypeScript client
+  method whose request has a field named `options`, `items` or a word strict
+  mode reserves (`default`, `delete`, `this`, …) no longer produces a
+  duplicate or invalid parameter; the parameter gets a `Value` suffix and the
+  request still sends the field under its own name.
+
 ## [0.4.0] - 2026-11-21
 
 ### Added
