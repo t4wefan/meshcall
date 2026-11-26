@@ -23,6 +23,7 @@ import {
 } from "./policy.js";
 import type { Metadata } from "./protocol.js";
 import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
+import { askCredentialSource, kindedSource, type CredentialOption, type CredentialSource } from "./credentials.js";
 // Types only: importing router-auth's values would pull contract.ts (and Node's
 // crypto/fs/path) into browser bundles.
 import type {
@@ -43,6 +44,7 @@ export {
   e2ePublicKey, generateE2EKey, generateE2EPsk, type E2EIdentity, type E2EKeyPair, type E2EPairing,
 } from "./e2e.js";
 export type { MeshCallRpc, RpcDuplex, RpcStream } from "./rpc.js";
+export { CredentialSourceError, type CredentialOption, type CredentialSource } from "./credentials.js";
 export {
   TunnelsClient, type OpenedTunnel, type OpenTunnelRequest, type TunnelInfo, type TunnelScope,
 } from "./tunnel.js";
@@ -188,6 +190,12 @@ export interface HttpTransportOptions {
   readonly authorization?: string;
   /** An API key (`mk_…`) or temporary token (`mt_…`), sent as a Bearer token. */
   readonly token?: string;
+  /**
+   * Asked for a bearer credential before every request instead of `token`;
+   * a 401 from the Router asks it again and resends once
+   * (docs/protocol.md → Credential sources).
+   */
+  readonly authSource?: CredentialSource;
   /** Extra headers on every request. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Defaults to the global `fetch`. */
@@ -202,13 +210,19 @@ export interface HttpTransportOptions {
 }
 
 export interface MeshWebOptions {
-  /** An API key (`mk_…`) or temporary token (`mt_…`), sent as a Bearer token. */
-  readonly token?: string;
+  /**
+   * An API key (`mk_…`) or temporary token (`mt_…`), sent as a Bearer token;
+   * or a function returning one, asked before every connection or request
+   * (docs/protocol.md → Credential sources).
+   */
+  readonly token?: CredentialOption;
   /**
    * A tunnel credential (`mtun_…`): the Mesh reaches only the tunnel's
-   * instance. Over `ws(s)://` it is sent in `hello`, never in the URL.
+   * instance. Over `ws(s)://` it is sent in `hello`, never in the URL. Or a
+   * function returning one (a new tunnel of the same instance), asked before
+   * every connection; the Router refusing the old one asks it again.
    */
-  readonly tunnel?: string;
+  readonly tunnel?: CredentialOption;
   /**
    * The instance public key the issuer pinned for this tunnel: every call is
    * then sealed end to end, and the connection fails unless the instance
@@ -406,7 +420,10 @@ export class HttpTransport implements MeshCallRpc {
     service: string, method: string, body: string, contentType: string, options: CallOptions, control: CallControl,
   ): Promise<Response> {
     const headers: Record<string, string> = { ...(this.options.headers ?? {}), "Content-Type": contentType };
-    if (this.options.authorization !== undefined) {
+    const source = this.options.authSource;
+    if (source !== undefined) {
+      headers.Authorization = "Bearer " + await askCredentialSource(source);
+    } else if (this.options.authorization !== undefined) {
       headers.Authorization = this.options.authorization;
     } else if (this.options.token !== undefined) {
       headers.Authorization = "Bearer " + this.options.token;
@@ -416,10 +433,15 @@ export class HttpTransport implements MeshCallRpc {
     if (options.idempotencyKey !== undefined) headers["Idempotency-Key"] = options.idempotencyKey;
     if (options.instance !== undefined) headers["MeshCall-Instance"] = options.instance;
     for (const [key, value] of Object.entries(validateMetadata(options.metadata) ?? {})) headers["MeshCall-Meta-" + key] = value;
-    const response = await this.fetcher(
-      this.base + "/v1/call/" + encodeURIComponent(service) + "/" + encodeURIComponent(method),
-      { method: "POST", headers, body, signal: control.controller.signal },
-    );
+    const url = this.base + "/v1/call/" + encodeURIComponent(service) + "/" + encodeURIComponent(method);
+    let response = await this.fetcher(url, { method: "POST", headers, body, signal: control.controller.signal });
+    if (response.status === 401 && source !== undefined) {
+      // The Router refused the credential before routing: nothing ran, so a
+      // new one from the source may be sent once more.
+      await response.body?.cancel().catch(() => undefined);
+      headers.Authorization = "Bearer " + await askCredentialSource(source);
+      response = await this.fetcher(url, { method: "POST", headers, body, signal: control.controller.signal });
+    }
     if (response.ok) return response;
     let parsed: unknown = null;
     try {
@@ -632,16 +654,20 @@ export class Mesh implements MeshCallRpc {
     if (options.token !== undefined && options.tunnel !== undefined) {
       throw new TypeError("Specify either token or tunnel on Mesh, not both");
     }
-    if (options.token?.startsWith(TUNNEL_CREDENTIAL_PREFIX) === true) {
+    const { token, tunnel } = options;
+    if (typeof token === "string" && token.startsWith(TUNNEL_CREDENTIAL_PREFIX)) {
       throw new TypeError("This is a tunnel credential: pass it as new Mesh(router, { tunnel })");
     }
-    const bearer = options.tunnel !== undefined ? checkTunnelCredential(options.tunnel) : options.token;
-    if (options.e2eKey !== undefined || options.tunnel !== undefined) {
-      if (options.e2eKey !== undefined && options.tunnel === undefined) {
+    const authSource = typeof tunnel === "function" ? kindedSource(tunnel, "tunnel")
+      : typeof token === "function" ? kindedSource(token, "token") : undefined;
+    const bearer = typeof tunnel === "string" ? checkTunnelCredential(tunnel) : typeof token === "string" ? token : undefined;
+    if (options.e2eKey !== undefined || tunnel !== undefined) {
+      if (options.e2eKey !== undefined && tunnel === undefined) {
         throw new TypeError("e2eKey seals the calls of a tunnel: pass tunnel too");
       }
-      // Refused here, before any payload goes towards the Router unsealed.
-      checkE2EAgreement(options.tunnel, options.e2eKey);
+      // Refused here, before any payload goes towards the Router unsealed; a
+      // source's credentials are checked the same way before each connection.
+      if (typeof tunnel === "string") checkE2EAgreement(tunnel, options.e2eKey);
     }
     if (options.e2eKey !== undefined) {
       if (router.isHttp) {
@@ -657,7 +683,10 @@ export class Mesh implements MeshCallRpc {
     }
     this.router = router;
     if (router.isHttp) {
-      this.transport = new HttpTransport(router.url, { ...options, ...(bearer === undefined ? {} : { token: bearer }) });
+      const { token: _token, tunnel: _tunnel, ...rest } = options;
+      this.transport = new HttpTransport(router.url, {
+        ...rest, ...(bearer === undefined ? {} : { token: bearer }), ...(authSource === undefined ? {} : { authSource }),
+      });
     } else {
       const urls = router.urls.filter((url) => /^wss?:\/\//u.test(url));
       if (urls.length !== router.urls.length) {
@@ -665,6 +694,7 @@ export class Mesh implements MeshCallRpc {
       }
       this.transport = new WebSocketTransport(urls, {
         ...(bearer === undefined ? {} : { authorization: "Bearer " + bearer }),
+        ...(authSource === undefined ? {} : { authSource }),
         ...(options.retry === undefined ? {} : { retry: options.retry }),
         ...(options.deadlineGraceMs === undefined ? {} : { deadlineGraceMs: options.deadlineGraceMs }),
         ...(options.pingIntervalMs === undefined ? {} : { pingIntervalMs: options.pingIntervalMs }),

@@ -796,6 +796,8 @@ func revokeToken(ctx context.Context, c Caller, tokenID string, opts ...CallOpti
 type meshConfig struct {
 	token              string
 	tunnel             string
+	tokenSource        CredentialSource
+	tunnelSource       CredentialSource
 	e2eKey             string
 	e2eIdentity        *E2EIdentity
 	auth               string
@@ -826,6 +828,14 @@ func (f meshOptFunc) applyMesh(c *meshConfig) { f(c) }
 // WithToken authenticates the Mesh with a Bearer token ("mk_…" API key or issued token).
 func WithToken(token string) MeshOption {
 	return meshOptFunc(func(c *meshConfig) { c.token = token })
+}
+
+// WithTokenSource authenticates the Mesh with Bearer tokens from source,
+// asked before every connection, registration and HTTP request; a Router
+// refusing the old token asks it again (docs/protocol.md → Credential
+// sources). Caching is up to the source.
+func WithTokenSource(source CredentialSource) MeshOption {
+	return meshOptFunc(func(c *meshConfig) { c.tokenSource = source })
 }
 
 // WithAuth sets the Authorization header value (e.g. BearerToken(...) or BasicAuth(...)).
@@ -908,6 +918,7 @@ type Mesh struct {
 	router     RouterEndpoint
 	cfg        meshConfig
 	authHeader string
+	authSource CredentialSource
 	wsClient   *Client
 	httpCaller *httpTransport
 	registry   *RegistryClient
@@ -946,8 +957,21 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 			opt.applyMesh(&cfg)
 		}
 	}
-	if (cfg.token != "") && (cfg.auth != "") || (cfg.tunnel != "" && (cfg.token != "" || cfg.auth != "")) {
-		panic("meshcall: pass one of WithToken, WithAuth or WithTunnel to NewMesh")
+	given := 0
+	for _, set := range []bool{cfg.token != "", cfg.auth != "", cfg.tunnel != "", cfg.tokenSource != nil, cfg.tunnelSource != nil} {
+		if set {
+			given++
+		}
+	}
+	if given > 1 {
+		panic("meshcall: pass one of WithToken, WithAuth, WithTunnel, WithTokenSource or WithTunnelSource to NewMesh")
+	}
+	var authSource CredentialSource
+	switch {
+	case cfg.tunnelSource != nil:
+		authSource = kindedSource(cfg.tunnelSource, true)
+	case cfg.tokenSource != nil:
+		authSource = kindedSource(cfg.tokenSource, false)
 	}
 	if strings.HasPrefix(cfg.token, tunnelPrefix) || strings.HasPrefix(cfg.auth, "Bearer "+tunnelPrefix) {
 		panic("meshcall: this is a tunnel credential: pass it as WithTunnel(...)")
@@ -967,7 +991,7 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 		if cfg.tunnel != "" && !isE2ECredential(cfg.tunnel) {
 			panic("meshcall: WithE2EKey needs the credential of an end-to-end tunnel (mtun_e2e.…)")
 		}
-		if cfg.tunnel == "" {
+		if cfg.tunnel == "" && cfg.tunnelSource == nil {
 			panic("meshcall: WithE2EKey seals the calls of a tunnel: pass WithTunnel too")
 		}
 		if router.IsHTTP() {
@@ -984,6 +1008,7 @@ func NewMesh(router RouterEndpoint, opts ...MeshOption) *Mesh {
 		router:     router,
 		cfg:        cfg,
 		authHeader: authHeader,
+		authSource: authSource,
 		mountCfg: serveConfig{
 			drainTimeout: 10 * time.Second,
 		},
@@ -1012,6 +1037,7 @@ func (m *Mesh) ensureCaller() (Caller, error) {
 			}
 			m.httpCaller = newHTTPTransport(m.router.URL(), httpTransportOptions{
 				Authorization: m.authHeader,
+				AuthSource:    m.authSource,
 				Headers:       m.cfg.headers,
 				Retry:         m.cfg.retry,
 				Reconnect:     reconnect,
@@ -1025,6 +1051,7 @@ func (m *Mesh) ensureCaller() (Caller, error) {
 	if m.wsClient == nil {
 		clientOpts := ClientOptions{
 			Authorization:    m.authHeader,
+			AuthSource:       m.authSource,
 			PeerID:           m.cfg.peerID,
 			MaxFrameSize:     m.cfg.maxFrameSize,
 			PingInterval:     m.cfg.pingInterval,
@@ -1120,6 +1147,7 @@ func (m *Mesh) WithOptions(opts CallOptions) *Mesh {
 		router:     m.router,
 		cfg:        m.cfg,
 		authHeader: m.authHeader,
+		authSource: m.authSource,
 		mountedRaw: m.mountedRaw,
 		mountCfg:   m.mountCfg,
 
@@ -1349,7 +1377,7 @@ func (r *RunningServer) Close() error {
 // Arguments may be *Service, []*Service, a struct (or pointer) embedding ServiceMeta, ServeOption,
 // or MountOption (WithAcceptTunnels, WithTunnelClosed), which applies to the services of this call.
 func (m *Mesh) Mount(args ...any) *Mesh {
-	if m.cfg.tunnel != "" {
+	if m.cfg.tunnel != "" || m.cfg.tunnelSource != nil {
 		panic("meshcall: a tunnel Mesh reaches one instance and cannot serve; mount services on a Mesh with registration credentials")
 	}
 	if m.router.IsHTTP() {
@@ -1456,6 +1484,7 @@ func (m *Mesh) StartServing(ctx context.Context, opts ...ServeOption) (*RunningS
 		PingInterval:  m.cfg.pingInterval,
 		PingTimeout:   m.cfg.pingTimeout,
 		Authorization: m.authHeader,
+		AuthSource:    m.authSource,
 		IdleTimeout:   cfg.idleTimeout,
 		MaxFrameSize:  m.cfg.maxFrameSize,
 		Strict:        cfg.strict,

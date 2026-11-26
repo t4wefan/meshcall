@@ -655,6 +655,45 @@ same, so an issuer learns nothing about other issuers' tokens — gets
 `invalid_argument` with `details.reason: "token_expired"`; the issuer issues a
 new token instead.
 
+## Credential sources
+
+This is runtime behaviour, not a wire change: the Router sees ordinary
+connections with ordinary credentials.
+
+A peer may be given a *credential source* instead of a fixed token or tunnel
+credential: a function the runtime calls for the credential to send
+(`token=` / `tunnel=` given a function in Python, `token` / `tunnel` given a
+function in TypeScript, `WithTokenSource` / `WithTunnelSource` in Go). The
+runtime calls it before every connection it opens, first and reconnects
+alike, and before every HTTP request; caching is up to the source. A source
+that fails, or returns an empty value, fails that connection attempt the
+way an unreachable Router would (`unavailable`, retryable,
+`details.reason: "credential_source"`). A source returning a credential of
+the wrong kind (a tunnel credential from a token
+source, a plain one where an end-to-end key is pinned) fails with a
+configuration error (`CredentialSourceError`), as configuring it would,
+before anything is sent.
+
+When the Router refuses a credential (HTTP 401, close 4401), a peer with a
+source does not keep the refusal:
+
+- **A client** asks the source again and retries the connection once. If the
+  new credential is refused too, the attempt fails with that
+  `unauthenticated` error; the next call asks the source again. Calls in
+  flight on a connection the Router closed with 4401 still fail with it (they
+  may have run); calls made afterwards connect with a new credential. An HTTP
+  request answered 401 (refused before routing, so nothing ran) is sent once
+  more with a new credential, except a client stream, whose body cannot be
+  sent twice.
+- **A service instance** keeps reconnecting with its usual backoff, asking the
+  source before each attempt, instead of giving up on that Router. It never
+  reports the Router as having refused it while it has a source.
+
+An end-to-end client binds each session to the credential of its connection
+(the prologue), so a new credential means a new handshake; a pairing the
+instance confirmed stays confirmed. The pinned key and the client's identity
+do not change with the credential.
+
 ## Timeouts
 
 `timeout_ms` is the total budget for the call, measured by each peer from the

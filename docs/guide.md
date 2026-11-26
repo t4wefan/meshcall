@@ -978,6 +978,32 @@ Fill in the entry's `call` list and restart the Router. Callers send the key as 
 
 Bind each instance's registration credential to its instance id with `instance_ids` (accounts, API keys, and `RouterScope(..., instance_ids=[...])` on tokens): a registration under any other id is refused, so no credential can stand in for an instance that is offline.
 
+### Credential Sources: Replace Expiring Credentials
+
+When the credential comes from somewhere that replaces it (an issuer that hands out short-lived tokens, a control plane that opens a new tunnel each time), pass a function instead of the value. The runtime calls it before every connection, registration and HTTP request, so caching is up to you. When the Router refuses the old credential (expired at reconnect, revoked), the runtime asks the function again instead of giving up:
+
+```python
+mesh = Mesh(router, token=issuer.current_token)          # sync or async function
+box = Mesh(router, tunnel=lambda: api.open_tunnel("box-a"), e2e_key=pinned)
+```
+
+```typescript
+const mesh = new Mesh(router, { token: () => issuer.currentToken() });
+const box = new Mesh(router, { tunnel: () => api.openTunnel("box-a"), e2eKey: pinned });
+```
+
+```go
+mesh := meshcall.NewMesh(router, meshcall.WithTokenSource(issuer.CurrentToken))
+box := meshcall.NewMesh(router, meshcall.WithTunnelSource(api.OpenTunnel), meshcall.WithE2EKey(pinned))
+```
+
+- A client asks again once and retries the connection. If the new credential is refused too, that call fails with `unauthenticated`; the next call asks again. Calls in flight when the Router closed the connection still fail (they may have run).
+- A served instance keeps reconnecting with its backoff, asking each time, instead of stopping.
+- An HTTP request answered 401 is sent once more with a new credential (a client stream's body cannot be sent twice).
+- A function that fails, or returns nothing, fails that attempt as `unavailable` with `reason: "credential_source"` (retryable). A token function returning a tunnel credential, or a plain credential where an end-to-end key is pinned, is a configuration error (`CredentialSourceError`).
+
+The pinned end-to-end key and the client's identity do not change with the credential; each new tunnel is handshaken anew and a confirmed pairing stays confirmed. See [protocol → Credential sources](protocol.md#credential-sources).
+
 ### 3. Tunnels: One Instance for One Caller
 
 **Benefit:** A platform hands a person's browser or phone a credential for *one* instance — their dev container, their agent session — and the Router behaves towards that connection like the instance's own Router. The control plane is not in the data path; the instance learns who is calling from the Router, not from caller-supplied metadata.

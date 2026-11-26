@@ -56,6 +56,7 @@ var ClientScenarios = []ClientScenario{
 	{"reconnect.router_restart", "a lost connection fails its calls with a retryable unavailable; the next call reconnects"},
 	{"reconnect.dead_socket", "a connection that stops answering (pause_router) is dropped, failing its calls retryably; the next call reconnects"},
 	{"reconnect.failover", "with several Router URLs, an unreachable one is skipped"},
+	{"auth.credential_source", "a client given a credential source connects with what it returns; after the Router revokes that tunnel the next call connects with a new credential from the source and succeeds; a source whose new credential is refused too fails the call with unauthenticated"},
 }
 
 // ClientRuntime is a client runtime whose tests mark the scenarios.

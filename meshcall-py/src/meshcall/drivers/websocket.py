@@ -20,6 +20,10 @@ from meshcall.context import (
     DEFAULT_RECONNECT,
     ReconnectPolicy,
 )
+from meshcall.credentials import (
+    CredentialSource,
+    ask_credential_source,
+)
 from meshcall.driver import ClientDriver, DriverBinding, ServerDriver
 from meshcall.drivers.local import (
     check_unix_supported,
@@ -113,6 +117,7 @@ class WebSocketClientDriver(ClientDriver):
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
         e2e_key: str | None = None,
         e2e_identity: E2EIdentity | None = None,
+        auth_source: CredentialSource | None = None,
     ) -> None:
         #: Pinned instance public key: handshake on every connection and seal.
         self.e2e_key = e2e_key
@@ -122,16 +127,11 @@ class WebSocketClientDriver(ClientDriver):
         self._paired = False
         if e2e_identity is not None and e2e_key is None:
             raise ValueError("e2e_identity needs the instance's e2e_key")
-        bearer = auth.token if auth is not None else None
-        if bearer is not None and is_e2e_credential(bearer) and e2e_key is None:
-            raise ValueError(
-                "This is an end-to-end tunnel credential: pass the instance's "
-                "e2e_key the issuer gave you"
-            )
-        if e2e_key is not None and (bearer is None or not is_e2e_credential(bearer)):
-            raise ValueError(
-                "e2e_key needs the credential of an end-to-end tunnel (mtun_e2e.…)"
-            )
+        #: Asked for a bearer credential before every connection instead of
+        #: ``auth`` (docs/protocol.md → Credential sources).
+        self.auth_source = auth_source
+        if auth_source is None:
+            _check_e2e_agreement(auth.token if auth is not None else None, e2e_key)
         self.unix_path, self.pipe = _local_endpoint(uri, unix_path, pipe)
         self.uris: tuple[str, ...] = (
             () if uri is None else ((uri,) if isinstance(uri, str) else tuple(uri))
@@ -173,13 +173,24 @@ class WebSocketClientDriver(ClientDriver):
         assert last is not None
         raise last
 
+    async def _current_auth(self) -> RouterCredentials | None:
+        if self.auth_source is None:
+            return self.auth
+        e2e_key = self.e2e_key
+        token = await ask_credential_source(
+            self.auth_source, lambda value: _check_e2e_agreement(value, e2e_key)
+        )
+        # The handshake binds the session to the credential it connects with.
+        self.auth = RouterCredentials.bearer(token)
+        return self.auth
+
     async def _connect_one(self, uri: str | None) -> FrameConnection:
         websocket = await _connect_endpoint(
             uri=uri,
             unix_path=self.unix_path,
             pipe=self.pipe,
             max_frame_size=self.max_frame_size,
-            auth=self.auth,
+            auth=await self._current_auth(),
         )
         connection = FrameConnection(
             websocket,
@@ -409,8 +420,12 @@ class WebSocketRouterServerDriver(ServerDriver):
         ping_interval: float | None = DEFAULT_PING_INTERVAL,
         ping_timeout: float = DEFAULT_PING_TIMEOUT,
         reconnect: ReconnectPolicy = DEFAULT_RECONNECT,
+        auth_source: CredentialSource | None = None,
     ) -> None:
         super().__init__(instance_id=instance_id)
+        #: Asked for a bearer credential before every registration attempt;
+        #: a Router refusing it is retried, asking again, instead of given up.
+        self.auth_source = auth_source
         self.unix_path, self.pipe = _local_endpoint(uri, unix_path, pipe)
         uris = () if uri is None else ((uri,) if isinstance(uri, str) else tuple(uri))
         if uri is not None and not uris:
@@ -451,7 +466,7 @@ class WebSocketRouterServerDriver(ServerDriver):
         if len(failures) == len(self._links):
             raise failures[0]
         for link, result in zip(self._links, results, strict=True):
-            if isinstance(result, UnauthenticatedError):
+            if isinstance(result, UnauthenticatedError) and self.auth_source is None:
                 link.refuse(runtime, result)
                 continue
             if isinstance(result, BaseException):
@@ -535,12 +550,17 @@ class _RouterLink:
 
     async def _open(self, runtime: ServerRuntime) -> FrameConnection:
         driver = self.driver
+        auth = driver.auth
+        if driver.auth_source is not None:
+            auth = RouterCredentials.bearer(
+                await ask_credential_source(driver.auth_source)
+            )
         websocket = await _connect_endpoint(
             uri=self.endpoint,
             unix_path=driver.unix_path,
             pipe=driver.pipe,
             max_frame_size=driver.max_frame_size,
-            auth=driver.auth,
+            auth=auth,
         )
         connection = FrameConnection(
             websocket,
@@ -620,8 +640,15 @@ class _RouterLink:
                     try:
                         self.connection = await self._open(runtime)
                     except UnauthenticatedError as exc:
-                        self.refuse(runtime, exc)
-                        return
+                        if driver.auth_source is None:
+                            self.refuse(runtime, exc)
+                            return
+                        runtime.logger.warning(  # noqa: PLE1205
+                            "Router refused the credential of {}; asking the source again: {}",
+                            where,
+                            exc,
+                        )
+                        continue
                     except (OSError, ConnectionError, MeshCallError) as exc:
                         runtime.logger.warning(  # noqa: PLE1205
                             "Router re-registration failed for {}: {}", where, exc
@@ -645,8 +672,15 @@ class _RouterLink:
             refusal = connection.refusal
             await connection.close()  # releases the sender task of the dead socket
             if isinstance(refusal, UnauthenticatedError):
-                self.refuse(runtime, refusal)  # the Router closed it with 4401
-                return
+                if driver.auth_source is None:
+                    self.refuse(runtime, refusal)  # the Router closed it with 4401
+                    return
+                # A source may have a new credential: reconnect, asking it.
+                runtime.logger.warning(  # noqa: PLE1205
+                    "Router refused the credential of {}; asking the source again: {}",
+                    where,
+                    refusal,
+                )
 
     async def close(self) -> None:
         connection, self.connection = self.connection, None
@@ -741,3 +775,15 @@ async def _open_endpoint(
             additional_headers=headers,
         )
     return await connect(uri, max_size=max_frame_size, additional_headers=headers)
+
+
+def _check_e2e_agreement(bearer: str | None, e2e_key: str | None) -> None:
+    if bearer is not None and is_e2e_credential(bearer) and e2e_key is None:
+        raise ValueError(
+            "This is an end-to-end tunnel credential: pass the instance's "
+            "e2e_key the issuer gave you"
+        )
+    if e2e_key is not None and (bearer is None or not is_e2e_credential(bearer)):
+        raise ValueError(
+            "e2e_key needs the credential of an end-to-end tunnel (mtun_e2e.…)"
+        )

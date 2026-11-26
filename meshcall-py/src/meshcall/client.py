@@ -22,6 +22,7 @@ from meshcall.context import (
     RetryPolicy,
     client_deadline_grace,
 )
+from meshcall.credentials import is_router_refusal
 from meshcall.driver import ClientDriver
 from meshcall.e2e import ROUTER_SERVICE_PREFIX, SealedCall, SealingConnection
 from meshcall.errors import (
@@ -194,11 +195,18 @@ class ClientBase:
                 if self.reconnect.enabled and self._ever_connected
                 else iter(())
             )
+            has_source = getattr(self.driver, "auth_source", None) is not None
+            asked_again = False
             while True:
                 try:
                     self._connection = await self.driver.connect()
                     break
                 except (OSError, ConnectionError, MeshCallError) as exc:
+                    if has_source and not asked_again and is_router_refusal(exc):
+                        # A source may have a new credential: ask it once more.
+                        asked_again = True
+                        await self.driver.close()
+                        continue
                     if isinstance(exc, (UnauthenticatedError, PermissionDeniedError)):
                         raise  # refused credentials fail the same way again
                     delay = next(delays, None)
@@ -636,7 +644,11 @@ class ClientBase:
             raise
         except ConnectionError as exc:
             failure = connection_lost(exc)
-            if isinstance(failure, UnauthenticatedError):
+            # With a source, the next connection asks it for a new credential.
+            if (
+                isinstance(failure, UnauthenticatedError)
+                and getattr(self.driver, "auth_source", None) is None
+            ):
                 self._refused = failure
         except Exception as exc:  # noqa: BLE001
             failure = exc if isinstance(exc, MeshCallError) else ProtocolError(str(exc))

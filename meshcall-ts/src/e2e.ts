@@ -776,9 +776,14 @@ export class E2EClient {
 
   public constructor(
     private readonly pinnedKey: string,
-    private readonly credential: string,
+    private credential: string,
     private readonly identity?: E2EIdentity,
   ) {}
+
+  /** Bind the next handshakes to a new tunnel credential; a confirmed pairing stays confirmed. */
+  public useCredential(credential: string): void {
+    this.credential = credential;
+  }
 
   /** Start the handshake of a fresh connection; `ephemeral` is for test vectors only. */
   public async start(callId: string, ephemeral?: Uint8Array): Promise<ClientHandshake> {

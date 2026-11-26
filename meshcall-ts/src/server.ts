@@ -21,6 +21,7 @@ import type { ServerInterceptor } from "./service.js";
 import { DEFAULT_MAX_FRAME_SIZE, FrameWriter } from "./transport.js";
 import { methodValidators } from "./validation.js";
 
+import { askCredentialSource, type CredentialSource } from "./credentials.js";
 import type { RouterCredentials } from "./router-auth.js";
 import { TUNNEL_CAPABILITY, TunnelHost, type E2EPairingPskHook, type E2EPeerHook, type TunnelPolicy } from "./tunnel.js";
 
@@ -28,6 +29,12 @@ export type { RpcContext, ServerCallNext, ServerInterceptor, DuplexChannel } fro
 
 export interface RouterConnectionOptions {
   readonly auth?: RouterCredentials;
+  /**
+   * Asked for a bearer credential before every registration attempt instead
+   * of `auth`; a Router refusing it is retried with backoff, asking again,
+   * instead of being given up (docs/protocol.md → Credential sources).
+   */
+  readonly authSource?: CredentialSource;
   /**
    * One Router, or several: the instance keeps one registration per Router,
    * each with its own reconnect loop, so clients can fail over between them.
@@ -255,7 +262,7 @@ export class MeshCallServer {
         this.startRouterLink(router, link).then(
           () => this.logger.info("Router connection restored for %s", where),
           (error: unknown) => {
-            if (error instanceof UnauthenticatedError) {
+            if (error instanceof UnauthenticatedError && router.authSource === undefined) {
               this.refuseLink(link, error);
               return;
             }
@@ -270,6 +277,13 @@ export class MeshCallServer {
 
   /** The same credentials fail the same way again: stop reconnecting this link. */
   private refuseLink(link: RouterLink, error: UnauthenticatedError): void {
+    if (this.options.router?.authSource !== undefined) {
+      // A source may have a new credential: keep reconnecting, asking it.
+      this.logger.warning("Router %s refused the credential of instance %s; asking the source again: %s",
+        JSON.stringify(link.endpoint), this.instanceId, error);
+      this.scheduleRouterReconnect(link, true);
+      return;
+    }
     this.logger.error("Router %s refused the credentials of instance %s; not retrying: %s",
       JSON.stringify(link.endpoint), this.instanceId, error);
     link.refused = true;
@@ -490,7 +504,8 @@ export class MeshCallServer {
   }
 
   private async startRouterLink(router: RouterConnectionOptions, link: RouterLink): Promise<void> {
-    const socket = createSocket(link.endpoint, this.maxFrameSize, this.handshakeTimeout, router.auth);
+    const auth = router.authSource === undefined ? router.auth : { token: await askCredentialSource(router.authSource) };
+    const socket = createSocket(link.endpoint, this.maxFrameSize, this.handshakeTimeout, auth);
     // link.socket is set only once registered: a failed attempt is retried by
     // the caller, and must neither start a second reconnect loop when it
     // closes nor displace a registration another attempt already holds.

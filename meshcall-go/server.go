@@ -37,6 +37,10 @@ type ServerOptions struct {
 	Reconnect    ReconnectPolicy
 	// Authorization is sent to the Router ("Basic …" or "Bearer mk_…").
 	Authorization string
+	// AuthSource, instead of Authorization, is asked for a bearer credential
+	// before every registration attempt; a Router refusing it is retried with
+	// backoff, asking again, instead of given up.
+	AuthSource CredentialSource
 	// IdleTimeout closes a direct client connection silent for this long.
 	IdleTimeout  time.Duration
 	MaxFrameSize int
@@ -210,7 +214,7 @@ func (s *Server) ConnectRouter(ctx context.Context, urls ...string) error {
 		if errs[i] == nil {
 			registered++
 			go s.supervise(link, false)
-		} else if refusal := credentialRefusal(errs[i]); refusal != nil {
+		} else if refusal := s.credentialRefusal(errs[i]); refusal != nil {
 			s.refuseLink(link, refusal)
 		} else {
 			s.logger.Warn("Router refused the instance at start; retrying in the background", "router", link.endpoint.text, "instance", s.opts.InstanceID, "error", errs[i])
@@ -225,8 +229,16 @@ func (s *Server) ConnectRouter(ctx context.Context, urls ...string) error {
 
 func (s *Server) register(ctx context.Context, link *routerLink) error {
 	header := http.Header{}
-	if s.opts.Authorization != "" {
-		header.Set("Authorization", s.opts.Authorization)
+	authorization := s.opts.Authorization
+	if s.opts.AuthSource != nil {
+		token, err := askCredentialSource(ctx, s.opts.AuthSource, nil)
+		if err != nil {
+			return err
+		}
+		authorization = "Bearer " + token
+	}
+	if authorization != "" {
+		header.Set("Authorization", authorization)
 	}
 	c, err := link.endpoint.connect(ctx, header, s.opts.MaxFrameSize)
 	if err != nil {
@@ -270,9 +282,10 @@ func (s *Server) register(ctx context.Context, link *routerLink) error {
 	return nil
 }
 
-// credentialRefusal is err when it says the Router refused the credentials.
-func credentialRefusal(err error) *Error {
-	if e, ok := AsError(err); ok && e.Code == CodeUnauthenticated {
+// credentialRefusal is err when it says the Router refused the credentials
+// for good: never with a source, which may have a new credential.
+func (s *Server) credentialRefusal(err error) *Error {
+	if e, ok := AsError(err); ok && e.Code == CodeUnauthenticated && s.opts.AuthSource == nil {
 		return e
 	}
 	return nil
@@ -328,8 +341,8 @@ func (s *Server) supervise(link *routerLink, startDown bool) {
 				return
 			}
 			if conn != nil {
-				if lost := conn.lost(); lost.Code == CodeUnauthenticated {
-					s.refuseLink(link, lost) // the Router closed it with 4401
+				if refusal := s.credentialRefusal(conn.lost()); refusal != nil {
+					s.refuseLink(link, refusal) // the Router closed it with 4401
 					return
 				}
 			}
@@ -361,7 +374,7 @@ func (s *Server) supervise(link *routerLink, startDown bool) {
 			if stopping {
 				return
 			}
-			if refusal := credentialRefusal(err); refusal != nil {
+			if refusal := s.credentialRefusal(err); refusal != nil {
 				s.refuseLink(link, refusal)
 				return
 			}

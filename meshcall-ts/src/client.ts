@@ -12,6 +12,7 @@ import {
   checkE2EAgreement, checkE2EIdentity, E2EClient, ROUTER_SERVICE_PREFIX, SealedCall,
   type ClientHandshake, type E2EIdentity, type E2ESession,
 } from "./e2e.js";
+import { askCredentialSource, CredentialSourceError, isRouterRefusal, type CredentialSource } from "./credentials.js";
 import { AsyncQueue, CreditWindow, INITIAL_STREAM_CREDIT } from "./flow.js";
 import {
   clientDeadlineGraceMs,
@@ -83,6 +84,11 @@ export type DuplexCallOptions = Omit<CallOptions, "idempotencyKey" | "idempotent
 
 export interface MeshCallClientOptions {
   readonly auth?: RouterCredentials;
+  /**
+   * Asked for a bearer credential before every connection instead of `auth`
+   * (docs/protocol.md → Credential sources); a refusal asks it again.
+   */
+  readonly authSource?: CredentialSource;
   readonly maxFrameSize?: number;
   readonly handshakeTimeoutMs?: number;
   /**
@@ -259,7 +265,7 @@ export class MeshCallClient implements MeshCallRpc {
   ) {
     this.root = this;
     this.endpoints = Array.isArray(url) ? [...(url as ReadonlyArray<WebSocketEndpoint>)] : [url as WebSocketEndpoint];
-    checkE2EAgreement(options.auth?.token, options.e2eKey);
+    if (options.authSource === undefined) checkE2EAgreement(options.auth?.token, options.e2eKey);
     if (options.e2eIdentity !== undefined) {
       if (options.e2eKey === undefined) {
         throw new TypeError("e2eIdentity authenticates this client to the instance whose key you pinned: pass e2eKey too");
@@ -335,14 +341,21 @@ export class MeshCallClient implements MeshCallRpc {
     const policy = this.options.reconnect ?? {};
     const retry = (policy.enabled ?? true) && this.everConnected;
     const delays = retry ? reconnectDelays(policy) : undefined;
+    let askedAgain = false;
     for (;;) {
       try {
         await this.openAnyEndpoint();
         this.everConnected = true;
         return;
       } catch (error) {
+        // A source may have a new credential: ask it once more, at once.
+        if (this.options.authSource !== undefined && !askedAgain && isRouterRefusal(error)) {
+          askedAgain = true;
+          continue;
+        }
         // Refused credentials fail the same way again: report them at once.
         if (error instanceof UnauthenticatedError || error instanceof PermissionDeniedError) throw error;
+        if (error instanceof CredentialSourceError) throw error;
         const next = delays?.next();
         if (next === undefined || next.done === true || this.closed) {
           throw error instanceof MeshCallError ? error
@@ -782,7 +795,7 @@ export class MeshCallClient implements MeshCallRpc {
     for (let offset = 0; offset < this.endpoints.length; offset += 1) {
       const index = (this.cursor + offset) % this.endpoints.length;
       try {
-        await this.open(this.endpoints[index] as WebSocketEndpoint);
+        await this.open(this.endpoints[index] as WebSocketEndpoint, await this.currentAuth());
         this.cursor = index;
         return;
       } catch (error) {
@@ -792,10 +805,20 @@ export class MeshCallClient implements MeshCallRpc {
     throw last;
   }
 
-  private async open(endpoint: WebSocketEndpoint): Promise<void> {
+  /** The credentials for the next connection: fixed, or fresh from the source. */
+  private async currentAuth(): Promise<RouterCredentials | undefined> {
+    const source = this.options.authSource;
+    if (source === undefined) return this.options.auth;
+    const e2eKey = this.options.e2eKey;
+    const token = await askCredentialSource(source, (credential) => checkE2EAgreement(credential, e2eKey));
+    this.e2eClient?.useCredential(token);
+    return { token };
+  }
+
+  private async open(endpoint: WebSocketEndpoint, auth: RouterCredentials | undefined): Promise<void> {
     const maxSize = this.options.maxFrameSize ?? DEFAULT_MAX_FRAME_SIZE;
     const timeout = this.options.handshakeTimeoutMs ?? 10_000;
-    const socket = createSocket(endpoint, maxSize, timeout, this.options.auth);
+    const socket = createSocket(endpoint, maxSize, timeout, auth);
     const writer = new FrameWriter(socket, maxSize, "client");
     const liveness = new Liveness(socket, writer, {
       pingIntervalMs: this.options.pingIntervalMs === undefined
@@ -891,7 +914,8 @@ export class MeshCallClient implements MeshCallRpc {
           liveness.stop();
           writer.close();
           const error = closeError(code, reason.toString()) ?? new UnavailableError("Connection was lost", { retryable: true });
-          if (ready && error instanceof UnauthenticatedError) this.refused = error;
+          // With a source, the next connection asks it for a new credential instead.
+          if (ready && error instanceof UnauthenticatedError && this.options.authSource === undefined) this.refused = error;
           if (this.socket === socket) {
             this.detach(socket, error);
             // Start the next connect from the following endpoint: the one

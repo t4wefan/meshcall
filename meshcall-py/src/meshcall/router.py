@@ -28,6 +28,7 @@ from meshcall.contract import (
     get_service_warnings,
     normalize_service_name,
 )
+from meshcall.credentials import CredentialSource, kinded_source
 from meshcall.drivers.local import PIPE_PREFIX, check_unix_supported, pipe_address
 from meshcall.drivers.websocket import (
     WebSocketClientDriver,
@@ -568,6 +569,7 @@ class RunningServer:
             instance_id=instance_id,
             max_frame_size=mesh.max_frame_size,
             auth=mesh.credentials,
+            auth_source=mesh.auth_source,
             ping_interval=mesh.ping_interval,
             ping_timeout=mesh.ping_timeout,
             reconnect=mesh.reconnect,
@@ -738,9 +740,9 @@ class Mesh:
         self,
         router: Router | LocalRouter,
         *,
-        token: str | None = None,
+        token: str | CredentialSource | None = None,
         credentials: RouterCredentials | None = None,
-        tunnel: str | None = None,
+        tunnel: str | CredentialSource | None = None,
         e2e_key: str | None = None,
         e2e_identity: E2EIdentity | None = None,
         headers: Mapping[str, str] | None = None,
@@ -763,6 +765,21 @@ class Mesh:
             )
         if sum(x is not None for x in (credentials, token, tunnel)) > 1:
             raise ValueError("Pass one of credentials, token or tunnel")
+        #: A function asked for the token or tunnel credential before every
+        #: connection, registration and HTTP request; a Router refusing the
+        #: old one asks it again (docs/protocol.md → Credential sources).
+        self.auth_source: CredentialSource | None = (
+            kinded_source(tunnel, "tunnel")
+            if callable(tunnel)
+            else kinded_source(token, "token")
+            if callable(token)
+            else None
+        )
+        tunnel_source = callable(tunnel)
+        if callable(token):
+            token = None
+        if callable(tunnel):
+            tunnel = None
         bearer = token if token is not None else (credentials and credentials.token)
         if bearer is not None and bearer.startswith(TUNNEL_CREDENTIAL_PREFIX):
             raise ValueError(
@@ -772,6 +789,7 @@ class Mesh:
         #: The tunnel credential this Mesh connects with, if any. A tunnel
         #: Mesh reaches one instance and cannot mount services.
         self.tunnel = check_tunnel_credential(tunnel) if tunnel is not None else None
+        self._tunnel_source = tunnel_source
         self.credentials = credentials or (
             RouterCredentials.bearer(token)
             if token is not None
@@ -790,7 +808,7 @@ class Mesh:
                 raise ValueError(
                     "e2e_key needs the credential of an end-to-end tunnel (mtun_e2e.…)"
                 )
-            if tunnel is None:
+            if tunnel is None and not tunnel_source:
                 raise ValueError(
                     "e2e_key seals the calls of a tunnel: pass tunnel= too"
                 )
@@ -876,6 +894,7 @@ class Mesh:
                 self._client = _HttpTransport(
                     self.router.url,
                     credentials=self.credentials,
+                    auth_source=self.auth_source,
                     headers=self.headers,
                     retry=self.retry,
                     timeout=self.timeout,
@@ -890,6 +909,7 @@ class Mesh:
                     peer_id=self.peer_id,
                     max_frame_size=self.max_frame_size,
                     auth=self.credentials,
+                    auth_source=self.auth_source,
                     ping_interval=self.ping_interval,
                     ping_timeout=self.ping_timeout,
                     e2e_key=self.e2e_key,
@@ -1013,7 +1033,7 @@ class Mesh:
         """
         if not services:
             raise ValueError("At least one service is required")
-        if self.tunnel is not None:
+        if self.tunnel is not None or self._tunnel_source:
             raise ContractError(
                 "A tunnel Mesh reaches one instance and cannot serve; "
                 "mount services on a Mesh with registration credentials"

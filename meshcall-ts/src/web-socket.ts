@@ -17,6 +17,7 @@ import type { RpcLogger } from "./log.js";
 import { clientDeadlineGraceMs, retryUnary, validateMetadata, type RetryPolicy } from "./policy.js";
 import type { Frame as WireFrame, Metadata } from "./protocol.js";
 import { mergeCallOptions, type MeshCallRpc, type RpcDuplex, type RpcStream } from "./rpc.js";
+import { askCredentialSource, isRouterRefusal, type CredentialSource } from "./credentials.js";
 import { checkReceived } from "./validation.js";
 
 const PROTOCOL = "meshcall/1";
@@ -25,6 +26,11 @@ const DEFAULT_MAX_FRAME_SIZE = 64 * 1024 * 1024;
 export interface WebSocketTransportOptions {
   /** Sent as `hello.authorization` (`Bearer …` or `Basic …`). */
   readonly authorization?: string;
+  /**
+   * Asked for a bearer credential before every connection instead of
+   * `authorization` (docs/protocol.md → Credential sources).
+   */
+  readonly authSource?: CredentialSource;
   readonly retry?: RetryPolicy | false;
   /** Extra time past `timeoutMs` before failing locally. Defaults to `max(1s, 10%)`. */
   readonly deadlineGraceMs?: number;
@@ -76,7 +82,7 @@ class Connection {
 
   public constructor(
     url: string, private readonly options: WebSocketTransportOptions, private readonly onGone: (error: MeshCallError) => void,
-    e2eClient?: E2EClient,
+    e2eClient: E2EClient | undefined, authorization: string | undefined,
   ) {
     const Socket = options.WebSocket ?? globalThis.WebSocket;
     if (Socket === undefined) throw new UnavailableError("No WebSocket implementation is available", { retryable: false });
@@ -90,7 +96,7 @@ class Connection {
       this.socket.onopen = () => {
         this.send({
           kind: "hello", protocol: PROTOCOL, role: "client", peer_id: randomId(),
-          ...(options.authorization === undefined ? {} : { authorization: options.authorization }),
+          ...(authorization === undefined ? {} : { authorization }),
         });
       };
       this.socket.onmessage = (event: MessageEvent) => {
@@ -471,7 +477,7 @@ export class WebSocketTransport implements MeshCallRpc {
   public constructor(private readonly urls: ReadonlyArray<string>, private readonly options: WebSocketTransportOptions = {}) {
     if (urls.length === 0) throw new RangeError("WebSocketTransport needs at least one URL");
     const credential = options.authorization?.replace(/^Bearer /u, "");
-    checkE2EAgreement(credential, options.e2eKey);
+    if (options.authSource === undefined) checkE2EAgreement(credential, options.e2eKey);
     if (options.e2eIdentity !== undefined) {
       if (options.e2eKey === undefined) {
         throw new TypeError("e2eIdentity authenticates this client to the instance whose key you pinned: pass e2eKey too");
@@ -587,15 +593,34 @@ export class WebSocketTransport implements MeshCallRpc {
     return this.connecting;
   }
 
-  /** Try each URL once, starting with the last one that worked. */
+  /** Dial; a source asked again once if the Router refused its credential. */
   private async dial(): Promise<Connection> {
+    if (this.options.authSource === undefined) return this.dialOnce(this.options.authorization);
+    try {
+      return await this.dialOnce(await this.sourceAuthorization());
+    } catch (error) {
+      if (!isRouterRefusal(error)) throw error;
+      return this.dialOnce(await this.sourceAuthorization());
+    }
+  }
+
+  private async sourceAuthorization(): Promise<string> {
+    const e2eKey = this.options.e2eKey;
+    const token = await askCredentialSource(this.options.authSource!, (credential) => checkE2EAgreement(credential, e2eKey));
+    this.e2eClient?.useCredential(token);
+    return "Bearer " + token;
+  }
+
+  /** Try each URL once, starting with the last one that worked. */
+  private async dialOnce(authorization: string | undefined): Promise<Connection> {
     let last: unknown;
     for (let i = 0; i < this.urls.length; i += 1) {
       const index = (this.cursor + i) % this.urls.length;
       const connection = new Connection(this.urls[index]!, this.options, (error) => {
         if (this.connection === connection) this.connection = undefined;
-        if (error instanceof UnauthenticatedError) this.refused = error;
-      }, this.e2eClient);
+        // With a source, the next connection asks it for a new credential instead.
+        if (error instanceof UnauthenticatedError && this.options.authSource === undefined) this.refused = error;
+      }, this.e2eClient, authorization);
       try {
         await connection.ready;
         this.cursor = index;
