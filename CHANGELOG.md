@@ -12,6 +12,18 @@ matching `meshcall-go/vX.Y.Z` tag.
 
 ### Changed
 
+- **Generated clients of targeted services are bound to one instance**
+  (breaking). The instance is passed once, when the client is constructed,
+  instead of on every call, in every generated language:
+  `ActorClient(mesh, instance="a")` (Python), `new ActorClient(mesh, "a")`
+  (TypeScript), `NewActorClient(mesh, "a")` (Go),
+  `ActorClient(rpc, instance: "a")` (Swift), `ActorClient(rpc, "a")`
+  (Kotlin). Methods no longer take `instance`, per-call options cannot
+  override it, and `with_options` / `withOptions` keep it. On a tunnel,
+  construct the client with the tunnel's instance id. To call another
+  instance, make another client; it shares the Mesh. Raw calls
+  (`mesh.call_unary(..., instance=...)`, `mesh.unary(..., { instance })`) are
+  unchanged.
 - **Generated TypeScript clients take any `MeshCallRpc`.** A service with a
   duplex method used to require `MeshCallClient`; every generated client now
   accepts `MeshCallClient`, `meshcall/web`'s `HttpTransport`, a `Mesh` or an

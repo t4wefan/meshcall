@@ -32,45 +32,46 @@ type SessionsChatRequest struct {
 	Prefix *string `json:"prefix,omitempty"`
 }
 
-// Every call names the instance it is for.
+// Each client is bound to one instance.
 type SessionsClient struct {
-	rpc meshcall.Caller
+	rpc      meshcall.Caller
+	instance string
 }
 
-// NewSessionsClient wraps a Mesh (or any Caller).
-func NewSessionsClient(rpc meshcall.Caller) *SessionsClient {
-	return &SessionsClient{rpc: rpc}
+// NewSessionsClient wraps a Mesh (or any Caller); every call goes to instance.
+func NewSessionsClient(rpc meshcall.Caller, instance string) *SessionsClient {
+	return &SessionsClient{rpc: rpc, instance: instance}
 }
 
 // WithOptions returns a shallow copy of the client with default CallOptions applied to every call.
 func (c *SessionsClient) WithOptions(opts meshcall.CallOptions) *SessionsClient {
-	return &SessionsClient{rpc: c.rpc.WithCallOptions(opts)}
+	return &SessionsClient{rpc: c.rpc.WithCallOptions(opts), instance: c.instance}
 }
 
 // ServiceName is the service these calls address.
 const ServiceName = "test.v1.Sessions"
 
 // Unary, no parameters.
-func (c *SessionsClient) Status(ctx context.Context, instance string, opts ...meshcall.CallOption) (Text, error) {
-	return meshcall.Unary[SessionsStatusRequest, Text](ctx, c.rpc, ServiceName, "status", SessionsStatusRequest{}, append([]meshcall.CallOption{meshcall.WithInstance(instance)}, opts...)...)
+func (c *SessionsClient) Status(ctx context.Context, opts ...meshcall.CallOption) (Text, error) {
+	return meshcall.Unary[SessionsStatusRequest, Text](ctx, c.rpc, ServiceName, "status", SessionsStatusRequest{}, append(append([]meshcall.CallOption{}, opts...), meshcall.WithInstance(c.instance))...)
 }
 
 // Unary with a parameter.
-func (c *SessionsClient) Rename(ctx context.Context, instance string, title string, opts ...meshcall.CallOption) (Text, error) {
-	return meshcall.Unary[SessionsRenameRequest, Text](ctx, c.rpc, ServiceName, "rename", SessionsRenameRequest{Title: title}, append([]meshcall.CallOption{meshcall.WithInstance(instance), meshcall.IdempotentCall()}, opts...)...)
+func (c *SessionsClient) Rename(ctx context.Context, title string, opts ...meshcall.CallOption) (Text, error) {
+	return meshcall.Unary[SessionsRenameRequest, Text](ctx, c.rpc, ServiceName, "rename", SessionsRenameRequest{Title: title}, append(append([]meshcall.CallOption{meshcall.IdempotentCall()}, opts...), meshcall.WithInstance(c.instance))...)
 }
 
 // Server stream.
-func (c *SessionsClient) Watch(ctx context.Context, instance string, since *int64, opts ...meshcall.CallOption) (*meshcall.Stream[Text], error) {
-	return meshcall.ServerStream[SessionsWatchRequest, Text](ctx, c.rpc, ServiceName, "watch", SessionsWatchRequest{Since: since}, append([]meshcall.CallOption{meshcall.WithInstance(instance)}, opts...)...)
+func (c *SessionsClient) Watch(ctx context.Context, since *int64, opts ...meshcall.CallOption) (*meshcall.Stream[Text], error) {
+	return meshcall.ServerStream[SessionsWatchRequest, Text](ctx, c.rpc, ServiceName, "watch", SessionsWatchRequest{Since: since}, append(append([]meshcall.CallOption{}, opts...), meshcall.WithInstance(c.instance))...)
 }
 
 // Client stream.
-func (c *SessionsClient) Upload(ctx context.Context, instance string, items func(yield func(Text) bool), opts ...meshcall.CallOption) (Total, error) {
-	return meshcall.ClientStream[SessionsUploadRequest, Text, Total](ctx, c.rpc, ServiceName, "upload", SessionsUploadRequest{}, items, append([]meshcall.CallOption{meshcall.WithInstance(instance)}, opts...)...)
+func (c *SessionsClient) Upload(ctx context.Context, items func(yield func(Text) bool), opts ...meshcall.CallOption) (Total, error) {
+	return meshcall.ClientStream[SessionsUploadRequest, Text, Total](ctx, c.rpc, ServiceName, "upload", SessionsUploadRequest{}, items, append(append([]meshcall.CallOption{}, opts...), meshcall.WithInstance(c.instance))...)
 }
 
 // Duplex.
-func (c *SessionsClient) Chat(ctx context.Context, instance string, prefix *string, opts ...meshcall.CallOption) (*meshcall.DuplexCall[Text, Text], error) {
-	return meshcall.Duplex[SessionsChatRequest, Text, Text](ctx, c.rpc, ServiceName, "chat", SessionsChatRequest{Prefix: prefix}, append([]meshcall.CallOption{meshcall.WithInstance(instance)}, opts...)...)
+func (c *SessionsClient) Chat(ctx context.Context, prefix *string, opts ...meshcall.CallOption) (*meshcall.DuplexCall[Text, Text], error) {
+	return meshcall.Duplex[SessionsChatRequest, Text, Text](ctx, c.rpc, ServiceName, "chat", SessionsChatRequest{Prefix: prefix}, append(append([]meshcall.CallOption{}, opts...), meshcall.WithInstance(c.instance))...)
 }

@@ -609,7 +609,6 @@ client = TextProcessorClient(mesh).with_options(
     idle_timeout=2.0,            # gap between stream items
     metadata={"trace-id": "abc"},
     idempotency_key="op-1",      # makes a mutating unary call retry-safe
-    instance="worker-1",         # only for targeted services
 )
 chunk = await client.echo("hello")
 ```
@@ -620,7 +619,6 @@ const client = new TextProcessorClient(mesh).withOptions({
   idleTimeoutMs: 2_000,
   metadata: { "trace-id": "abc" },
   idempotencyKey: "op-1",
-  instance: "worker-1",
 });
 const chunk = await client.echo("hello");
 ```
@@ -631,13 +629,12 @@ client := textclient.NewTextProcessorClient(mesh).WithOptions(meshcall.CallOptio
     IdleTimeout:    2 * time.Second,
     Metadata:       map[string]string{"trace-id": "abc"},
     IdempotencyKey: "op-1",
-    Instance:       "worker-1",
 })
 chunk, err := client.Echo(ctx, "hello")
 _, _ = chunk, err
 ```
 
-A targeted service's generated client keeps `instance` a compile-time requirement (Python keyword-only `instance`, TypeScript required option, Go positional argument) even though other options come from `with_options`.
+A targeted service's generated client takes its instance when it is constructed instead (see [targeted services](#stateful-instance-targeted-services-targetedtrue)); a raw `mesh.call_unary(..., instance=...)` still names it per call.
 
 ### Calling from a Browser, an Edge Runtime or curl
 
@@ -719,7 +716,7 @@ class Worker:
 
 When every instance holds distinct state (e.g., `gpu-worker-0` holds Model A and `gpu-worker-1` holds Model B), mark the service `targeted=True`.
 - The Router rejects any call that omits `instance_id` with `invalid_argument` (`reason: "instance_required"`).
-- Generated Python and TypeScript clients make `instance` a **required compile-time parameter**, so forgetting to specify the target worker is caught by `pyright` / `tsc` before code ever runs!
+- Generated clients take the instance when they are constructed, so forgetting the target worker is caught by `pyright` / `tsc` / `go build` before code ever runs. One client addresses one instance; make another client (cheap: it shares the Mesh) for another one.
 
 ```python
 from meshcall import RpcContext, query, service
@@ -737,18 +734,19 @@ class ModelRunner:
 Calling a targeted service:
 
 ```python
-# `instance=` is required by the generated client signature:
-res = await client.with_options(timeout=10.0).infer("Hello!", instance="gpu-worker-1")
+# The generated client is bound to one instance:
+worker = ModelRunnerClient(mesh, instance="gpu-worker-1")
+res = await worker.with_options(timeout=10.0).infer("Hello!")
 ```
 
 ```typescript
-// The generated TypeScript method requires `instance` in its options:
-const res = await client.infer("Hello!", { instance: "gpu-worker-1", timeoutMs: 10_000 });
+const worker = new ModelRunnerClient(mesh, "gpu-worker-1");
+const res = await worker.infer("Hello!", { timeoutMs: 10_000 });
 ```
 
 ```go
-// The generated Go method takes instance right after ctx:
-res, err := client.Infer(ctx, "gpu-worker-1", "Hello!")
+worker := gpuclient.NewModelRunnerClient(mesh, "gpu-worker-1")
+res, err := worker.Infer(ctx, "Hello!")
 _, _ = res, err
 ```
 
@@ -1013,13 +1011,13 @@ The client connects with nothing but the credential:
 ```typescript
 import { Mesh, Router } from "meshcall/web";
 const mesh = new Mesh(new Router("wss://relay.example"), { tunnel: credential });
-const box = new WorkspaceClient(mesh);
-await box.whoami({ instance: instanceId });   // targeted clients still name the instance: see below
+const box = new WorkspaceClient(mesh, instanceId);   // targeted clients are bound to the instance: see below
+await box.whoami();
 ```
 
 On a tunnel connection only the scoped methods of that instance exist: other instances and services, the Registry and `/v1/openapi.json` show nothing else, and the connection cannot register or issue. `ttl_seconds` bounds *new* connections only; a connection lives until `revoke`, which ends it at once. While the instance reconnects, calls fail with retryable `unavailable` / `instance_offline` and resume when it accepts the Router's re-offer. Tunnels live in the Router's memory: after a Router restart the client asks the issuer again.
 
-Generated clients of `targeted` services keep `instance` required on tunnels too: pass the tunnel's `instance_id`. The Router checks it (`permission_denied` / `tunnel_scope`, naming the right one), and every ordinary `Mesh` keeps the compile-time check. TypeScript uses `{ tunnel }` / `acceptTunnels` / `onTunnelClosed`, Go `meshcall.WithTunnel(cred)` / `meshcall.WithAcceptTunnels(decide)` / `meshcall.WithTunnelClosed(fn)` and `ctx.Tunnel`. From the CLI: `meshcall --tunnel mtun_… call dev.v1.Workspace.whoami '{}'`; `meshcall router inspect` lists the tunnels you opened, never their credentials.
+Generated clients of `targeted` services take the instance on tunnels too: construct them with the tunnel's `instance_id`. The Router checks it (`permission_denied` / `tunnel_scope`, naming the right one), and every ordinary `Mesh` keeps the compile-time check. TypeScript uses `{ tunnel }` / `acceptTunnels` / `onTunnelClosed`, Go `meshcall.WithTunnel(cred)` / `meshcall.WithAcceptTunnels(decide)` / `meshcall.WithTunnelClosed(fn)` and `ctx.Tunnel`. From the CLI: `meshcall --tunnel mtun_… call dev.v1.Workspace.whoami '{}'`; `meshcall router inspect` lists the tunnels you opened, never their credentials.
 
 #### End-to-end sealed tunnels
 

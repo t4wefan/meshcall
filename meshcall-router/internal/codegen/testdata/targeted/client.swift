@@ -49,47 +49,57 @@ public struct SessionsChatRequest: Codable, Sendable, Hashable {
     }
 }
 
-/// Every call names the instance it is for.
+/// Each client is bound to one instance.
 public struct SessionsClient: Sendable {
     /// The service these calls address.
     public static let serviceName = "test.v1.Sessions"
 
     private let rpc: any MeshCallRPC
+    private let boundInstance: String
 
-    /// Wraps a `Mesh` (or any `MeshCallRPC`).
-    public init(_ rpc: any MeshCallRPC) {
+    /// Wraps a `Mesh` (or any `MeshCallRPC`); every call goes to `instance`.
+    public init(_ rpc: any MeshCallRPC, instance: String) {
         self.rpc = rpc
+        self.boundInstance = instance
     }
 
     /// A copy of the client with default `CallOptions` applied to every call.
     public func withOptions(_ options: CallOptions) -> SessionsClient {
-        SessionsClient(rpc.withCallOptions(options))
+        SessionsClient(rpc.withCallOptions(options), instance: boundInstance)
     }
 
     /// Unary, no parameters.
-    public func status(instance: String, options: CallOptions = CallOptions()) async throws -> Text {
-        return try await rpc.unary(Self.serviceName, "status", SessionsStatusRequest(), as: Text.self, options: CallOptions(instance: instance).merged(with: options))
+    public func status(options: CallOptions = CallOptions()) async throws -> Text {
+        var options = options
+        options.instance = boundInstance
+        return try await rpc.unary(Self.serviceName, "status", SessionsStatusRequest(), as: Text.self, options: options)
     }
 
     /// Unary with a parameter.
-    public func rename(instance: String, title: String, options: CallOptions = CallOptions()) async throws -> Text {
-        return try await rpc.unary(Self.serviceName, "rename", SessionsRenameRequest(title: title), as: Text.self, options: CallOptions(idempotent: true, instance: instance).merged(with: options))
+    public func rename(title: String, options: CallOptions = CallOptions()) async throws -> Text {
+        var options = CallOptions(idempotent: true).merged(with: options)
+        options.instance = boundInstance
+        return try await rpc.unary(Self.serviceName, "rename", SessionsRenameRequest(title: title), as: Text.self, options: options)
     }
 
     /// Server stream.
-    public func watch(instance: String, since: Int = 0, options: CallOptions = CallOptions()) async throws -> ServerStream<Text> {
-        return try await rpc.serverStream(Self.serviceName, "watch", SessionsWatchRequest(since: since), of: Text.self, options: CallOptions(instance: instance).merged(with: options))
+    public func watch(since: Int = 0, options: CallOptions = CallOptions()) async throws -> ServerStream<Text> {
+        var options = options
+        options.instance = boundInstance
+        return try await rpc.serverStream(Self.serviceName, "watch", SessionsWatchRequest(since: since), of: Text.self, options: options)
     }
 
     /// Client stream.
-    public func upload<Items: AsyncSequence & Sendable>(instance: String, items: Items, options: CallOptions = CallOptions()) async throws -> Total where Items.Element == Text {
-        return try await rpc.clientStream(Self.serviceName, "upload", SessionsUploadRequest(), items: items, as: Total.self, options: CallOptions(instance: instance).merged(with: options))
+    public func upload<Items: AsyncSequence & Sendable>(items: Items, options: CallOptions = CallOptions()) async throws -> Total where Items.Element == Text {
+        var options = options
+        options.instance = boundInstance
+        return try await rpc.clientStream(Self.serviceName, "upload", SessionsUploadRequest(), items: items, as: Total.self, options: options)
     }
 
     /// Duplex.
-    public func chat(instance: String, prefix: String = "", options: DuplexCallOptions = DuplexCallOptions()) async throws -> DuplexCall<Text, Text> {
+    public func chat(prefix: String = "", options: DuplexCallOptions = DuplexCallOptions()) async throws -> DuplexCall<Text, Text> {
         var options = options
-        options.instance = instance
+        options.instance = boundInstance
         return try await rpc.duplex(Self.serviceName, "chat", SessionsChatRequest(prefix: prefix), input: Text.self, output: Text.self, options: options)
     }
 }

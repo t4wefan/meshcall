@@ -10,7 +10,7 @@
         "kind": "round_robin",
         "key": null
       },
-      "description": "Every call names the instance it is for.",
+      "description": "Each client is bound to one instance.",
       "targeted": true,
       "methods": [
         {

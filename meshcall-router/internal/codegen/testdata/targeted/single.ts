@@ -55,26 +55,30 @@ export interface SessionsChatRequest {
 }
 
 /**
- * Every call names the instance it is for.
+ * Each client is bound to one instance.
  */
 export class SessionsClient {
-  public constructor(private readonly rpc: MeshCallRpc) {}
+  readonly #instance: string;
 
-  public withOptions(options: CallOptions): SessionsClient {
-    return new SessionsClient(this.rpc.withOptions(options));
+  public constructor(private readonly rpc: MeshCallRpc, instance: string) {
+    this.#instance = instance;
+  }
+
+  public withOptions(options: Omit<CallOptions, "instance">): SessionsClient {
+    return new SessionsClient(this.rpc.withOptions(options), this.#instance);
   }
 
   /**
    * Unary, no parameters.
    */
   public status(
-    options: CallOptions & { instance: string },
+    options?: Omit<CallOptions, "instance">,
   ): Promise<Text> {
     return this.rpc.unary<SessionsStatusRequest, Text>(
       "test.v1.Sessions",
       "status",
       {},
-      { ...options, responseSchema: TextSchema },
+      { ...options, instance: this.#instance, responseSchema: TextSchema },
     );
   }
 
@@ -83,7 +87,7 @@ export class SessionsClient {
    */
   public rename(
     title: string,
-    options: CallOptions & { instance: string },
+    options?: Omit<CallOptions, "instance">,
   ): Promise<Text> {
     return this.rpc.unary<SessionsRenameRequest, Text>(
       "test.v1.Sessions",
@@ -91,7 +95,7 @@ export class SessionsClient {
       {
         title: title,
       },
-      { idempotent: true, ...options, responseSchema: TextSchema },
+      { idempotent: true, ...options, instance: this.#instance, responseSchema: TextSchema },
     );
   }
 
@@ -100,7 +104,7 @@ export class SessionsClient {
    */
   public watch(
     since: number = 0,
-    options: CallOptions & { instance: string },
+    options?: Omit<CallOptions, "instance">,
   ): RpcStream<Text> {
     return this.rpc.serverStream<SessionsWatchRequest, Text>(
       "test.v1.Sessions",
@@ -108,7 +112,7 @@ export class SessionsClient {
       {
         since: since,
       },
-      { ...options, itemSchema: TextSchema },
+      { ...options, instance: this.#instance, itemSchema: TextSchema },
     );
   }
 
@@ -117,14 +121,14 @@ export class SessionsClient {
    */
   public upload(
     items: AsyncIterable<Text>,
-    options: CallOptions & { instance: string },
+    options?: Omit<CallOptions, "instance">,
   ): Promise<Total> {
     return this.rpc.clientStream<SessionsUploadRequest, Text, Total>(
       "test.v1.Sessions",
       "upload",
       {},
       items,
-      { ...options, responseSchema: TotalSchema },
+      { ...options, instance: this.#instance, responseSchema: TotalSchema },
     );
   }
 
@@ -133,7 +137,7 @@ export class SessionsClient {
    */
   public chat(
     prefix: string = "",
-    options: DuplexCallOptions & { instance: string },
+    options?: Omit<DuplexCallOptions, "instance">,
   ): RpcDuplex<Text, Text> {
     if (this.rpc.duplex === undefined) {
       throw new TypeError("test.v1.Sessions.chat needs a client with duplex calls, such as MeshCallClient");
@@ -144,7 +148,7 @@ export class SessionsClient {
       {
         prefix: prefix,
       },
-      { ...options, itemSchema: TextSchema },
+      { ...options, instance: this.#instance, itemSchema: TextSchema },
     );
   }
 }

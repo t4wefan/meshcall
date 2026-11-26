@@ -110,14 +110,20 @@ def test_contract_and_generated_clients_carry_targeting(meshcall_cli, tmp_path) 
     )[1]
     py_actor = generate("test_targeted:Actor", "python", "actor.py")
     py_plain = generate("test_targeted:Plain", "python", "plain.py")
-    # A targeted call names its instance at compile time; other options come
-    # from with_options().
-    assert "        instance: str," in py_actor
-    assert "instance=instance" not in py_plain
-    assert "instance=instance," in py_actor
+    # A targeted client is bound to one instance when it is constructed; no
+    # method takes it again.
+    assert "def __init__(self, rpc: MeshCallRpc, *, instance: str)" in py_actor
+    assert "instance=self._instance," in py_actor
+    assert "        instance: str," not in py_actor
+    assert "__init__" not in py_plain
+    assert "instance=" not in py_plain
     ts_actor = generate("test_targeted:Actor", "typescript", "actor.ts")
     ts_plain = generate("test_targeted:Plain", "typescript", "plain.ts")
-    assert "options: CallOptions & { instance: string }" in ts_actor
+    assert (
+        "constructor(private readonly rpc: MeshCallRpc, instance: string)" in ts_actor
+    )
+    assert 'options?: Omit<CallOptions, "instance">' in ts_actor
+    assert "instance: this.#instance" in ts_actor
     assert "options?: CallOptions" in ts_plain
 
 

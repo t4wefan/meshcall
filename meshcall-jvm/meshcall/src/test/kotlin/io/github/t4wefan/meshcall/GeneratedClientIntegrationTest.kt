@@ -51,8 +51,8 @@ class GeneratedClientIntegrationTest {
     }
 
     @Test
-    fun targetedClientsRequireTheInstance() = test {
-        assertEquals(INSTANCE, TargetedClient(mesh).whoami(INSTANCE).instance)
+    fun targetedClientsAreBoundToTheInstance() = test {
+        assertEquals(INSTANCE, TargetedClient(mesh, INSTANCE).whoami().instance)
     }
 
     // conformance-scenario: unary.undecodable_response

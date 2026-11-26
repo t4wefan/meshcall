@@ -611,7 +611,6 @@ client = TextProcessorClient(mesh).with_options(
     idle_timeout=2.0,            # 流条目之间的最大间隔
     metadata={"trace-id": "abc"},
     idempotency_key="op-1",      # 让写操作的一元调用可安全重试
-    instance="worker-1",         # 仅定向服务需要
 )
 chunk = await client.echo("hello")
 ```
@@ -622,7 +621,6 @@ const client = new TextProcessorClient(mesh).withOptions({
   idleTimeoutMs: 2_000,
   metadata: { "trace-id": "abc" },
   idempotencyKey: "op-1",
-  instance: "worker-1",
 });
 const chunk = await client.echo("hello");
 ```
@@ -633,13 +631,12 @@ client := textclient.NewTextProcessorClient(mesh).WithOptions(meshcall.CallOptio
     IdleTimeout:    2 * time.Second,
     Metadata:       map[string]string{"trace-id": "abc"},
     IdempotencyKey: "op-1",
-    Instance:       "worker-1",
 })
 chunk, err := client.Echo(ctx, "hello")
 _, _ = chunk, err
 ```
 
-定向服务的生成客户端把 `instance` 作为编译期必填项（Python 的 keyword-only `instance`、TypeScript 的必填选项、Go 的位置参数），其余选项走 `with_options`。
+定向服务的生成客户端改在构造时传入实例（见下文的定向服务一节）；直接调用 `mesh.call_unary(..., instance=...)` 时仍按次指定。
 
 ### 从浏览器、边缘运行时或 curl 调用
 
@@ -723,7 +720,7 @@ class Worker:
 
 当每个服务实例承载不同状态时（例如 `gpu-worker-0` 加载了模型 A，`gpu-worker-1` 加载了模型 B），在服务上声明 `targeted=True`：
 - 若调用方未指定 `instance_id`，Router 会在路由前直接拒绝并返回 `invalid_argument`（`reason: "instance_required"`）。
-- **编译期防呆**：生成的 Python 与 TypeScript 客户端会将 `instance` 生成为**必填参数**，一旦漏传，IDE 和类型检查器（`pyright` / `tsc`）在编写代码阶段就会报错！
+- **编译期防呆**：生成的客户端在构造时绑定实例，漏传时类型检查器（`pyright` / `tsc` / `go build`）在编写代码阶段就会报错。一个客户端只对应一个实例；要调用别的实例就再建一个客户端（共用同一个 Mesh，开销很小）。
 
 ```python
 from meshcall import RpcContext, query, service
@@ -741,18 +738,19 @@ class ModelRunner:
 调用定向服务：
 
 ```python
-# 生成的客户端要求显式传入 instance= 参数：
-res = await client.with_options(timeout=10.0).infer("Hello!", instance="gpu-worker-1")
+# 生成的客户端绑定一个实例：
+worker = ModelRunnerClient(mesh, instance="gpu-worker-1")
+res = await worker.with_options(timeout=10.0).infer("Hello!")
 ```
 
 ```typescript
-// 生成的 TypeScript 方法要求在选项里传入 instance：
-const res = await client.infer("Hello!", { instance: "gpu-worker-1", timeoutMs: 10_000 });
+const worker = new ModelRunnerClient(mesh, "gpu-worker-1");
+const res = await worker.infer("Hello!", { timeoutMs: 10_000 });
 ```
 
 ```go
-// 生成的 Go 方法紧跟 ctx 之后接收 instance：
-res, err := client.Infer(ctx, "gpu-worker-1", "Hello!")
+worker := gpuclient.NewModelRunnerClient(mesh, "gpu-worker-1")
+res, err := worker.Infer(ctx, "Hello!")
 _, _ = res, err
 ```
 
@@ -1017,13 +1015,13 @@ opened = await control.tunnels.open(
 ```typescript
 import { Mesh, Router } from "meshcall/web";
 const mesh = new Mesh(new Router("wss://relay.example"), { tunnel: credential });
-const box = new WorkspaceClient(mesh);
-await box.whoami({ instance: instanceId });   // 定向客户端仍然要写出实例：见下文
+const box = new WorkspaceClient(mesh, instanceId);   // 定向客户端绑定隧道的实例：见下文
+await box.whoami();
 ```
 
 隧道连接上只存在该实例在 scope 内的方法：其他实例与服务、Registry 和 `/v1/openapi.json` 都看不到别的内容，该连接也不能注册或签发。`ttl_seconds` 只限制*新*连接；连接一直存活到 `revoke`，撤销会立即结束它。实例重连期间，调用以可重试的 `unavailable` / `instance_offline` 失败，实例接受 Router 的重新 offer 后恢复。隧道保存在 Router 内存中：Router 重启后客户端需要重新向签发方申请。
 
-`targeted` 服务的生成客户端在隧道上同样要求 `instance`：传入隧道的 `instance_id`。Router 会校验它（不符时返回 `permission_denied` / `tunnel_scope`，并给出正确的 id），而普通 `Mesh` 保留编译期检查。TypeScript 使用 `{ tunnel }` / `acceptTunnels` / `onTunnelClosed`，Go 使用 `meshcall.WithTunnel(cred)` / `meshcall.WithAcceptTunnels(decide)` / `meshcall.WithTunnelClosed(fn)` 与 `ctx.Tunnel`。CLI：`meshcall --tunnel mtun_… call dev.v1.Workspace.whoami '{}'`；`meshcall router inspect` 列出你开启的隧道，但从不显示凭据。
+`targeted` 服务的生成客户端在隧道上同样要绑定实例：用隧道的 `instance_id` 构造。Router 会校验它（不符时返回 `permission_denied` / `tunnel_scope`，并给出正确的 id），而普通 `Mesh` 保留编译期检查。TypeScript 使用 `{ tunnel }` / `acceptTunnels` / `onTunnelClosed`，Go 使用 `meshcall.WithTunnel(cred)` / `meshcall.WithAcceptTunnels(decide)` / `meshcall.WithTunnelClosed(fn)` 与 `ctx.Tunnel`。CLI：`meshcall --tunnel mtun_… call dev.v1.Workspace.whoami '{}'`；`meshcall router inspect` 列出你开启的隧道，但从不显示凭据。
 
 #### 端到端密封隧道
 

@@ -21,18 +21,18 @@ public data class Instance(
 )
 
 /** A targeted service: every call must name the instance it is for. */
-public class TargetedClient(private val rpc: MeshCallRpc) {
+public class TargetedClient(private val rpc: MeshCallRpc, private val boundInstance: String) {
     /** A view of this client with [options] applied to every call. */
-    public fun withOptions(options: CallOptions): TargetedClient = TargetedClient(rpc.withOptions(options))
+    public fun withOptions(options: CallOptions): TargetedClient = TargetedClient(rpc.withOptions(options), boundInstance)
 
     /** Return the id of the instance that served the call. */
-    public suspend fun whoami(instance: String, options: CallOptions = CallOptions.DEFAULT): Instance =
-        rpc.unary(SERVICE_NAME, "whoami", TargetedWhoamiRequest(), serializer<TargetedWhoamiRequest>(), serializer<Instance>(), options.withInstance(instance).withIdempotent(true))
+    public suspend fun whoami(options: CallOptions = CallOptions.DEFAULT): Instance =
+        rpc.unary(SERVICE_NAME, "whoami", TargetedWhoamiRequest(), serializer<TargetedWhoamiRequest>(), serializer<Instance>(), options.withInstance(boundInstance).withIdempotent(true))
 
     /** [whoami] for Java. */
     @JvmOverloads
-    public fun whoamiAsync(instance: String, options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Instance> =
-        rpc.future { whoami(instance, options) }
+    public fun whoamiAsync(options: CallOptions = CallOptions.DEFAULT): CompletableFuture<Instance> =
+        rpc.future { whoami(options) }
 
     public companion object {
         /** The service these calls address. */

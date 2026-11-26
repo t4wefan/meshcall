@@ -78,10 +78,10 @@ var swiftNaming = Naming{
 	},
 	// self and init clash with a struct's initializer, rawValue with an enum's
 	// storage, Self, Type and Protocol with member lookup; the client declares
-	// rpc, serviceName and withOptions.
+	// rpc, boundInstance, serviceName and withOptions.
 	ReservedMembers: map[string]bool{
 		"self": true, "init": true, "Self": true, "Type": true, "Protocol": true, "rawValue": true,
-		"rpc": true, "serviceName": true, "withOptions": true,
+		"rpc": true, "boundInstance": true, "serviceName": true, "withOptions": true,
 	},
 }
 
@@ -267,12 +267,24 @@ func RenderSwiftClient(service *contract.Service, opts SwiftOptions) string {
 	b.WriteString("public struct " + opts.ClassName + ": Sendable {\n")
 	b.WriteString("    /// The service these calls address.\n")
 	b.WriteString("    public static let serviceName = " + swiftString(service.Name) + "\n\n")
-	b.WriteString("    private let rpc: any MeshCallRPC\n\n")
-	b.WriteString("    /// Wraps a `Mesh` (or any `MeshCallRPC`).\n")
-	b.WriteString("    public init(_ rpc: any MeshCallRPC) {\n        self.rpc = rpc\n    }\n\n")
-	b.WriteString("    /// A copy of the client with default `CallOptions` applied to every call.\n")
-	b.WriteString("    public func withOptions(_ options: CallOptions) -> " + opts.ClassName + " {\n")
-	b.WriteString("        " + opts.ClassName + "(rpc.withCallOptions(options))\n    }\n")
+	if model.Targeted {
+		// One client per instance, in every language: the id is bound once, so
+		// no call can forget it or name another (a tunnel's instance included).
+		b.WriteString("    private let rpc: any MeshCallRPC\n")
+		b.WriteString("    private let boundInstance: String\n\n")
+		b.WriteString("    /// Wraps a `Mesh` (or any `MeshCallRPC`); every call goes to `instance`.\n")
+		b.WriteString("    public init(_ rpc: any MeshCallRPC, instance: String) {\n        self.rpc = rpc\n        self.boundInstance = instance\n    }\n\n")
+		b.WriteString("    /// A copy of the client with default `CallOptions` applied to every call.\n")
+		b.WriteString("    public func withOptions(_ options: CallOptions) -> " + opts.ClassName + " {\n")
+		b.WriteString("        " + opts.ClassName + "(rpc.withCallOptions(options), instance: boundInstance)\n    }\n")
+	} else {
+		b.WriteString("    private let rpc: any MeshCallRPC\n\n")
+		b.WriteString("    /// Wraps a `Mesh` (or any `MeshCallRPC`).\n")
+		b.WriteString("    public init(_ rpc: any MeshCallRPC) {\n        self.rpc = rpc\n    }\n\n")
+		b.WriteString("    /// A copy of the client with default `CallOptions` applied to every call.\n")
+		b.WriteString("    public func withOptions(_ options: CallOptions) -> " + opts.ClassName + " {\n")
+		b.WriteString("        " + opts.ClassName + "(rpc.withCallOptions(options))\n    }\n")
+	}
 	for _, m := range model.Methods {
 		b.WriteString("\n")
 		writeSwiftMethod(&b, model, m)
@@ -346,10 +358,6 @@ func writeSwiftMethod(b *strings.Builder, model *ClientModel, m ClientMethod) {
 		b.WriteString("    @available(*, deprecated, message: " + swiftString(message) + ")\n")
 	}
 	var params []string
-	if model.Targeted {
-		// Required on tunnel connections too: the instance is implied there.
-		params = append(params, "instance: String")
-	}
 	request := m.Request + "()"
 	if m.WholeRequest {
 		params = append(params, "request: "+m.Request)
@@ -381,7 +389,7 @@ func writeSwiftMethod(b *strings.Builder, model *ClientModel, m ClientMethod) {
 	if m.Shape == "duplex" {
 		params = append(params, "options: DuplexCallOptions = DuplexCallOptions()")
 		if model.Targeted {
-			setup = append(setup, "var options = options", "options.instance = instance")
+			setup = append(setup, "var options = options", "options.instance = boundInstance")
 		}
 	} else {
 		params = append(params, "options: CallOptions = CallOptions()")
@@ -389,11 +397,13 @@ func writeSwiftMethod(b *strings.Builder, model *ClientModel, m ClientMethod) {
 		if m.Idempotent {
 			defaults = append(defaults, "idempotent: true")
 		}
-		if model.Targeted {
-			defaults = append(defaults, "instance: instance")
-		}
 		if len(defaults) > 0 {
 			optionsExpr = "CallOptions(" + strings.Join(defaults, ", ") + ").merged(with: options)"
+		}
+		if model.Targeted {
+			// Set last, so no per-call option can address another instance.
+			setup = append(setup, "var options = "+optionsExpr, "options.instance = boundInstance")
+			optionsExpr = "options"
 		}
 	}
 	method := swiftString(m.Wire)
